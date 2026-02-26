@@ -1,0 +1,61 @@
+          <!-- Overview -->
+          <div x-show="activeView==='overview'" x-transition.opacity>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+                <div class="text-xs text-slate-400">Media</div>
+                <div class="text-2xl font-semibold mt-1" x-text="stats.mediaCount"></div>
+              </div>
+              <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+                <div class="text-xs text-slate-400">Videos</div>
+                <div class="text-2xl font-semibold mt-1" x-text="stats.videoCount"></div>
+              </div>
+              <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+                <div class="text-xs text-slate-400">Jobs (pending)</div>
+                <div class="text-2xl font-semibold mt-1" x-text="stats.pendingJobs"></div>
+              </div>
+              <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+                <div class="text-xs text-slate-400">Jobs (failed)</div>
+                <div class="text-2xl font-semibold mt-1" x-text="stats.failedJobs"></div>
+              </div>
+            </div>
+
+            <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="text-xs text-slate-400">Database</div>
+                  <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.db.ok)" x-text="serviceText(services.db)"></span>
+                </div>
+                <div class="mt-2 text-xs text-slate-400 truncate" x-show="services.db.error" x-text="services.db.error"></div>
+              </div>
+
+              <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="text-xs text-slate-400">S3 / MinIO</div>
+                  <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.s3.ok)" x-text="serviceText(services.s3)"></span>
+                </div>
+                <div class="mt-2 text-xs text-slate-400 truncate">
+                  <span class="text-slate-300">bucket:</span>
+                  <span x-text="services.s3.bucket || '-'"></span>
+                </div>
+                <div class="mt-1 text-xs text-slate-400 truncate" x-show="services.s3.error" x-text="services.s3.error"></div>
+              </div>
+
+              <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="text-xs text-slate-400">ASR</div>
+                  <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.asr.ok)" x-text="serviceText(services.asr)"></span>
+                </div>
+                <div class="mt-2 text-xs text-slate-400 truncate" x-show="services.asr.url" x-text="services.asr.url"></div>
+                <div class="mt-1 text-xs text-slate-400 truncate" x-show="services.asr.error && services.asr.configured" x-text="services.asr.error"></div>
+              </div>
+
+              <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="text-xs text-slate-400">Ollama</div>
+                  <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.ollama.ok)" x-text="serviceText(services.ollama)"></span>
+                </div>
+                <div class="mt-2 text-xs text-slate-400 truncate" x-show="services.ollama.url" x-text="services.ollama.url"></div>
+                <div class="mt-1 text-xs text-slate-400 truncate" x-show="services.ollama.error && services.ollama.configured" x-text="services.ollama.error"></div>
+              </div>
+            </div>
+          </div>

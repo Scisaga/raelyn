@@ -1,0 +1,25 @@
+          <!-- Briefs -->
+          <div x-show="activeView==='briefs'" x-transition.opacity>
+            <div class="rounded-xl border border-slate-800 bg-slate-900/40 overflow-hidden">
+              <div class="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
+                <div class="text-sm font-semibold">简报（Markdown）</div>
+                <button
+                  class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
+                  @click="generateTodayBrief()"
+                >
+                  生成今日
+                </button>
+              </div>
+              <div class="p-4 text-sm text-slate-300 space-y-2">
+                <div class="text-xs text-slate-400">
+                  需要配置 <code class="text-slate-200">OLLAMA_URL</code> / <code class="text-slate-200">OLLAMA_MODEL</code>，并且视频需要字幕或文字稿。
+                </div>
+                <div class="text-xs text-slate-400" x-show="!selectedPlaylistId">
+                  未选择播放列表：请先到“播放列表”页面点击一个列表项进入详情（会自动选择）。
+                </div>
+                <div class="text-xs text-slate-400" x-show="selectedPlaylistId">
+                  当前播放列表：<span class="text-slate-200" x-text="selectedPlaylistId"></span>
+                </div>
+              </div>
+            </div>
+          </div>

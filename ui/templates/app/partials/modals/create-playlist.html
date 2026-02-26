@@ -1,0 +1,93 @@
+      <!-- Create playlist modal -->
+      <div x-show="modals.createPlaylist" class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" x-transition>
+        <div class="w-full max-w-lg rounded-xl border border-slate-800 bg-slate-900 shadow-lg p-4">
+          <div class="text-sm font-semibold">新建播放列表</div>
+          <div class="mt-3 space-y-3">
+            <input
+              class="w-full rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+              placeholder="名称"
+              x-model="createPlaylistName"
+            />
+            <input
+              class="w-full rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+              placeholder="描述（可选）"
+              x-model="createPlaylistDesc"
+            />
+
+            <div class="rounded-lg border border-slate-800 bg-slate-950/20 p-3 space-y-2">
+              <div class="text-xs text-slate-300">包含媒体（可检索添加）</div>
+              <div class="flex flex-wrap items-center gap-2">
+                <template x-for="m in createPlaylistSelectedMedia()" :key="m.id">
+                  <span class="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-950/30 px-3 py-1 text-xs text-slate-200">
+                    <span class="truncate max-w-[220px]" x-text="mediaDisplayName(m)"></span>
+                    <button class="text-slate-400 hover:text-slate-200" @click="createPlaylistRemoveMediaTag(m.id)" title="移除">×</button>
+                  </span>
+                </template>
+                <button
+                  class="inline-flex items-center gap-2 rounded-full border border-dashed border-slate-700 bg-slate-950/10 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800/40"
+                  @click="createPlaylistMediaTagOpen = !createPlaylistMediaTagOpen"
+                >
+                  + 添加
+                </button>
+              </div>
+
+              <div class="relative" x-show="createPlaylistMediaTagOpen" x-transition>
+                <input
+                  class="w-full rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                  placeholder="搜索媒体（回车添加第一个匹配项）"
+                  x-model="createPlaylistMediaTagQuery"
+                  @keydown.enter.prevent="createPlaylistAddFirstFilteredMediaTag()"
+                />
+                <div class="mt-2 max-h-56 overflow-auto rounded-md border border-slate-800 bg-slate-950/30">
+                  <template x-for="m in createPlaylistFilteredMediaOptions()" :key="m.id">
+                    <button
+                      class="w-full text-left px-3 py-2 text-sm text-slate-200 hover:bg-slate-800/60 flex items-center justify-between gap-3"
+                      @click="createPlaylistAddMediaTag(m.id)"
+                    >
+                      <span class="truncate" x-text="mediaDisplayName(m)"></span>
+                      <span class="text-[11px] text-slate-500" x-text="m.provider"></span>
+                    </button>
+                  </template>
+                  <div class="px-3 py-2 text-xs text-slate-500" x-show="createPlaylistFilteredMediaOptions().length===0">无匹配</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div class="space-y-1">
+                <div class="text-xs text-slate-300">头像（方形，≤2MB）</div>
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  class="block w-full text-xs text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-slate-950 hover:file:bg-white"
+                  @change="createPlaylistAvatarFile = $event.target.files && $event.target.files[0] ? $event.target.files[0] : null"
+                />
+              </div>
+              <div class="space-y-1">
+                <div class="text-xs text-slate-300">背景（cover 填充，≤2MB）</div>
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  class="block w-full text-xs text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-slate-950 hover:file:bg-white"
+                  @change="createPlaylistBackgroundFile = $event.target.files && $event.target.files[0] ? $event.target.files[0] : null"
+                />
+              </div>
+            </div>
+
+            <div class="flex items-center justify-end gap-2">
+              <button
+                class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
+                @click="modals.createPlaylist=false"
+              >
+                取消
+              </button>
+              <button
+                class="px-3 py-1.5 rounded-md bg-emerald-500 text-sm font-medium text-slate-950 hover:bg-emerald-400"
+                @click="submitCreatePlaylist()"
+              >
+                确定
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>

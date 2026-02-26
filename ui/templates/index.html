@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>video-sync UI Shell</title>
+    <link rel="stylesheet" href="/static/css/tailwind.min.css" />
+    <script defer src="/static/vendor/alpine.min.js"></script>
+  </head>
+  <body class="bg-slate-50 text-slate-900">
+    <div
+      x-data="{ activeView: 'overview', titleMap: { overview: '概览', media: '媒体', jobs: '任务', settings: '设置' }, count: 0 }"
+      class="min-h-screen flex"
+    >
+      <aside class="w-64 bg-white border-r border-slate-200 h-screen overflow-y-auto">
+        <div class="p-4">
+          <div class="text-lg font-semibold">video-sync</div>
+          <div class="text-xs text-slate-500 mt-1">offline assets: /static/</div>
+        </div>
+        <nav class="px-2 pb-4 space-y-1">
+          <button class="w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100" :class="activeView==='overview' ? 'bg-slate-100 font-medium' : ''" @click="activeView='overview'">概览</button>
+          <button class="w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100" :class="activeView==='media' ? 'bg-slate-100 font-medium' : ''" @click="activeView='media'">媒体</button>
+          <button class="w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100" :class="activeView==='jobs' ? 'bg-slate-100 font-medium' : ''" @click="activeView='jobs'">任务</button>
+          <button class="w-full text-left px-3 py-2 rounded-xl hover:bg-slate-100" :class="activeView==='settings' ? 'bg-slate-100 font-medium' : ''" @click="activeView='settings'">设置</button>
+        </nav>
+      </aside>
+
+      <main class="flex-1">
+        <header class="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-4">
+          <div class="text-base font-semibold" x-text="titleMap[activeView]"></div>
+          <div class="text-sm text-slate-600">
+            <button class="px-3 py-1.5 rounded-xl border border-slate-200" @click="count++">count: <span x-text="count"></span></button>
+          </div>
+        </header>
+
+        <section class="p-4">
+          <div x-show="activeView==='overview'" x-transition>
+            <div class="rounded-2xl shadow bg-white p-4">
+              <div class="font-semibold">卡片组件</div>
+              <div class="text-sm text-slate-600 mt-2">rounded-2xl + shadow</div>
+            </div>
+          </div>
+
+          <div x-show="activeView==='media'" x-transition>
+            <div class="rounded-2xl shadow bg-white p-4">媒体视图占位</div>
+          </div>
+
+          <div x-show="activeView==='jobs'" x-transition>
+            <div class="rounded-2xl shadow bg-white p-4">任务视图占位</div>
+          </div>
+
+          <div x-show="activeView==='settings'" x-transition>
+            <div class="rounded-2xl shadow bg-white p-4">设置视图占位</div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
+

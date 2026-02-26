@@ -1,0 +1,81 @@
+          <!-- Media -->
+          <div x-show="activeView==='media'" x-transition.opacity>
+            <div class="rounded-xl border border-slate-800 bg-slate-900/40 overflow-hidden">
+              <div class="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
+                <div class="text-sm font-semibold">媒体</div>
+                <input
+                  class="w-64 max-w-full rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                  placeholder="搜索名称/描述"
+                  x-model="mediaQuery"
+                  @input.debounce.400ms="loadMedia()"
+                />
+              </div>
+              <div class="divide-y divide-slate-800">
+                <template x-for="m in mediaList" :key="m.id">
+                  <div class="p-4 flex items-center justify-between gap-4 hover:bg-slate-900/50">
+                    <div class="flex items-center gap-3 min-w-0">
+                      <div
+                        class="w-10 h-10 rounded-lg ring-1 flex items-center justify-center overflow-hidden shrink-0"
+                        :class="mediaAvatarClasses(m)"
+                      >
+                        <template x-if="m.avatar_url">
+                          <img
+                            class="w-10 h-10 object-cover"
+                            :src="m.avatar_url"
+                            alt=""
+                            loading="lazy"
+                            @error="m.avatar_url=null"
+                          />
+                        </template>
+                        <template x-if="!m.avatar_url">
+                          <span class="text-xs font-semibold" x-text="mediaAvatarLabel(m)"></span>
+                        </template>
+                      </div>
+                      <div class="min-w-0">
+                        <div class="font-medium truncate" x-text="mediaDisplayName(m)"></div>
+                        <div class="text-xs text-slate-400 truncate" x-text="m.url"></div>
+                        <div class="mt-1 flex items-center gap-2">
+                          <span
+                            class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/20 px-2 py-0.5 text-[11px] text-slate-300"
+                            x-text="'视频 ' + ((m.video_count===0 || m.video_count) ? m.video_count : '-')"
+                          ></span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                      <div class="flex items-center gap-2 mr-1">
+                        <span class="text-xs text-slate-400">监控</span>
+                        <label class="relative inline-flex items-center cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            class="sr-only peer"
+                            :checked="m.monitor_enabled !== false"
+                            @change="setMediaMonitor(m.id, $event.target.checked)"
+                          />
+                          <div class="relative w-9 h-5 rounded-full bg-slate-700/60 peer-focus:ring-2 peer-focus:ring-emerald-500/30 peer-checked:bg-emerald-600/80 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:h-4 after:w-4 after:rounded-full after:bg-slate-100 after:transition-all peer-checked:after:translate-x-4"></div>
+                        </label>
+                      </div>
+                      <button
+                        class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
+                        @click="syncMediaRecent(m.id)"
+                      >
+                        同步近期
+                      </button>
+                      <button
+                        class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
+                        @click="syncMediaAll(m.id)"
+                      >
+                        同步全部
+                      </button>
+                      <button
+                        class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
+                        @click="deleteMedia(m.id)"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>

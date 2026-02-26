@@ -1,0 +1,69 @@
+# =====================
+# Secrets / local config
+# =====================
+.env
+.env.*
+!.env.example
+
+# =====================
+# Python
+# =====================
+__pycache__/
+*.py[cod]
+*$py.class
+
+.venv/
+.venv_*/
+.venv_test/
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+.coverage
+coverage.xml
+htmlcov/
+
+dist/
+build/
+*.egg-info/
+
+# =====================
+# Node (UI build tooling)
+# =====================
+ui/node_modules/
+ui/.cache/
+ui/.parcel-cache/
+ui/.vite/
+ui/dist/
+ui/build/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =====================
+# Generated UI artifacts (output under ./static/)
+# =====================
+static/index.html
+static/css/tailwind*.css
+static/vendor/alpine*.js
+static/vendor/lightweight-charts*.js
+static/**/*.map
+
+# =====================
+# Runtime / downloads
+# =====================
+bin/
+tmp/
+
+# =====================
+# OS / editors
+# =====================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

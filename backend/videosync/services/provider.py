@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import re
+from urllib.parse import urlparse
+
+
+def detect_provider(url: str) -> str | None:
+    u = url.lower()
+    if "youtube.com" in u or "youtu.be" in u:
+        return "youtube"
+    if "bilibili.com" in u:
+        return "bilibili"
+    return None
+
+
+@dataclass(frozen=True)
+class MediaIdentity:
+    provider: str
+    provider_media_id: str
+
+
+_YOUTUBE_HANDLE_RE = re.compile(r"^/@(?P<handle>[A-Za-z0-9._-]{1,100})(?:/|$)")
+_YOUTUBE_CHANNEL_RE = re.compile(r"^/channel/(?P<cid>UC[A-Za-z0-9_-]{10,})(?:/|$)")
+_YOUTUBE_USER_RE = re.compile(r"^/user/(?P<user>[A-Za-z0-9._-]{1,100})(?:/|$)")
+_YOUTUBE_C_RE = re.compile(r"^/c/(?P<cname>[A-Za-z0-9._-]{1,100})(?:/|$)")
+
+_BILIBILI_SPACE_RE = re.compile(r"^/(?P<mid>\d{1,20})(?:/|$)")
+
+
+def _normalize_url(url: str) -> str:
+    # Ensure urlparse can see the netloc.
+    u = url.strip()
+    if not u:
+        return u
+    if "://" not in u:
+        return "https://" + u
+    return u
+
+
+def _extract_media_id_from_url(*, provider: str, url: str) -> str | None:
+    u = _normalize_url(url)
+    p = urlparse(u)
+    host = (p.netloc or "").lower()
+    path = p.path or ""
+
+    if provider == "youtube":
+        # Typical channel URLs:
+        # - https://www.youtube.com/@handle
+        # - https://www.youtube.com/channel/UCxxxx
+        # - https://www.youtube.com/user/username
+        # - https://www.youtube.com/c/customname
+        if "youtube.com" not in host and "youtu.be" not in host:
+            return None
+        m = _YOUTUBE_HANDLE_RE.match(path)
+        if m:
+            return f"@{m.group('handle')}"
+        m = _YOUTUBE_CHANNEL_RE.match(path)
+        if m:
+            return m.group("cid")
+        m = _YOUTUBE_USER_RE.match(path)
+        if m:
+            return f"user:{m.group('user')}"
+        m = _YOUTUBE_C_RE.match(path)
+        if m:
+            return f"c:{m.group('cname')}"
+        return None
+
+    if provider == "bilibili":
+        # Typical UP URLs:
+        # - https://space.bilibili.com/123456
+        if "space.bilibili.com" in host:
+            m = _BILIBILI_SPACE_RE.match(path)
+            if m:
+                return m.group("mid")
+        return None
+
+    return None
+
+
+def extract_media_identity(*, provider: str, url: str) -> MediaIdentity:
+    provider_media_id = _extract_media_id_from_url(provider=provider, url=url)
+    if provider_media_id:
+        return MediaIdentity(provider=provider, provider_media_id=provider_media_id)
+
+    raise ValueError("仅支持添加频道/UP 主主页 URL（例如 YouTube /@handle 或 bilibili space 链接）")

@@ -1,0 +1,2272 @@
+function _videosync_icon(svgBody) {
+  return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${svgBody}</svg>`;
+}
+
+function VideoSyncApp() {
+  const SIDEBAR_COLLAPSED_KEY = "videosync.ui.sidebarCollapsed";
+  const SIDEBAR_HIDDEN_KEY = "videosync.ui.sidebarHidden";
+  const initialCollapsed = (() => {
+    try {
+      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  })();
+  const initialHidden = (() => {
+    try {
+      return localStorage.getItem(SIDEBAR_HIDDEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  })();
+
+  return {
+    // layout
+    sidebarCollapsed: initialCollapsed,
+    sidebarHidden: initialHidden,
+    sidebarMobilePortrait: false,
+
+    // state
+    activeView: "overview",
+    pageTitle: "概览",
+    healthOk: false,
+    globalStatus: "Connecting…",
+    services: {
+      db: { ok: false, error: null },
+      s3: { ok: false, bucket: "", error: null },
+      asr: { ok: false, configured: false, url: "", error: null },
+      ollama: { ok: false, configured: false, url: "", error: null },
+    },
+    navItems: [
+      { key: "overview", label: "概览", icon: _videosync_icon('<path d="M4 4h7v7H4z"/><path d="M13 4h7v7h-7z"/><path d="M4 13h7v7H4z"/><path d="M13 13h7v7h-7z"/>') },
+      { key: "media", label: "媒体", icon: _videosync_icon('<path d="M16 18a4 4 0 0 0-8 0"/><circle cx="12" cy="10" r="4"/><path d="M5 20h14"/>') },
+      { key: "videos", label: "视频", icon: _videosync_icon('<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>') },
+      { key: "jobs", label: "任务", icon: _videosync_icon('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>') },
+      { key: "playlists", label: "播放列表", icon: _videosync_icon('<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>') },
+      { key: "playlist", label: "播放列表页", hidden: true, icon: _videosync_icon('<path d="M4 19V5"/><path d="M8 5h12"/><path d="M8 12h12"/><path d="M8 19h12"/>') },
+      { key: "briefs", label: "简报", icon: _videosync_icon('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/>') },
+      { key: "settings", label: "设置", icon: _videosync_icon('<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2.2 2.2 0 0 1-1.56 3.76 2.2 2.2 0 0 1-1.56-.64l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.64V21a2.2 2.2 0 1 1-4.4 0v-.06a1.8 1.8 0 0 0-1.08-1.64 1.8 1.8 0 0 0-1.98.36l-.04.04a2.2 2.2 0 0 1-3.76-1.56 2.2 2.2 0 0 1 .64-1.56l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.64-1.08H2.9a2.2 2.2 0 1 1 0-4.4h.06A1.8 1.8 0 0 0 4.6 8.4a1.8 1.8 0 0 0-.36-1.98l-.04-.04A2.2 2.2 0 0 1 5.76 2.6a2.2 2.2 0 0 1 1.56.64l.04.04A1.8 1.8 0 0 0 9.34 3.6 1.8 1.8 0 0 0 10.42 2h.06a2.2 2.2 0 1 1 4.4 0h-.06a1.8 1.8 0 0 0 1.08 1.64 1.8 1.8 0 0 0 1.98-.36l.04-.04a2.2 2.2 0 0 1 3.76 1.56 2.2 2.2 0 0 1-.64 1.56l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.64 1.08h.06a2.2 2.2 0 1 1 0 4.4h-.06A1.8 1.8 0 0 0 19.4 15z"/>') },
+    ],
+    stats: { mediaCount: 0, videoCount: 0, pendingJobs: 0, failedJobs: 0 },
+
+    mediaIndex: [],
+    mediaList: [],
+    mediaQuery: "",
+    videoList: [],
+    videoStatus: "",
+    videoMediaIds: [],
+    videoMediaTagQuery: "",
+    videoMediaTagOpen: false,
+    videoQuery: "",
+    videoFrom: "",
+    videoTo: "",
+    videoLimit: 20,
+    videoOffset: 0,
+    videoHasMore: true,
+    videoLoadingList: false,
+    videoLoadingMore: false,
+    videoIo: null,
+    jobsTab: "active", // active | succeeded | failed
+    jobListActive: [],
+    jobListDone: [],
+    jobsTypeFilter: "",
+    jobsDoneFrom: "",
+    jobsDoneTo: "",
+    jobsSeriesDone: [],
+    jobsSeriesDoneMax: 0,
+    jobsSeriesLoading: false,
+    jobsSeriesError: "",
+    jobsSeriesLastAt: 0,
+    jobsWs: null,
+    jobsWsConnected: false,
+    jobsWsError: "",
+    jobsDoneChart: null,
+    jobsDoneSeries: null,
+    playlistList: [],
+    selectedPlaylistId: null,
+    playerVideo: null,
+    playerAssets: [],
+    playerVideoUrl: "",
+    playerVideoDownloadUrl: "",
+    playerVideoDownloadName: "",
+    playerAudioDownloadUrl: "",
+    playerAudioDownloadName: "",
+    playerTranscriptText: "",
+    playerDescription: "",
+    playerLoading: false,
+    playerError: "",
+    playerTab: "transcript", // transcript
+
+    modals: { addMedia: false, createPlaylist: false, videoPlayer: false },
+    addMediaUrl: "",
+    addMediaSubmitting: false,
+    addMediaError: "",
+    createPlaylistName: "",
+    createPlaylistDesc: "",
+    createPlaylistMediaIds: [],
+    createPlaylistMediaTagQuery: "",
+    createPlaylistMediaTagOpen: false,
+    createPlaylistAvatarFile: null,
+    createPlaylistBackgroundFile: null,
+
+    playlistPageId: null,
+    playlistDetail: null,
+    playlistSelectedDate: "",
+    playlistDayVideos: [],
+    playlistDayVideosLoading: false,
+    playlistDayVideosError: "",
+    playlistCurrentVideo: null,
+    playlistAudioOnly: false,
+    playlistPlayerVideoUrl: "",
+    playlistPlayerAudioUrl: "",
+    playlistPlayerError: "",
+    playlistBriefHtml: "",
+    playlistBriefLoading: false,
+    playlistBriefError: "",
+    playlistBriefAutoRequests: new Set(),
+    playlistBriefAutoPoll: new Map(),
+    playlistTimelineStart: "",
+    playlistTimelineEnd: "",
+    playlistTimelineMax: 0,
+    playlistTimelineValue: 0,
+    playlistCalendarCount: 14,
+    playlistCalendarAnchor: "",
+    playlistEditMediaOpen: false,
+    playlistEditMediaIds: [],
+    playlistEditMediaTagQuery: "",
+    playlistEditMediaTagOpen: false,
+
+    mediaDisplayName(m) {
+      return (m && (m.name || m.provider_media_id || m.url)) || "";
+    },
+
+    mediaAvatarLabel(m) {
+      const base = (m && (m.name || m.provider_media_id || "")) || "";
+      const s = String(base).trim() || "?";
+      // Prefer handle without leading '@'
+      const t = s.startsWith("@") ? s.slice(1) : s;
+      const cleaned = t.replace(/[^A-Za-z0-9\u4e00-\u9fa5]/g, "");
+      if (!cleaned) return "?";
+      return cleaned.slice(0, 2).toUpperCase();
+    },
+
+    mediaAvatarClasses(m) {
+      const p = (m && m.provider) || "";
+      if (p === "youtube") return "bg-rose-500/15 text-rose-200 ring-rose-400/20";
+      if (p === "bilibili") return "bg-sky-500/15 text-sky-200 ring-sky-400/20";
+      return "bg-slate-800 text-slate-200 ring-slate-700/60";
+    },
+
+    videoMediaDisplayName(v) {
+      return (v && (v.media_name || v.media_id)) || "";
+    },
+
+    videoMediaAvatarLabel(v) {
+      const base = (v && (v.media_name || "")) || "";
+      const s = String(base).trim() || "?";
+      const t = s.startsWith("@") ? s.slice(1) : s;
+      const cleaned = t.replace(/[^A-Za-z0-9\u4e00-\u9fa5]/g, "");
+      if (!cleaned) return "?";
+      return cleaned.slice(0, 2).toUpperCase();
+    },
+
+    videoSelectedMedia() {
+      const ids = Array.isArray(this.videoMediaIds) ? this.videoMediaIds : [];
+      if (!ids.length) return [];
+      const idx = new Map((this.mediaIndex || []).map((m) => [String(m.id), m]));
+      return ids.map((id) => idx.get(String(id))).filter(Boolean);
+    },
+
+    videoFilteredMediaOptions() {
+      const q = String(this.videoMediaTagQuery || "")
+        .trim()
+        .toLowerCase();
+      const selected = new Set(Array.isArray(this.videoMediaIds) ? this.videoMediaIds : []);
+      let items = Array.isArray(this.mediaIndex) ? this.mediaIndex : [];
+      items = items.filter((m) => m && !selected.has(String(m.id)));
+      if (q) {
+        items = items.filter((m) => {
+          const name = String(this.mediaDisplayName(m) || "").toLowerCase();
+          const prov = String(m.provider || "").toLowerCase();
+          return name.includes(q) || prov.includes(q);
+        });
+      }
+      return items.slice(0, 50);
+    },
+
+    videoAddMediaTag(mediaId) {
+      const id = String(mediaId || "").trim();
+      if (!id) return;
+      if (!Array.isArray(this.videoMediaIds)) this.videoMediaIds = [];
+      if (!this.videoMediaIds.includes(id)) this.videoMediaIds.push(id);
+      this.videoMediaTagQuery = "";
+      this.videoMediaTagOpen = false;
+      this.loadVideos();
+    },
+
+    videoAddFirstFilteredMediaTag() {
+      const items = this.videoFilteredMediaOptions();
+      if (!items.length) return;
+      this.videoAddMediaTag(items[0].id);
+    },
+
+    videoRemoveMediaTag(mediaId) {
+      const id = String(mediaId || "").trim();
+      if (!id) return;
+      this.videoMediaIds = (Array.isArray(this.videoMediaIds) ? this.videoMediaIds : []).filter((x) => String(x) !== id);
+      this.loadVideos();
+    },
+
+    videoClearMediaTags() {
+      this.videoMediaIds = [];
+      this.videoMediaTagQuery = "";
+      this.videoMediaTagOpen = false;
+      this.loadVideos();
+    },
+
+    createPlaylistSelectedMedia() {
+      const ids = Array.isArray(this.createPlaylistMediaIds) ? this.createPlaylistMediaIds : [];
+      if (!ids.length) return [];
+      const idx = new Map((this.mediaIndex || []).map((m) => [String(m.id), m]));
+      return ids.map((id) => idx.get(String(id))).filter(Boolean);
+    },
+
+    createPlaylistFilteredMediaOptions() {
+      const q = String(this.createPlaylistMediaTagQuery || "")
+        .trim()
+        .toLowerCase();
+      const selected = new Set(Array.isArray(this.createPlaylistMediaIds) ? this.createPlaylistMediaIds : []);
+      let items = Array.isArray(this.mediaIndex) ? this.mediaIndex : [];
+      items = items.filter((m) => m && !selected.has(String(m.id)));
+      if (q) {
+        items = items.filter((m) => {
+          const name = String(this.mediaDisplayName(m) || "").toLowerCase();
+          const prov = String(m.provider || "").toLowerCase();
+          return name.includes(q) || prov.includes(q);
+        });
+      }
+      return items.slice(0, 50);
+    },
+
+    createPlaylistAddMediaTag(mediaId) {
+      const id = String(mediaId || "").trim();
+      if (!id) return;
+      if (!Array.isArray(this.createPlaylistMediaIds)) this.createPlaylistMediaIds = [];
+      if (!this.createPlaylistMediaIds.includes(id)) this.createPlaylistMediaIds.push(id);
+      this.createPlaylistMediaTagQuery = "";
+      this.createPlaylistMediaTagOpen = false;
+    },
+
+    createPlaylistAddFirstFilteredMediaTag() {
+      const items = this.createPlaylistFilteredMediaOptions();
+      if (!items.length) return;
+      this.createPlaylistAddMediaTag(items[0].id);
+    },
+
+    createPlaylistRemoveMediaTag(mediaId) {
+      const id = String(mediaId || "").trim();
+      if (!id) return;
+      this.createPlaylistMediaIds = (Array.isArray(this.createPlaylistMediaIds) ? this.createPlaylistMediaIds : []).filter(
+        (x) => String(x) !== id
+      );
+    },
+
+    formatDuration(sec) {
+      const s = Number(sec || 0);
+      if (!Number.isFinite(s) || s <= 0) return "";
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const ss = Math.floor(s % 60);
+      const pad = (n) => String(n).padStart(2, "0");
+      return h > 0 ? `${h}:${pad(m)}:${pad(ss)}` : `${m}:${pad(ss)}`;
+    },
+
+    formatDateTime(ts) {
+      if (!ts) return "";
+      try {
+        const d = new Date(ts);
+        if (Number.isNaN(d.getTime())) return "";
+        return d.toLocaleString();
+      } catch {
+        return "";
+      }
+    },
+
+    formatDateTimeShort(ts) {
+      if (!ts) return "";
+      try {
+        const d = new Date(ts);
+        if (Number.isNaN(d.getTime())) return "";
+        return d.toLocaleString(undefined, {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      } catch {
+        return "";
+      }
+    },
+
+    servicePillClass(ok) {
+      return ok
+        ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-200"
+        : "border-rose-500/20 bg-rose-500/10 text-rose-200";
+    },
+
+    serviceText(svc) {
+      if (!svc) return "unknown";
+      if (svc.configured === false) return "未配置";
+      return svc.ok ? "OK" : "Error";
+    },
+
+    async openVideoPlayer(v) {
+      if (!v || !v.id) return;
+      this.modals.addMedia = false;
+      this.modals.createPlaylist = false;
+      this.modals.videoPlayer = true;
+      this.playerVideo = v;
+      this.playerAssets = [];
+      this.playerVideoUrl = "";
+      this.playerVideoDownloadUrl = "";
+      this.playerVideoDownloadName = "";
+      this.playerAudioDownloadUrl = "";
+      this.playerAudioDownloadName = "";
+      this.playerTranscriptText = "";
+      this.playerDescription = "";
+      this.playerError = "";
+      this.playerLoading = true;
+      this.playerTab = "transcript";
+
+      try {
+        const [assets, transcript, detail] = await Promise.all([
+          this.api(`/videos/${v.id}/assets?presign=true&download=true`),
+          this.api(`/videos/${v.id}/transcript`),
+          this.api(`/videos/${v.id}`),
+        ]);
+
+        this.playerAssets = Array.isArray(assets) ? assets : [];
+        const detailDesc = detail && typeof detail === "object" ? detail.description || "" : "";
+        this.playerDescription = detailDesc || "";
+
+        const videos = this.playerAssets.filter((a) => a.type === "video" && a.presigned_url);
+        const mp4 = videos.find((a) => String(a.format || "").toLowerCase() === "mp4") || videos[0] || null;
+        this.playerVideoUrl = (mp4 && mp4.presigned_url) || "";
+        this.playerVideoDownloadUrl = (mp4 && (mp4.download_url || mp4.presigned_url)) || "";
+        this.playerVideoDownloadName = (mp4 && mp4.filename) || "";
+
+        const audios = this.playerAssets.filter((a) => a.type === "audio" && (a.download_url || a.presigned_url));
+        const m4a = audios.find((a) => String(a.format || "").toLowerCase() === "m4a") || audios[0] || null;
+        this.playerAudioDownloadUrl = (m4a && (m4a.download_url || m4a.presigned_url)) || "";
+        this.playerAudioDownloadName = (m4a && m4a.filename) || "";
+
+        this.playerTranscriptText = transcript && transcript.ok ? transcript.text || "" : "";
+      } catch (e) {
+        this.playerError = e && e.message ? e.message : String(e);
+      } finally {
+        this.playerLoading = false;
+      }
+    },
+
+    closeVideoPlayer() {
+      this.modals.videoPlayer = false;
+      this.playerVideoUrl = "";
+      this.playerVideoDownloadUrl = "";
+      this.playerAudioDownloadUrl = "";
+      this.playerVideo = null;
+    },
+
+    maximizePlayer() {
+      try {
+        const el = this.$refs && this.$refs.playerVideoEl;
+        if (el && el.requestFullscreen) el.requestFullscreen();
+      } catch {
+        // ignore
+      }
+    },
+
+    _isMobilePortrait() {
+      try {
+        return window.matchMedia("(max-width: 767px) and (orientation: portrait)").matches;
+      } catch {
+        return window.innerWidth < 768 && window.innerHeight > window.innerWidth;
+      }
+    },
+
+    _applySidebarMode() {
+      const mobilePortrait = this._isMobilePortrait();
+
+      if (mobilePortrait) {
+        // Portrait mode: auto-hide by default and only allow hidden/collapsed (no expanded state).
+        if (!this.sidebarMobilePortrait) this.sidebarHidden = true;
+        this.sidebarCollapsed = true;
+      } else {
+        // Non-portrait mode: sidebar is always visible; keep collapsed/expanded behavior.
+        this.sidebarHidden = false;
+        if (this.sidebarMobilePortrait) {
+          // Restore the user's collapsed/expanded preference when leaving portrait mode.
+          try {
+            this.sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      this.sidebarMobilePortrait = mobilePortrait;
+    },
+
+    toggleSidebar() {
+      if (this.sidebarMobilePortrait) {
+        this.sidebarHidden = !this.sidebarHidden;
+        try {
+          localStorage.setItem(SIDEBAR_HIDDEN_KEY, this.sidebarHidden ? "1" : "0");
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
+      this.sidebarCollapsed = !this.sidebarCollapsed;
+      try {
+        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, this.sidebarCollapsed ? "1" : "0");
+      } catch {
+        // ignore
+      }
+    },
+
+    async api(path, options) {
+      const resp = await fetch(`/api${path}`, options || {});
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`${resp.status}: ${text}`);
+      }
+      const ct = resp.headers.get("content-type") || "";
+      return ct.includes("application/json") ? resp.json() : resp.text();
+    },
+
+    _viewPath(key) {
+      if (!key || key === "overview") return "/";
+      return `/${encodeURIComponent(key)}`;
+    },
+
+    _parseViewFromLocation() {
+      const path = (window.location.pathname || "/").replace(/\/+$/, "") || "/";
+      if (path === "/" || path === "") return "overview";
+      const key = decodeURIComponent(path.slice(1));
+      const exists = this.navItems.some((x) => x.key === key);
+      return exists ? key : "overview";
+    },
+
+    _applyQueryFromLocation(viewKey) {
+      const sp = new URLSearchParams(window.location.search || "");
+      if (viewKey === "media") {
+        this.mediaQuery = sp.get("q") || "";
+      }
+      if (viewKey === "videos") {
+        this.videoStatus = sp.get("status") || "";
+        const mediaIn = sp.get("media_id_in") || "";
+        const mediaOne = sp.get("media_id") || "";
+        if (mediaIn) {
+          this.videoMediaIds = mediaIn
+            .split(",")
+            .map((x) => x.trim())
+            .filter(Boolean);
+        } else if (mediaOne) {
+          this.videoMediaIds = [mediaOne];
+        } else {
+          this.videoMediaIds = [];
+        }
+        this.videoQuery = sp.get("q") || "";
+        const fromIso = sp.get("from") || "";
+        const toIso = sp.get("to") || "";
+        if (fromIso) this.videoFrom = this._toLocalInputValue(new Date(fromIso));
+        if (toIso) this.videoTo = this._toLocalInputValue(new Date(toIso));
+        if (!fromIso && !toIso) this._ensureVideoRange();
+      }
+      if (viewKey === "jobs") {
+        this.jobsTab = sp.get("tab") || this.jobsTab || "active";
+        this.jobsTypeFilter = sp.get("type") || this.jobsTypeFilter || "";
+        const fromIso = sp.get("from") || "";
+        const toIso = sp.get("to") || "";
+        if (fromIso) this.jobsDoneFrom = this._toLocalInputValue(new Date(fromIso));
+        if (toIso) this.jobsDoneTo = this._toLocalInputValue(new Date(toIso));
+      }
+      if (viewKey === "playlists" || viewKey === "briefs") {
+        this.selectedPlaylistId = sp.get("playlist_id") || this.selectedPlaylistId;
+      }
+      if (viewKey === "playlist") {
+        const pid = sp.get("playlist_id") || this.playlistPageId || this.selectedPlaylistId;
+        this.playlistPageId = pid || null;
+        this.selectedPlaylistId = pid || this.selectedPlaylistId;
+        this.playlistSelectedDate = sp.get("date") || this.playlistSelectedDate || "";
+        if (!this.playlistSelectedDate) {
+          this.playlistSelectedDate = this._todayIsoLocal();
+        }
+      }
+    },
+
+    _buildSearchForView(viewKey) {
+      const sp = new URLSearchParams();
+      if (viewKey === "media" && this.mediaQuery) sp.set("q", this.mediaQuery);
+      if (viewKey === "videos" && this.videoStatus) sp.set("status", this.videoStatus);
+      if (viewKey === "videos" && Array.isArray(this.videoMediaIds) && this.videoMediaIds.length) {
+        sp.set("media_id_in", this.videoMediaIds.join(","));
+      }
+      if (viewKey === "videos" && this.videoQuery) sp.set("q", this.videoQuery);
+      if (viewKey === "videos" && this.videoFrom) sp.set("from", new Date(this.videoFrom).toISOString());
+      if (viewKey === "videos" && this.videoTo) sp.set("to", new Date(this.videoTo).toISOString());
+      if (viewKey === "jobs") {
+        sp.set("tab", this.jobsTab || "active");
+        if (this.jobsTypeFilter) sp.set("type", this.jobsTypeFilter);
+        if (this.jobsTab !== "active") {
+          const fromIso = this.jobsDoneFrom ? new Date(this.jobsDoneFrom).toISOString() : "";
+          const toIso = this.jobsDoneTo ? new Date(this.jobsDoneTo).toISOString() : "";
+          if (fromIso) sp.set("from", fromIso);
+          if (toIso) sp.set("to", toIso);
+        }
+      }
+      if ((viewKey === "playlists" || viewKey === "briefs") && this.selectedPlaylistId) sp.set("playlist_id", this.selectedPlaylistId);
+      if (viewKey === "playlist") {
+        const pid = this.playlistPageId || this.selectedPlaylistId;
+        if (pid) sp.set("playlist_id", String(pid));
+        if (this.playlistSelectedDate) sp.set("date", String(this.playlistSelectedDate));
+      }
+      const s = sp.toString();
+      return s ? `?${s}` : "";
+    },
+
+    _syncUrl({ push = false } = {}) {
+      const path = this._viewPath(this.activeView);
+      const search = this._buildSearchForView(this.activeView);
+      const url = `${path}${search}`;
+      const state = { view: this.activeView };
+      if (push) history.pushState(state, "", url);
+      else history.replaceState(state, "", url);
+    },
+
+    switchView(key) {
+      if (this.activeView === "videos" && key !== "videos") this._teardownVideoIo();
+      if (key === "videos") this._ensureVideoRange();
+      this.activeView = key;
+      const item = this.navItems.find((x) => x.key === key);
+      this.pageTitle = item ? item.label : key;
+      this._syncUrl({ push: true });
+      this.refreshActive();
+    },
+
+    async refreshActive() {
+      try {
+        if (this.activeView !== "jobs") {
+          this._disconnectJobsWs();
+          this._destroyJobsDoneChart();
+        }
+        if (this.activeView === "overview") return await this.loadStats();
+        if (this.activeView === "media") return await this.loadMedia();
+        if (this.activeView === "videos") return await this.loadVideos();
+        if (this.activeView === "jobs") return await this.loadJobs();
+        if (this.activeView === "playlists") return await this.loadPlaylists();
+        if (this.activeView === "playlist") return await this.loadPlaylistPage();
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    async loadStats() {
+      try {
+        const s = await this.api(`/stats`);
+        this.stats.mediaCount = s.media_count || 0;
+        this.stats.videoCount = s.video_count || 0;
+        this.stats.pendingJobs = s.pending_jobs || 0;
+        this.stats.failedJobs = s.failed_jobs || 0;
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    async loadMedia() {
+      try {
+        this._syncUrl({ push: false });
+        const q = this.mediaQuery ? `&q=${encodeURIComponent(this.mediaQuery)}` : "";
+        this.mediaList = await this.api(`/media?limit=50&offset=0${q}`);
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    async loadVideos() {
+      try {
+        this.videoLoadingList = true;
+        this._syncUrl({ push: false });
+        if (!this.mediaIndex || this.mediaIndex.length === 0) {
+          this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
+        }
+        this.videoOffset = 0;
+        this.videoHasMore = true;
+        this.videoLoadingMore = false;
+
+        const qs = new URLSearchParams();
+        qs.set("limit", String(this.videoLimit || 20));
+        qs.set("offset", "0");
+        if (this.videoStatus) qs.set("status", this.videoStatus);
+        if (Array.isArray(this.videoMediaIds) && this.videoMediaIds.length) qs.set("media_id_in", this.videoMediaIds.join(","));
+        if (this.videoQuery) qs.set("q", this.videoQuery);
+        if (this.videoFrom) qs.set("published_since", new Date(this.videoFrom).toISOString());
+        if (this.videoTo) qs.set("published_until", new Date(this.videoTo).toISOString());
+
+        const items = await this.api(`/videos?${qs.toString()}`);
+        this.videoList = Array.isArray(items) ? items : [];
+        this.videoOffset = this.videoList.length;
+        const lim = Number(this.videoLimit || 20);
+        this.videoHasMore = this.videoList.length >= lim;
+        if (this.videoHasMore) this._setupVideoIo();
+        else this._teardownVideoIo();
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      } finally {
+        this.videoLoadingList = false;
+      }
+    },
+
+    _teardownVideoIo() {
+      try {
+        if (this.videoIo) this.videoIo.disconnect();
+      } catch {
+        // ignore
+      }
+      this.videoIo = null;
+    },
+
+    _setupVideoIo() {
+      if (this.activeView !== "videos") return;
+      this.$nextTick(() => {
+        const el = this.$refs && this.$refs.videoInfiniteSentinel;
+        if (!el) return;
+        this._teardownVideoIo();
+        const io = new IntersectionObserver(
+          (entries) => {
+            if (!entries || !entries.some((e) => e.isIntersecting)) return;
+            this.loadMoreVideos();
+          },
+          { root: null, rootMargin: "800px 0px", threshold: 0 }
+        );
+        this.videoIo = io;
+        io.observe(el);
+      });
+    },
+
+    async loadMoreVideos() {
+      if (this.activeView !== "videos") return;
+      if (this.videoLoadingList || this.videoLoadingMore) return;
+      if (!this.videoHasMore) return;
+
+      try {
+        this.videoLoadingMore = true;
+        const qs = new URLSearchParams();
+        qs.set("limit", String(this.videoLimit || 20));
+        qs.set("offset", String(this.videoOffset || 0));
+        if (this.videoStatus) qs.set("status", this.videoStatus);
+        if (Array.isArray(this.videoMediaIds) && this.videoMediaIds.length) qs.set("media_id_in", this.videoMediaIds.join(","));
+        if (this.videoQuery) qs.set("q", this.videoQuery);
+        if (this.videoFrom) qs.set("published_since", new Date(this.videoFrom).toISOString());
+        if (this.videoTo) qs.set("published_until", new Date(this.videoTo).toISOString());
+
+        const items = await this.api(`/videos?${qs.toString()}`);
+        const arr = Array.isArray(items) ? items : [];
+        const cur = Array.isArray(this.videoList) ? this.videoList : [];
+        const seen = new Set(cur.map((v) => String(v && v.id)));
+        const fresh = arr.filter((v) => v && v.id && !seen.has(String(v.id)));
+        this.videoList = cur.concat(fresh);
+        this.videoOffset = (this.videoOffset || 0) + arr.length;
+
+        const lim = Number(this.videoLimit || 20);
+        this.videoHasMore = arr.length >= lim;
+        if (!this.videoHasMore) this._teardownVideoIo();
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      } finally {
+        this.videoLoadingMore = false;
+      }
+    },
+
+    async loadJobs() {
+      await this.refreshJobs();
+    },
+
+    _toLocalInputValue(d) {
+      const pad = (n) => String(n).padStart(2, "0");
+      const yyyy = d.getFullYear();
+      const mm = pad(d.getMonth() + 1);
+      const dd = pad(d.getDate());
+      const hh = pad(d.getHours());
+      const mi = pad(d.getMinutes());
+      return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+    },
+
+    _wsUrl(path) {
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      return `${proto}://${window.location.host}${path}`;
+    },
+
+    setJobsTab(tab) {
+      const prev = this.jobsTab;
+      this.jobsTab = tab;
+      this._syncUrl({ push: false });
+      if (tab === "active") this._destroyJobsDoneChart();
+      // If the chart was destroyed (or we're switching back from active quickly),
+      // bypass the refresh throttle so we can repopulate the chart immediately.
+      if (prev === "active" && tab !== "active") this.jobsSeriesLastAt = 0;
+      this.refreshJobs();
+    },
+
+    _ensureJobsDoneRange() {
+      if (this.jobsDoneFrom && this.jobsDoneTo) return;
+      const now = new Date();
+      const since = new Date(now.getTime() - 24 * 3600 * 1000);
+      this.jobsDoneFrom = this._toLocalInputValue(since);
+      this.jobsDoneTo = this._toLocalInputValue(now);
+    },
+
+    _ensureVideoRange() {
+      if (this.videoFrom && this.videoTo) return;
+      const now = new Date();
+      const since = new Date(now.getTime() - 24 * 3600 * 1000);
+      if (!this.videoFrom) this.videoFrom = this._toLocalInputValue(since);
+      if (!this.videoTo) this.videoTo = this._toLocalInputValue(now);
+    },
+
+    _disconnectJobsWs() {
+      try {
+        if (this.jobsWs) this.jobsWs.close();
+      } catch {
+        // ignore
+      }
+      this.jobsWs = null;
+      this.jobsWsConnected = false;
+    },
+
+    _connectJobsWs() {
+      if (this.jobsWs) return;
+      const qs = new URLSearchParams();
+      qs.set("status_in", "pending,running");
+      qs.set("limit", "200");
+      qs.set("interval_seconds", "1");
+      if (this.jobsTypeFilter) qs.set("type", this.jobsTypeFilter);
+      const url = this._wsUrl(`/api/ws/jobs?${qs.toString()}`);
+      const ws = new WebSocket(url);
+      this.jobsWs = ws;
+      this.jobsWsError = "";
+
+      ws.onopen = () => {
+        this.jobsWsConnected = true;
+      };
+      ws.onclose = () => {
+        this.jobsWsConnected = false;
+        this.jobsWs = null;
+        if (this.activeView === "jobs" && this.jobsTab === "active") {
+          setTimeout(() => this._connectJobsWs(), 800);
+        }
+      };
+      ws.onerror = () => {
+        this.jobsWsError = "WebSocket error";
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data || "{}");
+          if (msg.type !== "jobs") return;
+          const jobs = Array.isArray(msg.jobs) ? msg.jobs : [];
+          this.jobListActive = jobs;
+        } catch {
+          // ignore
+        }
+      };
+    },
+
+    jobProgressPct(j) {
+      const cur = j && typeof j.progress_current === "number" ? j.progress_current : null;
+      const tot = j && typeof j.progress_total === "number" ? j.progress_total : null;
+      if (!tot || tot <= 0 || cur == null) return null;
+      const pct = Math.round((cur * 100) / tot);
+      return Math.max(0, Math.min(100, pct));
+    },
+
+    async loadJobsDone() {
+      this._ensureJobsDoneRange();
+      this._syncUrl({ push: false });
+
+      const fromIso = this.jobsDoneFrom ? new Date(this.jobsDoneFrom).toISOString() : "";
+      const toIso = this.jobsDoneTo ? new Date(this.jobsDoneTo).toISOString() : "";
+      const statusIn = this.jobsTab === "succeeded" ? "succeeded" : "failed,canceled";
+
+      const qs = new URLSearchParams();
+      qs.set("status_in", statusIn);
+      qs.set("limit", "200");
+      qs.set("offset", "0");
+      if (this.jobsTypeFilter) qs.set("type", this.jobsTypeFilter);
+      if (fromIso) qs.set("finished_since", fromIso);
+      if (toIso) qs.set("finished_until", toIso);
+      this.jobListDone = await this.api(`/jobs?${qs.toString()}`);
+    },
+
+    jobsTypeOptions() {
+      const known = [
+        "media.sync_profile",
+        "media.sync_videos",
+        "video.download",
+        "video.extract_audio",
+        "video.normalize_subtitle",
+        "video.asr_transcribe",
+        "video.generate_note",
+        "brief.generate_daily",
+      ];
+      const s = new Set(known);
+      for (const j of Array.isArray(this.jobListActive) ? this.jobListActive : []) {
+        if (j && j.type) s.add(String(j.type));
+      }
+      for (const j of Array.isArray(this.jobListDone) ? this.jobListDone : []) {
+        if (j && j.type) s.add(String(j.type));
+      }
+      return Array.from(s).filter(Boolean).sort();
+    },
+
+    applyJobsTypeFilter() {
+      this._disconnectJobsWs();
+      this._syncUrl({ push: false });
+      this.refreshJobs();
+      this.refreshJobsSeries({ force: true });
+    },
+
+    clearJobsTypeFilter() {
+      this.jobsTypeFilter = "";
+      this.applyJobsTypeFilter();
+    },
+
+    async applyJobsRange() {
+      if (this.activeView !== "jobs" || this.jobsTab === "active") return;
+      this._syncUrl({ push: false });
+      await Promise.all([this.loadJobsDone(), this.refreshJobsSeries({ force: true })]);
+    },
+
+    _jobsSeriesMax(series) {
+      let max = 0;
+      for (const p of Array.isArray(series) ? series : []) {
+        const t = p && typeof p.total === "number" ? p.total : 0;
+        if (t > max) max = t;
+      }
+      return max;
+    },
+
+    _destroyJobsDoneChart() {
+      try {
+        clearTimeout(this._jobsDoneChartRetryTimer);
+      } catch {
+        // ignore
+      }
+      this._jobsDoneChartRetryTimer = null;
+      try {
+        if (this.jobsDoneChart) this.jobsDoneChart.remove();
+      } catch {
+        // ignore
+      }
+      this.jobsDoneChart = null;
+      this.jobsDoneSeries = null;
+    },
+
+    _ensureJobsDoneChart() {
+      if (this.jobsDoneChart && this.jobsDoneSeries) return true;
+      const el = this.$refs && this.$refs.jobsDoneChart;
+      if (!el) return false;
+      if (el.clientWidth < 10 || el.clientHeight < 10) return false;
+      const LC = window.LightweightCharts;
+      if (!LC || typeof LC.createChart !== "function") return false;
+
+      function JobsDoneStackedBarsRenderer() {
+        this._bars = [];
+        this._barSpacing = 6;
+        this._visibleRange = null;
+        this._conflationFactor = 1;
+      }
+
+      JobsDoneStackedBarsRenderer.prototype.update = function (data) {
+        this._bars = (data && data.bars) || [];
+        this._barSpacing = (data && data.barSpacing) || 6;
+        this._visibleRange = (data && data.visibleRange) || null;
+        this._conflationFactor = (data && data.conflationFactor) || 1;
+      };
+
+      JobsDoneStackedBarsRenderer.prototype.draw = function (target, priceToCoordinate) {
+        const bars = Array.isArray(this._bars) ? this._bars : [];
+        if (!bars.length) return;
+        const visible = this._visibleRange;
+        const from = visible && typeof visible.from === "number" ? Math.max(0, Math.floor(visible.from)) : 0;
+        const to = visible && typeof visible.to === "number" ? Math.min(bars.length, Math.ceil(visible.to)) : bars.length;
+        const spacing = (this._barSpacing || 6) * (this._conflationFactor || 1);
+        const widthFactor = 0.72;
+
+        target.useBitmapCoordinateSpace(({ context, horizontalPixelRatio, verticalPixelRatio }) => {
+          const wPx = Math.max(1, Math.floor(spacing * widthFactor * horizontalPixelRatio));
+          const half = Math.floor(wPx / 2);
+
+          const y0v = priceToCoordinate(0);
+          if (y0v == null) return;
+          const y0 = Math.round(y0v * verticalPixelRatio);
+
+          for (let i = from; i < to; i++) {
+            const b = bars[i];
+            if (!b || !b.originalData) continue;
+            const d = b.originalData;
+            const succeeded = Number(d.succeeded || 0);
+            const failed = Number(d.failed || 0);
+            const canceled = Number(d.canceled || 0);
+            const total = succeeded + failed + canceled;
+            if (!total) continue;
+
+            const x = Math.round(b.x * horizontalPixelRatio);
+            const left = x - half;
+
+            const y1v = priceToCoordinate(succeeded);
+            const y2v = priceToCoordinate(succeeded + failed);
+            const y3v = priceToCoordinate(total);
+            if (y1v == null || y2v == null || y3v == null) continue;
+
+            const y1 = Math.round(y1v * verticalPixelRatio);
+            const y2 = Math.round(y2v * verticalPixelRatio);
+            const y3 = Math.round(y3v * verticalPixelRatio);
+
+            const drawSeg = (yBottom, yTop, color) => {
+              const top = Math.min(yBottom, yTop);
+              const bottom = Math.max(yBottom, yTop);
+              const h = bottom - top;
+              if (h <= 0) return;
+              context.fillStyle = color;
+              context.fillRect(left, top, wPx, h);
+            };
+
+            // Stack: succeeded (bottom) -> failed -> canceled (top)
+            drawSeg(y0, y1, "rgba(16, 185, 129, 0.75)"); // emerald-500
+            drawSeg(y1, y2, "rgba(244, 63, 94, 0.75)"); // rose-500
+            drawSeg(y2, y3, "rgba(148, 163, 184, 0.55)"); // slate-400
+
+            // outline
+            context.strokeStyle = "rgba(30, 41, 59, 0.55)"; // slate-800-ish
+            context.lineWidth = Math.max(1, Math.floor(horizontalPixelRatio));
+            const outW = Math.max(1, wPx - 1);
+            const outH = Math.max(1, Math.abs(y0 - y3) - 1);
+            context.strokeRect(left + 0.5, Math.min(y0, y3) + 0.5, outW, outH);
+          }
+        });
+      };
+
+      function JobsDoneStackedBarsPaneView() {
+        this._renderer = new JobsDoneStackedBarsRenderer();
+      }
+
+      JobsDoneStackedBarsPaneView.prototype.renderer = function () {
+        return this._renderer;
+      };
+
+      JobsDoneStackedBarsPaneView.prototype.update = function (data) {
+        this._renderer.update(data);
+      };
+
+      JobsDoneStackedBarsPaneView.prototype.priceValueBuilder = function (row) {
+        const succeeded = Number((row && row.succeeded) || 0);
+        const failed = Number((row && row.failed) || 0);
+        const canceled = Number((row && row.canceled) || 0);
+        const total = succeeded + failed + canceled;
+        return [0, total, total];
+      };
+
+      JobsDoneStackedBarsPaneView.prototype.isWhitespace = function (row) {
+        return !row || row.time == null;
+      };
+
+      JobsDoneStackedBarsPaneView.prototype.defaultOptions = function () {
+        return LC.customSeriesDefaultOptions;
+      };
+
+      const chart = LC.createChart(el, {
+        autoSize: true,
+        localization: {
+          timeFormatter: (time) => {
+            try {
+              if (typeof time === "number") return new Date(time * 1000).toLocaleString();
+              if (time && typeof time === "object" && typeof time.year === "number") {
+                const d = new Date(time.year, (time.month || 1) - 1, time.day || 1);
+                return d.toLocaleDateString();
+              }
+              return String(time);
+            } catch {
+              return String(time);
+            }
+          },
+        },
+        layout: {
+          background: { type: LC.ColorType.Solid, color: "rgba(0,0,0,0)" },
+          textColor: "rgba(148, 163, 184, 0.85)",
+          fontFamily:
+            "-apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif",
+          fontSize: 11,
+          attributionLogo: true,
+        },
+        rightPriceScale: { visible: false, scaleMargins: { top: 0.18, bottom: 0.1 } },
+        leftPriceScale: { visible: false },
+        grid: {
+          vertLines: { visible: true, color: "rgba(30, 41, 59, 0.35)" },
+          horzLines: { visible: true, color: "rgba(30, 41, 59, 0.35)" },
+        },
+        timeScale: {
+          borderVisible: true,
+          borderColor: "rgba(30, 41, 59, 0.55)",
+          timeVisible: true,
+          secondsVisible: false,
+          tickMarkFormatter: (time, tickMarkType, locale) => {
+            try {
+              const loc = locale || undefined;
+              let d = null;
+              if (typeof time === "number") d = new Date(time * 1000);
+              else if (time && typeof time === "object" && typeof time.year === "number") {
+                d = new Date(time.year, (time.month || 1) - 1, time.day || 1);
+              }
+              if (!d || Number.isNaN(d.getTime())) return "";
+              if (tickMarkType === LC.TickMarkType.DayOfMonth || tickMarkType === LC.TickMarkType.Month || tickMarkType === LC.TickMarkType.Year) {
+                return d.toLocaleDateString(loc, { month: "2-digit", day: "2-digit" });
+              }
+              return d.toLocaleTimeString(loc, { hour: "2-digit", minute: "2-digit" });
+            } catch {
+              return "";
+            }
+          },
+        },
+        crosshair: { mode: LC.CrosshairMode.Hidden },
+        handleScroll: false,
+        handleScale: false,
+      });
+
+      const series = chart.addCustomSeries(new JobsDoneStackedBarsPaneView(), {
+        lastValueVisible: false,
+        priceLineVisible: false,
+      });
+
+      this.jobsDoneChart = chart;
+      this.jobsDoneSeries = series;
+      // Apply the current control range if available (even before data arrives),
+      // so the displayed window always matches the time range inputs.
+      try {
+        const r = this._jobsDoneRangeSeconds();
+        if (r) chart.timeScale().setVisibleRange(r);
+      } catch {
+        // ignore
+      }
+      return true;
+    },
+
+    _jobsDoneRangeSeconds() {
+      try {
+        const fromSec = this.jobsDoneFrom ? Math.floor(new Date(this.jobsDoneFrom).getTime() / 1000) : null;
+        const toSec = this.jobsDoneTo ? Math.floor(new Date(this.jobsDoneTo).getTime() / 1000) : null;
+        if (fromSec == null || toSec == null) return null;
+        if (!Number.isFinite(fromSec) || !Number.isFinite(toSec)) return null;
+        if (toSec <= fromSec) return null;
+        return { from: fromSec, to: toSec };
+      } catch {
+        return null;
+      }
+    },
+
+    _updateJobsDoneChart() {
+      if (!this._ensureJobsDoneChart()) {
+        if (this.activeView === "jobs" && this.jobsTab !== "active") {
+          clearTimeout(this._jobsDoneChartRetryTimer);
+          this._jobsDoneChartRetryTimer = setTimeout(() => this._updateJobsDoneChart(), 80);
+        }
+        return;
+      }
+      const series = this.jobsDoneSeries;
+      const chart = this.jobsDoneChart;
+      if (!series || !chart) return;
+
+      const points = Array.isArray(this.jobsSeriesDone) ? this.jobsSeriesDone : [];
+      const countsByMinute = new Map();
+      for (const p of points) {
+        const ts = p && p.ts ? new Date(p.ts) : null;
+        if (!ts || Number.isNaN(ts.getTime())) continue;
+        const sec = Math.floor(ts.getTime() / 1000);
+        const minute = Math.floor(sec / 60) * 60;
+        countsByMinute.set(minute, {
+          succeeded: Number(p.succeeded || 0),
+          failed: Number(p.failed || 0),
+          canceled: Number(p.canceled || 0),
+        });
+      }
+
+      const r = this._jobsDoneRangeSeconds();
+      const data = [];
+      if (r) {
+        const start = Math.floor(r.from / 60) * 60;
+        for (let t = start; t < r.to; t += 60) {
+          const c = countsByMinute.get(t) || { succeeded: 0, failed: 0, canceled: 0 };
+          data.push({ time: t, ...c });
+        }
+      } else {
+        for (const [t, c] of countsByMinute.entries()) data.push({ time: t, ...c });
+        data.sort((a, b) => a.time - b.time);
+      }
+
+      series.setData(data);
+      try {
+        if (r) chart.timeScale().setVisibleRange(r);
+        else chart.timeScale().fitContent();
+      } catch {
+        // ignore
+      }
+    },
+
+    jobStatusPillClass(status) {
+      const s = String(status || "").toLowerCase();
+      if (s === "succeeded") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+      if (s === "failed") return "border-rose-500/30 bg-rose-500/10 text-rose-200";
+      if (s === "canceled") return "border-slate-600 bg-slate-800/40 text-slate-200";
+      if (s === "running") return "border-sky-500/30 bg-sky-500/10 text-sky-200";
+      if (s === "pending") return "border-amber-500/30 bg-amber-500/10 text-amber-200";
+      return "border-slate-700 bg-slate-950/30 text-slate-200";
+    },
+
+    jobStatusLabel(j) {
+      const s = String((j && j.status) || "").toLowerCase() || "-";
+      const pct = s === "running" ? this.jobProgressPct(j) : null;
+      if (pct != null) return `${s} · ${pct}%`;
+      return s;
+    },
+
+    formatTs(v) {
+      if (!v) return "-";
+      try {
+        const d = new Date(v);
+        if (Number.isNaN(d.getTime())) return String(v);
+        return d.toLocaleString();
+      } catch {
+        return String(v);
+      }
+    },
+
+    formatTsShort(v) {
+      if (!v) return "-";
+      try {
+        const d = new Date(v);
+        if (Number.isNaN(d.getTime())) return String(v);
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      } catch {
+        return String(v);
+      }
+    },
+
+    jobMetaLabel(j) {
+      if (!j || typeof j !== "object") return "";
+      if (j.media_name) return String(j.media_name || "");
+      const mid = j.params && j.params.media_id ? String(j.params.media_id) : "";
+      if (!mid) return "";
+      const m = (this.mediaIndex || []).find((x) => String(x.id) === mid);
+      return m ? this.mediaDisplayName(m) : "";
+    },
+
+    async refreshJobsSeries({ force = false } = {}) {
+      try {
+        if (this.activeView !== "jobs") return;
+        if (this.jobsTab === "active") return;
+        this._ensureJobsDoneRange();
+        const now = Date.now();
+        if (!force && this.jobsSeriesLastAt && now - this.jobsSeriesLastAt < 5000) return;
+
+        const fromIso = this.jobsDoneFrom ? new Date(this.jobsDoneFrom).toISOString() : "";
+        const toIso = this.jobsDoneTo ? new Date(this.jobsDoneTo).toISOString() : "";
+        if (!fromIso || !toIso) return;
+        this.jobsSeriesLastAt = now;
+
+        this.jobsSeriesLoading = true;
+        this.jobsSeriesError = "";
+
+        const commonQs = new URLSearchParams();
+        commonQs.set("since", fromIso);
+        commonQs.set("until", toIso);
+        commonQs.set("bucket", "minute");
+        if (this.jobsTypeFilter) commonQs.set("type", this.jobsTypeFilter);
+
+        const qsDone = new URLSearchParams(commonQs);
+        qsDone.set("status_in", "succeeded,failed,canceled");
+        qsDone.set("ts_field", "finished_at");
+
+        const done = await this.api(`/jobs/series?${qsDone.toString()}`);
+        const donePoints = Array.isArray(done) ? done : [];
+
+        this.jobsSeriesDone = donePoints.map((p) => {
+          const c = (p && p.counts) || {};
+          const succeeded = Number(c.succeeded || 0);
+          const failed = Number(c.failed || 0);
+          const canceled = Number(c.canceled || 0);
+          return { ts: p.ts, succeeded, failed, canceled, total: succeeded + failed + canceled };
+        });
+
+        this.jobsSeriesDoneMax = this._jobsSeriesMax(this.jobsSeriesDone);
+        this._updateJobsDoneChart();
+      } catch (e) {
+        this.jobsSeriesError = e && e.message ? e.message : String(e);
+      } finally {
+        this.jobsSeriesLoading = false;
+      }
+    },
+
+    async refreshJobs() {
+      try {
+        if (this.activeView !== "jobs") {
+          this._disconnectJobsWs();
+          return;
+        }
+        if (this.jobsTab === "active") {
+          this.jobListDone = [];
+          this._connectJobsWs();
+          return;
+        }
+        this._disconnectJobsWs();
+        await this.loadJobsDone();
+        this.refreshJobsSeries();
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    async loadPlaylists() {
+      try {
+        this.playlistList = await this.api(`/playlists?limit=100&offset=0`);
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    async _uploadPlaylistImage(playlistId, kind, file) {
+      const pid = String(playlistId || "").trim();
+      if (!pid) throw new Error("missing playlist id");
+      const k = String(kind || "").trim();
+      if (k !== "avatar" && k !== "background") throw new Error("invalid upload kind");
+      if (!file) throw new Error("missing file");
+
+      const fd = new FormData();
+      fd.set("file", file, file.name || "image");
+      const resp = await fetch(`/api/playlists/${encodeURIComponent(pid)}/${encodeURIComponent(k)}`, { method: "POST", body: fd });
+      if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`);
+      return resp.json();
+    },
+
+    openPlaylistPage(playlistId, dateStr) {
+      const pid = String(playlistId || "").trim();
+      if (!pid) return;
+      this.modals.addMedia = false;
+      this.modals.createPlaylist = false;
+      this.closeVideoPlayer();
+      this.playlistPageId = pid;
+      this.selectedPlaylistId = pid;
+      this.playlistSelectedDate = String(dateStr || "").trim() || this._todayIsoLocal();
+      this.playlistCalendarUpdateCount();
+      this.switchView("playlist");
+    },
+
+    _dateAddDays(iso, days) {
+      try {
+        const d = new Date(`${iso}T00:00:00Z`);
+        if (Number.isNaN(d.getTime())) return iso;
+        d.setUTCDate(d.getUTCDate() + Number(days || 0));
+        return d.toISOString().slice(0, 10);
+      } catch {
+        return iso;
+      }
+    },
+
+    _dateDiffDays(aIso, bIso) {
+      try {
+        const a = new Date(`${aIso}T00:00:00Z`);
+        const b = new Date(`${bIso}T00:00:00Z`);
+        if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) return 0;
+        return Math.round((b.getTime() - a.getTime()) / (24 * 3600 * 1000));
+      } catch {
+        return 0;
+      }
+    },
+
+    _dateClamp(iso, startIso, endIso) {
+      try {
+        const d = new Date(`${iso}T00:00:00Z`).getTime();
+        const s = new Date(`${startIso}T00:00:00Z`).getTime();
+        const e = new Date(`${endIso}T00:00:00Z`).getTime();
+        if ([d, s, e].some((x) => Number.isNaN(x))) return iso;
+        if (d < s) return startIso;
+        if (d > e) return endIso;
+        return iso;
+      } catch {
+        return iso;
+      }
+    },
+
+    _todayIsoLocal() {
+      try {
+        const d = new Date();
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return `${y}-${m}-${day}`;
+      } catch {
+        return new Date().toISOString().slice(0, 10);
+      }
+    },
+
+    async loadPlaylistPage() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) {
+        this.playlistDetail = null;
+        this.playlistDayVideos = [];
+        this.playlistBriefHtml = "";
+        this.pageTitle = "播放列表页";
+        return;
+      }
+
+      try {
+        this._syncUrl({ push: false });
+        this.playlistDayVideosError = "";
+        this.playlistBriefError = "";
+
+        const detail = await this.api(`/playlists/${encodeURIComponent(pid)}/detail`);
+        this.playlistDetail = detail || null;
+        this.pageTitle = (detail && detail.name) || "播放列表页";
+
+        this.playlistCalendarUpdateCount();
+        try {
+          if (this.$nextTick) this.$nextTick(() => this.playlistCalendarUpdateCount());
+        } catch {
+          // ignore
+        }
+        setTimeout(() => this.playlistCalendarUpdateCount(), 0);
+        const today = this._todayIsoLocal();
+        const start = (detail && detail.earliest_date) || today;
+        const end = today;
+        this.playlistTimelineStart = start;
+        this.playlistTimelineEnd = end;
+        const max = Math.max(0, this._dateDiffDays(start, end));
+        this.playlistTimelineMax = max;
+
+        if (!this.playlistSelectedDate) this.playlistSelectedDate = today;
+        this.playlistSelectedDate = this._dateClamp(this.playlistSelectedDate, start, end);
+        this.playlistTimelineValue = Math.max(0, Math.min(max, this._dateDiffDays(start, this.playlistSelectedDate)));
+
+        this.playlistCalendarAnchor = this._dateClamp(
+          this._dateAddDays(this.playlistSelectedDate, -(Number(this.playlistCalendarCount || 14) - 1)),
+          start,
+          end
+        );
+        this.playlistCalendarEnsureVisible();
+        this.playlistEditResetFromDetail();
+        await this.playlistLoadDay(this.playlistSelectedDate);
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    playlistRangeLabel() {
+      const a = String(this.playlistTimelineStart || "").trim();
+      const b = String(this.playlistTimelineEnd || "").trim();
+      if (!a && !b) return "-";
+      if (a && b) return `${a} ~ ${b}`;
+      return a || b || "-";
+    },
+
+    playlistRangeLabelShort() {
+      const a = String(this.playlistTimelineStart || "").trim();
+      const b = String(this.playlistTimelineEnd || "").trim();
+      if (!a && !b) return "-";
+      if (!a || !b) return this._mdLabel(a || b);
+
+      const parse = (iso) => {
+        try {
+          const parts = String(iso || "").split("-");
+          if (parts.length !== 3) return null;
+          const y = Number(parts[0]);
+          const m = Number(parts[1]);
+          const d = Number(parts[2]);
+          if (![y, m, d].every((x) => Number.isFinite(x))) return null;
+          return { y, m, d };
+        } catch {
+          return null;
+        }
+      };
+
+      const pa = parse(a);
+      const pb = parse(b);
+      if (pa && pb && pa.y === pb.y) return `${pa.m}/${pa.d} ~ ${pb.m}/${pb.d}`;
+      if (pa && pb) return `${String(pa.y).slice(-2)}/${pa.m}/${pa.d} ~ ${String(pb.y).slice(-2)}/${pb.m}/${pb.d}`;
+      return `${this._mdLabel(a)} ~ ${this._mdLabel(b)}`;
+    },
+
+    playlistCalendarUpdateCount() {
+      try {
+        const refW =
+          this.$refs && this.$refs.playlistCalendarStrip && this.$refs.playlistCalendarStrip.clientWidth
+            ? Number(this.$refs.playlistCalendarStrip.clientWidth)
+            : 0;
+        const w = refW || (window && window.innerWidth ? Number(window.innerWidth) : 1280);
+        const gap = 8; // gap-2
+        const minCard = 64;
+        let n = Math.floor((w + gap) / (minCard + gap));
+        if (!Number.isFinite(n) || n <= 0) n = 14;
+        n = Math.max(5, Math.min(14, Math.floor(n)));
+        if (n !== this.playlistCalendarCount) {
+          this.playlistCalendarCount = n;
+          this.playlistCalendarEnsureVisible();
+        }
+      } catch {
+        // ignore
+      }
+    },
+
+    _weekdayZh(iso) {
+      try {
+        const d = new Date(`${iso}T00:00:00Z`);
+        if (Number.isNaN(d.getTime())) return "";
+        const map = ["日", "一", "二", "三", "四", "五", "六"];
+        return map[d.getUTCDay()] || "";
+      } catch {
+        return "";
+      }
+    },
+
+    _mdLabel(iso) {
+      try {
+        const d = new Date(`${iso}T00:00:00Z`);
+        if (Number.isNaN(d.getTime())) return iso;
+        const mm = String(d.getUTCMonth() + 1);
+        const dd = String(d.getUTCDate());
+        return `${mm}/${dd}`;
+      } catch {
+        return iso;
+      }
+    },
+
+    playlistCalendarEnsureVisible() {
+      const start = String(this.playlistTimelineStart || "").trim();
+      const end = String(this.playlistTimelineEnd || "").trim();
+      const selected = String(this.playlistSelectedDate || "").trim();
+      const n = Math.max(5, Number(this.playlistCalendarCount || 14));
+      if (!start || !end || !selected) return;
+      const maxAnchor = this._dateAddDays(end, -(n - 1));
+      let anchor = String(this.playlistCalendarAnchor || "").trim();
+      if (!anchor) anchor = this._dateAddDays(selected, -(n - 1));
+      // Ensure selected within window
+      const windowEnd = this._dateAddDays(anchor, n - 1);
+      if (this._dateDiffDays(selected, anchor) > 0) {
+        // selected < anchor
+        anchor = selected;
+      } else if (this._dateDiffDays(windowEnd, selected) > 0) {
+        // selected > windowEnd
+        anchor = this._dateAddDays(selected, -(n - 1));
+      }
+      // Clamp to range
+      if (this._dateDiffDays(maxAnchor, start) > 0) {
+        anchor = start;
+      } else {
+        anchor = this._dateClamp(anchor, start, maxAnchor);
+      }
+      this.playlistCalendarAnchor = anchor;
+    },
+
+    playlistCalendarItems() {
+      const start = String(this.playlistTimelineStart || "").trim();
+      const end = String(this.playlistTimelineEnd || "").trim();
+      const selected = String(this.playlistSelectedDate || "").trim();
+      const n = Math.max(5, Number(this.playlistCalendarCount || 14));
+      if (!start || !end) return [];
+      const today = end || this._todayIsoLocal();
+      let anchor = String(this.playlistCalendarAnchor || "").trim();
+      if (!anchor) anchor = selected ? this._dateAddDays(selected, -(n - 1)) : start;
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        const date = this._dateAddDays(anchor, i);
+        const disabled = this._dateDiffDays(date, start) > 0 || this._dateDiffDays(end, date) > 0;
+        out.push({
+          date,
+          md: this._mdLabel(date),
+          weekday: this._weekdayZh(date),
+          selected: !!selected && date === selected,
+          today: date === today,
+          disabled,
+        });
+      }
+      return out;
+    },
+
+    playlistTimelineApply() {
+      const start = String(this.playlistTimelineStart || "").trim();
+      const end = String(this.playlistTimelineEnd || "").trim();
+      if (!start || !end) return;
+      const v = Number(this.playlistTimelineValue || 0);
+      const next = this._dateAddDays(start, v);
+      this.playlistSetDate(this._dateClamp(next, start, end));
+    },
+
+    playlistSetDate(iso) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return;
+      const next = String(iso || "").trim();
+      if (!next || next === this.playlistSelectedDate) return;
+      this.playlistSelectedDate = next;
+      this.playlistCalendarEnsureVisible();
+      if (this.playlistTimelineStart) {
+        const max = Number(this.playlistTimelineMax || 0);
+        this.playlistTimelineValue = Math.max(0, Math.min(max, this._dateDiffDays(this.playlistTimelineStart, next)));
+      }
+      this._syncUrl({ push: false });
+      this.playlistLoadDay(next);
+    },
+
+    async playlistLoadDay(iso) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const day = String(iso || "").trim();
+      if (!pid || !day) return;
+
+      const prevCurrentId =
+        this.playlistCurrentVideo && this.playlistCurrentVideo.id ? String(this.playlistCurrentVideo.id) : "";
+      this.playlistPlayerError = "";
+      this.playlistPlayerVideoUrl = "";
+      this.playlistPlayerAudioUrl = "";
+
+      this.playlistDayVideosLoading = true;
+      this.playlistDayVideosError = "";
+      try {
+        const items = await this.api(`/playlists/${encodeURIComponent(pid)}/videos_by_date?date=${encodeURIComponent(day)}`);
+        this.playlistDayVideos = Array.isArray(items) ? items : [];
+        const keep = prevCurrentId ? this.playlistDayVideos.find((x) => x && String(x.id) === prevCurrentId) : null;
+        if (keep) this.playlistCurrentVideo = keep;
+        else this.playlistCurrentVideo = this.playlistDayVideos.length ? this.playlistDayVideos[0] : null;
+        if (this.playlistCurrentVideo) await this.playlistSelectVideo(this.playlistCurrentVideo, { autoPlay: false });
+      } catch (e) {
+        this.playlistDayVideosError = e && e.message ? e.message : String(e);
+        this.playlistDayVideos = [];
+        this.playlistCurrentVideo = null;
+      } finally {
+        this.playlistDayVideosLoading = false;
+      }
+
+      await this.playlistLoadBrief(day);
+    },
+
+    async playlistSelectVideo(v, { autoPlay = false } = {}) {
+      if (!v) return;
+      const vid = String(v.id || "").trim();
+      if (!vid) return;
+      this.playlistCurrentVideo = v;
+      this.playlistPlayerError = "";
+      try {
+        const assets = await this.api(`/videos/${encodeURIComponent(vid)}/assets?presign=1&download=0`);
+        const list = Array.isArray(assets) ? assets : [];
+        const videos = list.filter((a) => a && a.type === "video" && a.presigned_url);
+        const audios = list.filter((a) => a && a.type === "audio" && a.presigned_url);
+        const mp4 = videos.find((a) => String(a.format || "").toLowerCase() === "mp4") || videos[0] || null;
+        const m4a = audios.find((a) => String(a.format || "").toLowerCase() === "m4a") || audios[0] || null;
+        this.playlistPlayerVideoUrl = (mp4 && mp4.presigned_url) || "";
+        this.playlistPlayerAudioUrl = (m4a && m4a.presigned_url) || "";
+        this.$nextTick(() => {
+          try {
+            const el = this.playlistAudioOnly ? this.$refs && this.$refs.playlistAudioEl : this.$refs && this.$refs.playlistVideoEl;
+            if (autoPlay && el && typeof el.play === "function") el.play();
+          } catch {
+            // ignore
+          }
+        });
+      } catch (e) {
+        this.playlistPlayerError = e && e.message ? e.message : String(e);
+        this.playlistPlayerVideoUrl = "";
+        this.playlistPlayerAudioUrl = "";
+      }
+    },
+
+    playlistPrevVideo() {
+      const items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
+      if (!items.length) return;
+      const id = this.playlistCurrentVideo && this.playlistCurrentVideo.id ? String(this.playlistCurrentVideo.id) : "";
+      const idx = id ? items.findIndex((x) => x && String(x.id) === id) : -1;
+      const next = idx > 0 ? items[idx - 1] : items[0];
+      if (next) this.playlistSelectVideo(next, { autoPlay: true });
+    },
+
+    playlistNextVideo() {
+      const items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
+      if (!items.length) return;
+      const id = this.playlistCurrentVideo && this.playlistCurrentVideo.id ? String(this.playlistCurrentVideo.id) : "";
+      const idx = id ? items.findIndex((x) => x && String(x.id) === id) : -1;
+      const next = idx >= 0 && idx < items.length - 1 ? items[idx + 1] : items[items.length - 1];
+      if (next) this.playlistSelectVideo(next, { autoPlay: true });
+    },
+
+    playlistPrevDay() {
+      const start = String(this.playlistTimelineStart || "").trim();
+      const end = String(this.playlistTimelineEnd || "").trim();
+      if (!start || !end || !this.playlistSelectedDate) return;
+      const next = this._dateClamp(this._dateAddDays(this.playlistSelectedDate, -1), start, end);
+      this.playlistSetDate(next);
+    },
+
+    playlistNextDay() {
+      const start = String(this.playlistTimelineStart || "").trim();
+      const end = String(this.playlistTimelineEnd || "").trim();
+      if (!start || !end || !this.playlistSelectedDate) return;
+      const next = this._dateClamp(this._dateAddDays(this.playlistSelectedDate, 1), start, end);
+      this.playlistSetDate(next);
+    },
+
+    playlistJump(days) {
+      const start = String(this.playlistTimelineStart || "").trim();
+      const end = String(this.playlistTimelineEnd || "").trim();
+      if (!start || !end || !this.playlistSelectedDate) return;
+      try {
+        const anchor = String(this.playlistCalendarAnchor || "").trim();
+        if (anchor) this.playlistCalendarAnchor = this._dateAddDays(anchor, Number(days || 0));
+      } catch {
+        // ignore
+      }
+      const next = this._dateClamp(this._dateAddDays(this.playlistSelectedDate, Number(days || 0)), start, end);
+      this.playlistSetDate(next);
+    },
+
+    async playlistGenerateBriefForSelectedDate() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const day = String(this.playlistSelectedDate || "").trim();
+      if (!pid || !day) return;
+      try {
+        await this.api(`/briefs/generate`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ playlist_id: pid, date: day }),
+        });
+        this.globalStatus = "已投递简报生成任务（Jobs 可查看进度）";
+        setTimeout(() => this.playlistLoadBrief(day), 1200);
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    async playlistRegenerateAllBriefs() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const detail = this.playlistDetail;
+      const from = detail && detail.earliest_date ? String(detail.earliest_date) : "";
+      const to = this._todayIsoLocal();
+      if (!pid || !from) {
+        this.globalStatus = "没有可用的日期范围（可能还没同步出视频）";
+        return;
+      }
+      try {
+        await this.api(`/briefs/generate_range`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ playlist_id: pid, from_date: from, to_date: to }),
+        });
+        this.globalStatus = "已投递全量简报生成任务（Jobs 可查看进度）";
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    async playlistDelete() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return;
+      const name = (this.playlistDetail && this.playlistDetail.name) || pid;
+      if (!confirm(`确认删除播放列表：${name}？\n\n删除后将无法恢复。`)) return;
+      try {
+        await this.api(`/playlists/${encodeURIComponent(pid)}`, { method: "DELETE" });
+        this.globalStatus = "已删除播放列表";
+        this.playlistDetail = null;
+        this.playlistPageId = null;
+        if (this.selectedPlaylistId === pid) this.selectedPlaylistId = null;
+        await this.loadPlaylists();
+        this.switchView("playlists");
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    _escapeHtml(s) {
+      return String(s || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    },
+
+    _briefToHtml(md) {
+      const src = String(md || "");
+      const lines = src.split(/\r?\n/);
+      const out = [];
+      let inList = false;
+
+      const flushList = () => {
+        if (!inList) return;
+        out.push("</ul>");
+        inList = false;
+      };
+
+      const formatInlineEsc = (escaped) => {
+        let s = String(escaped || "");
+        s = s.replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 rounded bg-slate-800/60 text-slate-100 text-[12px]">$1</code>');
+        s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        return s;
+      };
+
+      const linkifyAndFormat = (rawText) => {
+        const raw = String(rawText || "");
+        const re = /(https?:\/\/[^\s)]+)\b/g;
+        let last = 0;
+        let html = "";
+        for (const m of raw.matchAll(re)) {
+          const idx = m.index ?? 0;
+          const before = raw.slice(last, idx);
+          html += formatInlineEsc(this._escapeHtml(before));
+          const url = m[0];
+          const urlEsc = this._escapeHtml(url);
+          const enc = encodeURIComponent(url);
+          html += `<span class="inline-flex items-center gap-1"><button type="button" class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25 text-[11px]" data-play-url="${enc}" title="播放该视频">▶</button><a href="${urlEsc}" target="_blank" rel="noopener noreferrer" class="break-all">${urlEsc}</a></span>`;
+          last = idx + url.length;
+        }
+        html += formatInlineEsc(this._escapeHtml(raw.slice(last)));
+        return html;
+      };
+
+      for (const rawLine of lines) {
+        const line = rawLine || "";
+        const trimmed = line.trim();
+        if (!trimmed) {
+          flushList();
+          out.push("<div class=\"h-2\"></div>");
+          continue;
+        }
+        const m = trimmed.match(/^(#{1,4})\s+(.*)$/);
+        if (m) {
+          flushList();
+          const level = m[1].length;
+          const body = linkifyAndFormat(m[2] || "");
+          out.push(`<h${level} class="mt-2">${body}</h${level}>`);
+          continue;
+        }
+        const m2 = trimmed.match(/^\d+[\).]\s+(.*)$/);
+        if (m2) {
+          flushList();
+          const body = linkifyAndFormat(m2[1] || "");
+          out.push(`<h3 class="mt-3">${body}</h3>`);
+          continue;
+        }
+        if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+          if (!inList) {
+            out.push('<ul class="list-disc pl-5 space-y-1">');
+            inList = true;
+          }
+          const body = linkifyAndFormat(trimmed.slice(2));
+          out.push(`<li>${body}</li>`);
+          continue;
+        }
+        flushList();
+        out.push(`<p class="my-1">${linkifyAndFormat(line)}</p>`);
+      }
+      flushList();
+      return out.join("");
+    },
+
+    playlistBriefClick(ev) {
+      try {
+        const btn = ev && ev.target && ev.target.closest ? ev.target.closest("button[data-play-url]") : null;
+        if (!btn) return;
+        const enc = btn.getAttribute("data-play-url") || "";
+        const url = decodeURIComponent(enc);
+        this.playlistSelectVideoByUrl(url);
+        ev.preventDefault();
+        ev.stopPropagation();
+      } catch {
+        // ignore
+      }
+    },
+
+    playlistSelectVideoByUrl(url) {
+      const u = String(url || "").trim();
+      if (!u) return;
+      const items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
+      const found = items.find((v) => v && String(v.url || "").trim() === u);
+      if (found) {
+        this.playlistSelectVideo(found, { autoPlay: true });
+        return;
+      }
+      this.globalStatus = "该链接不在当天视频列表中";
+    },
+
+    async playlistLoadBrief(day) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const d = String(day || "").trim();
+      if (!pid || !d) return;
+      this.playlistBriefLoading = true;
+      this.playlistBriefError = "";
+      this.playlistBriefHtml = "";
+      const hasVideos = Array.isArray(this.playlistDayVideos) && this.playlistDayVideos.length > 0;
+      try {
+        const brief = await this.api(`/briefs/by_date?playlist_id=${encodeURIComponent(pid)}&date=${encodeURIComponent(d)}`);
+        if (!brief || brief.status !== "ready" || !brief.markdown_url) {
+          const s = brief && brief.status ? String(brief.status) : "pending";
+          this.playlistBriefHtml = `<div class="text-slate-400 text-sm">简报状态：${this._escapeHtml(s)}</div>`;
+          if (hasVideos) {
+            this._playlistEnsureBriefEnqueued(pid, d);
+            this._playlistPollBrief(pid, d);
+          }
+          return;
+        }
+        const resp = await fetch(brief.markdown_url);
+        if (!resp.ok) throw new Error(`${resp.status}: brief markdown fetch failed`);
+        const md = await resp.text();
+        this.playlistBriefHtml = this._briefToHtml(md);
+        try {
+          const k = `${String(pid)}:${String(d)}`;
+          if (this.playlistBriefAutoPoll) this.playlistBriefAutoPoll.delete(k);
+        } catch {}
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        if (String(msg).startsWith("404:") || String(msg).includes(" 404")) {
+          if (!hasVideos) {
+            this.playlistBriefHtml = `<div class="text-slate-400 text-sm">当天暂无视频，不生成简报</div>`;
+            return;
+          }
+          this.playlistBriefHtml = `<div class="text-slate-400 text-sm">暂无简报，已自动触发生成…</div>`;
+          this._playlistEnsureBriefEnqueued(pid, d);
+          this._playlistPollBrief(pid, d);
+        } else {
+          this.playlistBriefError = msg;
+        }
+      } finally {
+        this.playlistBriefLoading = false;
+      }
+    },
+
+    _playlistEnsureBriefEnqueued(pid, day) {
+      try {
+        const k = `${String(pid)}:${String(day)}`;
+        if (this.playlistBriefAutoRequests && this.playlistBriefAutoRequests.has(k)) return;
+        if (!this.playlistBriefAutoRequests) this.playlistBriefAutoRequests = new Set();
+        this.playlistBriefAutoRequests.add(k);
+        this.api(`/briefs/generate`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ playlist_id: pid, date: day }),
+        }).catch(() => {});
+      } catch {
+        // ignore
+      }
+    },
+
+    _playlistPollBrief(pid, day) {
+      try {
+        const k = `${String(pid)}:${String(day)}`;
+        if (!this.playlistBriefAutoPoll) this.playlistBriefAutoPoll = new Map();
+        const tries = Number(this.playlistBriefAutoPoll.get(k) || 0);
+        if (tries >= 8) return;
+        this.playlistBriefAutoPoll.set(k, tries + 1);
+        const delay = 1200 + tries * 700;
+        setTimeout(() => {
+          if (String(this.playlistPageId || this.selectedPlaylistId || "").trim() !== String(pid)) return;
+          if (String(this.playlistSelectedDate || "").trim() !== String(day)) return;
+          this.playlistLoadBrief(day);
+        }, delay);
+      } catch {
+        // ignore
+      }
+    },
+
+    async playlistUploadAvatar(ev) {
+      try {
+        const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+        const f = ev && ev.target && ev.target.files && ev.target.files[0] ? ev.target.files[0] : null;
+        if (!pid || !f) return;
+        if (f.size > 2 * 1024 * 1024) throw new Error("头像超过 2MB");
+        const updated = await this._uploadPlaylistImage(pid, "avatar", f);
+        if (this.playlistDetail) this.playlistDetail.avatar_url = updated.avatar_url || this.playlistDetail.avatar_url;
+        await this.loadPlaylists();
+        this.globalStatus = "已更新头像";
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      } finally {
+        try {
+          if (ev && ev.target) ev.target.value = "";
+        } catch {}
+      }
+    },
+
+    async playlistUploadBackground(ev) {
+      try {
+        const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+        const f = ev && ev.target && ev.target.files && ev.target.files[0] ? ev.target.files[0] : null;
+        if (!pid || !f) return;
+        if (f.size > 2 * 1024 * 1024) throw new Error("背景超过 2MB");
+        const updated = await this._uploadPlaylistImage(pid, "background", f);
+        if (this.playlistDetail) this.playlistDetail.background_url = updated.background_url || this.playlistDetail.background_url;
+        await this.loadPlaylists();
+        this.globalStatus = "已更新背景";
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      } finally {
+        try {
+          if (ev && ev.target) ev.target.value = "";
+        } catch {}
+      }
+    },
+
+    async playlistEditDescription() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return;
+      const current = (this.playlistDetail && this.playlistDetail.description) || "";
+      const next = prompt("编辑描述（留空表示清空）", String(current || ""));
+      if (next === null) return;
+      try {
+        const updated = await this.api(`/playlists/${encodeURIComponent(pid)}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ description: String(next).trim() || null }),
+        });
+        if (this.playlistDetail) this.playlistDetail.description = updated.description || null;
+        await this.loadPlaylists();
+        this.globalStatus = "已更新描述";
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    playlistEditResetFromDetail() {
+      const d = this.playlistDetail;
+      const media = d && Array.isArray(d.media) ? d.media : [];
+      this.playlistEditMediaIds = media.map((m) => String(m.id)).filter(Boolean);
+      this.playlistEditMediaTagQuery = "";
+      this.playlistEditMediaTagOpen = false;
+    },
+
+    playlistEditSelectedMedia() {
+      const ids = Array.isArray(this.playlistEditMediaIds) ? this.playlistEditMediaIds : [];
+      if (!ids.length) return [];
+      const idx = new Map((this.mediaIndex || []).map((m) => [String(m.id), m]));
+      return ids.map((id) => idx.get(String(id))).filter(Boolean);
+    },
+
+    playlistEditFilteredMediaOptions() {
+      const q = String(this.playlistEditMediaTagQuery || "")
+        .trim()
+        .toLowerCase();
+      const selected = new Set(Array.isArray(this.playlistEditMediaIds) ? this.playlistEditMediaIds : []);
+      let items = Array.isArray(this.mediaIndex) ? this.mediaIndex : [];
+      items = items.filter((m) => m && !selected.has(String(m.id)));
+      if (q) {
+        items = items.filter((m) => {
+          const name = String(this.mediaDisplayName(m) || "").toLowerCase();
+          const prov = String(m.provider || "").toLowerCase();
+          return name.includes(q) || prov.includes(q);
+        });
+      }
+      return items.slice(0, 50);
+    },
+
+    playlistEditAddMediaTag(mediaId) {
+      const id = String(mediaId || "").trim();
+      if (!id) return;
+      if (!Array.isArray(this.playlistEditMediaIds)) this.playlistEditMediaIds = [];
+      if (!this.playlistEditMediaIds.includes(id)) this.playlistEditMediaIds.push(id);
+      this.playlistEditMediaTagQuery = "";
+      this.playlistEditMediaTagOpen = false;
+    },
+
+    playlistEditAddFirstFilteredMediaTag() {
+      const items = this.playlistEditFilteredMediaOptions();
+      if (!items.length) return;
+      this.playlistEditAddMediaTag(items[0].id);
+    },
+
+    playlistEditRemoveMediaTag(mediaId) {
+      const id = String(mediaId || "").trim();
+      if (!id) return;
+      this.playlistEditMediaIds = (Array.isArray(this.playlistEditMediaIds) ? this.playlistEditMediaIds : []).filter(
+        (x) => String(x) !== id
+      );
+    },
+
+    async playlistEditSaveMedia() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return;
+      try {
+        await this.api(`/playlists/${encodeURIComponent(pid)}/media`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ media_ids: Array.isArray(this.playlistEditMediaIds) ? this.playlistEditMediaIds : [] }),
+        });
+        this.globalStatus = "已更新播放列表媒体（已触发全量简报生成）";
+        await this.loadPlaylistPage();
+        await this.loadPlaylists();
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    openAddMedia() {
+      this.modals.createPlaylist = false;
+      this.closeVideoPlayer();
+      this.addMediaUrl = "";
+      this.addMediaError = "";
+      this.addMediaSubmitting = false;
+      this.modals.addMedia = true;
+    },
+
+    async submitAddMedia() {
+      if (this.addMediaSubmitting) return;
+      const url = (this.addMediaUrl || "").trim();
+      if (!url) {
+        this.addMediaError = "请填写媒体 URL";
+        return;
+      }
+      try {
+        this.addMediaSubmitting = true;
+        this.addMediaError = "";
+        await this.api(`/media`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ url }),
+        });
+        this.modals.addMedia = false;
+        if (this.activeView !== "media") this.switchView("media");
+        await this.loadMedia();
+        this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.addMediaError = msg;
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.addMediaSubmitting = false;
+      }
+    },
+
+    async setMediaMonitor(mediaId, enabled) {
+      const id = String(mediaId || "").trim();
+      if (!id) return;
+      const next = !!enabled;
+
+      const all = Array.isArray(this.mediaList) ? this.mediaList : [];
+      const item = all.find((m) => m && String(m.id) === id);
+      const prev = item ? item.monitor_enabled !== false : true;
+      if (item) item.monitor_enabled = next;
+      const idx = Array.isArray(this.mediaIndex) ? this.mediaIndex : [];
+      const idxItem = idx.find((m) => m && String(m.id) === id);
+      if (idxItem) idxItem.monitor_enabled = next;
+
+      try {
+        await this.api(`/media/${id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ monitor_enabled: next }),
+        });
+        this.globalStatus = next ? "已启用监控" : "已关闭监控";
+      } catch (e) {
+        if (item) item.monitor_enabled = prev;
+        if (idxItem) idxItem.monitor_enabled = prev;
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    async _syncMedia(mediaId, scope) {
+      const id = String(mediaId || "").trim();
+      if (!id) return;
+      const qs = scope ? `?scope=${encodeURIComponent(scope)}` : "";
+      await this.api(`/media/${id}/sync${qs}`, { method: "POST" });
+      this.globalStatus = scope === "all" ? "已投递全量同步任务" : "已投递近期同步任务";
+      await this.loadJobs();
+    },
+
+    async syncMediaRecent(mediaId) {
+      try {
+        await this._syncMedia(mediaId, "recent");
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    async syncMediaAll(mediaId) {
+      try {
+        await this._syncMedia(mediaId, "all");
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    async syncMedia(mediaId) {
+      return await this.syncMediaRecent(mediaId);
+    },
+
+    async deleteMedia(mediaId) {
+      try {
+        await this.api(`/media/${mediaId}`, { method: "DELETE" });
+        await this.loadMedia();
+        this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+
+    async retryJob(jobId) {
+      try {
+        await this.api(`/jobs/${jobId}/retry`, { method: "POST" });
+        this.globalStatus = "已投递重试任务";
+        await this.loadJobs();
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    async cancelJob(jobId) {
+      try {
+        await this.api(`/jobs/${jobId}/cancel`, { method: "POST" });
+        this.globalStatus = "已取消任务";
+        await this.loadJobs();
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    openCreatePlaylist() {
+      this.modals.addMedia = false;
+      this.closeVideoPlayer();
+      this.createPlaylistName = "";
+      this.createPlaylistDesc = "";
+      this.createPlaylistMediaIds = [];
+      this.createPlaylistMediaTagQuery = "";
+      this.createPlaylistMediaTagOpen = false;
+      this.createPlaylistAvatarFile = null;
+      this.createPlaylistBackgroundFile = null;
+      if (!this.mediaIndex || this.mediaIndex.length === 0) {
+        this.api(`/media?limit=500&offset=0`)
+          .then((items) => {
+            this.mediaIndex = Array.isArray(items) ? items : [];
+          })
+          .catch(() => {});
+      }
+      this.modals.createPlaylist = true;
+    },
+
+    async submitCreatePlaylist() {
+      try {
+        const name = String(this.createPlaylistName || "").trim();
+        if (!name) {
+          this.globalStatus = "请填写播放列表名称";
+          return;
+        }
+        const created = await this.api(`/playlists`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name,
+            description: (this.createPlaylistDesc || "").trim() || null,
+            media_ids: Array.isArray(this.createPlaylistMediaIds) ? this.createPlaylistMediaIds : [],
+          }),
+        });
+
+        const pid = created && created.id ? String(created.id) : "";
+        const maxBytes = 2 * 1024 * 1024;
+        if (pid && this.createPlaylistAvatarFile) {
+          if (this.createPlaylistAvatarFile.size > maxBytes) throw new Error("头像超过 2MB");
+          await this._uploadPlaylistImage(pid, "avatar", this.createPlaylistAvatarFile);
+        }
+        if (pid && this.createPlaylistBackgroundFile) {
+          if (this.createPlaylistBackgroundFile.size > maxBytes) throw new Error("背景超过 2MB");
+          await this._uploadPlaylistImage(pid, "background", this.createPlaylistBackgroundFile);
+        }
+
+        this.modals.createPlaylist = false;
+        await this.loadPlaylists();
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    async deletePlaylist(id) {
+      try {
+        await this.api(`/playlists/${id}`, { method: "DELETE" });
+        if (this.selectedPlaylistId === id) this.selectedPlaylistId = null;
+        await this.loadPlaylists();
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    selectPlaylist(id) {
+      this.selectedPlaylistId = id;
+      this._syncUrl({ push: false });
+      this.globalStatus = `已选择播放列表：${id}`;
+    },
+
+    async generateTodayBrief() {
+      if (!this.selectedPlaylistId) {
+        this.globalStatus = "请先在播放列表页选择一个播放列表";
+        return;
+      }
+      const today = this._todayIsoLocal();
+      try {
+        await this.api(`/briefs/generate`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ playlist_id: this.selectedPlaylistId, date: today }),
+        });
+        this.globalStatus = "已投递简报生成任务（Jobs 可查看进度）";
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    async init() {
+      try {
+        this._applySidebarMode();
+
+        const onResize = () => {
+          this.playlistCalendarUpdateCount();
+          this._applySidebarMode();
+        };
+        window.addEventListener("resize", onResize, { passive: true });
+        window.addEventListener("orientationchange", onResize, { passive: true });
+        window.addEventListener("popstate", () => {
+          const viewKey = this._parseViewFromLocation();
+          if (this.activeView === "videos" && viewKey !== "videos") this._teardownVideoIo();
+          if (this.activeView === "jobs" && viewKey !== "jobs") this._destroyJobsDoneChart();
+          this.activeView = viewKey;
+          const item = this.navItems.find((x) => x.key === viewKey);
+          this.pageTitle = item ? item.label : viewKey;
+          this._applyQueryFromLocation(viewKey);
+          this.refreshActive();
+        });
+
+        const initialView = this._parseViewFromLocation();
+        this.activeView = initialView;
+        const item = this.navItems.find((x) => x.key === initialView);
+        this.pageTitle = item ? item.label : initialView;
+        this._applyQueryFromLocation(initialView);
+        this._syncUrl({ push: false });
+
+        const h = await this.api(`/health`);
+        this.healthOk = !!h.ok;
+        this.services.db = h.db || this.services.db;
+        this.services.s3 = h.s3 || this.services.s3;
+        this.services.asr = h.asr || this.services.asr;
+        this.services.ollama = h.ollama || this.services.ollama;
+        this.globalStatus = h.deps_ok ? "Health OK" : "部分依赖不可用";
+        this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
+        await this.refreshActive();
+        // Always load stats for overview cards even if user lands on other views.
+        await this.loadStats();
+      } catch (e) {
+        this.healthOk = false;
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+  };
+}

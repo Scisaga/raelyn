@@ -1,0 +1,19 @@
+{
+  "name": "video-sync-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "ui:build": "bash scripts/run-node.sh scripts/build.mjs",
+    "ui:watch": "bash scripts/run-node.sh scripts/watch.mjs"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.1.18",
+    "@tailwindcss/postcss": "4.1.18",
+    "alpinejs": "3.15.3",
+    "autoprefixer": "10.4.23",
+    "lightweight-charts": "^5.1.0",
+    "postcss": "8.5.6",
+    "tailwindcss": "4.1.18"
+  }
+}

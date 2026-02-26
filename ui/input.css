@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+/* Tailwind v4 uses CSS-first content configuration. */
+@source "../static/**/*.html";
+@source "../static/**/*.js";
+@source "./templates/**/*.html";

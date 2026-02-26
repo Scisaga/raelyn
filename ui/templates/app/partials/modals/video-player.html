@@ -1,0 +1,198 @@
+      <!-- Video player modal -->
+      <div x-show="modals.videoPlayer" class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" x-transition>
+        <div class="w-full max-w-6xl rounded-xl border border-slate-800 bg-slate-900 shadow-lg overflow-hidden">
+          <div class="relative p-4 border-b border-slate-800">
+            <div class="flex items-start gap-3 min-w-0 pr-16">
+              <div class="w-10 h-10 rounded-md ring-1 ring-inset shrink-0" :class="mediaAvatarClasses(playerVideo)">
+                <template x-if="playerVideo && playerVideo.media_avatar_url">
+                  <img
+                    class="w-10 h-10 rounded-md object-cover"
+                    :src="playerVideo.media_avatar_url"
+                    alt=""
+                    loading="lazy"
+                    @error="playerVideo.media_avatar_url=null"
+                  />
+                </template>
+                <template x-if="!playerVideo || !playerVideo.media_avatar_url">
+                  <div class="w-10 h-10 flex items-center justify-center">
+                    <span class="text-[11px] font-semibold" x-text="videoMediaAvatarLabel(playerVideo)"></span>
+                  </div>
+                </template>
+              </div>
+              <div class="min-w-0">
+                <div
+                  class="text-sm font-semibold truncate"
+                  x-text="playerVideo ? (playerVideo.title || playerVideo.provider_video_id) : '视频'"
+                ></div>
+                <div class="mt-0.5 flex items-center gap-2 text-xs text-slate-400 min-w-0">
+                  <span
+                    class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/30 px-2 py-0.5 text-[11px] text-slate-300"
+                    x-show="playerVideo && playerVideo.provider"
+                    x-text="playerVideo ? playerVideo.provider : ''"
+                  ></span>
+                  <a
+                    class="inline-flex items-center gap-1 truncate max-w-[560px] text-slate-500 hover:text-slate-300 hover:underline decoration-slate-600"
+                    :href="playerVideo ? playerVideo.url : '#'"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M10 13a5 5 0 0 1 0-7l1-1a5 5 0 0 1 7 7l-1 1"/>
+                      <path d="M14 11a5 5 0 0 1 0 7l-1 1a5 5 0 0 1-7-7l1-1"/>
+                    </svg>
+                    <span class="truncate" x-text="playerVideo ? playerVideo.url : ''"></span>
+                  </a>
+                </div>
+              </div>
+            </div>
+            <div class="absolute top-2 right-2 flex items-center">
+              <button
+                class="p-2 rounded-md text-slate-300 hover:text-slate-100 hover:bg-slate-800/60"
+                @click="maximizePlayer()"
+                title="最大化"
+                aria-label="最大化"
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M8 3H5a2 2 0 0 0-2 2v3"/>
+                  <path d="M16 3h3a2 2 0 0 1 2 2v3"/>
+                  <path d="M8 21H5a2 2 0 0 1-2-2v-3"/>
+                  <path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
+                </svg>
+              </button>
+              <button
+                class="p-2 rounded-md text-slate-300 hover:text-slate-100 hover:bg-slate-800/60"
+                @click="closeVideoPlayer()"
+                title="关闭"
+                aria-label="关闭"
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M18 6L6 18"/>
+                  <path d="M6 6l12 12"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="p-4 max-h-[80vh] overflow-auto videosync-scrollbar">
+            <template x-if="playerLoading">
+              <div class="text-sm text-slate-300">加载中…</div>
+            </template>
+            <template x-if="playerError && !playerLoading">
+              <div class="text-sm text-rose-200" x-text="playerError"></div>
+            </template>
+            <template x-if="!playerLoading && !playerError">
+	              <div class="space-y-4">
+	                <div class="grid lg:grid-cols-[minmax(0,1fr)_360px] gap-4 items-stretch">
+	                  <div class="rounded-xl border border-slate-800 bg-slate-950/30 overflow-hidden">
+	                    <video
+	                      x-ref="playerVideoEl"
+	                      class="w-full aspect-video bg-black"
+	                      :src="playerVideoUrl || ''"
+	                      controls
+	                      playsinline
+	                    ></video>
+	                  </div>
+	                  <div class="rounded-xl border border-slate-800 bg-slate-950/20 p-3 flex flex-col min-h-0 overflow-hidden">
+	                    <div class="space-y-3 shrink-0">
+	                      <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
+	                        <div
+	                          class="text-[11px] px-2 py-0.5 rounded-full border border-slate-700 bg-slate-950/40 text-slate-200"
+	                          x-text="playerVideo ? playerVideo.status : ''"
+	                        ></div>
+	                        <div class="inline-flex items-center gap-2 text-xs">
+	                          <span class="text-slate-400">发布时间</span>
+	                          <span class="text-slate-200" x-text="formatDateTime(playerVideo ? playerVideo.published_at : null) || '-'"></span>
+	                        </div>
+	                        <div class="inline-flex items-center gap-2 text-xs">
+	                          <span class="text-slate-400">时长</span>
+	                          <span class="text-slate-200" x-text="formatDuration(playerVideo ? playerVideo.duration_sec : null) || '-'"></span>
+	                        </div>
+	                      </div>
+
+	                      <div
+	                        class="text-xs text-rose-200"
+	                        x-show="playerVideo && playerVideo.error_message"
+	                        x-text="playerVideo ? playerVideo.error_message : ''"
+	                      ></div>
+
+	                      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+	                        <a
+	                          class="inline-flex items-center justify-center gap-2 rounded-md border border-slate-700 bg-slate-950/20 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/60"
+	                          :class="playerVideoDownloadUrl ? '' : 'opacity-60 cursor-not-allowed'"
+	                          :href="playerVideoDownloadUrl || '#'"
+	                          target="_blank"
+	                          rel="noopener noreferrer"
+	                          :tabindex="playerVideoDownloadUrl ? 0 : -1"
+	                          @click="if(!playerVideoDownloadUrl) $event.preventDefault()"
+	                          title="下载视频文件"
+	                        >
+	                          <svg
+	                            viewBox="0 0 24 24"
+	                            width="16"
+	                            height="16"
+	                            fill="none"
+	                            stroke="currentColor"
+	                            stroke-width="2"
+	                            stroke-linecap="round"
+	                            stroke-linejoin="round"
+	                            aria-hidden="true"
+	                          >
+	                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+	                            <path d="M7 10l5 5 5-5" />
+	                            <path d="M12 15V3" />
+	                          </svg>
+	                          <span>视频下载</span>
+	                        </a>
+
+	                        <a
+	                          class="inline-flex items-center justify-center gap-2 rounded-md border border-slate-700 bg-slate-950/20 px-3 py-2 text-xs text-slate-200 hover:bg-slate-800/60"
+	                          :class="playerAudioDownloadUrl ? '' : 'opacity-60 cursor-not-allowed'"
+	                          :href="playerAudioDownloadUrl || '#'"
+	                          target="_blank"
+	                          rel="noopener noreferrer"
+	                          :tabindex="playerAudioDownloadUrl ? 0 : -1"
+	                          @click="if(!playerAudioDownloadUrl) $event.preventDefault()"
+	                          title="下载音频文件"
+	                        >
+	                          <svg
+	                            viewBox="0 0 24 24"
+	                            width="16"
+	                            height="16"
+	                            fill="none"
+	                            stroke="currentColor"
+	                            stroke-width="2"
+	                            stroke-linecap="round"
+	                            stroke-linejoin="round"
+	                            aria-hidden="true"
+	                          >
+	                            <path d="M9 18V5l12-2v13" />
+	                            <circle cx="6" cy="18" r="3" />
+	                            <circle cx="18" cy="16" r="3" />
+	                          </svg>
+	                          <span>音频下载</span>
+	                        </a>
+	                      </div>
+
+	                      <div class="text-[11px] text-slate-500" x-show="!playerVideoDownloadUrl">视频文件未就绪</div>
+	                      <div class="text-[11px] text-slate-500" x-show="playerVideoDownloadUrl && !playerAudioDownloadUrl">音频未就绪（等待提取）</div>
+	                    </div>
+
+	                    <div class="mt-3 rounded-lg border border-slate-800 bg-slate-950/20 p-3 flex-1 min-h-0 overflow-auto videosync-scrollbar">
+	                      <div class="text-xs text-slate-300">简介</div>
+	                      <div
+	                        class="mt-2 text-sm text-slate-300 leading-6 whitespace-pre-wrap"
+	                        x-text="playerDescription || '暂无简介'"
+	                      ></div>
+	                    </div>
+	                  </div>
+	                </div>
+                <div class="rounded-xl border border-slate-800 bg-slate-950/20 p-4">
+                  <div
+                    class="text-base md:text-lg whitespace-pre-wrap text-slate-400 leading-7 md:leading-9 tracking-[0.01em]"
+                    x-text="playerTranscriptText || '暂无文本（需要字幕或 ASR）'"
+                  ></div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>

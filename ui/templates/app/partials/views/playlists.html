@@ -1,0 +1,75 @@
+          <!-- Playlists -->
+          <div x-show="activeView==='playlists'" x-transition.opacity>
+            <div class="rounded-xl border border-slate-800 bg-slate-900/40 overflow-hidden">
+              <div class="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
+                <div class="text-sm font-semibold">播放列表</div>
+                <button
+                  class="inline-flex items-center gap-2 rounded-md bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-950 hover:bg-white"
+                  @click="openCreatePlaylist()"
+                >
+                  新建
+                </button>
+              </div>
+              <div class="divide-y divide-slate-800">
+                <template x-for="p in playlistList" :key="p.id">
+                  <button
+                    type="button"
+                    class="w-full p-4 flex items-center justify-between gap-4 text-left hover:bg-slate-900/50"
+                    @click="openPlaylistPage(p.id)"
+                  >
+                    <div class="min-w-0 flex items-center gap-3">
+                      <div class="w-11 h-11 rounded-lg ring-1 ring-inset shrink-0" :class="p.avatar_url ? 'ring-slate-800/70 bg-slate-800/30' : 'ring-slate-700/60 bg-slate-800 text-slate-200'">
+                        <template x-if="p.avatar_url">
+                          <img class="w-11 h-11 rounded-lg object-cover" :src="p.avatar_url" alt="" loading="lazy" @error="p.avatar_url=null" />
+                        </template>
+                        <template x-if="!p.avatar_url">
+                          <div class="w-11 h-11 flex items-center justify-center">
+                            <span class="text-[11px] font-semibold" x-text="(String(p.name||'?').trim().slice(0,2) || '?')"></span>
+                          </div>
+                        </template>
+                      </div>
+                      <div class="min-w-0">
+                        <div class="font-medium truncate flex items-center gap-2">
+                          <span x-text="p.name"></span>
+                        </div>
+                        <div class="text-xs text-slate-400 truncate" x-text="p.description || ''"></div>
+                        <div class="mt-1 flex items-center gap-2 text-[11px] text-slate-500">
+                          <div class="flex items-center -space-x-2">
+                            <template x-for="m in (p.media_preview || []).slice(0,5)" :key="m.id">
+                              <div class="w-6 h-6 rounded-full ring-2 ring-slate-900/80 bg-slate-800 overflow-hidden">
+                                <template x-if="m.avatar_url">
+                                  <img class="w-6 h-6 object-cover" :src="m.avatar_url" alt="" loading="lazy" @error="m.avatar_url=null" />
+                                </template>
+                                <template x-if="!m.avatar_url">
+                                  <div class="w-6 h-6 flex items-center justify-center text-[10px] font-semibold text-slate-200">
+                                    <span x-text="mediaAvatarLabel(m)"></span>
+                                  </div>
+                                </template>
+                              </div>
+                            </template>
+                            <template x-if="(p.media_count||0) > ((p.media_preview||[]).length || 0)">
+                              <div class="w-6 h-6 rounded-full ring-2 ring-slate-900/80 bg-slate-950/40 border border-slate-700 flex items-center justify-center text-[10px] font-semibold text-slate-200">
+                                <span x-text="`+${(p.media_count||0)-((p.media_preview||[]).length||0)}`"></span>
+                              </div>
+                            </template>
+                          </div>
+                          <span x-text="`媒体 ${p.media_count||0}`"></span>
+                          <span class="mx-1">·</span>
+                          <span x-text="`视频 ${p.video_count||0}`"></span>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="shrink-0 flex items-center gap-3 text-slate-400">
+                      <div class="text-[11px] text-slate-500 text-right">
+                        <div class="text-slate-400">更新</div>
+                        <div class="text-slate-200" x-text="formatDateTimeShort(p.latest_video_at) || '-'"></div>
+                      </div>
+                      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M9 18l6-6-6-6"/>
+                      </svg>
+                    </div>
+                  </button>
+                </template>
+              </div>
+            </div>
+          </div>

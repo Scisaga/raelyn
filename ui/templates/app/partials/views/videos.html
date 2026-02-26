@@ -1,0 +1,238 @@
+          <!-- Videos -->
+          <div x-show="activeView==='videos'" x-transition.opacity>
+            <div class="rounded-xl border border-slate-800 bg-slate-900/40 overflow-hidden">
+              <div class="p-4 border-b border-slate-800 space-y-3">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="text-xs text-slate-400" x-text="videoList.length ? ('已加载 ' + videoList.length + ' 条') : ''"></div>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <!-- Media tag select -->
+                  <div class="relative" @click.away="videoMediaTagOpen=false">
+                    <div
+                      class="min-w-[220px] max-w-[420px] flex flex-wrap items-center gap-1 rounded-md border border-slate-700 bg-slate-950/30 px-2 py-1.5 text-xs focus-within:ring-2 focus-within:ring-emerald-500/30 focus-within:border-emerald-500/30"
+                      @click="videoMediaTagOpen=true"
+                    >
+                      <template x-for="m in videoSelectedMedia()" :key="m.id">
+                        <span class="inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-900/60 px-2 py-0.5 text-[11px] text-slate-200">
+                          <span class="truncate max-w-[140px]" x-text="mediaDisplayName(m)"></span>
+                          <button
+                            class="ml-0.5 rounded-full hover:bg-slate-800/70 px-1 text-slate-300 hover:text-slate-100"
+                            title="移除"
+                            @click.stop="videoRemoveMediaTag(m.id)"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      </template>
+
+                      <input
+                        class="w-28 flex-1 min-w-[120px] bg-transparent px-1 py-0.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none"
+                        :placeholder="videoMediaIds.length ? '添加媒体…' : '全部媒体'"
+                        x-model="videoMediaTagQuery"
+                        @focus="videoMediaTagOpen=true"
+                        @keydown.enter.prevent="videoAddFirstFilteredMediaTag()"
+                        @keydown.escape.stop="videoMediaTagOpen=false"
+                        @keydown.backspace="if(!videoMediaTagQuery && videoMediaIds.length){ videoRemoveMediaTag(videoMediaIds[videoMediaIds.length-1]) }"
+                      />
+
+                      <button
+                        class="ml-1 px-2 py-0.5 rounded-md border border-slate-700 bg-slate-950/20 text-[11px] text-slate-200 hover:bg-slate-800/60"
+                        x-show="videoMediaIds.length"
+                        @click.stop="videoClearMediaTags()"
+                      >
+                        清除
+                      </button>
+                    </div>
+
+                    <div
+                      x-show="videoMediaTagOpen"
+                      x-transition.opacity.duration.100ms
+                      class="absolute z-20 mt-1 w-[320px] max-w-[90vw] max-h-72 overflow-auto rounded-md border border-slate-700 bg-slate-950 shadow-lg"
+                    >
+                      <template x-for="m in videoFilteredMediaOptions()" :key="m.id">
+                        <button
+                          class="w-full text-left px-3 py-2 hover:bg-slate-800/60"
+                          @click="videoAddMediaTag(m.id)"
+                        >
+                          <div class="text-xs text-slate-100 truncate" x-text="mediaDisplayName(m)"></div>
+                          <div class="text-[11px] text-slate-400 truncate" x-text="m.provider"></div>
+                        </button>
+                      </template>
+                      <div x-show="videoFilteredMediaOptions().length===0" class="px-3 py-2 text-xs text-slate-400">无匹配媒体</div>
+                    </div>
+                  </div>
+
+                  <div class="relative min-w-[160px]">
+                    <select
+                      class="w-full appearance-none rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 pr-12 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                      x-model="videoStatus"
+                      @change="loadVideos()"
+                    >
+                      <option value="">全部状态</option>
+                      <option value="discovered">discovered</option>
+                      <option value="downloading">downloading</option>
+                      <option value="downloaded">downloaded</option>
+                      <option value="ready">ready</option>
+                      <option value="failed">failed</option>
+                    </select>
+                    <svg
+                      class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
+                      viewBox="0 0 24 24"
+                      width="16"
+                      height="16"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m6 9 6 6 6-6"></path>
+                    </svg>
+                  </div>
+
+                  <div class="relative">
+                    <input
+                      x-ref="videoFromInput"
+                      type="datetime-local"
+                      x-model="videoFrom"
+                      class="rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 pr-9 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                      @input.debounce.400ms="loadVideos()"
+                      @change="loadVideos()"
+                    />
+                    <button
+                      type="button"
+                      class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                      @click="($refs.videoFromInput && $refs.videoFromInput.showPicker ? $refs.videoFromInput.showPicker() : $refs.videoFromInput && $refs.videoFromInput.focus())"
+                      title="选择时间"
+                    >
+                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                        <path d="M16 2v4"></path>
+                        <path d="M8 2v4"></path>
+                        <path d="M3 10h18"></path>
+                      </svg>
+                    </button>
+                  </div>
+                  <span class="text-xs text-slate-500">到</span>
+                  <div class="relative">
+                    <input
+                      x-ref="videoToInput"
+                      type="datetime-local"
+                      x-model="videoTo"
+                      class="rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 pr-9 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                      @input.debounce.400ms="loadVideos()"
+                      @change="loadVideos()"
+                    />
+                    <button
+                      type="button"
+                      class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                      @click="($refs.videoToInput && $refs.videoToInput.showPicker ? $refs.videoToInput.showPicker() : $refs.videoToInput && $refs.videoToInput.focus())"
+                      title="选择时间"
+                    >
+                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                        <path d="M16 2v4"></path>
+                        <path d="M8 2v4"></path>
+                        <path d="M3 10h18"></path>
+                      </svg>
+                    </button>
+                  </div>
+
+                  <input
+                    class="w-56 rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                    placeholder="搜索标题"
+                    x-model="videoQuery"
+                    @input.debounce.400ms="loadVideos()"
+                  />
+                </div>
+              </div>
+
+              <div class="p-4">
+                <div x-show="videoLoadingList" class="text-sm text-slate-300">加载中…</div>
+                <div x-show="!videoLoadingList && videoList.length===0" class="text-sm text-slate-400">暂无视频</div>
+                <div
+                  class="grid grid-cols-1 min-[640px]:grid-cols-2 min-[1024px]:grid-cols-3 min-[1536px]:grid-cols-4 gap-4 items-start"
+                  x-show="!videoLoadingList && videoList.length>0"
+                >
+                  <template x-for="v in videoList" :key="v.id">
+                    <div
+                      class="video-card rounded-xl border border-slate-800 bg-slate-900/40 overflow-hidden cursor-pointer"
+                      @click="openVideoPlayer(v)"
+                    >
+                      <div class="relative bg-slate-950/30">
+                        <div class="aspect-video bg-slate-950/20">
+                          <template x-if="v.cover_url">
+                            <img
+                              class="w-full h-full object-cover"
+                              :src="v.cover_url"
+                              alt=""
+                              loading="lazy"
+                              @error="v.cover_url=null"
+                            />
+                          </template>
+                          <template x-if="!v.cover_url">
+                            <div class="w-full h-full flex items-center justify-center text-sm text-slate-500">无封面</div>
+                          </template>
+                        </div>
+                        <div
+                          class="absolute top-2 right-2 text-[11px] px-2 py-0.5 rounded-full border border-slate-700 bg-slate-950/40 text-slate-200"
+                          x-text="v.status"
+                        ></div>
+                        <div
+                          class="absolute bottom-2 left-2 text-[11px] px-2 py-0.5 rounded-md border border-slate-700 bg-slate-950/50 text-slate-200"
+                          x-text="formatDateTimeShort(v.published_at)"
+                          x-show="v.published_at"
+                        ></div>
+                        <div
+                          class="absolute bottom-2 right-2 text-[11px] px-2 py-0.5 rounded-md border border-slate-700 bg-slate-950/50 text-slate-200"
+                          x-text="formatDuration(v.duration_sec)"
+                        ></div>
+                      </div>
+                      <div class="p-3">
+                        <div class="text-sm font-medium leading-5 max-h-10 overflow-hidden" x-text="v.title || v.provider_video_id"></div>
+                        <div class="mt-2 flex items-center gap-2">
+                          <div
+                            class="w-8 h-8 rounded-md ring-1 ring-inset"
+                            :class="mediaAvatarClasses({provider: v.provider})"
+                          >
+                            <template x-if="v.media_avatar_url">
+                              <img class="w-8 h-8 rounded-md object-cover" :src="v.media_avatar_url" alt="" loading="lazy" @error="v.media_avatar_url=null" />
+                            </template>
+                            <template x-if="!v.media_avatar_url">
+                              <div class="w-8 h-8 flex items-center justify-center">
+                                <span class="text-[10px] font-semibold" x-text="videoMediaAvatarLabel(v)"></span>
+                              </div>
+                            </template>
+                          </div>
+                          <div class="min-w-0 flex-1">
+                            <div class="text-xs text-slate-200 truncate" x-text="videoMediaDisplayName(v)"></div>
+                            <div class="text-[11px] text-slate-400 truncate" x-text="formatDateTime(v.published_at)"></div>
+                          </div>
+                          <template x-if="v.video_download_url">
+                            <a
+                              class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60"
+                              :href="v.video_download_url"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              @click.stop
+                            >
+                              下载
+                            </a>
+                          </template>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+
+                <div class="pt-4 flex flex-col items-center gap-2">
+                  <div x-ref="videoInfiniteSentinel" class="h-1 w-1 opacity-0"></div>
+                  <div class="text-xs text-slate-400" x-show="videoLoadingMore">加载更多…</div>
+                  <div class="text-xs text-slate-500" x-show="!videoLoadingList && videoList.length>0 && !videoHasMore && !videoLoadingMore">
+                    没有更多了
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
