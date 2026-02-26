@@ -57,8 +57,8 @@
         <nav class="flex-1 overflow-y-auto space-y-1 videosync-sidebar-nav">
           <template x-for="item in navItems.filter(i => !i.hidden)" :key="item.key">
             <button
-              class="group w-10 flex items-center rounded-md text-sm leading-none transition border border-transparent"
-              :class="[(sidebarCollapsed ? 'justify-center mx-2 my-1' : 'gap-1 mx-2 my-1'), activeView===item.key ? 'bg-slate-800/70 text-slate-50 border-slate-700/60' : 'text-slate-300 hover:bg-slate-800/40 hover:text-slate-100']"
+              class="group flex items-center rounded-md text-sm leading-none transition border border-transparent"
+              :class="[(sidebarCollapsed ? 'w-10 justify-center mx-2 my-1' : 'w-full gap-1 mx-2 my-1'), activeView===item.key ? 'bg-slate-800/70 text-slate-50 border-slate-700/60' : 'text-slate-300 hover:bg-slate-800/40 hover:text-slate-100']"
               @click="switchView(item.key)"
               :title="sidebarCollapsed ? item.label : ''"
             >
