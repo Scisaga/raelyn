@@ -44,7 +44,7 @@
                 <path d="M15 18l-6-6 6-6" />
               </svg>
             </button>
-            <div class="text-sm font-semibold truncate" x-text="pageTitle"></div>
+            <div class="text-md font-semibold truncate" x-text="pageTitle"></div>
             <div class="hidden md:flex items-center gap-2 text-xs text-slate-400 min-w-0">
               <div class="inline-flex items-center gap-2 rounded-full border border-slate-800 bg-slate-900/40 px-3 py-1">
                 <span class="h-2 w-2 rounded-full" :class="healthOk ? 'bg-emerald-400' : 'bg-rose-400'"></span>
@@ -100,7 +100,11 @@
           </div>
         </header>
 
-        <section class="p-4 sm:p-5 space-y-4">
+        <section
+          class="min-h-0"
+          :class="activeView==='playlist' ? 'p-0 sm:p-0 space-y-0 overflow-hidden' : 'p-4 sm:p-5 space-y-4'"
+          :style="activeView==='playlist' ? 'height: calc(100vh - 3.5rem);' : ''"
+        >
 <!-- @include views/overview.html -->
 
 <!-- @include views/media.html -->
