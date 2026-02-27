@@ -19,11 +19,11 @@ from videosync.jobs.enqueue import enqueue_in, enqueue_job
 from videosync.jobs.log import job_log
 from videosync.jobs.progress import set_job_progress
 from videosync.jobs.registry import registry
-from videosync.models import Asset, DailyBrief, Job, Media, PlaylistMedia, Video
+from videosync.models import AppConfig, Asset, DailyBrief, Job, Media, PlaylistMedia, Video
 from videosync.services.assets import ensure_asset
 from videosync.services.ffmpeg import extract_audio_to_m4a
 from videosync.services.http_client import httpx_client
-from videosync.services.ollama import ollama_enabled, ollama_generate_markdown
+from videosync.services.llm import llm_enabled, llm_generate_markdown
 from videosync.services.pg_lock import advisory_lock
 from videosync.services.profile_fetch import fetch_media_profile
 from videosync.services.s3 import s3_download_file, s3_upload_file
@@ -654,8 +654,8 @@ def video_generate_note(session: Session, job: Job) -> dict | None:
     if not video:
         return {"skipped": "video not found"}
 
-    if not ollama_enabled():
-        return {"skipped": "ollama not configured"}
+    if not llm_enabled():
+        return {"skipped": "llm not configured"}
 
     bucket, key = _load_plain_transcript(session, video.id)
     if not bucket or not key:
@@ -680,7 +680,7 @@ def video_generate_note(session: Session, job: Job) -> dict | None:
             f"{text}\n"
         )
 
-        md = ollama_generate_markdown(prompt=prompt)
+        md = llm_generate_markdown(prompt=prompt)
         out = wd / "note.md"
         out.write_text(md, encoding="utf-8")
 
@@ -691,7 +691,7 @@ def video_generate_note(session: Session, job: Job) -> dict | None:
             type_="note",
             format_="md",
             language="zh",
-            source="ollama",
+            source="llm",
             variant="summary",
             local_path=out,
             s3_key=s3_key,
@@ -731,7 +731,7 @@ def _load_plain_transcript(session: Session, video_id: uuid.UUID) -> tuple[str |
 
 
 def _enqueue_brief_for_video_playlists(session: Session, *, video: Video, delay_seconds: int = 90) -> int:
-    if not ollama_enabled():
+    if not llm_enabled():
         return 0
 
     ts = video.published_at or video.created_at
@@ -810,10 +810,10 @@ def brief_generate_daily(session: Session, job: Job) -> dict | None:
     else:
         br.status = "running"
 
-    if not ollama_enabled():
+    if not llm_enabled():
         br.status = "failed"
-        br.error_message = "ollama 未配置"
-        return {"failed": True, "reason": "ollama not configured"}
+        br.error_message = "llm 未配置"
+        return {"failed": True, "reason": "llm not configured"}
 
     with job_workdir(job.id) as wd:
         blocks: list[str] = []
@@ -835,22 +835,95 @@ def brief_generate_daily(session: Session, job: Job) -> dict | None:
             br.error_message = "当日无可用文本（字幕/文字稿缺失）"
             return {"failed": True, "reason": "no transcript"}
 
-        prompt = (
-            "你是一个内容分析助手。请根据以下多条视频的文字内容，生成一份**Markdown**格式的日报简报。\n"
-            "要求：\n"
-            "- 用中文\n"
-            "- 输出结构建议：\n"
-            "  1) 今日要点（bullet，每条要点末尾必须附带 1~3 个来源视频链接，用括号包起来，如“（来源：https://...）”）\n"
-            "  2) 主题归类（可选）\n"
-            "  3) 行动建议（可选）\n"
-            "  4) 今日视频清单（必须，列出标题+链接）\n"
-            "- 不要编造未出现的信息；不确定的地方明确说明“文本未提及”。\n\n"
-            f"日期：{brief_date.isoformat()}\n\n"
-            "以下是视频文本：\n\n"
-            + "\n\n---\n\n".join(blocks)
-        )
+        default_tpl = "\n".join(
+            [
+                "## 提示词",
+                "",
+                "你是一个**财经内容分析助手**。请基于下面提供的多条视频文字内容（可能含转写、字幕、摘要、片段拼接），生成一份**Markdown**格式的《每日财经简报》。",
+                "",
+                "### 核心约束（必须遵守）",
+                "",
+                "1. **只使用文本中明确出现的信息**：",
+                "",
+                "   * 不要补充常识性“背景”来充当事实。",
+                "   * 任何无法从文本直接验证的内容，一律写：**“文本未提及”** 或 **“文本表述不充分，无法确认”**。",
+                "2. **每条要点必须附 1–3 个来源链接**：",
+                "",
+                "   * 来源链接必须来自文本中的视频链接/来源字段。",
+                "   * 写法示例：`（来源：https://... ，https://...）`",
+                "3. 输出语言：**中文**。",
+                "4. 输出必须是 **Markdown**，段落清晰，便于直接发布。",
+                "5. 不需要：**主体归类**、**今日视频清单**。",
+                "",
+                "### 输出结构",
+                "",
+                "#### 1) 今日要点（必须）",
+                "",
+                "* 用 **bullet** 列出关键信息点。",
+                "* 每条要点：",
+                "",
+                "  * 句式尽量短，先给“结论/信息”，再给“条件/范围/时间”。",
+                "  * 必须在句末附 **1–3 个来源链接**（用括号包起来）。",
+                "  * 若文本出现具体数值（涨跌幅、利率、通胀、盈利、库存、产量等），必须原样保留，并注明它属于谁/哪个时间窗口；若时间窗口不清楚，写“文本未提及”。",
+                "",
+                "示例格式（示例仅展示格式，不要复用示例内容）：",
+                "",
+                "* 美债收益率在文本中被描述为____，并被归因于____（来源：[视频标题](https://...）)",
+                "* 某公司业绩/指引被提到____，但对同比/环比口径未说明（文本未提及）（来源：[视频标题](https://...）)",
+                "",
+                "#### 2) 影响与逻辑链（必须）",
+                "",
+                "* 写清楚“**因 → 果**”或“**事件 → 资产影响**”的链条。",
+                "* 每条链条必须满足：链条中的每个关键节点都能在文本中找到依据；找不到就标注“文本未提及”。",
+                "* 仍然要在句末附来源链接。",
+                "",
+                "#### 3) 风险与不确定性",
+                "",
+                "* 重点写：口径不一致、数据缺失、时间不明、推断过度、样本偏差、叙述互相矛盾之处。",
+                "* 如不同视频说法冲突：明确写出“视频 A 说…；视频 B 说…；无法判定”（并分别给来源）。",
+                "",
+                "#### 4) 关注清单",
+                "",
+                "* 给出“接下来应继续跟踪”的观察项（不是预测结论），如：",
+                "",
+                "  * 关键数据发布、会议/财报、政策口径、价格/利差/汇率阈值、行业库存、地缘事件进展等。",
+                "* 每一条都要说明：为什么要跟踪（依据文本哪个说法），并附来源链接。",
+                "* 如果文本没有足够依据，写“文本未提及”。",
+                "",
+                "#### 5) 行动建议",
+                "",
+                "* 给“**条件触发式**”建议，形式如：",
+                "",
+                "  * “若文本中提到的 A 指标继续…，可考虑…；否则…（文本未提及具体阈值）”",
+                "* **不允许直接给确定性买卖指令**；只能写“可考虑/可关注/需验证”。",
+                "* 每条建议仍需来源链接；若建议的关键条件缺失，标注“文本未提及”。",
+                "",
+                "---",
+                "",
+                "日期：{{date}}",
+                "",
+                "以下是视频文本（多条，可能包含标题与链接；若未包含链接，请在输出中把来源写为“文本未提供链接”）：",
+                "{{blocks}}",
+            ]
+        ).strip()
 
-        md = ollama_generate_markdown(prompt=prompt)
+        cfg_tpl: str | None = None
+        try:
+            cfg = session.get(AppConfig, "briefs")
+            if cfg and isinstance(cfg.value, dict):
+                v = cfg.value.get("daily_prompt")
+                if isinstance(v, str) and v.strip():
+                    cfg_tpl = v.strip()
+        except Exception:
+            cfg_tpl = None
+
+        blocks_text = "\n\n---\n\n".join(blocks)
+        tpl = cfg_tpl or default_tpl
+        prompt = tpl.replace("{{date}}", brief_date.isoformat()).replace("{{blocks}}", blocks_text)
+        if "{{blocks}}" not in tpl:
+            prompt = (prompt.rstrip() + "\n\n---\n\n" + blocks_text).strip()
+
+        md = llm_generate_markdown(prompt=prompt)
         out = wd / "brief.md"
         out.write_text(md, encoding="utf-8")
 
@@ -861,7 +934,7 @@ def brief_generate_daily(session: Session, job: Job) -> dict | None:
             type_="brief",
             format_="md",
             language="zh",
-            source="ollama",
+            source="llm",
             variant=None,
             local_path=out,
             s3_key=key,

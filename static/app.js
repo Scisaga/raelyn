@@ -30,12 +30,12 @@ function VideoSyncApp() {
     activeView: "overview",
     pageTitle: "概览",
     healthOk: false,
-    globalStatus: "Connecting…",
+    globalStatus: "",
     services: {
       db: { ok: false, error: null },
       s3: { ok: false, bucket: "", error: null },
       asr: { ok: false, configured: false, url: "", error: null },
-      ollama: { ok: false, configured: false, url: "", error: null },
+      llm: { ok: false, configured: false, url: "", error: null },
     },
     navItems: [
       { key: "overview", label: "概览", icon: _videosync_icon('<path d="M4 4h7v7H4z"/><path d="M13 4h7v7h-7z"/><path d="M4 13h7v7H4z"/><path d="M13 13h7v7h-7z"/>') },
@@ -44,7 +44,7 @@ function VideoSyncApp() {
       { key: "jobs", label: "任务", icon: _videosync_icon('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>') },
       { key: "playlists", label: "播放列表", icon: _videosync_icon('<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>') },
       { key: "playlist", label: "播放列表页", hidden: true, icon: _videosync_icon('<path d="M4 19V5"/><path d="M8 5h12"/><path d="M8 12h12"/><path d="M8 19h12"/>') },
-      { key: "briefs", label: "简报", icon: _videosync_icon('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/>') },
+      { key: "briefs", label: "提示词", icon: _videosync_icon('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/>') },
       { key: "settings", label: "设置", icon: _videosync_icon('<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2.2 2.2 0 0 1-1.56 3.76 2.2 2.2 0 0 1-1.56-.64l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.64V21a2.2 2.2 0 1 1-4.4 0v-.06a1.8 1.8 0 0 0-1.08-1.64 1.8 1.8 0 0 0-1.98.36l-.04.04a2.2 2.2 0 0 1-3.76-1.56 2.2 2.2 0 0 1 .64-1.56l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.64-1.08H2.9a2.2 2.2 0 1 1 0-4.4h.06A1.8 1.8 0 0 0 4.6 8.4a1.8 1.8 0 0 0-.36-1.98l-.04-.04A2.2 2.2 0 0 1 5.76 2.6a2.2 2.2 0 0 1 1.56.64l.04.04A1.8 1.8 0 0 0 9.34 3.6 1.8 1.8 0 0 0 10.42 2h.06a2.2 2.2 0 1 1 4.4 0h-.06a1.8 1.8 0 0 0 1.08 1.64 1.8 1.8 0 0 0 1.98-.36l.04-.04a2.2 2.2 0 0 1 3.76 1.56 2.2 2.2 0 0 1-.64 1.56l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.64 1.08h.06a2.2 2.2 0 1 1 0 4.4h-.06A1.8 1.8 0 0 0 19.4 15z"/>') },
     ],
     stats: { mediaCount: 0, videoCount: 0, pendingJobs: 0, failedJobs: 0 },
@@ -85,6 +85,10 @@ function VideoSyncApp() {
     playlistList: [],
     playlistListQuery: "",
     selectedPlaylistId: null,
+    briefDailyPrompt: "",
+    briefDailyPromptLoaded: false,
+    briefDailyPromptSaving: false,
+    briefDailyPromptError: "",
     playerVideo: null,
     playerAssets: [],
     playerVideoUrl: "",
@@ -121,9 +125,15 @@ function VideoSyncApp() {
     playlistPlayerVideoUrl: "",
     playlistPlayerAudioUrl: "",
     playlistPlayerError: "",
+    playlistTranscriptText: "",
+    playlistTranscriptLoading: false,
+    playlistTranscriptError: "",
+    playlistTranscriptLanguage: "",
+    playlistTranscriptSource: "",
     playlistBriefHtml: "",
     playlistBriefLoading: false,
     playlistBriefError: "",
+    playlistBriefGeneratingKey: "",
     playlistBriefAutoRequests: new Set(),
     playlistBriefAutoPoll: new Map(),
     playlistTimelineStart: "",
@@ -132,6 +142,9 @@ function VideoSyncApp() {
     playlistTimelineValue: 0,
     playlistCalendarCount: 14,
     playlistCalendarAnchor: "",
+    playlistDescEditing: false,
+    playlistDescDraft: "",
+    playlistDescSaving: false,
     playlistEditMediaOpen: false,
     playlistEditMediaIds: [],
     playlistEditMediaTagQuery: "",
@@ -493,7 +506,7 @@ function VideoSyncApp() {
         if (fromIso) this.jobsDoneFrom = this._toLocalInputValue(new Date(fromIso));
         if (toIso) this.jobsDoneTo = this._toLocalInputValue(new Date(toIso));
       }
-      if (viewKey === "playlists" || viewKey === "briefs") {
+      if (viewKey === "playlists") {
         this.selectedPlaylistId = sp.get("playlist_id") || this.selectedPlaylistId;
       }
       if (viewKey === "playlist") {
@@ -527,7 +540,7 @@ function VideoSyncApp() {
           if (toIso) sp.set("to", toIso);
         }
       }
-      if ((viewKey === "playlists" || viewKey === "briefs") && this.selectedPlaylistId) sp.set("playlist_id", this.selectedPlaylistId);
+      if (viewKey === "playlists" && this.selectedPlaylistId) sp.set("playlist_id", this.selectedPlaylistId);
       if (viewKey === "playlist") {
         const pid = this.playlistPageId || this.selectedPlaylistId;
         if (pid) sp.set("playlist_id", String(pid));
@@ -568,6 +581,7 @@ function VideoSyncApp() {
         if (this.activeView === "jobs") return await this.loadJobs();
         if (this.activeView === "playlists") return await this.loadPlaylists();
         if (this.activeView === "playlist") return await this.loadPlaylistPage();
+        if (this.activeView === "briefs") return await this.loadBriefs();
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
       }
@@ -1245,6 +1259,126 @@ function VideoSyncApp() {
       }
     },
 
+    briefDefaultDailyPrompt() {
+      return [
+        "## 提示词",
+        "",
+        "你是一个**财经内容分析助手**。请基于下面提供的多条视频文字内容（可能含转写、字幕、摘要、片段拼接），生成一份**Markdown**格式的《每日财经简报》。",
+        "",
+        "### 核心约束（必须遵守）",
+        "",
+        "1. **只使用文本中明确出现的信息**：",
+        "",
+        "   * 不要补充常识性“背景”来充当事实。",
+        "   * 任何无法从文本直接验证的内容，一律写：**“文本未提及”** 或 **“文本表述不充分，无法确认”**。",
+        "2. **每条要点必须附 1–3 个来源链接**：",
+        "",
+        "   * 来源链接必须来自文本中的视频链接/来源字段。",
+        "   * 写法示例：`（来源：https://... ，https://...）`",
+        "3. 输出语言：**中文**。",
+        "4. 输出必须是 **Markdown**，段落清晰，便于直接发布。",
+        "5. 不需要：**主体归类**、**今日视频清单**。",
+        "",
+        "### 输出结构",
+        "",
+        "#### 1) 今日要点（必须）",
+        "",
+        "* 用 **bullet** 列出关键信息点。",
+        "* 每条要点：",
+        "",
+        "  * 句式尽量短，先给“结论/信息”，再给“条件/范围/时间”。",
+        "  * 必须在句末附 **1–3 个来源链接**（用括号包起来）。",
+        "  * 若文本出现具体数值（涨跌幅、利率、通胀、盈利、库存、产量等），必须原样保留，并注明它属于谁/哪个时间窗口；若时间窗口不清楚，写“文本未提及”。",
+        "",
+        "示例格式（示例仅展示格式，不要复用示例内容）：",
+        "",
+        "* 美债收益率在文本中被描述为____，并被归因于____（来源：[视频标题](https://...）)",
+        "* 某公司业绩/指引被提到____，但对同比/环比口径未说明（文本未提及）（来源：[视频标题](https://...）)",
+        "",
+        "#### 2) 影响与逻辑链（必须）",
+        "",
+        "* 写清楚“**因 → 果**”或“**事件 → 资产影响**”的链条。",
+        "* 每条链条必须满足：链条中的每个关键节点都能在文本中找到依据；找不到就标注“文本未提及”。",
+        "* 仍然要在句末附来源链接。",
+        "",
+        "#### 3) 风险与不确定性",
+        "",
+        "* 重点写：口径不一致、数据缺失、时间不明、推断过度、样本偏差、叙述互相矛盾之处。",
+        "* 如不同视频说法冲突：明确写出“视频 A 说…；视频 B 说…；无法判定”（并分别给来源）。",
+        "",
+        "#### 4) 关注清单",
+        "",
+        "* 给出“接下来应继续跟踪”的观察项（不是预测结论），如：",
+        "",
+        "  * 关键数据发布、会议/财报、政策口径、价格/利差/汇率阈值、行业库存、地缘事件进展等。",
+        "* 每一条都要说明：为什么要跟踪（依据文本哪个说法），并附来源链接。",
+        "* 如果文本没有足够依据，写“文本未提及”。",
+        "",
+        "#### 5) 行动建议",
+        "",
+        "* 给“**条件触发式**”建议，形式如：",
+        "",
+        "  * “若文本中提到的 A 指标继续…，可考虑…；否则…（文本未提及具体阈值）”",
+        "* **不允许直接给确定性买卖指令**；只能写“可考虑/可关注/需验证”。",
+        "* 每条建议仍需来源链接；若建议的关键条件缺失，标注“文本未提及”。",
+        "",
+        "---",
+        "",
+        "日期：{{date}}",
+        "",
+        "以下是视频文本（多条，可能包含标题与链接；若未包含链接，请在输出中把来源写为“文本未提供链接”）：",
+        "{{blocks}}",
+      ].join("\n").trim();
+    },
+
+    async loadBriefs({ force = false } = {}) {
+      try {
+        if (this.briefDailyPromptLoaded && !force) return;
+        this.briefDailyPromptError = "";
+
+        const payload = await this.api(`/config`);
+        const data = (payload && payload.data) || {};
+        const briefs = data && data.briefs ? data.briefs : null;
+        const p = briefs && typeof briefs === "object" ? briefs.daily_prompt : "";
+        const text = typeof p === "string" ? p.trim() : "";
+        this.briefDailyPrompt = text || this.briefDefaultDailyPrompt();
+        this.briefDailyPromptLoaded = true;
+      } catch (e) {
+        this.briefDailyPromptError = e && e.message ? e.message : String(e);
+        if (!String(this.briefDailyPrompt || "").trim()) this.briefDailyPrompt = this.briefDefaultDailyPrompt();
+      }
+    },
+
+    resetBriefDailyPrompt() {
+      this.briefDailyPromptError = "";
+      this.briefDailyPrompt = this.briefDefaultDailyPrompt();
+    },
+
+    async saveBriefDailyPrompt() {
+      try {
+        this.briefDailyPromptSaving = true;
+        this.briefDailyPromptError = "";
+        const v = String(this.briefDailyPrompt || "").trim();
+        if (!v) {
+          this.briefDailyPromptError = "提示词不能为空";
+          return;
+        }
+        await this.api(`/config/briefs`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ value: { daily_prompt: v } }),
+        });
+        this.briefDailyPromptLoaded = true;
+        this.globalStatus = "已保存简报提示词";
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.briefDailyPromptError = msg;
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.briefDailyPromptSaving = false;
+      }
+    },
+
     playlistListFiltered() {
       const q = String(this.playlistListQuery || "").trim().toLowerCase();
       const list = Array.isArray(this.playlistList) ? this.playlistList : [];
@@ -1277,6 +1411,8 @@ function VideoSyncApp() {
       this.modals.addMedia = false;
       this.modals.createPlaylist = false;
       this.closeVideoPlayer();
+      this.playlistDescEditing = false;
+      this.playlistDescDraft = "";
       this.playlistPageId = pid;
       this.selectedPlaylistId = pid;
       this.playlistSelectedDate = String(dateStr || "").trim() || this._todayIsoLocal();
@@ -1338,6 +1474,8 @@ function VideoSyncApp() {
         this.playlistDetail = null;
         this.playlistDayVideos = [];
         this.playlistBriefHtml = "";
+        this.playlistDescEditing = false;
+        this.playlistDescDraft = "";
         this.pageTitle = "播放列表页";
         return;
       }
@@ -1548,6 +1686,11 @@ function VideoSyncApp() {
       this.playlistPlayerError = "";
       this.playlistPlayerVideoUrl = "";
       this.playlistPlayerAudioUrl = "";
+      this.playlistTranscriptText = "";
+      this.playlistTranscriptLoading = false;
+      this.playlistTranscriptError = "";
+      this.playlistTranscriptLanguage = "";
+      this.playlistTranscriptSource = "";
 
       this.playlistDayVideosLoading = true;
       this.playlistDayVideosError = "";
@@ -1562,6 +1705,11 @@ function VideoSyncApp() {
         this.playlistDayVideosError = e && e.message ? e.message : String(e);
         this.playlistDayVideos = [];
         this.playlistCurrentVideo = null;
+        this.playlistTranscriptText = "";
+        this.playlistTranscriptLoading = false;
+        this.playlistTranscriptError = "";
+        this.playlistTranscriptLanguage = "";
+        this.playlistTranscriptSource = "";
       } finally {
         this.playlistDayVideosLoading = false;
       }
@@ -1575,6 +1723,12 @@ function VideoSyncApp() {
       if (!vid) return;
       this.playlistCurrentVideo = v;
       this.playlistPlayerError = "";
+      const selectingId = vid;
+      this.playlistTranscriptText = "";
+      this.playlistTranscriptLoading = true;
+      this.playlistTranscriptError = "";
+      this.playlistTranscriptLanguage = "";
+      this.playlistTranscriptSource = "";
       try {
         const assets = await this.api(`/videos/${encodeURIComponent(vid)}/assets?presign=1&download=0`);
         const list = Array.isArray(assets) ? assets : [];
@@ -1592,10 +1746,33 @@ function VideoSyncApp() {
             // ignore
           }
         });
+
+        try {
+          const transcript = await this.api(`/videos/${encodeURIComponent(vid)}/transcript`);
+          if (!this.playlistCurrentVideo || String(this.playlistCurrentVideo.id || "") !== String(selectingId)) return;
+          if (transcript && typeof transcript === "object" && transcript.ok) {
+            this.playlistTranscriptText = transcript.text || "";
+            this.playlistTranscriptLanguage = transcript.language || "";
+            this.playlistTranscriptSource = transcript.source || "";
+          } else {
+            this.playlistTranscriptText = "";
+            this.playlistTranscriptLanguage = "";
+            this.playlistTranscriptSource = "";
+          }
+        } catch (e2) {
+          if (!this.playlistCurrentVideo || String(this.playlistCurrentVideo.id || "") !== String(selectingId)) return;
+          this.playlistTranscriptError = e2 && e2.message ? e2.message : String(e2);
+        } finally {
+          if (!this.playlistCurrentVideo || String(this.playlistCurrentVideo.id || "") !== String(selectingId)) return;
+          this.playlistTranscriptLoading = false;
+        }
       } catch (e) {
         this.playlistPlayerError = e && e.message ? e.message : String(e);
         this.playlistPlayerVideoUrl = "";
         this.playlistPlayerAudioUrl = "";
+        if (this.playlistCurrentVideo && String(this.playlistCurrentVideo.id || "") === String(selectingId)) {
+          this.playlistTranscriptLoading = false;
+        }
       }
     },
 
@@ -1647,10 +1824,28 @@ function VideoSyncApp() {
       this.playlistSetDate(next);
     },
 
+    _playlistBriefKey(pid, day) {
+      const p = String(pid || "").trim();
+      const d = String(day || "").trim();
+      if (!p || !d) return "";
+      return `${p}:${d}`;
+    },
+
+    playlistBriefGeneratingForSelectedDate() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const day = String(this.playlistSelectedDate || "").trim();
+      const k = this._playlistBriefKey(pid, day);
+      return !!k && String(this.playlistBriefGeneratingKey || "") === k;
+    },
+
     async playlistGenerateBriefForSelectedDate() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       const day = String(this.playlistSelectedDate || "").trim();
       if (!pid || !day) return;
+      const k = this._playlistBriefKey(pid, day);
+      if (k) this.playlistBriefGeneratingKey = k;
+      this.playlistBriefError = "";
+      this.playlistBriefHtml = "";
       try {
         await this.api(`/briefs/generate`, {
           method: "POST",
@@ -1658,9 +1853,10 @@ function VideoSyncApp() {
           body: JSON.stringify({ playlist_id: pid, date: day }),
         });
         this.globalStatus = "已投递简报生成任务（Jobs 可查看进度）";
-        setTimeout(() => this.playlistLoadBrief(day), 1200);
+        this.playlistLoadBrief(day);
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
+        if (String(this.playlistBriefGeneratingKey || "") === k) this.playlistBriefGeneratingKey = "";
       }
     },
 
@@ -1819,6 +2015,8 @@ function VideoSyncApp() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       const d = String(day || "").trim();
       if (!pid || !d) return;
+      const k = this._playlistBriefKey(pid, d);
+      const manualGenerating = !!k && String(this.playlistBriefGeneratingKey || "") === k;
       this.playlistBriefLoading = true;
       this.playlistBriefError = "";
       this.playlistBriefHtml = "";
@@ -1827,7 +2025,17 @@ function VideoSyncApp() {
         const brief = await this.api(`/briefs/by_date?playlist_id=${encodeURIComponent(pid)}&date=${encodeURIComponent(d)}`);
         if (!brief || brief.status !== "ready" || !brief.markdown_url) {
           const s = brief && brief.status ? String(brief.status) : "pending";
-          this.playlistBriefHtml = `<div class="text-slate-400 text-sm">简报状态：${this._escapeHtml(s)}</div>`;
+          if (s === "failed") {
+            const em = brief && brief.error_message ? String(brief.error_message) : "";
+            this.playlistBriefHtml = `<div class="text-rose-200 text-sm">生成失败${em ? `：${this._escapeHtml(em)}` : ""}</div>`;
+            if (manualGenerating) this.playlistBriefGeneratingKey = "";
+            return;
+          }
+          if (manualGenerating) {
+            this.playlistBriefHtml = `<div class="text-slate-400 text-sm">生成中…</div>`;
+          } else {
+            this.playlistBriefHtml = `<div class="text-slate-400 text-sm">简报状态：${this._escapeHtml(s)}</div>`;
+          }
           if (hasVideos) {
             this._playlistEnsureBriefEnqueued(pid, d);
             this._playlistPollBrief(pid, d);
@@ -1838,6 +2046,7 @@ function VideoSyncApp() {
         if (!resp.ok) throw new Error(`${resp.status}: brief markdown fetch failed`);
         const md = await resp.text();
         this.playlistBriefHtml = this._briefToHtml(md);
+        if (manualGenerating) this.playlistBriefGeneratingKey = "";
         try {
           const k = `${String(pid)}:${String(d)}`;
           if (this.playlistBriefAutoPoll) this.playlistBriefAutoPoll.delete(k);
@@ -1847,9 +2056,12 @@ function VideoSyncApp() {
         if (String(msg).startsWith("404:") || String(msg).includes(" 404")) {
           if (!hasVideos) {
             this.playlistBriefHtml = `<div class="text-slate-400 text-sm">当天暂无视频，不生成简报</div>`;
+            if (manualGenerating) this.playlistBriefGeneratingKey = "";
             return;
           }
-          this.playlistBriefHtml = `<div class="text-slate-400 text-sm">暂无简报，已自动触发生成…</div>`;
+          this.playlistBriefHtml = manualGenerating
+            ? `<div class="text-slate-400 text-sm">生成中…</div>`
+            : `<div class="text-slate-400 text-sm">暂无简报，已自动触发生成…</div>`;
           this._playlistEnsureBriefEnqueued(pid, d);
           this._playlistPollBrief(pid, d);
         } else {
@@ -1881,9 +2093,12 @@ function VideoSyncApp() {
         const k = `${String(pid)}:${String(day)}`;
         if (!this.playlistBriefAutoPoll) this.playlistBriefAutoPoll = new Map();
         const tries = Number(this.playlistBriefAutoPoll.get(k) || 0);
-        if (tries >= 8) return;
+        const manual = String(this.playlistBriefGeneratingKey || "") === k;
+        const maxTries = manual ? 60 : 8;
+        if (tries >= maxTries) return;
         this.playlistBriefAutoPoll.set(k, tries + 1);
-        const delay = 1200 + tries * 700;
+        const rawDelay = 1200 + tries * 700;
+        const delay = manual ? Math.min(8000, rawDelay) : rawDelay;
         setTimeout(() => {
           if (String(this.playlistPageId || this.selectedPlaylistId || "").trim() !== String(pid)) return;
           if (String(this.playlistSelectedDate || "").trim() !== String(day)) return;
@@ -1932,23 +2147,54 @@ function VideoSyncApp() {
       }
     },
 
-    async playlistEditDescription() {
+    playlistStartEditDescription() {
+      if (!this.playlistDetail) return;
+      this.playlistDescDraft = String(this.playlistDetail.description || "");
+      this.playlistDescEditing = true;
+      this.$nextTick(() => {
+        try {
+          const el = this.$refs && this.$refs.playlistDescInput;
+          if (!el) return;
+          el.focus();
+          if (typeof el.select === "function") el.select();
+        } catch {
+          // ignore
+        }
+      });
+    },
+
+    playlistCancelEditDescription() {
+      this.playlistDescEditing = false;
+      this.playlistDescDraft = "";
+    },
+
+    async playlistSaveDescription() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
-      if (!pid) return;
-      const current = (this.playlistDetail && this.playlistDetail.description) || "";
-      const next = prompt("编辑描述（留空表示清空）", String(current || ""));
-      if (next === null) return;
+      if (!pid || !this.playlistDetail) return;
+      if (this.playlistDescSaving) return;
+
+      const current = String(this.playlistDetail.description || "").trim();
+      const next = String(this.playlistDescDraft || "").trim();
+      if (current === next) {
+        this.playlistCancelEditDescription();
+        return;
+      }
+
       try {
+        this.playlistDescSaving = true;
         const updated = await this.api(`/playlists/${encodeURIComponent(pid)}`, {
           method: "PATCH",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ description: String(next).trim() || null }),
+          body: JSON.stringify({ description: next || null }),
         });
         if (this.playlistDetail) this.playlistDetail.description = updated.description || null;
         await this.loadPlaylists();
         this.globalStatus = "已更新描述";
+        this.playlistCancelEditDescription();
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
+      } finally {
+        this.playlistDescSaving = false;
       }
     },
 
@@ -2219,24 +2465,6 @@ function VideoSyncApp() {
       this.globalStatus = `已选择播放列表：${id}`;
     },
 
-    async generateTodayBrief() {
-      if (!this.selectedPlaylistId) {
-        this.globalStatus = "请先在播放列表页选择一个播放列表";
-        return;
-      }
-      const today = this._todayIsoLocal();
-      try {
-        await this.api(`/briefs/generate`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ playlist_id: this.selectedPlaylistId, date: today }),
-        });
-        this.globalStatus = "已投递简报生成任务（Jobs 可查看进度）";
-      } catch (e) {
-        this.globalStatus = `error: ${e.message}`;
-      }
-    },
-
     async init() {
       try {
         this._applySidebarMode();
@@ -2270,8 +2498,8 @@ function VideoSyncApp() {
         this.services.db = h.db || this.services.db;
         this.services.s3 = h.s3 || this.services.s3;
         this.services.asr = h.asr || this.services.asr;
-        this.services.ollama = h.ollama || this.services.ollama;
-        this.globalStatus = h.deps_ok ? "Health OK" : "部分依赖不可用";
+        this.services.llm = h.llm || this.services.llm;
+        this.globalStatus = h.deps_ok ? "" : "部分依赖不可用";
         this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
         await this.refreshActive();
         // Always load stats for overview cards even if user lands on other views.

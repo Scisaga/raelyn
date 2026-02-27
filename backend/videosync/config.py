@@ -65,9 +65,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ASR_TIMEOUT_SECONDS", "SPEACHES_TIMEOUT_SECONDS"),
     )
 
-    ollama_url: str = ""
-    ollama_model: str = ""
-    ollama_timeout_seconds: int = 600
+    llm_url: str = ""
+    llm_model: str = ""
+    llm_api_key: str = ""
+    llm_headers_json: str = ""
+    llm_timeout_seconds: int = 600
 
 
 settings = Settings()

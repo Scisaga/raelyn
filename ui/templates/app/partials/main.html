@@ -45,36 +45,12 @@
               </svg>
             </button>
             <div class="text-md font-semibold truncate" x-text="pageTitle"></div>
-            <div class="hidden md:flex items-center gap-2 text-xs text-slate-400 min-w-0">
-              <div class="inline-flex items-center gap-2 rounded-full border border-slate-800 bg-slate-900/40 px-3 py-1">
-                <span class="h-2 w-2 rounded-full" :class="healthOk ? 'bg-emerald-400' : 'bg-rose-400'"></span>
-                <span x-text="healthOk ? 'Health OK' : 'Offline'"></span>
-              </div>
-              <div class="truncate max-w-[420px]" x-text="globalStatus"></div>
+            <div class="hidden md:flex items-center gap-2 text-xs text-slate-400 min-w-0" x-show="globalStatus" x-transition.opacity.duration.150ms>
+              <div class="truncate max-w-[520px]" x-text="globalStatus"></div>
             </div>
           </div>
 
           <div class="flex items-center gap-2">
-            <button
-              class="inline-flex items-center gap-2 rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-medium text-slate-950 hover:bg-emerald-400"
-              @click="openAddMedia()"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                width="18"
-                height="18"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M12 5v14" />
-                <path d="M5 12h14" />
-              </svg>
-              <span class="hidden sm:inline">添加媒体</span>
-            </button>
             <button
               class="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-950/20 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60"
               @click="refreshActive()"
@@ -102,8 +78,8 @@
 
         <section
           class="min-h-0"
-          :class="activeView==='playlist' ? 'p-0 sm:p-0 space-y-0 overflow-hidden' : 'p-4 sm:p-5 space-y-4'"
-          :style="activeView==='playlist' ? 'height: calc(100vh - 3.5rem);' : ''"
+          :class="['overview','settings','playlist','playlists','videos','media','jobs','briefs'].includes(activeView) ? 'p-0 sm:p-0 space-y-0 overflow-hidden' : 'p-4 sm:p-5 space-y-4'"
+          :style="['overview','settings','playlist','playlists','videos','media','jobs','briefs'].includes(activeView) ? 'height: calc(100vh - 3.5rem);' : ''"
         >
 <!-- @include views/overview.html -->
 

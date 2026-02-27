@@ -1,10 +1,14 @@
           <!-- Settings -->
-          <div x-show="activeView==='settings'" x-transition.opacity>
-            <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-              <div class="text-sm font-semibold">设置</div>
-              <div class="text-sm text-slate-300 mt-2">
-                本 MVP 主要通过环境变量配置（<code class="text-slate-200">.env</code>），可选使用 <code class="text-slate-200">/api/config</code>
-                持久化配置。
+          <div x-show="activeView==='settings'" x-transition.opacity class="h-full">
+            <div class="rounded-none border border-slate-800 bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
+              <div class="shrink-0 px-4 py-3">
+                <div class="text-sm font-semibold">设置</div>
+              </div>
+              <div class="flex-1 min-h-0 overflow-auto videosync-scrollbar p-4">
+                <div class="text-sm text-slate-300">
+                  本 MVP 主要通过环境变量配置（<code class="text-slate-200">.env</code>），可选使用 <code class="text-slate-200">/api/config</code>
+                  持久化配置。
+                </div>
               </div>
             </div>
           </div>

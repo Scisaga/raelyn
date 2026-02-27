@@ -14,9 +14,9 @@ from videosync.services.s3 import s3_check_bucket
 router = APIRouter(tags=["health"])
 
 
-def _check_http_get(url: str, *, timeout_seconds: float = 2.0) -> dict[str, Any]:
+def _check_http_get(url: str, *, timeout_seconds: float = 2.0, headers: dict[str, str] | None = None) -> dict[str, Any]:
     try:
-        with httpx.Client(timeout=httpx.Timeout(timeout_seconds)) as client:
+        with httpx.Client(timeout=httpx.Timeout(timeout_seconds), headers=headers) as client:
             resp = client.get(url)
             resp.raise_for_status()
         return {"ok": True, "url": url, "error": None}
@@ -45,18 +45,49 @@ def health() -> dict:
     else:
         asr = {"configured": True, **_check_http_get(asr_url.rstrip("/") + "/health")}
 
-    # Ollama
-    ollama_url = settings.ollama_url.strip()
-    if not ollama_url:
-        ollama = {"ok": False, "configured": False, "url": "", "error": "not configured"}
+    # LLM
+    llm_url = settings.llm_url.strip()
+    if not llm_url:
+        llm = {"ok": False, "configured": False, "url": "", "error": "not configured"}
     else:
-        ollama = {"configured": True, **_check_http_get(ollama_url.rstrip("/") + "/api/version")}
+        llm_headers: dict[str, str] = {}
+        api_key = settings.llm_api_key.strip()
+        if api_key:
+            llm_headers["Authorization"] = f"Bearer {api_key}"
+        raw_headers = settings.llm_headers_json.strip()
+        if raw_headers:
+            try:
+                import json
+
+                extra = json.loads(raw_headers)
+                if isinstance(extra, dict):
+                    for k, v in extra.items():
+                        if v is None:
+                            continue
+                        llm_headers[str(k)] = str(v)
+            except Exception:
+                llm_headers = llm_headers
+
+        u = llm_url.lower()
+        if "/api/generate" in u:
+            base = llm_url.split("/api/generate", 1)[0].rstrip("/")
+            check_url = base + "/api/version"
+        elif "/chat/completions" in u:
+            base = llm_url.split("/chat/completions", 1)[0].rstrip("/")
+            check_url = base + "/models"
+        elif "/completions" in u:
+            base = llm_url.split("/completions", 1)[0].rstrip("/")
+            check_url = base + "/models"
+        else:
+            check_url = llm_url
+
+        llm = {"configured": True, **_check_http_get(check_url, headers=llm_headers)}
 
     ok = bool(db.get("ok"))
     deps_ok = bool(
         db.get("ok")
         and s3.get("ok")
         and (asr.get("ok") or asr.get("configured") is False)
-        and (ollama.get("ok") or ollama.get("configured") is False)
+        and (llm.get("ok") or llm.get("configured") is False)
     )
-    return {"ok": ok, "deps_ok": deps_ok, "db": db, "s3": s3, "asr": asr, "ollama": ollama}
+    return {"ok": ok, "deps_ok": deps_ok, "db": db, "s3": s3, "asr": asr, "llm": llm}

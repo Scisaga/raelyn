@@ -1,16 +1,40 @@
           <!-- Media -->
-          <div x-show="activeView==='media'" x-transition.opacity>
-            <div class="rounded-xl border border-slate-800 bg-slate-900/40 overflow-hidden">
-              <div class="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
-                <div class="text-sm font-semibold">媒体</div>
-                <input
-                  class="w-64 max-w-full rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
-                  placeholder="搜索名称/描述"
-                  x-model="mediaQuery"
-                  @input.debounce.400ms="loadMedia()"
-                />
+          <div x-show="activeView==='media'" x-transition.opacity class="h-full">
+            <div class="border border-slate-800 bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
+              <div class="shrink-0 px-4 py-3 flex items-center justify-between gap-3">
+                <div class="text-xs text-slate-400" x-text="mediaList.length ? ('已加载 ' + mediaList.length + ' 条') : ''"></div>
+                <div class="flex items-center gap-2">
+                  <button
+                    class="inline-flex items-center gap-2 rounded-md bg-emerald-500 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-400"
+                    @click="openAddMedia()"
+                    title="添加媒体"
+                    aria-label="添加媒体"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="18"
+                      height="18"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M12 5v14" />
+                      <path d="M5 12h14" />
+                    </svg>
+                    <span class="hidden sm:inline">添加媒体</span>
+                  </button>
+                  <input
+                    class="w-64 max-w-full rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                    placeholder="搜索名称/描述"
+                    x-model="mediaQuery"
+                    @input.debounce.400ms="loadMedia()"
+                  />
+                </div>
               </div>
-              <div class="divide-y divide-slate-800">
+              <div class="flex-1 min-h-0 overflow-auto videosync-scrollbar divide-y divide-slate-800">
                 <template x-for="m in mediaList" :key="m.id">
                   <div class="p-4 flex flex-col gap-3 hover:bg-slate-900/50 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                     <div class="flex items-center gap-3 min-w-0 sm:flex-1">

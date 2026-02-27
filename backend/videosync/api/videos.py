@@ -15,7 +15,7 @@ from videosync.db import session_scope
 from videosync.jobs.enqueue import enqueue_job
 from videosync.models import Asset, Media, Video
 from videosync.services.downloads import build_download_filename, content_disposition_attachment
-from videosync.services.ollama import ollama_enabled
+from videosync.services.llm import llm_enabled
 from videosync.services.s3 import s3_get_bytes, s3_presign_get
 from videosync.services.video_meta import parse_published_at
 
@@ -281,7 +281,7 @@ def get_video_note(video_id: uuid.UUID, max_chars: int = 200_000) -> dict:
                 Asset.video_id == video_id,
                 Asset.type == "note",
                 Asset.format == "md",
-                Asset.source == "ollama",
+                Asset.source.in_(["llm", "ollama"]),
                 Asset.variant == "summary",
             )
             .order_by(Asset.created_at.desc())
@@ -297,8 +297,8 @@ def get_video_note(video_id: uuid.UUID, max_chars: int = 200_000) -> dict:
 
 @router.post("/videos/{video_id}/note")
 def generate_video_note(video_id: uuid.UUID) -> dict:
-    if not ollama_enabled():
-        raise HTTPException(status_code=400, detail="ollama not configured")
+    if not llm_enabled():
+        raise HTTPException(status_code=400, detail="llm not configured")
     with session_scope() as session:
         video = session.get(Video, video_id)
         if not video:

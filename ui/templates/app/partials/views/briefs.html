@@ -1,25 +1,52 @@
           <!-- Briefs -->
-          <div x-show="activeView==='briefs'" x-transition.opacity>
-            <div class="rounded-xl border border-slate-800 bg-slate-900/40 overflow-hidden">
-              <div class="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
-                <div class="text-sm font-semibold">简报（Markdown）</div>
-                <button
-                  class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
-                  @click="generateTodayBrief()"
-                >
-                  生成今日
-                </button>
+          <div x-show="activeView==='briefs'" x-transition.opacity class="h-full">
+            <div class="rounded-none border border-slate-800 bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
+              <div class="shrink-0 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                <div class="text-sm font-semibold">简报提示词</div>
+                <div class="flex items-center gap-2">
+                  <button
+                    class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
+                    @click="resetBriefDailyPrompt()"
+                    :disabled="briefDailyPromptSaving"
+                    :class="briefDailyPromptSaving ? 'opacity-60 cursor-not-allowed' : ''"
+                    title="恢复为默认提示词"
+                    aria-label="恢复为默认提示词"
+                  >
+                    恢复默认
+                  </button>
+                  <button
+                    class="inline-flex items-center gap-2 rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-medium text-slate-950 hover:bg-emerald-400"
+                    @click="saveBriefDailyPrompt()"
+                    :disabled="briefDailyPromptSaving"
+                    :class="briefDailyPromptSaving ? 'opacity-60 cursor-not-allowed' : ''"
+                    title="保存提示词"
+                    aria-label="保存提示词"
+                  >
+                    <span x-show="!briefDailyPromptSaving">保存</span>
+                    <span x-show="briefDailyPromptSaving">保存中…</span>
+                  </button>
+                </div>
               </div>
-              <div class="p-4 text-sm text-slate-300 space-y-2">
+
+              <div class="flex-1 min-h-0 p-4 flex flex-col gap-3">
+	                <div class="text-xs text-slate-400">
+	                  提示词为全局配置，会用于“简报生成”任务（播放列表页手动生成 / 自动触发均生效）。占位符：
+	                  <code class="text-slate-200">{{date}}</code>、
+	                  <code class="text-slate-200">{{blocks}}</code>（视频文本拼接）。
+	                  若未包含 <code class="text-slate-200">{{blocks}}</code>，系统会自动在末尾追加视频文本。
+	                </div>
+
                 <div class="text-xs text-slate-400">
-                  需要配置 <code class="text-slate-200">OLLAMA_URL</code> / <code class="text-slate-200">OLLAMA_MODEL</code>，并且视频需要字幕或文字稿。
+                  需要配置 <code class="text-slate-200">LLM_URL</code> / <code class="text-slate-200">LLM_MODEL</code>，并且视频需要字幕或文字稿。
                 </div>
-                <div class="text-xs text-slate-400" x-show="!selectedPlaylistId">
-                  未选择播放列表：请先到“播放列表”页面点击一个列表项进入详情（会自动选择）。
-                </div>
-                <div class="text-xs text-slate-400" x-show="selectedPlaylistId">
-                  当前播放列表：<span class="text-slate-200" x-text="selectedPlaylistId"></span>
-                </div>
-              </div>
-            </div>
-          </div>
+
+                <div class="text-xs text-rose-200" x-show="briefDailyPromptError" x-text="briefDailyPromptError"></div>
+
+                <textarea
+                  class="w-full flex-1 min-h-0 rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 text-xs text-slate-100 font-mono leading-5 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 resize-none videosync-scrollbar"
+                  placeholder="请输入简报提示词…"
+                  x-model="briefDailyPrompt"
+                ></textarea>
+	              </div>
+	            </div>
+	          </div>

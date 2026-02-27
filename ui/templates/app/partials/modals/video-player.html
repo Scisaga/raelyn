@@ -1,7 +1,7 @@
       <!-- Video player modal -->
-      <div x-show="modals.videoPlayer" class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" x-transition>
-        <div class="w-full max-w-6xl rounded-xl border border-slate-800 bg-slate-900 shadow-lg overflow-hidden">
-          <div class="relative p-4 border-b border-slate-800">
+      <div x-show="modals.videoPlayer" class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-0 sm:p-4" x-transition>
+        <div class="w-full h-full sm:h-[calc(100vh-2rem)] sm:max-w-6xl rounded-none sm:rounded-2xl border border-slate-800 bg-slate-900/60 backdrop-blur shadow-lg overflow-hidden flex flex-col min-h-0 divide-y divide-slate-800">
+          <div class="relative shrink-0 px-4 py-3">
             <div class="flex items-start gap-3 min-w-0 pr-16">
               <div class="w-10 h-10 rounded-md ring-1 ring-inset shrink-0" :class="mediaAvatarClasses(playerVideo)">
                 <template x-if="playerVideo && playerVideo.media_avatar_url">
@@ -72,7 +72,7 @@
               </button>
             </div>
           </div>
-          <div class="p-4 max-h-[80vh] overflow-auto videosync-scrollbar">
+          <div class="p-4 flex-1 min-h-0 overflow-auto videosync-scrollbar">
             <template x-if="playerLoading">
               <div class="text-sm text-slate-300">加载中…</div>
             </template>
