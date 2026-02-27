@@ -83,6 +83,7 @@ function VideoSyncApp() {
     jobsDoneChart: null,
     jobsDoneSeries: null,
     playlistList: [],
+    playlistListQuery: "",
     selectedPlaylistId: null,
     playerVideo: null,
     playerAssets: [],
@@ -1242,6 +1243,18 @@ function VideoSyncApp() {
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
       }
+    },
+
+    playlistListFiltered() {
+      const q = String(this.playlistListQuery || "").trim().toLowerCase();
+      const list = Array.isArray(this.playlistList) ? this.playlistList : [];
+      if (!q) return list;
+      return list.filter((p) => {
+        const name = String((p && p.name) || "").toLowerCase();
+        const desc = String((p && p.description) || "").toLowerCase();
+        const id = String((p && p.id) || "").toLowerCase();
+        return name.includes(q) || desc.includes(q) || id.includes(q);
+      });
     },
 
     async _uploadPlaylistImage(playlistId, kind, file) {

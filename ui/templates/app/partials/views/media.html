@@ -12,8 +12,8 @@
               </div>
               <div class="divide-y divide-slate-800">
                 <template x-for="m in mediaList" :key="m.id">
-                  <div class="p-4 flex items-center justify-between gap-4 hover:bg-slate-900/50">
-                    <div class="flex items-center gap-3 min-w-0">
+                  <div class="p-4 flex flex-col gap-3 hover:bg-slate-900/50 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                    <div class="flex items-center gap-3 min-w-0 sm:flex-1">
                       <div
                         class="w-10 h-10 rounded-lg ring-1 flex items-center justify-center overflow-hidden shrink-0"
                         :class="mediaAvatarClasses(m)"
@@ -36,13 +36,13 @@
                         <div class="text-xs text-slate-400 truncate" x-text="m.url"></div>
                         <div class="mt-1 flex items-center gap-2">
                           <span
-                            class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/20 px-2 py-0.5 text-[11px] text-slate-300"
+                            class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/20 px-2 py-0.5 text-[11px] text-slate-300 whitespace-nowrap"
                             x-text="'视频 ' + ((m.video_count===0 || m.video_count) ? m.video_count : '-')"
                           ></span>
                         </div>
                       </div>
                     </div>
-                    <div class="flex items-center gap-2 shrink-0">
+                    <div class="flex flex-wrap items-center gap-2 justify-end">
                       <div class="flex items-center gap-2 mr-1">
                         <span class="text-xs text-slate-400">监控</span>
                         <label class="relative inline-flex items-center cursor-pointer select-none">

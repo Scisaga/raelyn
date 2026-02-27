@@ -156,7 +156,7 @@ def sync_media(media_id: uuid.UUID, scope: str = "recent") -> dict:
 
         scope_key = str(scope or "").strip().lower()
         if scope_key in {"recent", "latest"}:
-            max_entries = 50
+            max_entries = int(settings.sync_max_entries)
         elif scope_key in {"all", "full"}:
             max_entries = 0
         else:

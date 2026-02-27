@@ -49,7 +49,7 @@ services:
       AUTO_DOWNLOAD_NEW_VIDEOS: "true"
       SYNC_INTERVAL_MINUTES: "5"
       SYNC_BATCH_SIZE: "20"
-      SYNC_MAX_ENTRIES: "50"
+      SYNC_MAX_ENTRIES: "10"
     volumes:
       - ./static:/app/static
       - ./tmp:/app/tmp

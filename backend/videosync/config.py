@@ -39,7 +39,7 @@ class Settings(BaseSettings):
 
     sync_interval_minutes: int = 5
     sync_batch_size: int = 20
-    sync_max_entries: int = 50
+    sync_max_entries: int = 10
     auto_download_new_videos: bool = True
 
     youtube_sync_concurrency: int = 1
