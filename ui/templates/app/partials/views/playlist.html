@@ -299,22 +299,81 @@
                     >
                       <template x-if="playlistDayVideosLoading || playlistDayVideosError || (Array.isArray(playlistDayVideos) && playlistDayVideos.length>0)">
                         <div class="bg-black/30 overflow-hidden shrink-0">
-                          <div class="relative w-full aspect-video bg-black">
-                            <video x-ref="playlistVideoEl" class="absolute inset-0 w-full h-full" :src="playlistPlayerVideoUrl || null" controls playsinline x-show="!playlistAudioOnly"></video>
+                          <div class="relative w-full aspect-video bg-black" x-show="!playlistAudioOnly">
+                            <video x-ref="playlistVideoEl" class="absolute inset-0 w-full h-full" :src="playlistPlayerVideoUrl || null" controls playsinline @ended="playlistOnEnded($event)"></video>
                             <div class="absolute inset-0 flex items-center justify-center text-sm text-slate-500" x-show="playlistDayVideosLoading">加载中…</div>
                             <div class="absolute inset-0 flex items-center justify-center text-sm text-rose-200 px-4 text-center" x-show="playlistDayVideosError" x-text="playlistDayVideosError"></div>
-                            <div class="absolute inset-0 flex items-center justify-center text-sm text-slate-500" x-show="!playlistDayVideosLoading && !playlistDayVideosError && Array.isArray(playlistDayVideos) && playlistDayVideos.length>0 && playlistAudioOnly">
-                              <span class="inline-flex items-center gap-2">
-                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                  <path d="M9 18V5l12-2v13"></path>
-                                  <circle cx="6" cy="18" r="3"></circle>
-                                  <circle cx="18" cy="16" r="3"></circle>
-                                </svg>
-                                <span>音频模式</span>
-                              </span>
+                          </div>
+                          <div
+                            class="px-4 py-3 text-sm text-slate-500 flex items-center justify-center bg-slate-950/30 border-b border-slate-800"
+                            x-show="playlistAudioOnly"
+                          >
+                            <span x-show="playlistDayVideosLoading">加载中…</span>
+                            <span class="text-rose-200 text-center" x-show="playlistDayVideosError" x-text="playlistDayVideosError"></span>
+                            <span class="inline-flex items-center gap-2" x-show="!playlistDayVideosLoading && !playlistDayVideosError && Array.isArray(playlistDayVideos) && playlistDayVideos.length>0">
+                              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M9 18V5l12-2v13"></path>
+                                <circle cx="6" cy="18" r="3"></circle>
+                                <circle cx="18" cy="16" r="3"></circle>
+                              </svg>
+                              <span>音频模式</span>
+                            </span>
+                          </div>
+                          <audio
+                            x-ref="playlistAudioEl"
+                            class="hidden"
+                            :src="playlistPlayerAudioUrl || null"
+                            preload="metadata"
+                            @loadedmetadata="playlistMediaOnLoadedMetadata($event)"
+                            @timeupdate="playlistMediaOnTimeUpdate($event)"
+                            @durationchange="playlistMediaOnLoadedMetadata($event)"
+                            @play="playlistMediaOnPlay($event)"
+                            @pause="playlistMediaOnPause($event)"
+                            @volumechange="playlistMediaOnVolumeChange($event)"
+                            @ended="playlistOnEnded($event)"
+                          ></audio>
+
+                          <div
+                            class="border-t border-slate-800 bg-slate-950/15 p-3 space-y-3"
+                            x-show="playlistAudioOnly && !playlistDayVideosLoading && !playlistDayVideosError && Array.isArray(playlistDayVideos) && playlistDayVideos.length>0"
+                          >
+                            <div class="grid grid-cols-[3rem_minmax(0,1fr)] gap-3 items-center">
+                              <button
+                                type="button"
+                                class="h-12 w-12 inline-flex items-center justify-center border border-slate-700 bg-slate-950/30 text-slate-200 hover:bg-slate-800/60 rounded-none"
+                                @click="playlistMediaTogglePlay()"
+                                title="播放/暂停"
+                                aria-label="播放/暂停"
+                              >
+                                <template x-if="playlistMediaPlaying">
+                                  <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+                                    <rect x="6" y="5" width="4" height="14"></rect>
+                                    <rect x="14" y="5" width="4" height="14"></rect>
+                                  </svg>
+                                </template>
+                                <template x-if="!playlistMediaPlaying">
+                                  <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+                                    <polygon points="8,5 20,12 8,19"></polygon>
+                                  </svg>
+                                </template>
+                              </button>
+
+                              <div class="min-w-0 space-y-2">
+                                <div class="flex items-center gap-3 min-w-0">
+                                  <div class="text-xs md:text-sm tabular-nums text-slate-200 truncate" x-text="playlistMediaTimeLabel()"></div>
+                                </div>
+
+                                <div
+                                  class="h-2 border border-slate-700 bg-slate-950/40 cursor-pointer select-none rounded-none overflow-hidden"
+                                  @pointerdown.prevent="playlistSeekPointerDown($event)"
+                                  title="拖动/点击跳转"
+                                  aria-label="进度条"
+                                >
+                                  <div class="h-full bg-emerald-500/80" :style="`width:${playlistMediaProgressPct()}%`"></div>
+                                </div>
+                              </div>
                             </div>
                           </div>
-                          <audio x-ref="playlistAudioEl" class="w-full" :src="playlistPlayerAudioUrl || null" controls x-show="playlistAudioOnly && Array.isArray(playlistDayVideos) && playlistDayVideos.length>0"></audio>
                         </div>
                       </template>
 
@@ -339,7 +398,7 @@
                         </button>
                         <button
                           class="h-11 text-slate-200 hover:bg-slate-800/60 inline-flex items-center justify-center"
-                          @click="playlistAudioOnly = !playlistAudioOnly"
+                          @click="playlistToggleAudioOnly()"
                           :disabled="!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0"
                           :class="(!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0) ? 'opacity-40 cursor-not-allowed hover:bg-transparent' : (playlistAudioOnly ? 'bg-emerald-500/10 text-emerald-200' : '')"
                           title="切换：只播放音频"
@@ -408,11 +467,11 @@
                             @click="playlistSelectVideo(v)"
                           >
                             <div class="min-w-0">
-                              <div class="text-xs text-slate-500" x-text="formatDateTimeShort(v.published_at) || '-'"></div>
+                              <div class="text-xs text-teal-500" x-text="formatDateTimeShort(v.published_at) || '-'"></div>
                               <div class="mt-1 text-sm text-slate-100 truncate" x-text="v.title || v.url"></div>
                               <div class="mt-1 flex items-center gap-3 text-xs text-slate-400 min-w-0">
                                 <span class="truncate shrink-0 max-w-[40%]" x-text="v.media_name || v.media_id"></span>
-                                <span class="truncate text-slate-500" x-text="v.description || ''"></span>
+                                <span class="truncate text-slate-400" x-text="v.description || ''"></span>
                               </div>
                             </div>
                             <div class="shrink-0 text-xs text-slate-500" x-text="formatDuration(v.duration_sec) || ''"></div>

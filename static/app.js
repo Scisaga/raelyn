@@ -136,6 +136,11 @@ function VideoSyncApp() {
     playlistBriefGeneratingKey: "",
     playlistBriefAutoRequests: new Set(),
     playlistBriefAutoPoll: new Map(),
+    playlistMediaDurationSec: 0,
+    playlistMediaCurrentTimeSec: 0,
+    playlistMediaPlaying: false,
+    playlistMediaMuted: false,
+    playlistMediaVolume: 1,
     playlistTimelineStart: "",
     playlistTimelineEnd: "",
     playlistTimelineMax: 0,
@@ -1730,6 +1735,9 @@ function VideoSyncApp() {
       this.playlistCurrentVideo = v;
       this.playlistPlayerError = "";
       const selectingId = vid;
+      this.playlistMediaDurationSec = 0;
+      this.playlistMediaCurrentTimeSec = 0;
+      this.playlistMediaPlaying = false;
       this.playlistTranscriptText = "";
       this.playlistTranscriptLoading = true;
       this.playlistTranscriptError = "";
@@ -1751,6 +1759,7 @@ function VideoSyncApp() {
           } catch {
             // ignore
           }
+          this.playlistSyncMediaState();
         });
 
         try {
@@ -1782,6 +1791,229 @@ function VideoSyncApp() {
       }
     },
 
+    playlistActiveMediaEl() {
+      try {
+        return this.playlistAudioOnly ? this.$refs && this.$refs.playlistAudioEl : this.$refs && this.$refs.playlistVideoEl;
+      } catch {
+        return null;
+      }
+    },
+
+    playlistSyncMediaState() {
+      const el = this.playlistActiveMediaEl();
+      if (!el) return;
+      const dur = Number(el.duration || 0);
+      const cur = Number(el.currentTime || 0);
+      this.playlistMediaDurationSec = Number.isFinite(dur) && dur > 0 ? dur : 0;
+      this.playlistMediaCurrentTimeSec = Number.isFinite(cur) && cur >= 0 ? cur : 0;
+      this.playlistMediaPlaying = !!el && !el.paused && !el.ended;
+      this.playlistMediaMuted = !!el.muted;
+      const vol = Number(el.volume);
+      this.playlistMediaVolume = Number.isFinite(vol) ? Math.max(0, Math.min(1, vol)) : this.playlistMediaVolume;
+    },
+
+    playlistMediaOnLoadedMetadata(ev) {
+      try {
+        const el = ev && ev.target ? ev.target : this.playlistActiveMediaEl();
+        if (!el) return;
+        const dur = Number(el.duration || 0);
+        this.playlistMediaDurationSec = Number.isFinite(dur) && dur > 0 ? dur : 0;
+        const cur = Number(el.currentTime || 0);
+        this.playlistMediaCurrentTimeSec = Number.isFinite(cur) && cur >= 0 ? cur : this.playlistMediaCurrentTimeSec;
+      } catch {
+        // ignore
+      }
+      this.playlistSyncMediaState();
+    },
+
+    playlistMediaOnTimeUpdate(ev) {
+      try {
+        const el = ev && ev.target ? ev.target : this.playlistActiveMediaEl();
+        if (!el) return;
+        const cur = Number(el.currentTime || 0);
+        if (Number.isFinite(cur) && cur >= 0) this.playlistMediaCurrentTimeSec = cur;
+      } catch {
+        // ignore
+      }
+    },
+
+    playlistMediaOnPlay() {
+      this.playlistMediaPlaying = true;
+    },
+
+    playlistMediaOnPause() {
+      this.playlistMediaPlaying = false;
+    },
+
+    playlistMediaOnVolumeChange(ev) {
+      try {
+        const el = ev && ev.target ? ev.target : this.playlistActiveMediaEl();
+        if (!el) return;
+        this.playlistMediaMuted = !!el.muted;
+        const vol = Number(el.volume);
+        if (Number.isFinite(vol)) this.playlistMediaVolume = Math.max(0, Math.min(1, vol));
+      } catch {
+        // ignore
+      }
+    },
+
+    playlistMediaTimeLabel() {
+      const cur = Number(this.playlistMediaCurrentTimeSec || 0);
+      const dur = Number(this.playlistMediaDurationSec || 0);
+      const left = this.formatDuration(cur) || "0:00";
+      const right = this.formatDuration(dur) || "--:--";
+      return `${left} / ${right}`;
+    },
+
+    playlistMediaProgressPct() {
+      const cur = Number(this.playlistMediaCurrentTimeSec || 0);
+      const dur = Number(this.playlistMediaDurationSec || 0);
+      if (!Number.isFinite(dur) || dur <= 0) return "0";
+      const pct = (Math.max(0, Math.min(dur, cur)) / dur) * 100;
+      return String(Math.max(0, Math.min(100, pct)));
+    },
+
+    playlistMediaVolumePct() {
+      const vol = Number(this.playlistMediaVolume);
+      const muted = !!this.playlistMediaMuted;
+      const v = muted ? 0 : Number.isFinite(vol) ? Math.max(0, Math.min(1, vol)) : 1;
+      return String(v * 100);
+    },
+
+    playlistMediaTogglePlay() {
+      const el = this.playlistActiveMediaEl();
+      if (!el) return;
+      try {
+        if (el.paused || el.ended) el.play();
+        else el.pause();
+      } catch {
+        // ignore
+      }
+      this.playlistSyncMediaState();
+    },
+
+    playlistMediaToggleMute() {
+      const el = this.playlistActiveMediaEl();
+      if (!el) return;
+      try {
+        el.muted = !el.muted;
+      } catch {
+        // ignore
+      }
+      this.playlistSyncMediaState();
+    },
+
+    playlistSeekPointerDown(ev) {
+      const bar = ev && ev.currentTarget ? ev.currentTarget : null;
+      const el = this.playlistActiveMediaEl();
+      const dur = Number(this.playlistMediaDurationSec || 0);
+      if (!bar || !el || !Number.isFinite(dur) || dur <= 0) return;
+
+      const update = (e) => {
+        try {
+          const rect = bar.getBoundingClientRect();
+          const x = Number(e && e.clientX);
+          if (!rect || !Number.isFinite(x) || rect.width <= 0) return;
+          const pct = (x - rect.left) / rect.width;
+          const clamped = Math.max(0, Math.min(1, pct));
+          const t = dur * clamped;
+          el.currentTime = t;
+          this.playlistMediaCurrentTimeSec = t;
+        } catch {
+          // ignore
+        }
+      };
+
+      const onMove = (e) => update(e);
+      const onUp = () => {
+        try {
+          window.removeEventListener("pointermove", onMove);
+        } catch {
+          // ignore
+        }
+      };
+
+      try {
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp, { once: true });
+      } catch {
+        // ignore
+      }
+      update(ev);
+    },
+
+    playlistVolumePointerDown(ev) {
+      const bar = ev && ev.currentTarget ? ev.currentTarget : null;
+      const el = this.playlistActiveMediaEl();
+      if (!bar || !el) return;
+
+      const update = (e) => {
+        try {
+          const rect = bar.getBoundingClientRect();
+          const x = Number(e && e.clientX);
+          if (!rect || !Number.isFinite(x) || rect.width <= 0) return;
+          const pct = (x - rect.left) / rect.width;
+          const clamped = Math.max(0, Math.min(1, pct));
+          el.volume = clamped;
+          el.muted = false;
+          this.playlistMediaVolume = clamped;
+          this.playlistMediaMuted = false;
+        } catch {
+          // ignore
+        }
+      };
+
+      const onMove = (e) => update(e);
+      const onUp = () => {
+        try {
+          window.removeEventListener("pointermove", onMove);
+        } catch {
+          // ignore
+        }
+      };
+
+      try {
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp, { once: true });
+      } catch {
+        // ignore
+      }
+      update(ev);
+    },
+
+    playlistToggleAudioOnly() {
+      const videoEl = this.$refs && this.$refs.playlistVideoEl;
+      const audioEl = this.$refs && this.$refs.playlistAudioEl;
+      const next = !this.playlistAudioOnly;
+      const fromEl = next ? videoEl : audioEl;
+      const toEl = next ? audioEl : videoEl;
+
+      let t = 0;
+      let wasPlaying = false;
+      try {
+        if (fromEl) {
+          t = Number(fromEl.currentTime || 0);
+          wasPlaying = !fromEl.paused && !fromEl.ended;
+          if (typeof fromEl.pause === "function") fromEl.pause();
+        }
+      } catch {
+        // ignore
+      }
+
+      this.playlistAudioOnly = next;
+      this.$nextTick(() => {
+        try {
+          if (toEl) {
+            if (Number.isFinite(t) && t > 0) toEl.currentTime = t;
+            if (wasPlaying && typeof toEl.play === "function") toEl.play();
+          }
+        } catch {
+          // ignore
+        }
+        this.playlistSyncMediaState();
+      });
+    },
+
     playlistPrevVideo() {
       const items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
       if (!items.length) return;
@@ -1797,6 +2029,31 @@ function VideoSyncApp() {
       const id = this.playlistCurrentVideo && this.playlistCurrentVideo.id ? String(this.playlistCurrentVideo.id) : "";
       const idx = id ? items.findIndex((x) => x && String(x.id) === id) : -1;
       const next = idx >= 0 && idx < items.length - 1 ? items[idx + 1] : items[items.length - 1];
+      if (next) this.playlistSelectVideo(next, { autoPlay: true });
+    },
+
+    playlistOnEnded(ev) {
+      const items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
+      if (!items.length) return;
+
+      try {
+        const target = ev && ev.target ? ev.target : null;
+        const videoEl = this.$refs && this.$refs.playlistVideoEl;
+        const audioEl = this.$refs && this.$refs.playlistAudioEl;
+        if (this.playlistAudioOnly) {
+          if (target && audioEl && target !== audioEl) return;
+        } else {
+          if (target && videoEl && target !== videoEl) return;
+        }
+      } catch {
+        // ignore
+      }
+
+      const id = this.playlistCurrentVideo && this.playlistCurrentVideo.id ? String(this.playlistCurrentVideo.id) : "";
+      const idx = id ? items.findIndex((x) => x && String(x.id) === id) : -1;
+      if (idx < 0 || idx >= items.length - 1) return;
+
+      const next = items[idx + 1];
       if (next) this.playlistSelectVideo(next, { autoPlay: true });
     },
 
