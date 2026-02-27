@@ -1263,7 +1263,7 @@ function VideoSyncApp() {
       return [
         "## 提示词",
         "",
-        "你是一个**财经内容分析助手**。请基于下面提供的多条视频文字内容（可能含转写、字幕、摘要、片段拼接），生成一份**Markdown**格式的《每日财经简报》。",
+        "你是一个**财经内容分析助手**。请基于下面提供的多条视频文字内容（可能含转写、字幕、摘要、片段拼接），生成一份可直接发布的**Markdown**财经简报。",
         "",
         "### 核心约束（必须遵守）",
         "",
@@ -1271,60 +1271,66 @@ function VideoSyncApp() {
         "",
         "   * 不要补充常识性“背景”来充当事实。",
         "   * 任何无法从文本直接验证的内容，一律写：**“文本未提及”** 或 **“文本表述不充分，无法确认”**。",
-        "2. **每条要点必须附 1–3 个来源链接**：",
+	        "2. **每条要点必须附 1–3 个来源链接**：",
+	        "",
+	        "   * 来源链接必须来自文本中的视频链接/来源字段。",
+	        "   * 统一写法：句末用 `（来源：https://...，https://...）`（可用纯 URL 或 Markdown 链接）。",
+	        "3. 输出语言：**中文**。",
+	        "4. 输出必须是 **Markdown**，段落清晰，便于直接发布。",
+	        "5. 不需要：**主体归类**、**今日视频清单**。",
+	        "6. **不要输出“总标题/日期/分割线”**：",
+	        "",
+	        "   * 不要输出 H1（例如 `# ...`）或任何“总标题”。",
+	        "   * 不要输出“每日财经简报”字样。",
+	        "   * 不要输出“日期：...”或任何单独的日期行。",
+	        "   * 不要输出 Markdown 水平分割线（例如 `---`）。",
+	        "",
+	        "### 输出结构",
+	        "",
+	        "你必须严格按以下结构输出，并且**标题行必须用 Markdown 标题语法，单独成行**（不要写成正文里的小标题）：",
+	        "",
+	        "## 今日要点",
+	        "",
+	        "* 用 **bullet** 列出关键信息点（只写要点，不要写散文段落）。",
+	        "* 每条要点：",
+	        "",
+	        "  * 句式尽量短，先给“结论/信息”，再给“条件/范围/时间”。",
+	        "  * 必须在句末附 **1–3 个来源链接**，格式：`（来源：...）`。",
+	        "  * 若文本出现具体数值（涨跌幅、利率、通胀、盈利、库存、产量等），必须原样保留，并注明它属于谁/哪个时间窗口；若时间窗口不清楚，写“文本未提及”。",
+	        "",
+	        "示例格式（示例仅展示格式，不要复用示例内容）：",
+	        "",
+	        "* 美债收益率在文本中被描述为____，并被归因于____（来源：[视频标题](https://...)）",
+	        "* 某公司业绩/指引被提到____，但对同比/环比口径未说明（文本未提及）（来源：[视频标题](https://...)）",
+	        "",
+	        "## 影响与逻辑链",
+	        "",
+	        "* 写清楚“**因 → 果**”或“**事件 → 资产影响**”的链条。",
+	        "* 每条链条必须满足：链条中的每个关键节点都能在文本中找到依据；找不到就标注“文本未提及”。",
+	        "* 仍然要在句末附来源链接。",
+	        "",
+	        "## 风险与不确定性",
+	        "",
+	        "* 重点写：口径不一致、数据缺失、时间不明、推断过度、样本偏差、叙述互相矛盾之处。",
+	        "* 如不同视频说法冲突：明确写出“视频 A 说…；视频 B 说…；无法判定”（并分别给来源）。",
+	        "",
+	        "## 关注清单",
+	        "",
+	        "* 给出“接下来应继续跟踪”的观察项（不是预测结论），如：",
+	        "",
+	        "  * 关键数据发布、会议/财报、政策口径、价格/利差/汇率阈值、行业库存、地缘事件进展等。",
+	        "* 每一条都要说明：为什么要跟踪（依据文本哪个说法），并附来源链接。",
+	        "* 如果文本没有足够依据，写“文本未提及”。",
+	        "",
+	        "## 行动建议",
+	        "",
+	        "* 给“**条件触发式**”建议，形式如：",
+	        "",
+	        "  * “若文本中提到的 A 指标继续…，可考虑…；否则…（文本未提及具体阈值）”",
+	        "* **不允许直接给确定性买卖指令**；只能写“可考虑/可关注/需验证”。",
+	        "* 每条建议仍需来源链接；若建议的关键条件缺失，标注“文本未提及”。",
         "",
-        "   * 来源链接必须来自文本中的视频链接/来源字段。",
-        "   * 写法示例：`（来源：https://... ，https://...）`",
-        "3. 输出语言：**中文**。",
-        "4. 输出必须是 **Markdown**，段落清晰，便于直接发布。",
-        "5. 不需要：**主体归类**、**今日视频清单**。",
-        "",
-        "### 输出结构",
-        "",
-        "#### 1) 今日要点（必须）",
-        "",
-        "* 用 **bullet** 列出关键信息点。",
-        "* 每条要点：",
-        "",
-        "  * 句式尽量短，先给“结论/信息”，再给“条件/范围/时间”。",
-        "  * 必须在句末附 **1–3 个来源链接**（用括号包起来）。",
-        "  * 若文本出现具体数值（涨跌幅、利率、通胀、盈利、库存、产量等），必须原样保留，并注明它属于谁/哪个时间窗口；若时间窗口不清楚，写“文本未提及”。",
-        "",
-        "示例格式（示例仅展示格式，不要复用示例内容）：",
-        "",
-        "* 美债收益率在文本中被描述为____，并被归因于____（来源：[视频标题](https://...）)",
-        "* 某公司业绩/指引被提到____，但对同比/环比口径未说明（文本未提及）（来源：[视频标题](https://...）)",
-        "",
-        "#### 2) 影响与逻辑链（必须）",
-        "",
-        "* 写清楚“**因 → 果**”或“**事件 → 资产影响**”的链条。",
-        "* 每条链条必须满足：链条中的每个关键节点都能在文本中找到依据；找不到就标注“文本未提及”。",
-        "* 仍然要在句末附来源链接。",
-        "",
-        "#### 3) 风险与不确定性",
-        "",
-        "* 重点写：口径不一致、数据缺失、时间不明、推断过度、样本偏差、叙述互相矛盾之处。",
-        "* 如不同视频说法冲突：明确写出“视频 A 说…；视频 B 说…；无法判定”（并分别给来源）。",
-        "",
-        "#### 4) 关注清单",
-        "",
-        "* 给出“接下来应继续跟踪”的观察项（不是预测结论），如：",
-        "",
-        "  * 关键数据发布、会议/财报、政策口径、价格/利差/汇率阈值、行业库存、地缘事件进展等。",
-        "* 每一条都要说明：为什么要跟踪（依据文本哪个说法），并附来源链接。",
-        "* 如果文本没有足够依据，写“文本未提及”。",
-        "",
-        "#### 5) 行动建议",
-        "",
-        "* 给“**条件触发式**”建议，形式如：",
-        "",
-        "  * “若文本中提到的 A 指标继续…，可考虑…；否则…（文本未提及具体阈值）”",
-        "* **不允许直接给确定性买卖指令**；只能写“可考虑/可关注/需验证”。",
-        "* 每条建议仍需来源链接；若建议的关键条件缺失，标注“文本未提及”。",
-        "",
-        "---",
-        "",
-        "日期：{{date}}",
+        "简报日期（仅供你理解上下文，不要在输出中出现）：{{date}}",
         "",
         "以下是视频文本（多条，可能包含标题与链接；若未包含链接，请在输出中把来源写为“文本未提供链接”）：",
         "{{blocks}}",
@@ -1927,28 +1933,94 @@ function VideoSyncApp() {
         return s;
       };
 
+      const briefUrlLabel = (url) => {
+        try {
+          const u = String(url || "").trim();
+          if (!u) return "视频...";
+          const items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
+          const hit = items.find((v) => v && String(v.url || "").trim() === u);
+          const title = hit && hit.title ? String(hit.title).trim() : "";
+          if (!title) return "视频...";
+          const head = Array.from(title).slice(0, 4).join("");
+          return `${head}...`;
+        } catch {
+          return "视频...";
+        }
+      };
+
+      const briefRefPill = ({ label, url }) => {
+        const u = String(url || "").trim();
+        if (!u) return "";
+        const enc = encodeURIComponent(u);
+        const safeUrl = this._escapeHtml(u);
+        const text = String(label || "").trim() || briefUrlLabel(u);
+        const safeText = formatInlineEsc(this._escapeHtml(text));
+        return [
+          '<span class="inline-flex items-stretch rounded-full border border-slate-700 bg-slate-950/30 overflow-hidden align-middle ml-1 mr-1">',
+          `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" title="${safeUrl}" class="min-w-0 max-w-xs px-3 py-0.5 text-[11px] text-slate-200 hover:bg-slate-800/60 truncate no-underline">${safeText}</a>`,
+          `<button type="button" class="shrink-0 px-2.5 py-0.5 border-l border-slate-700 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20 text-[11px]" data-play-url="${enc}" title="播放该视频">▶</button>`,
+          "</span>",
+        ].join("");
+      };
+
+      const stripSourcePrefix = (s) => {
+        const raw = String(s || "");
+        const stripped = raw.replace(/(?:[（(]\s*)?来源\s*[:：]\s*$/u, "");
+        return { text: stripped, stripped: stripped !== raw };
+      };
+
+      let briefSourceCarry = false;
       const linkifyAndFormat = (rawText) => {
         const raw = String(rawText || "");
-        const re = /(https?:\/\/[^\s)]+)\b/g;
+        const re = /\[([^\]\n]+)\]\(\s*(https?:\/\/[^\s\)）]+)\s*[\)）]+\s*|\b(https?:\/\/[^\s\)）]+)\b/g;
         let last = 0;
         let html = "";
+        let inSourceGroup = briefSourceCarry;
         for (const m of raw.matchAll(re)) {
           const idx = m.index ?? 0;
-          const before = raw.slice(last, idx);
-          html += formatInlineEsc(this._escapeHtml(before));
-          const url = m[0];
-          const urlEsc = this._escapeHtml(url);
-          const enc = encodeURIComponent(url);
-          html += `<span class="inline-flex items-center gap-1"><button type="button" class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25 text-[11px]" data-play-url="${enc}" title="播放该视频">▶</button><a href="${urlEsc}" target="_blank" rel="noopener noreferrer" class="break-all">${urlEsc}</a></span>`;
-          last = idx + url.length;
+          const beforeRaw = raw.slice(last, idx);
+          const { text: beforeStripped, stripped } = stripSourcePrefix(beforeRaw);
+          if (stripped) inSourceGroup = true;
+
+          let beforeOut = beforeStripped;
+          if (inSourceGroup) {
+            const t = String(beforeOut || "").trim();
+            if (t === "，" || t === "," || t === "、" || t === ";" || t === "；") beforeOut = "";
+          }
+          html += formatInlineEsc(this._escapeHtml(beforeOut));
+
+          if (m[1] && m[2]) html += briefRefPill({ label: m[1], url: m[2] });
+          else if (m[3]) html += briefRefPill({ label: "", url: m[3] });
+
+          let nextLast = idx + m[0].length;
+          if (inSourceGroup) {
+            const tail = raw.slice(nextLast);
+            const close = tail.match(/^(\s*[)）])/);
+            if (close) {
+              nextLast += close[0].length;
+              inSourceGroup = false;
+            }
+          }
+          last = nextLast;
         }
         html += formatInlineEsc(this._escapeHtml(raw.slice(last)));
+        briefSourceCarry = inSourceGroup;
         return html;
       };
 
       for (const rawLine of lines) {
-        const line = rawLine || "";
-        const trimmed = line.trim();
+        let line = rawLine || "";
+        let trimmed = line.trim();
+        if (/(?:[（(]\s*)?来源\s*[:：]\s*$/u.test(trimmed)) {
+          line = line.replace(/(?:[（(]\s*)?来源\s*[:：]\s*$/u, "");
+          trimmed = line.trim();
+          briefSourceCarry = true;
+          if (!trimmed) continue;
+        }
+        if (/^[)）]\s*$/.test(trimmed)) {
+          briefSourceCarry = false;
+          continue;
+        }
         if (!trimmed) {
           flushList();
           out.push("<div class=\"h-2\"></div>");
