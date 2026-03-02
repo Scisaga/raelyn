@@ -20,6 +20,11 @@ function VideoSyncApp() {
     }
   })();
 
+  const YTDLP_FORMAT_PRESET_1080 =
+    "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best";
+  const YTDLP_FORMAT_PRESET_720 =
+    "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/bestvideo[height<=720]+bestaudio/best[height<=720]/best";
+
   return {
     // layout
     sidebarCollapsed: initialCollapsed,
@@ -31,6 +36,9 @@ function VideoSyncApp() {
     pageTitle: "概览",
     healthOk: false,
     globalStatus: "",
+    toasts: [],
+    _toastSeq: 0,
+    _toastTimers: new Map(),
     services: {
       db: { ok: false, error: null },
       s3: { ok: false, bucket: "", error: null },
@@ -69,6 +77,11 @@ function VideoSyncApp() {
     jobsTab: "active", // active | succeeded | failed
     jobListActive: [],
     jobListDone: [],
+    jobsDoneLoading: false,
+    jobVideoById: {},
+    jobPlaylistById: {},
+    _jobVideoFetchInFlight: {},
+    _jobPlaylistFetchInFlight: {},
     jobsTypeFilter: "",
     jobsDoneFrom: "",
     jobsDoneTo: "",
@@ -80,6 +93,12 @@ function VideoSyncApp() {
     jobsWs: null,
     jobsWsConnected: false,
     jobsWsError: "",
+    jobActionInFlight: {},
+    jobsHiddenDoneIds: {},
+    jobsHiddenActiveIds: {},
+    jobsOptimisticActive: [],
+    _jobsActiveServerCount: 0,
+    _jobsActiveLastFetchAt: 0,
     jobsDoneChart: null,
     jobsDoneSeries: null,
     playlistList: [],
@@ -89,6 +108,19 @@ function VideoSyncApp() {
     briefDailyPromptLoaded: false,
     briefDailyPromptSaving: false,
     briefDailyPromptError: "",
+    ytdlpCookiesText: "",
+    ytdlpCookiesLoaded: false,
+    ytdlpCookiesSaving: false,
+    ytdlpCookiesError: "",
+    ytdlpSubtitlesEnabled: false,
+    ytdlpSubtitlesLoaded: false,
+    ytdlpSubtitlesSaving: false,
+    ytdlpSubtitlesError: "",
+    ytdlpFormatPreset: "1080", // 1080 | 720 | custom
+    ytdlpFormatCustomText: "",
+    ytdlpFormatLoaded: false,
+    ytdlpFormatSaving: false,
+    ytdlpFormatError: "",
     playerVideo: null,
     playerAssets: [],
     playerVideoUrl: "",
@@ -97,6 +129,16 @@ function VideoSyncApp() {
     playerAudioDownloadUrl: "",
     playerAudioDownloadName: "",
     playerTranscriptText: "",
+    playerTranscriptAssetId: "",
+    playerTranscriptSource: "",
+    playerTranscriptVariant: "",
+    playerTranscriptPolishMethod: "",
+    playerTranscriptUpdatedAt: "",
+    playerTranscriptNotice: "",
+    playerTranscriptRefreshing: false,
+    playerRetranscribeSubmitting: false,
+    playerTranscriptPollKey: "",
+    playerTranscriptPollTries: 0,
     playerDescription: "",
     playerLoading: false,
     playerError: "",
@@ -130,6 +172,7 @@ function VideoSyncApp() {
     playlistTranscriptError: "",
     playlistTranscriptLanguage: "",
     playlistTranscriptSource: "",
+    playlistTranscriptUpdatedAt: "",
     playlistBriefHtml: "",
     playlistBriefLoading: false,
     playlistBriefError: "",
@@ -147,6 +190,9 @@ function VideoSyncApp() {
     playlistTimelineValue: 0,
     playlistCalendarCount: 14,
     playlistCalendarAnchor: "",
+    playlistNameEditing: false,
+    playlistNameDraft: "",
+    playlistNameSaving: false,
     playlistDescEditing: false,
     playlistDescDraft: "",
     playlistDescSaving: false,
@@ -352,6 +398,16 @@ function VideoSyncApp() {
       this.playerAudioDownloadUrl = "";
       this.playerAudioDownloadName = "";
       this.playerTranscriptText = "";
+      this.playerTranscriptAssetId = "";
+      this.playerTranscriptSource = "";
+      this.playerTranscriptVariant = "";
+      this.playerTranscriptPolishMethod = "";
+      this.playerTranscriptUpdatedAt = "";
+      this.playerTranscriptNotice = "";
+      this.playerTranscriptRefreshing = false;
+      this.playerRetranscribeSubmitting = false;
+      this.playerTranscriptPollKey = "";
+      this.playerTranscriptPollTries = 0;
       this.playerDescription = "";
       this.playerError = "";
       this.playerLoading = true;
@@ -380,6 +436,11 @@ function VideoSyncApp() {
         this.playerAudioDownloadName = (m4a && m4a.filename) || "";
 
         this.playerTranscriptText = transcript && transcript.ok ? transcript.text || "" : "";
+        this.playerTranscriptAssetId = transcript && transcript.ok ? transcript.asset_id || "" : "";
+        this.playerTranscriptSource = transcript && transcript.ok ? transcript.source || "" : "";
+        this.playerTranscriptVariant = transcript && transcript.ok ? transcript.variant || "" : "";
+        this.playerTranscriptPolishMethod = transcript && transcript.ok ? transcript.polish_method || "" : "";
+        this.playerTranscriptUpdatedAt = transcript && transcript.ok ? transcript.updated_at || transcript.created_at || "" : "";
       } catch (e) {
         this.playerError = e && e.message ? e.message : String(e);
       } finally {
@@ -393,6 +454,107 @@ function VideoSyncApp() {
       this.playerVideoDownloadUrl = "";
       this.playerAudioDownloadUrl = "";
       this.playerVideo = null;
+      this.playerTranscriptPollKey = "";
+    },
+
+    async refreshPlayerTranscript() {
+      const vid = this.playerVideo && this.playerVideo.id ? String(this.playerVideo.id) : "";
+      if (!vid) return;
+      if (this.playerTranscriptRefreshing) return;
+      this.playerTranscriptRefreshing = true;
+      try {
+        const transcript = await this.api(`/videos/${encodeURIComponent(vid)}/transcript`);
+        if (transcript && transcript.ok) {
+          this.playerTranscriptText = transcript.text || "";
+          this.playerTranscriptAssetId = transcript.asset_id || this.playerTranscriptAssetId || "";
+          this.playerTranscriptSource = transcript.source || this.playerTranscriptSource || "";
+          this.playerTranscriptVariant = transcript.variant || this.playerTranscriptVariant || "";
+          this.playerTranscriptPolishMethod = transcript.polish_method || this.playerTranscriptPolishMethod || "";
+          this.playerTranscriptUpdatedAt = transcript.updated_at || transcript.created_at || this.playerTranscriptUpdatedAt || "";
+        }
+      } finally {
+        this.playerTranscriptRefreshing = false;
+      }
+    },
+
+    _playerPollTranscriptAfterRetranscribe(vid, prevAssetId) {
+      try {
+        const key = `${String(vid)}:${Date.now()}`;
+        this.playerTranscriptPollKey = key;
+        this.playerTranscriptPollTries = 0;
+
+        const tick = async () => {
+          if (this.playerTranscriptPollKey !== key) return;
+          if (!this.modals.videoPlayer) return;
+          if (!this.playerVideo || String(this.playerVideo.id || "") !== String(vid)) return;
+
+          const tries = Number(this.playerTranscriptPollTries || 0);
+          if (tries >= 40) {
+            this.playerTranscriptNotice = "重新转写任务已提交；稍后可再次点击或手动刷新文本。";
+            return;
+          }
+          this.playerTranscriptPollTries = tries + 1;
+
+          try {
+            const transcript = await this.api(`/videos/${encodeURIComponent(vid)}/transcript`);
+            if (transcript && transcript.ok) {
+              const nextAssetId = transcript.asset_id || "";
+              const nextText = transcript.text || "";
+              const nextVariant = transcript.variant || "";
+              const nextMethod = transcript.polish_method || "";
+              const nextUpdatedAt = transcript.updated_at || transcript.created_at || "";
+              const changed =
+                (nextText && String(nextText) !== String(this.playerTranscriptText || "")) ||
+                (prevAssetId && nextAssetId && nextAssetId !== prevAssetId) ||
+                (nextVariant && nextVariant !== String(this.playerTranscriptVariant || "")) ||
+                (nextMethod && nextMethod !== String(this.playerTranscriptPolishMethod || "")) ||
+                (nextUpdatedAt && nextUpdatedAt !== String(this.playerTranscriptUpdatedAt || ""));
+              if (changed) {
+                this.playerTranscriptText = nextText;
+                this.playerTranscriptAssetId = nextAssetId || this.playerTranscriptAssetId || "";
+                this.playerTranscriptSource = transcript.source || this.playerTranscriptSource || "";
+                this.playerTranscriptVariant = transcript.variant || this.playerTranscriptVariant || "";
+                this.playerTranscriptPolishMethod = transcript.polish_method || this.playerTranscriptPolishMethod || "";
+                this.playerTranscriptUpdatedAt = nextUpdatedAt || this.playerTranscriptUpdatedAt || "";
+                this.playerTranscriptNotice = "转写文本已更新。";
+                this.playerTranscriptPollKey = "";
+                return;
+              }
+            }
+          } catch {
+            // ignore
+          }
+
+          const rawDelay = 1200 + tries * 650;
+          const delay = Math.min(9000, rawDelay);
+          setTimeout(tick, delay);
+        };
+
+        setTimeout(tick, 1200);
+      } catch {
+        // ignore
+      }
+    },
+
+    async retranscribePlayerTranscript() {
+      const vid = this.playerVideo && this.playerVideo.id ? String(this.playerVideo.id) : "";
+      if (!vid) return;
+      if (this.playerRetranscribeSubmitting) return;
+      this.playerRetranscribeSubmitting = true;
+      this.playerTranscriptNotice = "";
+      const prevAssetId = this.playerTranscriptAssetId || "";
+      try {
+        await this.api(`/videos/${encodeURIComponent(vid)}/transcript/retranscribe`, { method: "POST" });
+        this.playerTranscriptNotice = "已提交重新转写，正在等待生成…";
+        this.toastSuccess("已提交重新转写任务", { action: this.toastJobsAction() });
+        this._playerPollTranscriptAfterRetranscribe(vid, prevAssetId);
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.toastError(`重新转写提交失败：${msg}`, { action: this.toastJobsAction() });
+        this.playerTranscriptNotice = `重新转写失败：${msg}`;
+      } finally {
+        this.playerRetranscribeSubmitting = false;
+      }
     },
 
     maximizePlayer() {
@@ -462,6 +624,110 @@ function VideoSyncApp() {
       }
       const ct = resp.headers.get("content-type") || "";
       return ct.includes("application/json") ? resp.json() : resp.text();
+    },
+
+    toastPush({ level = "info", title = "", message = "", action = null } = {}) {
+      const msg = String(message || "").trim();
+      if (!msg) return;
+      const lv = String(level || "info").trim() || "info";
+
+      const nextSeq = Number(this._toastSeq || 0) + 1;
+      this._toastSeq = nextSeq;
+      const id = `t${Date.now()}_${nextSeq}`;
+
+      const t = {
+        id,
+        level: lv,
+        title: String(title || "").trim() || "",
+        message: msg,
+        action: action && typeof action === "object" ? action : null,
+        open: true,
+        ts: Date.now(),
+      };
+
+      if (!Array.isArray(this.toasts)) this.toasts = [];
+      this.toasts.push(t);
+
+      while (this.toasts.length > 3) {
+        const removed = this.toasts.shift();
+        if (removed && removed.id) this._toastClearTimer(removed.id);
+      }
+
+      if (lv !== "error") {
+        this._toastClearTimer(id);
+        try {
+          const timer = setTimeout(() => this.toastDismiss(id), 3500);
+          if (this._toastTimers && this._toastTimers.set) this._toastTimers.set(id, timer);
+        } catch {
+          // ignore
+        }
+      }
+    },
+
+    _toastClearTimer(id) {
+      const key = String(id || "").trim();
+      if (!key) return;
+      try {
+        const timer = this._toastTimers && this._toastTimers.get ? this._toastTimers.get(key) : null;
+        if (timer) clearTimeout(timer);
+      } catch {
+        // ignore
+      }
+      try {
+        if (this._toastTimers && this._toastTimers.delete) this._toastTimers.delete(key);
+      } catch {
+        // ignore
+      }
+    },
+
+    toastDismiss(id) {
+      const key = String(id || "").trim();
+      if (!key) return;
+      this._toastClearTimer(key);
+
+      const list = Array.isArray(this.toasts) ? this.toasts : [];
+      const idx = list.findIndex((x) => x && String(x.id) === key);
+      if (idx < 0) return;
+      try {
+        list[idx].open = false;
+      } catch {
+        // ignore
+      }
+      this.toasts = list;
+
+      setTimeout(() => {
+        const cur = Array.isArray(this.toasts) ? this.toasts : [];
+        this.toasts = cur.filter((x) => x && String(x.id) !== key);
+      }, 180);
+    },
+
+    toastSuccess(message, { action = null, title = "" } = {}) {
+      this.toastPush({ level: "success", title, message, action });
+    },
+
+    toastError(message, { action = null, title = "" } = {}) {
+      this.toastPush({ level: "error", title, message, action });
+    },
+
+    toastJobsAction() {
+      return { type: "jobs", label: "查看任务" };
+    },
+
+    toastHandleAction(t) {
+      try {
+        const a = t && t.action ? t.action : null;
+        if (!a || a.type !== "jobs") return;
+        if (this.modals) {
+          this.modals.videoPlayer = false;
+          this.modals.addMedia = false;
+          this.modals.createPlaylist = false;
+        }
+        this.jobsTab = "active";
+        this.switchView("jobs");
+        if (t && t.id) this.toastDismiss(t.id);
+      } catch {
+        // ignore
+      }
     },
 
     _viewPath(key) {
@@ -587,6 +853,7 @@ function VideoSyncApp() {
         if (this.activeView === "playlists") return await this.loadPlaylists();
         if (this.activeView === "playlist") return await this.loadPlaylistPage();
         if (this.activeView === "briefs") return await this.loadBriefs();
+        if (this.activeView === "settings") return await this.loadSettings();
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
       }
@@ -713,6 +980,65 @@ function VideoSyncApp() {
       await this.refreshJobs();
     },
 
+    jobsActiveCount() {
+      const server = Array.isArray(this.jobListActive) ? this.jobListActive.length : 0;
+      const extra = Array.isArray(this.jobsOptimisticActive) ? this.jobsOptimisticActive.length : 0;
+      return server + extra;
+    },
+
+    _cleanupJobsOptimisticActive() {
+      const now = Date.now();
+      const maxAgeMs = 60 * 1000;
+      const arr = Array.isArray(this.jobsOptimisticActive) ? this.jobsOptimisticActive : [];
+      this.jobsOptimisticActive = arr.filter((x) => x && x.ts && now - x.ts < maxAgeMs);
+    },
+
+    _addJobsOptimisticActive(key, meta) {
+      const k = String(key || "").trim();
+      if (!k) return;
+      if (!Array.isArray(this.jobsOptimisticActive)) this.jobsOptimisticActive = [];
+      if (this.jobsOptimisticActive.some((x) => x && x.key === k)) return;
+      const m = meta && typeof meta === "object" ? meta : {};
+      this.jobsOptimisticActive.push({ key: k, ts: Date.now(), type: m.type ? String(m.type) : null });
+      this._cleanupJobsOptimisticActive();
+    },
+
+    _removeJobsOptimisticActive(key) {
+      const k = String(key || "").trim();
+      if (!k) return;
+      this.jobsOptimisticActive = (Array.isArray(this.jobsOptimisticActive) ? this.jobsOptimisticActive : []).filter(
+        (x) => !(x && x.key === k)
+      );
+    },
+
+    _reconcileJobsOptimisticActiveByDelta(delta) {
+      const d = Number(delta || 0);
+      if (!Number.isFinite(d) || d <= 0) return;
+      if (!Array.isArray(this.jobsOptimisticActive) || this.jobsOptimisticActive.length === 0) return;
+      this.jobsOptimisticActive = this.jobsOptimisticActive.slice(Math.min(d, this.jobsOptimisticActive.length));
+    },
+
+    _reconcileJobsOptimisticActiveByJobs(jobs) {
+      const list = Array.isArray(jobs) ? jobs : [];
+      if (!Array.isArray(this.jobsOptimisticActive) || this.jobsOptimisticActive.length === 0) return;
+      if (!list.length) return;
+      const resolved = new Set();
+      for (const e of this.jobsOptimisticActive) {
+        if (!e || !e.key || !e.ts || !e.type) continue;
+        const since = Number(e.ts) - 5000;
+        const ok = list.some((j) => {
+          if (!j || !j.type) return false;
+          if (String(j.type) !== String(e.type)) return false;
+          const created = Date.parse(j.created_at || "");
+          return Number.isFinite(created) && created >= since;
+        });
+        if (ok) resolved.add(String(e.key));
+      }
+      if (resolved.size) {
+        this.jobsOptimisticActive = this.jobsOptimisticActive.filter((x) => !(x && resolved.has(String(x.key))));
+      }
+    },
+
     _toLocalInputValue(d) {
       const pad = (n) => String(n).padStart(2, "0");
       const yyyy = d.getFullYear();
@@ -783,7 +1109,7 @@ function VideoSyncApp() {
       ws.onclose = () => {
         this.jobsWsConnected = false;
         this.jobsWs = null;
-        if (this.activeView === "jobs" && this.jobsTab === "active") {
+        if (this.activeView === "jobs") {
           setTimeout(() => this._connectJobsWs(), 800);
         }
       };
@@ -795,11 +1121,67 @@ function VideoSyncApp() {
           const msg = JSON.parse(ev.data || "{}");
           if (msg.type !== "jobs") return;
           const jobs = Array.isArray(msg.jobs) ? msg.jobs : [];
-          this.jobListActive = jobs;
+          const prevServer = Number(this._jobsActiveServerCount || 0);
+          this._jobsActiveServerCount = jobs.length;
+
+          // Keep "optimistic" active count consistent: if server count goes up,
+          // assume some of the optimistic enqueues have materialized.
+          const delta = jobs.length - prevServer;
+          if (delta > 0) this._reconcileJobsOptimisticActiveByDelta(delta);
+          this._reconcileJobsOptimisticActiveByJobs(jobs);
+
+          const hidden = this.jobsHiddenActiveIds || {};
+          const seen = new Set(jobs.map((j) => String(j && j.id)));
+          for (const id of Object.keys(hidden || {})) {
+            if (!seen.has(String(id))) delete hidden[id];
+          }
+          this.jobsHiddenActiveIds = hidden;
+
+          const filtered = jobs.filter((j) => j && j.id && !hidden[String(j.id)]);
+          this.jobListActive = filtered;
+          this.ensureJobContextForList(filtered);
+          this._cleanupJobsOptimisticActive();
         } catch {
           // ignore
         }
       };
+    },
+
+    async _fetchJobsActiveSnapshot({ force = false } = {}) {
+      try {
+        if (this.activeView !== "jobs") return;
+        const now = Date.now();
+        if (!force && this._jobsActiveLastFetchAt && now - this._jobsActiveLastFetchAt < 2500) return;
+        this._jobsActiveLastFetchAt = now;
+
+        const qs = new URLSearchParams();
+        qs.set("status_in", "pending,running");
+        qs.set("limit", "200");
+        qs.set("offset", "0");
+        if (this.jobsTypeFilter) qs.set("type", this.jobsTypeFilter);
+        const items = await this.api(`/jobs?${qs.toString()}`);
+        const jobs = Array.isArray(items) ? items : [];
+
+        const prevServer = Number(this._jobsActiveServerCount || 0);
+        this._jobsActiveServerCount = jobs.length;
+        const delta = jobs.length - prevServer;
+        if (delta > 0) this._reconcileJobsOptimisticActiveByDelta(delta);
+        this._reconcileJobsOptimisticActiveByJobs(jobs);
+
+        const hidden = this.jobsHiddenActiveIds || {};
+        const seen = new Set(jobs.map((j) => String(j && j.id)));
+        for (const id of Object.keys(hidden || {})) {
+          if (!seen.has(String(id))) delete hidden[id];
+        }
+        this.jobsHiddenActiveIds = hidden;
+
+        const filtered = jobs.filter((j) => j && j.id && !hidden[String(j.id)]);
+        this.jobListActive = filtered;
+        this.ensureJobContextForList(filtered);
+        this._cleanupJobsOptimisticActive();
+      } catch {
+        // ignore: WS is the primary channel
+      }
     },
 
     jobProgressPct(j) {
@@ -811,21 +1193,30 @@ function VideoSyncApp() {
     },
 
     async loadJobsDone() {
-      this._ensureJobsDoneRange();
-      this._syncUrl({ push: false });
+      this.jobsDoneLoading = true;
+      try {
+        this._ensureJobsDoneRange();
+        this._syncUrl({ push: false });
 
-      const fromIso = this.jobsDoneFrom ? new Date(this.jobsDoneFrom).toISOString() : "";
-      const toIso = this.jobsDoneTo ? new Date(this.jobsDoneTo).toISOString() : "";
-      const statusIn = this.jobsTab === "succeeded" ? "succeeded" : "failed,canceled";
+        const fromIso = this.jobsDoneFrom ? new Date(this.jobsDoneFrom).toISOString() : "";
+        const toIso = this.jobsDoneTo ? new Date(this.jobsDoneTo).toISOString() : "";
+        const statusIn = this.jobsTab === "succeeded" ? "succeeded" : "failed,canceled";
 
-      const qs = new URLSearchParams();
-      qs.set("status_in", statusIn);
-      qs.set("limit", "200");
-      qs.set("offset", "0");
-      if (this.jobsTypeFilter) qs.set("type", this.jobsTypeFilter);
-      if (fromIso) qs.set("finished_since", fromIso);
-      if (toIso) qs.set("finished_until", toIso);
-      this.jobListDone = await this.api(`/jobs?${qs.toString()}`);
+        const qs = new URLSearchParams();
+        qs.set("status_in", statusIn);
+        qs.set("limit", "200");
+        qs.set("offset", "0");
+        if (this.jobsTypeFilter) qs.set("type", this.jobsTypeFilter);
+        if (fromIso) qs.set("finished_since", fromIso);
+        if (toIso) qs.set("finished_until", toIso);
+        const items = await this.api(`/jobs?${qs.toString()}`);
+        const hidden = this.jobsHiddenDoneIds || {};
+        const all = Array.isArray(items) ? items : [];
+        this.jobListDone = all.filter((j) => j && j.id && !hidden[String(j.id)]);
+        this.ensureJobContextForList(this.jobListDone);
+      } finally {
+        this.jobsDoneLoading = false;
+      }
     },
 
     jobsTypeOptions() {
@@ -1191,6 +1582,144 @@ function VideoSyncApp() {
       return m ? this.mediaDisplayName(m) : "";
     },
 
+    _shortId(v, n = 8) {
+      const s = String(v || "").trim();
+      if (!s) return "";
+      return s.length <= n ? s : s.slice(0, n);
+    },
+
+    jobParamId(j, key) {
+      if (!j || typeof j !== "object") return "";
+      const params = j.params && typeof j.params === "object" ? j.params : null;
+      const raw = params && params[key] ? String(params[key]) : "";
+      return String(raw || "").trim();
+    },
+
+    jobMediaId(j) {
+      return this.jobParamId(j, "media_id");
+    },
+
+    jobVideoId(j) {
+      return this.jobParamId(j, "video_id");
+    },
+
+    jobPlaylistId(j) {
+      return this.jobParamId(j, "playlist_id");
+    },
+
+    jobPlaylistDate(j) {
+      return this.jobParamId(j, "date");
+    },
+
+    jobVideoLabel(j) {
+      const vid = this.jobVideoId(j);
+      if (!vid) return "";
+      const v = this.jobVideoById && this.jobVideoById[vid] ? this.jobVideoById[vid] : null;
+      const title = v && v.title ? String(v.title).trim() : "";
+      if (title) return title;
+      const pv = v && v.provider_video_id ? String(v.provider_video_id).trim() : "";
+      if (pv) return pv;
+      return this._shortId(vid);
+    },
+
+    jobPlaylistLabel(j) {
+      const pid = this.jobPlaylistId(j);
+      if (!pid) return "";
+      const p = this.jobPlaylistById && this.jobPlaylistById[pid] ? this.jobPlaylistById[pid] : null;
+      const name = p && p.name ? String(p.name).trim() : "";
+      if (name) return name;
+      return this._shortId(pid);
+    },
+
+    ensureJobContextForList(list) {
+      const jobs = Array.isArray(list) ? list : [];
+      const videoIds = new Set();
+      const playlistIds = new Set();
+      for (const j of jobs) {
+        const vid = this.jobVideoId(j);
+        if (vid) videoIds.add(vid);
+        const pid = this.jobPlaylistId(j);
+        if (pid) playlistIds.add(pid);
+      }
+      for (const vid of videoIds) this._ensureJobVideo(vid);
+      for (const pid of playlistIds) this._ensureJobPlaylist(pid);
+    },
+
+    async _ensureJobVideo(videoId) {
+      const vid = String(videoId || "").trim();
+      if (!vid) return;
+      if (this.jobVideoById && this.jobVideoById[vid]) return;
+      if (this._jobVideoFetchInFlight && this._jobVideoFetchInFlight[vid]) return;
+      this._jobVideoFetchInFlight[vid] = true;
+      try {
+        const v = await this.api(`/videos/${encodeURIComponent(vid)}`);
+        if (v && typeof v === "object") {
+          if (!this.jobVideoById) this.jobVideoById = {};
+          this.jobVideoById[vid] = v;
+        }
+      } catch {
+        // best-effort
+      } finally {
+        try {
+          delete this._jobVideoFetchInFlight[vid];
+        } catch {
+          this._jobVideoFetchInFlight[vid] = false;
+        }
+      }
+    },
+
+    async _ensureJobPlaylist(playlistId) {
+      const pid = String(playlistId || "").trim();
+      if (!pid) return;
+      if (this.jobPlaylistById && this.jobPlaylistById[pid]) return;
+      if (this._jobPlaylistFetchInFlight && this._jobPlaylistFetchInFlight[pid]) return;
+      this._jobPlaylistFetchInFlight[pid] = true;
+      try {
+        const p = await this.api(`/playlists/${encodeURIComponent(pid)}`);
+        if (p && typeof p === "object") {
+          if (!this.jobPlaylistById) this.jobPlaylistById = {};
+          this.jobPlaylistById[pid] = p;
+        }
+      } catch {
+        // best-effort
+      } finally {
+        try {
+          delete this._jobPlaylistFetchInFlight[pid];
+        } catch {
+          this._jobPlaylistFetchInFlight[pid] = false;
+        }
+      }
+    },
+
+    async openJobVideo(j) {
+      const vid = this.jobVideoId(j);
+      if (!vid) return;
+      try {
+        if (!this.jobVideoById || !this.jobVideoById[vid]) await this._ensureJobVideo(vid);
+        const v = this.jobVideoById && this.jobVideoById[vid] ? this.jobVideoById[vid] : null;
+        if (v && v.id) {
+          await this.openVideoPlayer(v);
+        }
+      } catch {
+        // ignore
+      }
+    },
+
+    openJobPlaylist(j) {
+      const pid = this.jobPlaylistId(j);
+      if (!pid) return;
+      const dateStr = this.jobPlaylistDate(j);
+      this.openPlaylistPage(pid, dateStr);
+    },
+
+    async openJobMedia(j) {
+      const mid = this.jobMediaId(j);
+      if (!mid) return;
+      this.mediaQuery = mid;
+      this.switchView("media");
+      await this.loadMedia();
+    },
+
     async refreshJobsSeries({ force = false } = {}) {
       try {
         if (this.activeView !== "jobs") return;
@@ -1243,12 +1772,15 @@ function VideoSyncApp() {
           this._disconnectJobsWs();
           return;
         }
+        // Keep the active-jobs WS connected even when browsing done tabs,
+        // so the "待处理 / 运行中" count updates in real time.
+        this._connectJobsWs();
+        this._fetchJobsActiveSnapshot();
+
         if (this.jobsTab === "active") {
           this.jobListDone = [];
-          this._connectJobsWs();
           return;
         }
-        this._disconnectJobsWs();
         await this.loadJobsDone();
         this.refreshJobsSeries();
       } catch (e) {
@@ -1390,6 +1922,163 @@ function VideoSyncApp() {
       }
     },
 
+    async loadSettings({ force = false } = {}) {
+      await this.loadYtdlpCookies({ force });
+      await this.loadYtdlpSubtitles({ force });
+      await this.loadYtdlpFormat({ force });
+    },
+
+    async loadYtdlpCookies({ force = false } = {}) {
+      try {
+        if (this.ytdlpCookiesLoaded && !force) return;
+        this.ytdlpCookiesError = "";
+
+        const payload = await this.api(`/config`);
+        const data = (payload && payload.data) || {};
+        const cfg = data && data.ytdlp_cookies ? data.ytdlp_cookies : null;
+        const t = cfg && typeof cfg === "object" ? cfg.text : "";
+        this.ytdlpCookiesText = typeof t === "string" ? t : "";
+        this.ytdlpCookiesLoaded = true;
+      } catch (e) {
+        this.ytdlpCookiesError = e && e.message ? e.message : String(e);
+      }
+    },
+
+    async saveYtdlpCookies() {
+      try {
+        this.ytdlpCookiesSaving = true;
+        this.ytdlpCookiesError = "";
+        const v = String(this.ytdlpCookiesText || "");
+        await this.api(`/config/ytdlp_cookies`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ value: { text: v } }),
+        });
+        this.ytdlpCookiesLoaded = true;
+        this.globalStatus = "已保存 yt-dlp Cookies";
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.ytdlpCookiesError = msg;
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.ytdlpCookiesSaving = false;
+      }
+    },
+
+    async clearYtdlpCookies() {
+      this.ytdlpCookiesText = "";
+      await this.saveYtdlpCookies();
+    },
+
+    async loadYtdlpSubtitles({ force = false } = {}) {
+      try {
+        if (this.ytdlpSubtitlesLoaded && !force) return;
+        this.ytdlpSubtitlesError = "";
+
+        const payload = await this.api(`/config`);
+        const data = (payload && payload.data) || {};
+        const cfg = data && data.ytdlp_subtitles ? data.ytdlp_subtitles : null;
+        const enabled = cfg && typeof cfg === "object" ? cfg.enabled : false;
+        this.ytdlpSubtitlesEnabled = typeof enabled === "boolean" ? enabled : false;
+        this.ytdlpSubtitlesLoaded = true;
+      } catch (e) {
+        this.ytdlpSubtitlesError = e && e.message ? e.message : String(e);
+      }
+    },
+
+    async saveYtdlpSubtitles() {
+      try {
+        this.ytdlpSubtitlesSaving = true;
+        this.ytdlpSubtitlesError = "";
+        const enabled = !!this.ytdlpSubtitlesEnabled;
+        await this.api(`/config/ytdlp_subtitles`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ value: { enabled } }),
+        });
+        this.ytdlpSubtitlesLoaded = true;
+        this.globalStatus = "已保存字幕下载设置";
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.ytdlpSubtitlesError = msg;
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.ytdlpSubtitlesSaving = false;
+      }
+    },
+
+    ytdlpFormatEffectiveText() {
+      const preset = String(this.ytdlpFormatPreset || "1080").trim();
+      const custom = String(this.ytdlpFormatCustomText || "");
+      if (preset === "custom") return custom;
+      if (preset === "720") return YTDLP_FORMAT_PRESET_720;
+      return YTDLP_FORMAT_PRESET_1080;
+    },
+
+    async loadYtdlpFormat({ force = false } = {}) {
+      try {
+        if (this.ytdlpFormatLoaded && !force) return;
+        this.ytdlpFormatError = "";
+
+        const payload = await this.api(`/config`);
+        const data = (payload && payload.data) || {};
+        const cfg = data && data.ytdlp_format ? data.ytdlp_format : null;
+        const rawText = cfg && typeof cfg === "object" ? cfg.text : "";
+        const text = typeof rawText === "string" ? rawText.trim() : "";
+        const rawPreset = cfg && typeof cfg === "object" ? cfg.preset : "";
+        const preset = typeof rawPreset === "string" ? rawPreset.trim() : "";
+
+        if (preset === "1080" || preset === "720" || preset === "custom") {
+          this.ytdlpFormatPreset = preset;
+        } else if (text === YTDLP_FORMAT_PRESET_1080) {
+          this.ytdlpFormatPreset = "1080";
+        } else if (text === YTDLP_FORMAT_PRESET_720) {
+          this.ytdlpFormatPreset = "720";
+        } else if (text) {
+          this.ytdlpFormatPreset = "custom";
+        } else {
+          this.ytdlpFormatPreset = "1080";
+        }
+
+        if (this.ytdlpFormatPreset === "custom") {
+          this.ytdlpFormatCustomText = text;
+        }
+
+        this.ytdlpFormatLoaded = true;
+      } catch (e) {
+        this.ytdlpFormatError = e && e.message ? e.message : String(e);
+      }
+    },
+
+    async saveYtdlpFormat() {
+      try {
+        this.ytdlpFormatSaving = true;
+        this.ytdlpFormatError = "";
+        const preset = String(this.ytdlpFormatPreset || "1080").trim();
+        const custom = String(this.ytdlpFormatCustomText || "").trim();
+        const text = preset === "custom" ? custom : this.ytdlpFormatEffectiveText().trim();
+
+        if (preset === "custom" && !custom) {
+          this.ytdlpFormatError = "自定义格式不能为空";
+          return;
+        }
+
+        await this.api(`/config/ytdlp_format`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ value: { preset, text } }),
+        });
+        this.ytdlpFormatLoaded = true;
+        this.globalStatus = "已保存 YTDLP_FORMAT";
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.ytdlpFormatError = msg;
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.ytdlpFormatSaving = false;
+      }
+    },
+
     playlistListFiltered() {
       const q = String(this.playlistListQuery || "").trim().toLowerCase();
       const list = Array.isArray(this.playlistList) ? this.playlistList : [];
@@ -1422,6 +2111,9 @@ function VideoSyncApp() {
       this.modals.addMedia = false;
       this.modals.createPlaylist = false;
       this.closeVideoPlayer();
+      this.playlistNameEditing = false;
+      this.playlistNameDraft = "";
+      this.playlistNameSaving = false;
       this.playlistDescEditing = false;
       this.playlistDescDraft = "";
       this.playlistPageId = pid;
@@ -1485,6 +2177,9 @@ function VideoSyncApp() {
         this.playlistDetail = null;
         this.playlistDayVideos = [];
         this.playlistBriefHtml = "";
+        this.playlistNameEditing = false;
+        this.playlistNameDraft = "";
+        this.playlistNameSaving = false;
         this.playlistDescEditing = false;
         this.playlistDescDraft = "";
         this.pageTitle = "播放列表页";
@@ -1702,6 +2397,7 @@ function VideoSyncApp() {
       this.playlistTranscriptError = "";
       this.playlistTranscriptLanguage = "";
       this.playlistTranscriptSource = "";
+      this.playlistTranscriptUpdatedAt = "";
 
       this.playlistDayVideosLoading = true;
       this.playlistDayVideosError = "";
@@ -1743,6 +2439,7 @@ function VideoSyncApp() {
       this.playlistTranscriptError = "";
       this.playlistTranscriptLanguage = "";
       this.playlistTranscriptSource = "";
+      this.playlistTranscriptUpdatedAt = "";
       try {
         const assets = await this.api(`/videos/${encodeURIComponent(vid)}/assets?presign=1&download=0`);
         const list = Array.isArray(assets) ? assets : [];
@@ -1769,10 +2466,12 @@ function VideoSyncApp() {
             this.playlistTranscriptText = transcript.text || "";
             this.playlistTranscriptLanguage = transcript.language || "";
             this.playlistTranscriptSource = transcript.source || "";
+            this.playlistTranscriptUpdatedAt = transcript.updated_at || transcript.created_at || "";
           } else {
             this.playlistTranscriptText = "";
             this.playlistTranscriptLanguage = "";
             this.playlistTranscriptSource = "";
+            this.playlistTranscriptUpdatedAt = "";
           }
         } catch (e2) {
           if (!this.playlistCurrentVideo || String(this.playlistCurrentVideo.id || "") !== String(selectingId)) return;
@@ -2116,9 +2815,12 @@ function VideoSyncApp() {
           body: JSON.stringify({ playlist_id: pid, date: day }),
         });
         this.globalStatus = "已投递简报生成任务（Jobs 可查看进度）";
+        this.toastSuccess("已提交简报生成任务", { action: this.toastJobsAction() });
         this.playlistLoadBrief(day);
       } catch (e) {
-        this.globalStatus = `error: ${e.message}`;
+        const msg = e && e.message ? e.message : String(e);
+        this.toastError(`简报生成提交失败：${msg}`, { action: this.toastJobsAction() });
+        this.globalStatus = `error: ${msg}`;
         if (String(this.playlistBriefGeneratingKey || "") === k) this.playlistBriefGeneratingKey = "";
       }
     },
@@ -2129,7 +2831,9 @@ function VideoSyncApp() {
       const from = detail && detail.earliest_date ? String(detail.earliest_date) : "";
       const to = this._todayIsoLocal();
       if (!pid || !from) {
-        this.globalStatus = "没有可用的日期范围（可能还没同步出视频）";
+        const msg = "没有可用的日期范围（可能还没同步出视频）";
+        this.toastError(msg);
+        this.globalStatus = msg;
         return;
       }
       try {
@@ -2139,8 +2843,11 @@ function VideoSyncApp() {
           body: JSON.stringify({ playlist_id: pid, from_date: from, to_date: to }),
         });
         this.globalStatus = "已投递全量简报生成任务（Jobs 可查看进度）";
+        this.toastSuccess("已提交全量简报生成任务", { action: this.toastJobsAction() });
       } catch (e) {
-        this.globalStatus = `error: ${e.message}`;
+        const msg = e && e.message ? e.message : String(e);
+        this.toastError(`全量简报提交失败：${msg}`, { action: this.toastJobsAction() });
+        this.globalStatus = `error: ${msg}`;
       }
     },
 
@@ -2476,6 +3183,69 @@ function VideoSyncApp() {
       }
     },
 
+    playlistStartEditName() {
+      if (!this.playlistDetail) return;
+      this.playlistNameDraft = String(this.playlistDetail.name || "");
+      this.playlistNameEditing = true;
+      this.$nextTick(() => {
+        try {
+          const el = this.$refs && this.$refs.playlistNameInput;
+          if (!el) return;
+          el.focus();
+          if (typeof el.select === "function") el.select();
+        } catch {
+          // ignore
+        }
+      });
+    },
+
+    playlistCancelEditName() {
+      if (this.playlistNameSaving) return;
+      this.playlistNameEditing = false;
+      this.playlistNameDraft = "";
+    },
+
+    async playlistSaveName() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid || !this.playlistDetail) return;
+      if (this.playlistNameSaving) return;
+
+      const current = String(this.playlistDetail.name || "").trim();
+      const next = String(this.playlistNameDraft || "").trim();
+      if (!next) {
+        this.globalStatus = "error: 标题不能为空";
+        this.$nextTick(() => {
+          try {
+            const el = this.$refs && this.$refs.playlistNameInput;
+            if (el && typeof el.focus === "function") el.focus();
+          } catch {}
+        });
+        return;
+      }
+      if (current === next) {
+        this.playlistCancelEditName();
+        return;
+      }
+
+      try {
+        this.playlistNameSaving = true;
+        const updated = await this.api(`/playlists/${encodeURIComponent(pid)}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: next }),
+        });
+        if (this.playlistDetail) this.playlistDetail.name = updated.name || next;
+        this.pageTitle = (updated && updated.name) || next;
+        await this.loadPlaylists();
+        this.globalStatus = "已更新标题";
+        this.playlistCancelEditName();
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      } finally {
+        this.playlistNameSaving = false;
+      }
+    },
+
     playlistStartEditDescription() {
       if (!this.playlistDetail) return;
       this.playlistDescDraft = String(this.playlistDetail.description || "");
@@ -2493,6 +3263,7 @@ function VideoSyncApp() {
     },
 
     playlistCancelEditDescription() {
+      if (this.playlistDescSaving) return;
       this.playlistDescEditing = false;
       this.playlistDescDraft = "";
     },
@@ -2668,7 +3439,9 @@ function VideoSyncApp() {
       if (!id) return;
       const qs = scope ? `?scope=${encodeURIComponent(scope)}` : "";
       await this.api(`/media/${id}/sync${qs}`, { method: "POST" });
-      this.globalStatus = scope === "all" ? "已投递全量同步任务" : "已投递近期同步任务";
+      const msg = scope === "all" ? "已投递全量同步任务" : "已投递近期同步任务";
+      this.globalStatus = msg;
+      this.toastSuccess(msg, { action: this.toastJobsAction() });
       await this.loadJobs();
     },
 
@@ -2676,7 +3449,9 @@ function VideoSyncApp() {
       try {
         await this._syncMedia(mediaId, "recent");
       } catch (e) {
-        this.globalStatus = `error: ${e.message}`;
+        const msg = e && e.message ? e.message : String(e);
+        this.toastError(`同步任务提交失败：${msg}`, { action: this.toastJobsAction() });
+        this.globalStatus = `error: ${msg}`;
       }
     },
 
@@ -2684,7 +3459,9 @@ function VideoSyncApp() {
       try {
         await this._syncMedia(mediaId, "all");
       } catch (e) {
-        this.globalStatus = `error: ${e.message}`;
+        const msg = e && e.message ? e.message : String(e);
+        this.toastError(`同步任务提交失败：${msg}`, { action: this.toastJobsAction() });
+        this.globalStatus = `error: ${msg}`;
       }
     },
 
@@ -2704,22 +3481,86 @@ function VideoSyncApp() {
 
 
     async retryJob(jobId) {
+      const id = String(jobId || "").trim();
+      if (!id) return;
+      if (this.jobActionInFlight && this.jobActionInFlight[id]) return;
+
+      const done = Array.isArray(this.jobListDone) ? this.jobListDone : [];
+      const idx = done.findIndex((j) => j && String(j.id) === id);
+      const snapshot = idx >= 0 ? done[idx] : null;
+      const jobType = snapshot && snapshot.type ? String(snapshot.type) : null;
+
+      if (!this.jobActionInFlight) this.jobActionInFlight = {};
+      this.jobActionInFlight[id] = "retry";
+
+      // Optimistic UX:
+      // - hide the failed job from the current list immediately
+      // - bump the active count by +1 immediately
+      if (!this.jobsHiddenDoneIds) this.jobsHiddenDoneIds = {};
+      this.jobsHiddenDoneIds[id] = Date.now();
+      if (idx >= 0) this.jobListDone = done.filter((j) => j && String(j.id) !== id);
+      this._addJobsOptimisticActive(`retry:${id}`, { type: jobType });
+
       try {
-        await this.api(`/jobs/${jobId}/retry`, { method: "POST" });
+        this.globalStatus = "正在投递重试…";
+        await this.api(`/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" });
         this.globalStatus = "已投递重试任务";
-        await this.loadJobs();
+        // Refresh done list/series if we're on done tabs, without blocking active count.
+        if (this.activeView === "jobs" && this.jobsTab !== "active") {
+          this.refreshJobs();
+        }
       } catch (e) {
+        // Roll back optimistic changes.
+        try {
+          if (this.jobsHiddenDoneIds) delete this.jobsHiddenDoneIds[id];
+        } catch {
+          // ignore
+        }
+        this._removeJobsOptimisticActive(`retry:${id}`);
+        if (snapshot) {
+          const cur = Array.isArray(this.jobListDone) ? this.jobListDone : [];
+          const insertAt = Math.max(0, Math.min(idx, cur.length));
+          this.jobListDone = cur.slice(0, insertAt).concat([snapshot]).concat(cur.slice(insertAt));
+        }
         this.globalStatus = `error: ${e.message}`;
+      } finally {
+        try {
+          if (this.jobActionInFlight) delete this.jobActionInFlight[id];
+        } catch {
+          // ignore
+        }
       }
     },
 
     async cancelJob(jobId) {
+      const id = String(jobId || "").trim();
+      if (!id) return;
+      if (this.jobActionInFlight && this.jobActionInFlight[id]) return;
+
+      if (!this.jobActionInFlight) this.jobActionInFlight = {};
+      this.jobActionInFlight[id] = "cancel";
+
+      // Optimistic: hide from the active list immediately so the count updates.
+      if (!this.jobsHiddenActiveIds) this.jobsHiddenActiveIds = {};
+      this.jobsHiddenActiveIds[id] = Date.now();
+
       try {
-        await this.api(`/jobs/${jobId}/cancel`, { method: "POST" });
+        this.globalStatus = "正在取消…";
+        await this.api(`/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
         this.globalStatus = "已取消任务";
-        await this.loadJobs();
       } catch (e) {
+        try {
+          if (this.jobsHiddenActiveIds) delete this.jobsHiddenActiveIds[id];
+        } catch {
+          // ignore
+        }
         this.globalStatus = `error: ${e.message}`;
+      } finally {
+        try {
+          if (this.jobActionInFlight) delete this.jobActionInFlight[id];
+        } catch {
+          // ignore
+        }
       }
     },
 

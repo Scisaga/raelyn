@@ -1,7 +1,7 @@
           <!-- Playlist Page -->
           <div x-show="activeView==='playlist'" x-transition.opacity class="h-full">
 	            <div
-	              class="relative rounded-none rounded-tr-none border border-slate-800 overflow-hidden h-full flex flex-col"
+	              class="relative rounded-none rounded-tr-none overflow-hidden h-full flex flex-col"
 	              :class="playlistDetail && playlistDetail.background_url ? '' : 'bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950'"
 	            >
               <div class="absolute inset-0" x-show="playlistDetail && playlistDetail.background_url">
@@ -438,8 +438,8 @@
                           <div class="text-xs text-slate-400 shrink-0">文本</div>
                           <div
                             class="text-[11px] text-slate-500 truncate"
-                            x-show="playlistTranscriptSource || playlistTranscriptLanguage"
-                            x-text="(playlistTranscriptSource ? playlistTranscriptSource : '') + (playlistTranscriptLanguage ? ((playlistTranscriptSource ? ' · ' : '') + playlistTranscriptLanguage) : '')"
+                            x-show="playlistTranscriptSource || playlistTranscriptLanguage || playlistTranscriptUpdatedAt"
+                            x-text="(playlistTranscriptSource ? playlistTranscriptSource : '') + (playlistTranscriptLanguage ? ((playlistTranscriptSource ? ' · ' : '') + playlistTranscriptLanguage) : '') + (playlistTranscriptUpdatedAt ? ((playlistTranscriptSource || playlistTranscriptLanguage ? ' · ' : '') + ('更新: ' + formatDateTimeShort(playlistTranscriptUpdatedAt))) : '')"
                           ></div>
                         </div>
                         <div class="flex-1 min-h-0 overflow-auto videosync-scrollbar px-4 py-3">

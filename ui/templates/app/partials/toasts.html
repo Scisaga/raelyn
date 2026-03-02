@@ -1,0 +1,62 @@
+      <!-- Toast notifications -->
+      <div
+        class="fixed bottom-4 right-4 z-[70] flex flex-col gap-2 w-[360px] max-w-[calc(100vw-2rem)] pointer-events-none"
+        x-show="Array.isArray(toasts) && toasts.length"
+        x-transition.opacity.duration.150ms
+        aria-live="polite"
+      >
+        <template x-for="t in toasts" :key="t.id">
+          <div
+            class="pointer-events-auto rounded-lg border bg-slate-950/70 backdrop-blur shadow-lg overflow-hidden"
+            :class="t.level==='error' ? 'border-rose-500/30' : t.level==='success' ? 'border-emerald-500/30' : 'border-slate-700/70'"
+            :role="t.level==='error' ? 'alert' : 'status'"
+            x-show="t.open"
+            x-transition:enter="transition ease-out duration-200"
+            x-transition:enter-start="opacity-0 translate-y-2"
+            x-transition:enter-end="opacity-100 translate-y-0"
+            x-transition:leave="transition ease-in duration-150"
+            x-transition:leave-start="opacity-100 translate-y-0"
+            x-transition:leave-end="opacity-0 translate-y-2"
+          >
+            <div class="flex gap-3 p-3">
+              <div
+                class="w-1 rounded-full"
+                :class="t.level==='error' ? 'bg-rose-500/80' : t.level==='success' ? 'bg-emerald-500/80' : 'bg-slate-500/70'"
+              ></div>
+
+              <div class="min-w-0 flex-1">
+                <div class="text-xs font-semibold text-slate-100" x-show="t.title" x-text="t.title"></div>
+                <div class="text-xs text-slate-200 break-words" x-text="t.message"></div>
+
+                <div class="mt-2 flex items-center gap-2" x-show="t.action && t.action.type==='jobs'">
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-950/20 px-2.5 py-1 text-[11px] text-slate-200 hover:bg-slate-800/60"
+                    @click="toastHandleAction(t)"
+                  >
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M9 11l3 3L22 4"/>
+                      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+                    </svg>
+                    <span x-text="(t.action && t.action.label) ? t.action.label : '查看任务'"></span>
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                class="shrink-0 p-1.5 rounded-md text-slate-300 hover:text-slate-100 hover:bg-slate-800/60 pointer-events-auto"
+                @click="toastDismiss(t.id)"
+                title="关闭"
+                aria-label="关闭通知"
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M18 6L6 18"/>
+                  <path d="M6 6l12 12"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </template>
+      </div>
+

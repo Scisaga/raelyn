@@ -96,6 +96,7 @@ class Asset(Base):
     meta: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB, nullable=True)
 
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
     video: Mapped["Video"] = relationship(back_populates="assets")
 

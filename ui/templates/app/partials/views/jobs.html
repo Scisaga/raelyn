@@ -1,6 +1,6 @@
 		          <!-- Jobs -->
 		          <div x-show="activeView==='jobs'" x-transition.opacity class="h-full">
-		            <div class="border border-slate-800 bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
+		            <div class="bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
 			              <div class="shrink-0 px-4 py-3 flex flex-col gap-3">
 		                <div class="flex flex-wrap items-center justify-between gap-3">
 		                  <div class="flex flex-wrap items-center gap-2">
@@ -12,7 +12,7 @@
 		                      <span>待处理 / 运行中</span>
 		                      <span
 		                        class="ml-2 inline-flex items-center px-2 py-0.5 rounded-full border border-slate-700 bg-slate-950/30 text-[11px] text-slate-300"
-		                        x-text="jobListActive.length"
+		                        x-text="jobsActiveCount()"
 		                      ></span>
 		                    </button>
 	                    <button
@@ -113,8 +113,9 @@
 		                  </div>
 		                </div>
 
-			                <div x-show="jobsTab!=='active' && (jobsSeriesLoading || jobsSeriesError)" class="flex items-center justify-between gap-3">
-			                  <div class="text-xs text-slate-400" x-show="jobsSeriesLoading">图表加载中…</div>
+			                <div x-show="jobsTab!=='active' && (jobsDoneLoading || jobsSeriesLoading || jobsSeriesError)" class="flex items-center justify-between gap-3">
+			                  <div class="text-xs text-slate-400" x-show="jobsDoneLoading">列表加载中…</div>
+			                  <div class="text-xs text-slate-400" x-show="!jobsDoneLoading && jobsSeriesLoading">图表加载中…</div>
 			                  <div class="text-xs text-rose-300" x-show="jobsSeriesError" x-text="jobsSeriesError"></div>
 			                </div>
 
@@ -168,7 +169,7 @@
 	                            <span class="truncate">id: <span class="text-slate-400" x-text="j.id"></span></span>
 	                          </div>
 	                        </div>
-	                        <div class="shrink-0 flex flex-col items-end gap-2">
+	                        <div class="shrink-0 flex flex-wrap items-center justify-end gap-2">
 	                          <span
 	                            class="inline-flex items-center px-2.5 py-0.5 rounded-full border text-xs"
 	                            :class="jobStatusPillClass(j.status)"
@@ -176,9 +177,11 @@
 	                          ></span>
 	                          <button
 	                            class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
+	                            :class="jobActionInFlight[j.id] ? 'opacity-60 cursor-not-allowed' : ''"
+	                            :disabled="!!jobActionInFlight[j.id]"
 	                            @click="cancelJob(j.id)"
 	                          >
-	                            取消
+	                            <span x-text="jobActionInFlight[j.id]==='cancel' ? '取消中…' : '取消'"></span>
 	                          </button>
 	                        </div>
 	                      </div>
@@ -212,7 +215,7 @@
 	                            </template>
 	                          </div>
 	                        </div>
-	                        <div class="shrink-0 flex flex-col items-end gap-2">
+	                        <div class="shrink-0 flex flex-wrap items-center justify-end gap-2">
 	                          <span
 	                            class="inline-flex items-center px-2.5 py-0.5 rounded-full border text-xs"
 	                            :class="jobStatusPillClass(j.status)"
@@ -220,10 +223,12 @@
 	                          ></span>
 	                          <button
 	                            class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
+	                            :class="jobActionInFlight[j.id] ? 'opacity-60 cursor-not-allowed' : ''"
+	                            :disabled="!!jobActionInFlight[j.id]"
 	                            x-show="j.status!=='succeeded'"
 	                            @click="retryJob(j.id)"
 	                          >
-	                            重试
+	                            <span x-text="jobActionInFlight[j.id]==='retry' ? '重试中…' : '重试'"></span>
 	                          </button>
 	                        </div>
 	                      </div>

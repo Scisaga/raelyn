@@ -12,6 +12,7 @@ from videosync.jobs.claim import claim_next_job, requeue_expired_running_jobs
 from videosync.jobs.handlers import *  # noqa: F403  注册 handlers
 from videosync.jobs.log import job_log
 from videosync.jobs.registry import registry
+from videosync.services.log_timestamps import install_if_needed
 from videosync.services.s3 import s3_ensure_bucket
 from videosync.timeutil import utcnow
 
@@ -124,6 +125,7 @@ def run_loop() -> None:
 
 
 def main() -> None:
+    install_if_needed()
     run_loop()
 
 

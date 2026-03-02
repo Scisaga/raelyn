@@ -18,6 +18,13 @@
 
 ## 2) 推荐：Docker 一键启动（含 Postgres + MinIO）
 
+说明：本项目的 `Dockerfile` 会直接 **COPY 开发环境已下载的 `./bin/*` 工具二进制**（避免在镜像构建时重新下载）。因此请确保你在 **Linux/WSL** 环境下先准备好这些文件：
+```bash
+./scripts/dev/download-ytdlp.sh
+./scripts/dev/download-ffmpeg.sh
+./scripts/dev/download-node.sh
+```
+
 ```bash
 docker compose up --build
 ```
@@ -45,17 +52,53 @@ docker compose up --build
 ./scripts/dev/bootstrap-ubuntu.sh
 ```
 
-### 3.2 下载工具（二选一）
-你可以使用系统安装的 `yt-dlp/ffmpeg`，或用脚本下载到 `./bin/`（可选）：
+### 3.2 工具准备（开发必需）
+本项目在本地开发/运行（无 Docker）时，建议用脚本把依赖工具统一放到 `./bin/`，并通过 `scripts/dev/load-env.sh` 将其加入 `PATH`（优先使用项目内二进制）。
+
+#### 3.2.1 `yt-dlp` + `ffmpeg`（必需）
+二选一即可：
 ```bash
+# A) 推荐：下载到 ./bin/
 ./scripts/dev/download-ytdlp.sh
 ./scripts/dev/download-ffmpeg.sh
+
+# B) 或：系统安装（确保在 PATH 里）
+```
+
+#### 3.2.2 Node.js + npm（必需，用于 UI 构建）
+推荐在 WSL 里安装 Node（避免使用 `/mnt/c/...` 的 Windows npm 导致构建失败）：
+```bash
+./scripts/dev/bootstrap-node-wsl.sh
+```
+
+如果你只想把 `node` 放到 `./bin/node`（不改系统环境），可用：
+```bash
+./scripts/dev/download-node.sh
+```
+> 注意：该脚本只提供 `node`，不包含 `npm`；UI 首次安装依赖仍需要可用的 `npm`。
+
+#### 3.2.3 `yt-dlp-ejs`（必需，Python 包）
+```bash
+./scripts/dev/install-ytdlp-ejs.sh
 ```
 
 ### 3.3 配置
 ```bash
 cp .env.example .env
 ```
+
+建议在手动运行命令前先加载环境变量（`run-*.sh` / `devctl.sh` 检测到 `.env` 时也会自动加载）：
+```bash
+source ./scripts/dev/load-env.sh
+```
+说明：`load-env.sh` 会导出 `.env` 里的变量，并将 `./bin` 放到 `PATH` 最前（优先使用下载到 `./bin/` 的 `ffmpeg/yt-dlp/node` 等）。
+
+#### 可选：配置 YouTube Cookies（推荐）
+很多 429/风控/年龄验证/登录态相关的问题，用 cookies 可以显著改善。
+
+1) 在浏览器里登录 YouTube（建议用单独账号）
+2) 导出 **Netscape 格式** `cookies.txt`（Chrome/Firefox 常用扩展：`Get cookies.txt`）
+3) 打开 UI -> **设置** -> `YTDLP_COOKIES（cookies.txt）`，把内容粘贴进去并保存（不会写入 `.env`）。
 
 ### 3.4 启动（3 个终端）
 ```bash

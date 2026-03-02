@@ -13,7 +13,9 @@ from videosync.api.orm import OrmModel
 from videosync.config import settings
 from videosync.db import session_scope
 from videosync.jobs.enqueue import enqueue_job
+from videosync.jobs.enqueue import enqueue_in
 from videosync.models import Asset, Media, Video
+from videosync.services.asr import asr_enabled
 from videosync.services.downloads import build_download_filename, content_disposition_attachment
 from videosync.services.llm import llm_enabled
 from videosync.services.s3 import s3_get_bytes, s3_presign_get
@@ -220,31 +222,37 @@ def download_video(video_id: uuid.UUID) -> dict:
 
 
 def _pick_plain_transcript_asset(session, video_id: uuid.UUID) -> Asset | None:
-    # Prefer subtitle zh, then ASR zh, then any transcript plain.
+    # Prefer polished first, then plain. Prefer subtitle zh, then ASR zh, then any transcript.
+    variants = ["polished", "plain"]
     order = [
         ("subtitle", "zh"),
         ("qwen3-asr", "zh"),
         ("speaches", "zh"),  # legacy
     ]
-    for source, lang in order:
+    for variant in variants:
+        for source, lang in order:
+            a = session.execute(
+                select(Asset).where(
+                    Asset.video_id == video_id,
+                    Asset.type == "transcript",
+                    Asset.format == "txt",
+                    Asset.variant == variant,
+                    Asset.source == source,
+                    Asset.language == lang,
+                )
+            ).scalar_one_or_none()
+            if a:
+                return a
+
+    for variant in variants:
         a = session.execute(
-            select(Asset).where(
-                Asset.video_id == video_id,
-                Asset.type == "transcript",
-                Asset.format == "txt",
-                Asset.variant == "plain",
-                Asset.source == source,
-                Asset.language == lang,
-            )
+            select(Asset)
+            .where(Asset.video_id == video_id, Asset.type == "transcript", Asset.format == "txt", Asset.variant == variant)
+            .order_by(Asset.created_at.desc())
         ).scalar_one_or_none()
         if a:
             return a
-
-    return session.execute(
-        select(Asset)
-        .where(Asset.video_id == video_id, Asset.type == "transcript", Asset.format == "txt", Asset.variant == "plain")
-        .order_by(Asset.created_at.desc())
-    ).scalar_one_or_none()
+    return None
 
 
 @router.get("/videos/{video_id}/transcript")
@@ -260,11 +268,23 @@ def get_video_transcript(video_id: uuid.UUID, max_chars: int = 200_000) -> dict:
         text = raw.decode("utf-8", errors="ignore")
         if max_chars and len(text) > max_chars:
             text = text[:max_chars] + "\n…(truncated)…\n"
+        polish_method = None
+        try:
+            if isinstance(asset.meta, dict):
+                polish_method = asset.meta.get("polish_method")
+        except Exception:
+            polish_method = None
+        created_at = getattr(asset, "created_at", None)
+        updated_at = getattr(asset, "updated_at", None) or created_at
         return {
             "ok": True,
             "asset_id": str(asset.id),
             "language": asset.language,
             "source": asset.source,
+            "variant": asset.variant,
+            "polish_method": polish_method,
+            "created_at": created_at,
+            "updated_at": updated_at,
             "text": text,
         }
 
@@ -305,3 +325,58 @@ def generate_video_note(video_id: uuid.UUID) -> dict:
             raise HTTPException(status_code=404, detail="video not found")
         enqueue_job(session, type_="video.generate_note", params={"video_id": str(video.id)}, priority=2)
     return {"ok": True}
+
+
+@router.post("/videos/{video_id}/transcript/retranscribe")
+def retranscribe_video_transcript(video_id: uuid.UUID) -> dict:
+    with session_scope() as session:
+        video = session.get(Video, video_id)
+        if not video:
+            raise HTTPException(status_code=404, detail="video not found")
+
+        has_zh_subtitle = session.execute(
+            select(Asset.id).where(
+                Asset.video_id == video_id,
+                Asset.type == "subtitle",
+                Asset.language.is_not(None),
+                Asset.language.ilike("zh%"),
+            )
+        ).scalar_one_or_none()
+
+        has_audio = session.execute(select(Asset.id).where(Asset.video_id == video_id, Asset.type == "audio")).scalar_one_or_none()
+
+        jobs: list[str] = []
+        if has_zh_subtitle:
+            jid = enqueue_job(
+                session,
+                type_="video.normalize_subtitle",
+                params={"video_id": str(video_id), "force": True},
+                priority=4,
+            )
+            jobs.append(str(jid))
+            return {"ok": True, "mode": "subtitle", "jobs": jobs}
+
+        if not asr_enabled():
+            raise HTTPException(status_code=400, detail="asr not configured and no zh subtitle available")
+
+        # Ensure audio exists; if not, extract first then schedule ASR slightly later.
+        if not has_audio:
+            jid1 = enqueue_job(session, type_="video.extract_audio", params={"video_id": str(video_id)}, priority=5)
+            jid2 = enqueue_in(
+                session,
+                seconds=20,
+                type_="video.asr_transcribe",
+                params={"video_id": str(video_id), "force": True},
+                priority=5,
+            )
+            jobs.extend([str(jid1), str(jid2)])
+            return {"ok": True, "mode": "asr", "jobs": jobs, "note": "audio not ready; scheduled extract_audio first"}
+
+        jid = enqueue_job(
+            session,
+            type_="video.asr_transcribe",
+            params={"video_id": str(video_id), "force": True},
+            priority=5,
+        )
+        jobs.append(str(jid))
+        return {"ok": True, "mode": "asr", "jobs": jobs}

@@ -84,3 +84,40 @@ def extract_media_identity(*, provider: str, url: str) -> MediaIdentity:
         return MediaIdentity(provider=provider, provider_media_id=provider_media_id)
 
     raise ValueError("仅支持添加频道/UP 主主页 URL（例如 YouTube /@handle 或 bilibili space 链接）")
+
+
+def build_media_videos_url(*, provider: str, provider_media_id: str) -> str | None:
+    """
+    Build a canonical "videos list" URL for a given provider media id.
+
+    Why: Some providers' home pages are not a true "uploads feed" for yt-dlp.
+    For example, YouTube channel home pages may only expose "Videos/Shorts" tabs
+    in extract-flat mode. Using the explicit videos tab makes sync stable.
+    """
+    pid = (provider_media_id or "").strip()
+    if not pid:
+        return None
+
+    if provider == "youtube":
+        # provider_media_id formats:
+        # - "@handle"
+        # - "UCxxxx" (channel id)
+        # - "user:username"
+        # - "c:customname"
+        if pid.startswith("@"):
+            return f"https://www.youtube.com/{pid}/videos"
+        if pid.startswith("UC"):
+            return f"https://www.youtube.com/channel/{pid}/videos"
+        if pid.startswith("user:"):
+            return f"https://www.youtube.com/user/{pid.removeprefix('user:')}/videos"
+        if pid.startswith("c:"):
+            return f"https://www.youtube.com/c/{pid.removeprefix('c:')}/videos"
+        return None
+
+    if provider == "bilibili":
+        # UP 主视频页
+        if pid.isdigit():
+            return f"https://space.bilibili.com/{pid}/video"
+        return None
+
+    return None

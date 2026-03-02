@@ -19,6 +19,18 @@ def _migrate_schema(conn) -> None:
     insp = inspect(conn)
     tables = set(insp.get_table_names())
 
+    if "asset" in tables:
+        cols = {c.get("name") for c in insp.get_columns("asset")}
+        if "updated_at" not in cols:
+            if conn.dialect.name == "postgresql":
+                conn.execute(text("alter table asset add column updated_at timestamptz"))
+                conn.execute(text("update asset set updated_at = created_at where updated_at is null"))
+                conn.execute(text("alter table asset alter column updated_at set default now()"))
+                conn.execute(text("alter table asset alter column updated_at set not null"))
+            else:
+                conn.execute(text("alter table asset add column updated_at datetime"))
+                conn.execute(text("update asset set updated_at = created_at where updated_at is null"))
+
     if "media" in tables:
         cols = {c.get("name") for c in insp.get_columns("media")}
         if "monitor_enabled" not in cols:

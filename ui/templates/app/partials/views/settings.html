@@ -1,13 +1,152 @@
           <!-- Settings -->
           <div x-show="activeView==='settings'" x-transition.opacity class="h-full">
-            <div class="rounded-none border border-slate-800 bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
-              <div class="shrink-0 px-4 py-3">
-                <div class="text-sm font-semibold">设置</div>
-              </div>
-              <div class="flex-1 min-h-0 overflow-auto videosync-scrollbar p-4">
-                <div class="text-sm text-slate-300">
-                  本 MVP 主要通过环境变量配置（<code class="text-slate-200">.env</code>），可选使用 <code class="text-slate-200">/api/config</code>
-                  持久化配置。
+            <div class="rounded-none bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
+              <div class="flex-1 min-h-0 overflow-auto videosync-scrollbar">
+                <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
+                  <div>
+                    <div class="text-sm font-semibold text-slate-100">YTDLP_COOKIES（cookies.txt）</div>
+                    <div class="text-xs text-slate-400 mt-1">
+                      用于 yt-dlp 登录态（Netscape cookies.txt 格式）。在此编辑并保存后，下载任务会自动使用该 Cookie。
+                    </div>
+                  </div>
+                  <div class="shrink-0 flex items-center gap-2">
+                    <button
+                      class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
+                      @click="loadYtdlpCookies({force:true})"
+                      :disabled="ytdlpCookiesSaving"
+                    >
+                      重新加载
+                    </button>
+                    <button
+                      class="px-3 py-1.5 rounded-md border border-rose-900/60 bg-rose-950/20 text-xs text-rose-200 hover:bg-rose-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                      @click="clearYtdlpCookies()"
+                      :disabled="ytdlpCookiesSaving"
+                    >
+                      清空并保存
+                    </button>
+                    <button
+                      class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                      @click="saveYtdlpCookies()"
+                      :disabled="ytdlpCookiesSaving"
+                    >
+                      保存
+                    </button>
+                  </div>
+                </div>
+                <div class="p-4 space-y-3">
+                  <textarea
+                    class="w-full h-72 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs font-mono text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 whitespace-pre"
+                    placeholder="# Netscape HTTP Cookie File\n# 从浏览器导出后粘贴到这里…"
+                    spellcheck="false"
+                    x-model="ytdlpCookiesText"
+                  ></textarea>
+                  <div class="text-xs text-rose-200" x-show="ytdlpCookiesError" x-text="ytdlpCookiesError"></div>
+                  <div class="text-[11px] text-slate-500">
+                    提示：该 Cookie 会保存在数据库配置中（<code class="text-slate-200">/api/config</code>），并在运行时写入本地
+                    <code class="text-slate-200">tmp/ytdlp_cookies.txt</code> 供 yt-dlp 使用。
+                  </div>
+                </div>
+
+                <div class="px-4 py-3 border-t border-slate-800 flex items-center justify-between gap-3">
+                  <div>
+                    <div class="text-sm font-semibold text-slate-100">下载字幕（Subtitles）</div>
+                    <div class="text-xs text-slate-400 mt-1">
+                      下载字幕通常需要 Cookies，且更容易触发风控/限流（例如 HTTP 429）。建议默认关闭。
+                    </div>
+                  </div>
+                  <div class="shrink-0 flex items-center gap-2">
+                    <button
+                      class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
+                      @click="loadYtdlpSubtitles({force:true})"
+                      :disabled="ytdlpSubtitlesSaving"
+                    >
+                      重新加载
+                    </button>
+                    <button
+                      class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                      @click="saveYtdlpSubtitles()"
+                      :disabled="ytdlpSubtitlesSaving"
+                    >
+                      保存
+                    </button>
+                  </div>
+                </div>
+                <div class="p-4 space-y-3">
+                  <label class="inline-flex items-center gap-3 select-none">
+                    <input
+                      type="checkbox"
+                      class="h-4 w-4 rounded border-slate-700 bg-slate-950/30 text-emerald-500 focus:ring-emerald-500/30"
+                      x-model="ytdlpSubtitlesEnabled"
+                    />
+                    <span class="text-sm text-slate-200">下载字幕（含自动字幕）</span>
+                    <span class="text-xs text-slate-500">（对新下载任务生效）</span>
+                  </label>
+                  <div class="text-xs text-rose-200" x-show="ytdlpSubtitlesError" x-text="ytdlpSubtitlesError"></div>
+                  <div class="text-[11px] text-slate-500">
+                    提示：开启字幕下载后，建议同时在上方配置 <code class="text-slate-200">YTDLP_COOKIES</code>，否则更容易失败/被风控。
+                  </div>
+                </div>
+
+                <div class="px-4 py-3 border-t border-slate-800 flex items-center justify-between gap-3">
+                  <div>
+                    <div class="text-sm font-semibold text-slate-100">YTDLP_FORMAT（下载画质）</div>
+                    <div class="text-xs text-slate-400 mt-1">
+                      配置 yt-dlp <code class="text-slate-200">--format</code>（format selector）。可选 1080p/720p 上限或自定义。
+                    </div>
+                  </div>
+                  <div class="shrink-0 flex items-center gap-2">
+                    <button
+                      class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
+                      @click="loadYtdlpFormat({force:true})"
+                      :disabled="ytdlpFormatSaving"
+                    >
+                      重新加载
+                    </button>
+                    <button
+                      class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                      @click="saveYtdlpFormat()"
+                      :disabled="ytdlpFormatSaving"
+                    >
+                      保存
+                    </button>
+                  </div>
+                </div>
+                <div class="p-4 space-y-3">
+                  <div class="flex flex-col gap-3">
+                    <div class="flex items-end gap-3 flex-wrap">
+                      <label class="block">
+                        <div class="text-xs text-slate-300 mb-1">预设</div>
+                        <select
+                          class="w-56 max-w-full rounded-md border border-slate-800 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                          x-model="ytdlpFormatPreset"
+                        >
+                          <option value="1080">1080p cap</option>
+                          <option value="720">720p cap</option>
+                          <option value="custom">自定义</option>
+                        </select>
+                      </label>
+                      <div class="text-[11px] text-slate-500 pb-2">
+                        非自定义：只读展示；自定义：可编辑
+                      </div>
+                    </div>
+
+                    <label class="block">
+                      <div class="text-xs text-slate-300 mb-1">Format selector</div>
+                      <textarea
+                        class="w-full h-28 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs font-mono text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 whitespace-pre"
+                        :readonly="ytdlpFormatPreset!=='custom'"
+                        :value="ytdlpFormatPreset==='custom' ? (ytdlpFormatCustomText || '') : ytdlpFormatEffectiveText()"
+                        @input="if (ytdlpFormatPreset==='custom') ytdlpFormatCustomText=$event.target.value"
+                        :placeholder="ytdlpFormatPreset==='custom' ? '填入 yt-dlp format selector，例如：bv*[height<=1080]+ba/b' : ''"
+                        spellcheck="false"
+                      ></textarea>
+                    </label>
+                  </div>
+                  <div class="text-xs text-rose-200" x-show="ytdlpFormatError" x-text="ytdlpFormatError"></div>
+                  <div class="text-[11px] text-slate-500">
+                    提示：该配置会保存在数据库配置中（<code class="text-slate-200">/api/config</code>），并在下载时作为 yt-dlp 的
+                    <code class="text-slate-200">--format</code> 使用（无需重启即可生效）。
+                  </div>
                 </div>
               </div>
             </div>

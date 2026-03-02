@@ -42,7 +42,18 @@ def parse_vtt(path: Path) -> list[Segment]:
         start = c.start_time
         end = c.end_time
         # 格式：HH:MM:SS.mmm 或 MM:SS.mmm
-        def parse_ts(ts: str) -> int:
+        def parse_ts(ts: object) -> int:
+            # webvtt-py 可能返回 Timestamp 对象，而不是字符串
+            if not isinstance(ts, str):
+                if all(hasattr(ts, k) for k in ("hours", "minutes", "seconds", "milliseconds")):
+                    return _to_ms(
+                        int(getattr(ts, "hours")),
+                        int(getattr(ts, "minutes")),
+                        int(getattr(ts, "seconds")),
+                        int(getattr(ts, "milliseconds")),
+                    )
+                ts = str(ts)
+
             parts = ts.replace(",", ".").split(":")
             if len(parts) == 3:
                 hh, mm, rest = parts
@@ -68,4 +79,3 @@ def normalize_subtitle(path: Path) -> tuple[str, str]:
     segments_json = json.dumps([s.__dict__ for s in segments], ensure_ascii=False, indent=2)
     plain = "\n".join(s.text for s in segments)
     return segments_json, plain
-

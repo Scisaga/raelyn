@@ -9,6 +9,7 @@ from videosync.config import settings
 from videosync.db import init_db, session_scope
 from videosync.jobs.enqueue import enqueue_job
 from videosync.models import Media
+from videosync.services.log_timestamps import install_if_needed
 from videosync.services.s3 import s3_ensure_bucket
 from videosync.timeutil import utcnow
 
@@ -48,6 +49,7 @@ def tick() -> int:
 
 
 def main() -> None:
+    install_if_needed()
     init_db()
     s3_ensure_bucket()
     while True:

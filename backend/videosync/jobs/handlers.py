@@ -26,6 +26,7 @@ from videosync.services.http_client import httpx_client
 from videosync.services.llm import llm_enabled, llm_generate_markdown
 from videosync.services.pg_lock import advisory_lock
 from videosync.services.profile_fetch import fetch_media_profile
+from videosync.services.provider import build_media_videos_url
 from videosync.services.s3 import s3_download_file, s3_upload_file
 from videosync.services.asr import asr_enabled, asr_transcribe
 from videosync.services.subtitles import normalize_subtitle
@@ -241,7 +242,10 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                 playlist_limit = n
                 process_limit = n
 
-        info = ytdlp_extract_info(media.url, flat=True, max_entries=playlist_limit)
+        sync_url = build_media_videos_url(provider=media.provider, provider_media_id=media.provider_media_id) or media.url
+        # Sync should be format-agnostic: do a flat playlist extraction to avoid failing on entries
+        # like upcoming livestreams (which can raise "requested format is not available" in non-flat mode).
+        info = ytdlp_extract_info(sync_url, flat=True, max_entries=playlist_limit if raw_max is not None else process_limit)
         if process_limit is None:
             raw_entries = info.get("entries") or []
             items = raw_entries if isinstance(raw_entries, list) else []
@@ -254,6 +258,9 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
             if not provider_video_id:
                 continue
             provider_video_id = str(provider_video_id)
+            # Avoid accidentally treating channel pages/tabs as videos (common when given a channel homepage URL).
+            if media.provider == "youtube" and len(provider_video_id) != 11:
+                continue
             exists = session.execute(
                 select(Video.id).where(Video.provider == media.provider, Video.provider_video_id == provider_video_id)
             ).scalar_one_or_none()
@@ -306,6 +313,22 @@ def video_download(session: Session, job: Job) -> dict | None:
     if not video:
         return {"skipped": "video not found"}
 
+    # Guardrail: refuse to download channel/playlist pages accidentally stored as "videos".
+    # This can happen if a media sync used a channel homepage URL and created a placeholder row.
+    if video.provider == "youtube" and (video.url or "").strip():
+        try:
+            parsed = urlparse(str(video.url))
+            host = (parsed.netloc or "").lower()
+            path = (parsed.path or "").rstrip("/")
+            looks_like_tab = path.endswith("/videos") or path.endswith("/shorts") or path.endswith("/featured") or path.endswith("/streams")
+            looks_like_playlist = path == "/playlist" or path == "/channel" or path.startswith("/@")
+            if ("youtube.com" in host or "youtu.be" in host) and (looks_like_tab or looks_like_playlist):
+                video.status = "failed"
+                video.error_message = f"invalid youtube video url (channel/playlist page): {video.url}"
+                return {"skipped": "invalid_video_url"}
+        except Exception:
+            pass
+
     with advisory_lock(session, _provider_guard_name(video.provider, "download")) as ok:
         if not ok:
             job_log(session, job, "provider download locked; reschedule", level="warn")
@@ -314,6 +337,8 @@ def video_download(session: Session, job: Job) -> dict | None:
 
         video.status = "downloading"
         with job_workdir(job.id) as wd:
+            info: dict[str, Any] | None = None
+            subtitle_download_failed = False
             try:
                 set_job_progress(job_id=job.id, current=0, total=10000)
                 last_progress_at = 0.0
@@ -343,21 +368,73 @@ def video_download(session: Session, job: Job) -> dict | None:
                     pct = max(0, min(10000, pct))
                     set_job_progress(job_id=job.id, current=pct, total=10000)
 
-                info = ytdlp_download(url=video.url or video.provider_video_id, out_dir=wd, progress_hook=_hook)
-                set_job_progress(job_id=job.id, current=10000, total=10000)
+                try:
+                    info = ytdlp_download(url=video.url or video.provider_video_id, out_dir=wd, progress_hook=_hook)
+                    set_job_progress(job_id=job.id, current=10000, total=10000)
+                except Exception as e:
+                    msg = str(e)
+                    lower = msg.lower()
+                    members_only = ("members-only" in lower) or ("join this channel" in lower) or ("members only" in lower)
+                    if members_only:
+                        video.status = "failed"
+                        video.error_message = "members-only video; skipped"
+                        job_log(session, job, "members-only video; skipped", level="warn")
+                        return {"skipped": "members_only"}
+
+                    # Subtitle download failures (e.g. HTTP 429) should not block video download.
+                    is_subtitle_error = ("subtitle" in lower) and ("unable to download" in lower or "http error 429" in lower)
+                    if is_subtitle_error:
+                        subtitle_download_failed = True
+                        job_log(session, job, f"subtitle download failed; will continue without subtitles: {msg}", level="warn")
+                    else:
+                        raise
             except Exception as e:
-                msg = str(e)
-                lower = msg.lower()
-                members_only = ("members-only" in lower) or ("join this channel" in lower) or ("members only" in lower)
-                if members_only:
-                    video.status = "failed"
-                    video.error_message = "members-only video; skipped"
-                    job_log(session, job, "members-only video; skipped", level="warn")
-                    return {"skipped": "members_only"}
                 raise
-            # info.json
-            info_json_path = wd / f"{info.get('id')}.info.json"
-            raw_info = load_info_json(info_json_path)
+
+            def _pick_video_file(paths: list[Path]) -> Path | None:
+                video_file = None
+                mp4s = [p for p in paths if p.suffix.lower() == ".mp4"]
+                if mp4s:
+                    return sorted(mp4s, key=lambda x: x.stat().st_size, reverse=True)[0]
+                for p in sorted(paths, key=lambda x: x.stat().st_size, reverse=True):
+                    if p.suffix.lower() in {".json", ".jpg", ".webp", ".png", ".vtt", ".srt", ".ass"}:
+                        continue
+                    if p.suffix.lower() in {".m4a", ".opus", ".aac", ".mp3", ".wav"}:
+                        continue
+                    if p.name.endswith(".info.json"):
+                        continue
+                    video_file = p
+                    break
+                return video_file
+
+            # 找到视频文件（排除 .info.json/.jpg/.webp/.vtt/.srt）
+            candidates = [p for p in wd.glob("*") if p.is_file()]
+            video_file = _pick_video_file(candidates)
+
+            # If yt-dlp aborted due to subtitles, retry once without subtitles (or proceed if video already exists).
+            if (not video_file) and subtitle_download_failed:
+                info = ytdlp_download(
+                    url=video.url or video.provider_video_id,
+                    out_dir=wd,
+                    write_subtitles=False,
+                    write_auto_subtitles=False,
+                    progress_hook=_hook,
+                )
+                set_job_progress(job_id=job.id, current=10000, total=10000)
+                candidates = [p for p in wd.glob("*") if p.is_file()]
+                video_file = _pick_video_file(candidates)
+
+            if video_file:
+                set_job_progress(job_id=job.id, current=10000, total=10000)
+
+            # info.json (best-effort)
+            raw_info = None
+            if info and info.get("id"):
+                raw_info = load_info_json(wd / f"{info.get('id')}.info.json")
+            if raw_info is None:
+                info_json_candidates = [p for p in candidates if p.name.endswith(".info.json")]
+                if info_json_candidates:
+                    raw_info = load_info_json(sorted(info_json_candidates, key=lambda x: x.stat().st_size, reverse=True)[0])
             if raw_info:
                 # 避免 raw_info 过大：裁剪部分字段
                 keep_keys = ["id", "title", "description", "uploader", "channel", "upload_date", "timestamp", "duration", "webpage_url"]
@@ -374,24 +451,6 @@ def video_download(session: Session, job: Job) -> dict | None:
                 if (not video.title) and raw_info.get("title"):
                     video.title = str(raw_info.get("title"))
 
-            # 找到视频文件（排除 .info.json/.jpg/.webp/.vtt/.srt）
-            candidates = [p for p in wd.glob("*") if p.is_file()]
-            video_file = None
-            # Prefer merged mp4 output when present.
-            mp4s = [p for p in candidates if p.suffix.lower() == ".mp4"]
-            if mp4s:
-                video_file = sorted(mp4s, key=lambda x: x.stat().st_size, reverse=True)[0]
-            for p in sorted(candidates, key=lambda x: x.stat().st_size, reverse=True):
-                if video_file:
-                    break
-                if p.suffix.lower() in {".json", ".jpg", ".webp", ".png", ".vtt", ".srt", ".ass"}:
-                    continue
-                if p.suffix.lower() in {".m4a", ".opus", ".aac", ".mp3", ".wav"}:
-                    continue
-                if p.name.endswith(".info.json"):
-                    continue
-                video_file = p
-                break
             if not video_file:
                 raise RuntimeError("yt-dlp 未产出视频文件")
 
@@ -477,7 +536,10 @@ def video_extract_audio(session: Session, job: Job) -> dict | None:
         return {"skipped": "video not found"}
 
     video_asset = session.execute(
-        select(Asset).where(Asset.video_id == video.id, Asset.type == "video").order_by(Asset.created_at.desc())
+        select(Asset)
+        .where(Asset.video_id == video.id, Asset.type == "video")
+        .order_by(Asset.created_at.desc())
+        .limit(1)
     ).scalar_one_or_none()
     if not video_asset:
         return {"skipped": "video asset not found"}
@@ -509,6 +571,7 @@ def video_extract_audio(session: Session, job: Job) -> dict | None:
                 Asset.language.is_not(None),
                 Asset.language.ilike("zh%"),
             )
+            .limit(1)
         ).scalar_one_or_none()
         has_zh_transcript = session.execute(
             select(Asset.id).where(
@@ -517,6 +580,7 @@ def video_extract_audio(session: Session, job: Job) -> dict | None:
                 Asset.language.is_not(None),
                 Asset.language.ilike("zh%"),
             )
+            .limit(1)
         ).scalar_one_or_none()
         if not has_zh_subtitle and not has_zh_transcript:
             enqueue_job(
@@ -556,6 +620,7 @@ def video_normalize_subtitle(session: Session, job: Job) -> dict | None:
 
         lang = (sub.language or "und").lower()
         base = f"{video.provider}/{video.media_id}/{video.provider_video_id}/transcript/{lang}"
+        force = bool(job.params.get("force"))
         ensure_asset(
             session,
             video_id=video.id,
@@ -567,6 +632,7 @@ def video_normalize_subtitle(session: Session, job: Job) -> dict | None:
             local_path=seg_path,
             s3_key=f"{base}/segments.json",
             content_type="application/json",
+            replace=force,
         )
         ensure_asset(
             session,
@@ -579,6 +645,19 @@ def video_normalize_subtitle(session: Session, job: Job) -> dict | None:
             local_path=txt_path,
             s3_key=f"{base}/plain.txt",
             content_type="text/plain; charset=utf-8",
+            replace=force,
+        )
+
+        _maybe_polish_transcript(
+            session,
+            job=job,
+            video=video,
+            language=lang,
+            source="subtitle",
+            plain_text=plain,
+            output_path=wd / "polished.txt",
+            s3_key=f"{base}/polished.txt",
+            force=force,
         )
 
     _enqueue_brief_for_video_playlists(session, video=video)
@@ -595,9 +674,21 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
         return {"skipped": "video not found"}
 
     audio_asset = session.execute(
-        select(Asset).where(Asset.video_id == video.id, Asset.type == "audio").order_by(Asset.created_at.desc())
+        select(Asset)
+        .where(Asset.video_id == video.id, Asset.type == "audio")
+        .order_by(Asset.created_at.desc())
+        .limit(1)
     ).scalar_one_or_none()
     if not audio_asset:
+        force = bool(job.params.get("force"))
+        if force:
+            retries = int(job.params.get("retries") or 0)
+            if retries < 10:
+                params = dict(job.params)
+                params["retries"] = retries + 1
+                job_log(session, job, f"audio not ready; reschedule asr_transcribe (retry {retries + 1}/10)", level="warn")
+                enqueue_in(session, seconds=30, type_=job.type, params=params, priority=job.priority)
+                return {"rescheduled": True, "reason": "audio asset not found"}
         return {"skipped": "audio asset not found"}
 
     with job_workdir(job.id) as wd:
@@ -616,6 +707,7 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
         plain_path.write_text(str(text), encoding="utf-8")
 
         base = f"{video.provider}/{video.media_id}/{video.provider_video_id}/transcript/zh"
+        force = bool(job.params.get("force"))
         ensure_asset(
             session,
             video_id=video.id,
@@ -627,6 +719,7 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
             local_path=segments_path,
             s3_key=f"{base}/qwen3-asr-segments.json",
             content_type="application/json",
+            replace=force,
         )
         ensure_asset(
             session,
@@ -639,6 +732,19 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
             local_path=plain_path,
             s3_key=f"{base}/qwen3-asr-plain.txt",
             content_type="text/plain; charset=utf-8",
+            replace=force,
+        )
+
+        _maybe_polish_transcript(
+            session,
+            job=job,
+            video=video,
+            language="zh",
+            source="qwen3-asr",
+            plain_text=text,
+            output_path=wd / "polished.txt",
+            s3_key=f"{base}/qwen3-asr-polished.txt",
+            force=force,
         )
 
     _enqueue_brief_for_video_playlists(session, video=video)
@@ -702,32 +808,187 @@ def video_generate_note(session: Session, job: Job) -> dict | None:
 
 
 def _load_plain_transcript(session: Session, video_id: uuid.UUID) -> tuple[str | None, str | None]:
-    # 优先字幕 zh，其次 ASR zh，其次任意 transcript plain
+    # Prefer polished first, then plain. Prefer subtitle zh, then ASR zh, then any transcript.
+    variants = ["polished", "plain"]
     order = [
         ("subtitle", "zh"),
         ("qwen3-asr", "zh"),
         ("speaches", "zh"),  # legacy
     ]
-    for source, lang in order:
+    for variant in variants:
+        for source, lang in order:
+            a = session.execute(
+                select(Asset).where(
+                    Asset.video_id == video_id,
+                    Asset.type == "transcript",
+                    Asset.format == "txt",
+                    Asset.variant == variant,
+                    Asset.source == source,
+                    Asset.language == lang,
+                )
+            ).scalar_one_or_none()
+            if a:
+                return a.s3_bucket, a.s3_key
+
+    for variant in variants:
         a = session.execute(
-            select(Asset).where(
+            select(Asset)
+            .where(
                 Asset.video_id == video_id,
                 Asset.type == "transcript",
                 Asset.format == "txt",
-                Asset.variant == "plain",
-                Asset.source == source,
-                Asset.language == lang,
+                Asset.variant == variant,
             )
+            .order_by(Asset.created_at.desc())
         ).scalar_one_or_none()
         if a:
             return a.s3_bucket, a.s3_key
-
-    a = session.execute(
-        select(Asset).where(Asset.video_id == video_id, Asset.type == "transcript", Asset.format == "txt", Asset.variant == "plain")
-    ).scalar_one_or_none()
-    if a:
-        return a.s3_bucket, a.s3_key
     return None, None
+
+
+def _sanitize_llm_plain_text(text: str) -> str:
+    s = (text or "").strip()
+    if not s:
+        return ""
+    # Strip common markdown wrappers/models' formatting.
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", s)
+        s = re.sub(r"\n?```$", "", s)
+    s = s.strip().strip("\ufeff")
+    return s
+
+
+def _split_text_for_llm(text: str, *, max_chars: int) -> list[str]:
+    t = (text or "").strip()
+    if not t:
+        return []
+    if len(t) <= max_chars:
+        return [t]
+    lines = t.splitlines()
+    chunks: list[str] = []
+    buf: list[str] = []
+    size = 0
+    for line in lines:
+        ln = len(line) + 1
+        if buf and size + ln > max_chars:
+            chunks.append("\n".join(buf).strip())
+            buf = []
+            size = 0
+        # If a single line is extremely long (no newlines), hard-split it.
+        if ln > max_chars and not buf:
+            start = 0
+            while start < len(line):
+                chunks.append(line[start : start + max_chars].strip())
+                start += max_chars
+            continue
+        buf.append(line)
+        size += ln
+    if buf:
+        chunks.append("\n".join(buf).strip())
+    return [c for c in chunks if c]
+
+
+def _polish_transcript_via_llm(*, text: str) -> str:
+    # Keep chunks reasonably small to reduce the chance of context overflow.
+    chunks = _split_text_for_llm(text, max_chars=12_000)
+    if not chunks:
+        return ""
+
+    outputs: list[str] = []
+    total = len(chunks)
+    for i, chunk in enumerate(chunks, start=1):
+        prompt = (
+            "你是一名中文文字稿编辑。下面是一段从视频字幕/转写得到的原始文本，可能存在：口语化、断句混乱、错别字、同音错词、"
+            "标点缺失、段落缺失。\n"
+            "请在不增删事实的前提下，把文本润色成更易读的中文正文。\n"
+            "要求（必须遵守）：\n"
+            "1) 自动分段：只在语义转折/话题切换处换段；不要逐句换段；段落宁可更长一些，避免出现大量短段。\n"
+            "2) 段落之间用**单个**空行分隔；不要出现连续多个空行；不要把每一句都写成单独一行。\n"
+            "3) 补充必要标点（保持原意）；\n"
+            "4) 修正常见错别字/同音错词；不确定就保留原样；不要改写专有名词；\n"
+            "4) **所有阿拉伯数字（0-9）必须逐字保留**：不得新增、删除、改动任何数字字符（含小数点/负号/%）。\n"
+            "   - 只允许在数字与单位之间补空格、加千分位这类不改变字符的格式化；\n"
+            "   - 不要把中文数字转换成阿拉伯数字；\n"
+            "   - 不要推断缺失单位/小数点/时间窗口；\n"
+            "5) 不要总结、不要加标题、不要加解释；只输出润色后的正文纯文本。\n"
+            "6) 这是整段文本的一个片段（"
+            f"{i}/{total}"
+            "），输出中不要提及片段编号。\n\n"
+            "原始文本：\n"
+            f"{chunk}\n"
+        )
+
+        out = llm_generate_markdown(prompt=prompt)
+        out = _sanitize_llm_plain_text(out)
+        if out:
+            outputs.append(out.strip())
+
+    return "\n\n".join(outputs).strip()
+
+
+def _maybe_polish_transcript(
+    session: Session,
+    *,
+    job: Job,
+    video: Video,
+    language: str,
+    source: str,
+    plain_text: str,
+    output_path: Path,
+    s3_key: str,
+    force: bool = False,
+) -> None:
+    if not llm_enabled():
+        return
+
+    txt = (plain_text or "").strip()
+    if not txt:
+        return
+
+    if not force:
+        # Skip if already generated.
+        exists = session.execute(
+            select(Asset.id).where(
+                Asset.video_id == video.id,
+                Asset.type == "transcript",
+                Asset.format == "txt",
+                Asset.language == language,
+                Asset.source == source,
+                Asset.variant == "polished",
+            )
+        ).scalar_one_or_none()
+        if exists:
+            return
+
+    try:
+        polished = _polish_transcript_via_llm(text=txt)
+        polished = (polished or "").strip()
+        metadata: dict[str, Any] = {"variant": "polished"}
+        if not polished:
+            job_log(session, job, "llm transcript polish returned empty; keep plain transcript", level="warn")
+            return
+        else:
+            metadata.update({"polish_method": "llm", "polished": True})
+
+        output_path.write_text(polished, encoding="utf-8")
+        ensure_asset(
+            session,
+            video_id=video.id,
+            type_="transcript",
+            format_="txt",
+            language=language,
+            source=source,
+            variant="polished",
+            local_path=output_path,
+            s3_key=s3_key,
+            content_type="text/plain; charset=utf-8",
+            metadata=metadata,
+            replace=force,
+        )
+        job_log(session, job, "llm transcript polish saved", level="info", data={"language": language, "source": source})
+    except Exception as e:
+        job_log(session, job, f"llm transcript polish failed: {e}", level="warn")
+        return
 
 
 def _enqueue_brief_for_video_playlists(session: Session, *, video: Video, delay_seconds: int = 90) -> int:
