@@ -2,9 +2,9 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_DB: videosync
-      POSTGRES_USER: videosync
-      POSTGRES_PASSWORD: videosync
+      POSTGRES_DB: raelyn
+      POSTGRES_USER: raelyn
+      POSTGRES_PASSWORD: raelyn
     ports:
       - "5432:5432"
     volumes:
@@ -29,7 +29,7 @@ services:
     entrypoint: >
       /bin/sh -c "
       mc alias set local http://minio:9000 minioadmin minioadmin &&
-      mc mb -p local/video-sync || true &&
+      mc mb -p local/raelyn || true &&
       exit 0
       "
 
@@ -39,12 +39,12 @@ services:
       APP_ENV: dev
       BASE_URL: http://127.0.0.1:8000
       TIMEZONE: Asia/Shanghai
-      DATABASE_URL: postgresql+psycopg://videosync:videosync@postgres:5432/videosync
+      DATABASE_URL: postgresql+psycopg://raelyn:raelyn@postgres:5432/raelyn
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
       S3_REGION: us-east-1
-      S3_BUCKET: video-sync
+      S3_BUCKET: raelyn
       S3_USE_SSL: "false"
       AUTO_DOWNLOAD_NEW_VIDEOS: "true"
       SYNC_INTERVAL_MINUTES: "5"

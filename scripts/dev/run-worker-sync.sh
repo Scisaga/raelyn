@@ -13,5 +13,5 @@ export WORKER_ROLE="sync"
 
 PY="${PY:-python3}"
 if [[ -x .venv/bin/python ]]; then PY=".venv/bin/python"; fi
-exec "$PY" -m videosync.worker
+exec "$PY" -m raelyn.worker
 

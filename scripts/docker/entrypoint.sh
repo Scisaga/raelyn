@@ -26,16 +26,16 @@ shutdown() {
 trap shutdown SIGINT SIGTERM
 
 # API
-start python -m videosync.api_server
+start python -m raelyn.api_server
 
 # Workers (separate roles to avoid one queue starving others)
-start env WORKER_ROLE=download python -m videosync.worker
-start env WORKER_ROLE=process python -m videosync.worker
-start env WORKER_ROLE=sync python -m videosync.worker
-start env WORKER_ROLE=ai python -m videosync.worker
+start env WORKER_ROLE=download python -m raelyn.worker
+start env WORKER_ROLE=process python -m raelyn.worker
+start env WORKER_ROLE=sync python -m raelyn.worker
+start env WORKER_ROLE=ai python -m raelyn.worker
 
 # Scheduler
-start python -m videosync.scheduler
+start python -m raelyn.scheduler
 
 wait -n
 shutdown

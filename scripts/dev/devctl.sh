@@ -138,12 +138,12 @@ stop_one() {
 }
 
 kill_strays() {
-  # Kill any leftover videosync processes not managed by pidfiles.
+  # Kill any leftover raelyn processes not managed by pidfiles.
   # This commonly happens if the user started servers manually.
   local patterns=(
-    "python.*-m videosync\\.api_server"
-    "python.*-m videosync\\.worker"
-    "python.*-m videosync\\.scheduler"
+    "python.*-m raelyn\\.api_server"
+    "python.*-m raelyn\\.worker"
+    "python.*-m raelyn\\.scheduler"
   )
   local pids=()
   local pat
@@ -165,7 +165,7 @@ kill_strays() {
       seen+=" $x "
     fi
   done
-  echo "[stop] stray videosync pids: ${uniq[*]}"
+  echo "[stop] stray raelyn pids: ${uniq[*]}"
   kill "${uniq[@]}" >/dev/null 2>&1 || true
   sleep 0.2
   kill -9 "${uniq[@]}" >/dev/null 2>&1 || true

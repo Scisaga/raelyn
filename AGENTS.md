@@ -1,4 +1,4 @@
-# Agent instructions (video-sync)
+# Agent instructions (raelyn)
 
 ## 禁止使用 Git 重置/回滚命令
 

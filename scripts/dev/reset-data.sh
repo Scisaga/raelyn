@@ -12,5 +12,5 @@ export PYTHONPATH="$(pwd)/backend"
 PY="${PY:-python3}"
 if [[ -x .venv/bin/python ]]; then PY=".venv/bin/python"; fi
 
-exec "$PY" -m videosync.tools.reset_data "$@"
+exec "$PY" -m raelyn.tools.reset_data "$@"
 

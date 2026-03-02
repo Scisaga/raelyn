@@ -34,7 +34,7 @@
                   />
                 </div>
               </div>
-              <div class="flex-1 min-h-0 overflow-auto videosync-scrollbar divide-y divide-slate-800">
+              <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar divide-y divide-slate-800">
                 <template x-for="m in mediaList" :key="m.id">
                   <div class="p-4 flex flex-col gap-3 hover:bg-slate-900/50 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                     <div class="flex items-center gap-3 min-w-0 sm:flex-1">
@@ -57,7 +57,13 @@
                       </div>
                       <div class="min-w-0">
                         <div class="font-medium truncate" x-text="mediaDisplayName(m)"></div>
-                        <div class="text-xs text-slate-400 truncate" x-text="m.url"></div>
+                        <a
+                          class="text-xs text-slate-400 truncate hover:text-slate-200 hover:underline"
+                          :href="(m.url||'').startsWith('http') ? m.url : ('https://' + (m.url||''))"
+                          target="_blank"
+                          rel="noreferrer"
+                          x-text="m.url"
+                        ></a>
                         <div class="mt-1 flex items-center gap-2">
                           <span
                             class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/20 px-2 py-0.5 text-[11px] text-slate-300 whitespace-nowrap"

@@ -1,10 +1,10 @@
-function _videosync_icon(svgBody) {
+function _raelyn_icon(svgBody) {
   return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${svgBody}</svg>`;
 }
 
-function VideoSyncApp() {
-  const SIDEBAR_COLLAPSED_KEY = "videosync.ui.sidebarCollapsed";
-  const SIDEBAR_HIDDEN_KEY = "videosync.ui.sidebarHidden";
+function RaelynApp() {
+  const SIDEBAR_COLLAPSED_KEY = "raelyn.ui.sidebarCollapsed";
+  const SIDEBAR_HIDDEN_KEY = "raelyn.ui.sidebarHidden";
   const initialCollapsed = (() => {
     try {
       return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
@@ -46,14 +46,14 @@ function VideoSyncApp() {
       llm: { ok: false, configured: false, url: "", error: null },
     },
     navItems: [
-      { key: "overview", label: "概览", icon: _videosync_icon('<path d="M4 4h7v7H4z"/><path d="M13 4h7v7h-7z"/><path d="M4 13h7v7H4z"/><path d="M13 13h7v7h-7z"/>') },
-      { key: "media", label: "媒体", icon: _videosync_icon('<path d="M16 18a4 4 0 0 0-8 0"/><circle cx="12" cy="10" r="4"/><path d="M5 20h14"/>') },
-      { key: "videos", label: "视频", icon: _videosync_icon('<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>') },
-      { key: "jobs", label: "任务", icon: _videosync_icon('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>') },
-      { key: "playlists", label: "播放列表", icon: _videosync_icon('<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>') },
-      { key: "playlist", label: "播放列表页", hidden: true, icon: _videosync_icon('<path d="M4 19V5"/><path d="M8 5h12"/><path d="M8 12h12"/><path d="M8 19h12"/>') },
-      { key: "briefs", label: "提示词", icon: _videosync_icon('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/>') },
-      { key: "settings", label: "设置", icon: _videosync_icon('<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2.2 2.2 0 0 1-1.56 3.76 2.2 2.2 0 0 1-1.56-.64l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.64V21a2.2 2.2 0 1 1-4.4 0v-.06a1.8 1.8 0 0 0-1.08-1.64 1.8 1.8 0 0 0-1.98.36l-.04.04a2.2 2.2 0 0 1-3.76-1.56 2.2 2.2 0 0 1 .64-1.56l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.64-1.08H2.9a2.2 2.2 0 1 1 0-4.4h.06A1.8 1.8 0 0 0 4.6 8.4a1.8 1.8 0 0 0-.36-1.98l-.04-.04A2.2 2.2 0 0 1 5.76 2.6a2.2 2.2 0 0 1 1.56.64l.04.04A1.8 1.8 0 0 0 9.34 3.6 1.8 1.8 0 0 0 10.42 2h.06a2.2 2.2 0 1 1 4.4 0h-.06a1.8 1.8 0 0 0 1.08 1.64 1.8 1.8 0 0 0 1.98-.36l.04-.04a2.2 2.2 0 0 1 3.76 1.56 2.2 2.2 0 0 1-.64 1.56l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.64 1.08h.06a2.2 2.2 0 1 1 0 4.4h-.06A1.8 1.8 0 0 0 19.4 15z"/>') },
+      { key: "overview", label: "概览", icon: _raelyn_icon('<path d="M4 4h7v7H4z"/><path d="M13 4h7v7h-7z"/><path d="M4 13h7v7H4z"/><path d="M13 13h7v7h-7z"/>') },
+      { key: "media", label: "媒体", icon: _raelyn_icon('<path d="M16 18a4 4 0 0 0-8 0"/><circle cx="12" cy="10" r="4"/><path d="M5 20h14"/>') },
+      { key: "videos", label: "视频", icon: _raelyn_icon('<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>') },
+      { key: "jobs", label: "任务", icon: _raelyn_icon('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>') },
+      { key: "playlists", label: "播放列表", icon: _raelyn_icon('<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>') },
+      { key: "playlist", label: "播放列表页", hidden: true, icon: _raelyn_icon('<path d="M4 19V5"/><path d="M8 5h12"/><path d="M8 12h12"/><path d="M8 19h12"/>') },
+      { key: "briefs", label: "提示词", icon: _raelyn_icon('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/>') },
+      { key: "settings", label: "设置", icon: _raelyn_icon('<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2.2 2.2 0 0 1-1.56 3.76 2.2 2.2 0 0 1-1.56-.64l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.64V21a2.2 2.2 0 1 1-4.4 0v-.06a1.8 1.8 0 0 0-1.08-1.64 1.8 1.8 0 0 0-1.98.36l-.04.04a2.2 2.2 0 0 1-3.76-1.56 2.2 2.2 0 0 1 .64-1.56l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.64-1.08H2.9a2.2 2.2 0 1 1 0-4.4h.06A1.8 1.8 0 0 0 4.6 8.4a1.8 1.8 0 0 0-.36-1.98l-.04-.04A2.2 2.2 0 0 1 5.76 2.6a2.2 2.2 0 0 1 1.56.64l.04.04A1.8 1.8 0 0 0 9.34 3.6 1.8 1.8 0 0 0 10.42 2h.06a2.2 2.2 0 1 1 4.4 0h-.06a1.8 1.8 0 0 0 1.08 1.64 1.8 1.8 0 0 0 1.98-.36l.04-.04a2.2 2.2 0 0 1 3.76 1.56 2.2 2.2 0 0 1-.64 1.56l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.64 1.08h.06a2.2 2.2 0 1 1 0 4.4h-.06A1.8 1.8 0 0 0 19.4 15z"/>') },
     ],
     stats: { mediaCount: 0, videoCount: 0, pendingJobs: 0, failedJobs: 0 },
 

@@ -201,7 +201,7 @@ static/
 
     * 容器：border border-slate-800 bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800
     * 顶部工具条：shrink-0 px-4 py-3（可 flex flex-wrap）
-    * 内容区：flex-1 min-h-0 overflow-auto videosync-scrollbar（列表用 divide-y；网格用 p-4 + grid）
+    * 内容区：flex-1 min-h-0 overflow-auto raelyn-scrollbar（列表用 divide-y；网格用 p-4 + grid）
   * “小卡片/Tile”仅用于面板内部的局部信息块（如统计卡、视频卡、弹窗），圆角更小（优先 rounded-md，必要时 rounded-lg），不作为页面默认外框
 * 组件风格（保持一致即可）：
 

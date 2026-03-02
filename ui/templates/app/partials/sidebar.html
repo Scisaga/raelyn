@@ -19,13 +19,13 @@
             >
               <img
                 src="/static/brand/logo.svg"
-                alt="video-sync"
+                alt="raelyn"
                 class="shrink-0"
                 :class="sidebarCollapsed ? 'h-6 w-6' : 'h-8 w-8'"
               />
             </button>
             <div class="min-w-0" x-show="!sidebarCollapsed" x-transition.opacity.duration.150ms>
-              <div class="text-sm font-semibold leading-5">video-sync</div>
+              <div class="text-sm font-semibold leading-5">raelyn</div>
             </div>
           </div>
           <button
@@ -53,7 +53,7 @@
           </button>
         </div>
 
-        <nav class="flex-1 overflow-y-auto space-y-1 videosync-sidebar-nav">
+        <nav class="flex-1 overflow-y-auto space-y-1 raelyn-sidebar-nav">
           <template x-for="item in navItems.filter(i => !i.hidden)" :key="item.key">
             <button
               class="group flex items-center rounded-md text-sm leading-none transition border border-transparent"

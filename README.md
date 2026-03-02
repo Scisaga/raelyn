@@ -1,4 +1,4 @@
-# video-sync（MVP）
+# raelyn（MVP）
 
 一个基于 `yt-dlp + ffmpeg` 的单用户媒体订阅与视频采集系统：支持 YouTube / B站媒体同步、增量发现新视频、下载视频/字幕、分离音频、字幕标准化文本（可选 ASR）、按播放列表按天生成 Markdown 简报（LLM：Ollama 或 OpenAI-compatible 在线推理）。
 
@@ -93,10 +93,10 @@ source ./scripts/dev/load-env.sh
 ```
 说明：`load-env.sh` 会导出 `.env` 里的变量，并将 `./bin` 放到 `PATH` 最前（优先使用下载到 `./bin/` 的 `ffmpeg/yt-dlp/node` 等）。
 
-#### 可选：配置 YouTube Cookies（推荐）
-很多 429/风控/年龄验证/登录态相关的问题，用 cookies 可以显著改善。
+#### 可选：配置平台 Cookies（YouTube / bilibili，推荐）
+很多 429/风控/年龄验证/登录态相关的问题，用 cookies 可以显著改善（B 站常见报错：352 风控拦截）。
 
-1) 在浏览器里登录 YouTube（建议用单独账号）
+1) 在浏览器里登录对应平台（YouTube / bilibili，建议用单独账号）
 2) 导出 **Netscape 格式** `cookies.txt`（Chrome/Firefox 常用扩展：`Get cookies.txt`）
 3) 打开 UI -> **设置** -> `YTDLP_COOKIES（cookies.txt）`，把内容粘贴进去并保存（不会写入 `.env`）。
 
@@ -160,7 +160,7 @@ WSL 提示：如果你的 `npm` 指向 Windows 安装路径（如 `/mnt/c/Progra
 
 ## 5) 目录结构
 
-- `backend/videosync/`：后端（FastAPI + Worker + Scheduler）
+- `backend/raelyn/`：后端（FastAPI + Worker + Scheduler）
 - `scripts/dev/`：开发环境与下载脚本
 - `ui/`：Tailwind + Alpine 的离线 UI 构建脚手架
 - `static/`：静态资源（构建产物与 `index.html`）
