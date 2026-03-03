@@ -1,12 +1,46 @@
           <!-- Settings -->
           <div x-show="activeView==='settings'" x-transition.opacity class="h-full">
             <div class="rounded-none bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
-              <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar">
-                <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
-                  <div>
-                    <div class="text-sm font-semibold text-slate-100">YTDLP_COOKIES（cookies.txt）</div>
-                    <div class="text-xs text-slate-400 mt-1">
-                      用于 yt-dlp 登录态（Netscape cookies.txt 格式）。在此编辑并保存后，下载任务会自动使用该 Cookie。
+              <div class="shrink-0 px-4 py-3 border-b border-slate-800 bg-slate-950/20">
+                <div class="flex flex-wrap items-center gap-2">
+                  <button
+                    class="px-3 py-1.5 rounded-md border text-sm"
+                    :class="settingsTab==='cookies' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-slate-700 bg-slate-950/20 text-slate-200 hover:bg-slate-800/60'"
+                    @click="setSettingsTab('cookies')"
+                  >
+                    Cookies
+                  </button>
+                  <button
+                    class="px-3 py-1.5 rounded-md border text-sm"
+                    :class="settingsTab==='subtitles' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-slate-700 bg-slate-950/20 text-slate-200 hover:bg-slate-800/60'"
+                    @click="setSettingsTab('subtitles')"
+                  >
+                    字幕
+                  </button>
+                  <button
+                    class="px-3 py-1.5 rounded-md border text-sm"
+                    :class="settingsTab==='members' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-slate-700 bg-slate-950/20 text-slate-200 hover:bg-slate-800/60'"
+                    @click="setSettingsTab('members')"
+                  >
+                    会员
+                  </button>
+                  <button
+                    class="px-3 py-1.5 rounded-md border text-sm"
+                    :class="settingsTab==='format' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-slate-700 bg-slate-950/20 text-slate-200 hover:bg-slate-800/60'"
+                    @click="setSettingsTab('format')"
+                  >
+                    画质
+                  </button>
+                </div>
+              </div>
+
+	              <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar">
+	                <div x-show="settingsTab==='cookies'" class="h-full flex flex-col min-h-0">
+	                  <div class="shrink-0 px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
+	                  <div>
+	                    <div class="text-sm font-semibold text-slate-100">YTDLP_COOKIES（cookies.txt）</div>
+	                    <div class="text-xs text-slate-400 mt-1">
+	                      用于 yt-dlp 登录态（Netscape cookies.txt 格式）。在此编辑并保存后，下载任务会自动使用该 Cookie。
                     </div>
                   </div>
                   <div class="shrink-0 flex items-center gap-2">
@@ -29,25 +63,27 @@
                       @click="saveYtdlpCookies()"
                       :disabled="ytdlpCookiesSaving"
                     >
-                      保存
-                    </button>
-                  </div>
-                </div>
-                <div class="p-4 space-y-3">
-                  <textarea
-                    class="w-full h-72 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs font-mono text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 whitespace-pre"
-                    placeholder="# Netscape HTTP Cookie File\n# 从浏览器导出后粘贴到这里…"
-                    spellcheck="false"
-                    x-model="ytdlpCookiesText"
-                  ></textarea>
+	                      保存
+	                    </button>
+	                  </div>
+	                </div>
+	                <div class="flex-1 min-h-0 p-4 flex flex-col gap-3">
+	                  <textarea
+	                    class="w-full flex-1 min-h-0 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs font-mono text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 whitespace-pre"
+	                    placeholder="# Netscape HTTP Cookie File\n# 从浏览器导出后粘贴到这里…"
+	                    spellcheck="false"
+	                    x-model="ytdlpCookiesText"
+	                  ></textarea>
                   <div class="text-xs text-rose-200" x-show="ytdlpCookiesError" x-text="ytdlpCookiesError"></div>
                   <div class="text-[11px] text-slate-500">
                     提示：该 Cookie 会保存在数据库配置中（<code class="text-slate-200">/api/config</code>），并在运行时写入本地
                     <code class="text-slate-200">tmp/ytdlp_cookies.txt</code> 供 yt-dlp 使用。
                   </div>
                 </div>
+                </div>
 
-                <div class="px-4 py-3 border-t border-slate-800 flex items-center justify-between gap-3">
+                <div x-show="settingsTab==='subtitles'">
+                <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
                   <div>
                     <div class="text-sm font-semibold text-slate-100">下载字幕（Subtitles）</div>
                     <div class="text-xs text-slate-400 mt-1">
@@ -86,8 +122,52 @@
                     提示：开启字幕下载后，建议同时在上方配置 <code class="text-slate-200">YTDLP_COOKIES</code>，否则更容易失败/被风控。
                   </div>
                 </div>
+                </div>
 
-                <div class="px-4 py-3 border-t border-slate-800 flex items-center justify-between gap-3">
+                <div x-show="settingsTab==='members'">
+                <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
+                  <div>
+                    <div class="text-sm font-semibold text-slate-100">会员视频（Members-only）</div>
+                    <div class="text-xs text-slate-400 mt-1">
+                      是否尝试下载 YouTube 会员专享视频（需要账号具备权限且 Cookies 有效）。默认关闭。
+                    </div>
+                  </div>
+                  <div class="shrink-0 flex items-center gap-2">
+                    <button
+                      class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
+                      @click="loadYtdlpMembersOnly({force:true})"
+                      :disabled="ytdlpMembersOnlySaving"
+                    >
+                      重新加载
+                    </button>
+                    <button
+                      class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                      @click="saveYtdlpMembersOnly()"
+                      :disabled="ytdlpMembersOnlySaving"
+                    >
+                      保存
+                    </button>
+                  </div>
+                </div>
+                <div class="p-4 space-y-3">
+                  <label class="inline-flex items-center gap-3 select-none">
+                    <input
+                      type="checkbox"
+                      class="h-4 w-4 rounded border-slate-700 bg-slate-950/30 text-emerald-500 focus:ring-emerald-500/30"
+                      x-model="ytdlpMembersOnlyEnabled"
+                    />
+                    <span class="text-sm text-slate-200">下载会员视频</span>
+                    <span class="text-xs text-slate-500">（对新同步/新下载任务生效）</span>
+                  </label>
+                  <div class="text-xs text-rose-200" x-show="ytdlpMembersOnlyError" x-text="ytdlpMembersOnlyError"></div>
+                  <div class="text-[11px] text-slate-500">
+                    提示：关闭时，识别为会员专享的视频不会创建下载任务；打开后会尝试下载，若无权限则仍会跳过。
+                  </div>
+                </div>
+                </div>
+
+                <div x-show="settingsTab==='format'">
+                <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
                   <div>
                     <div class="text-sm font-semibold text-slate-100">YTDLP_FORMAT（下载画质）</div>
                     <div class="text-xs text-slate-400 mt-1">
@@ -147,6 +227,7 @@
                     提示：该配置会保存在数据库配置中（<code class="text-slate-200">/api/config</code>），并在下载时作为 yt-dlp 的
                     <code class="text-slate-200">--format</code> 使用（无需重启即可生效）。
                   </div>
+                </div>
                 </div>
               </div>
             </div>

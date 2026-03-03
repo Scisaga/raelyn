@@ -106,12 +106,37 @@ def run_loop() -> None:
                 try:
                     job_log(session, job, "running")
                     result = handler(session, job)
+                    # If an operator canceled the job while it was running, do not overwrite status.
+                    try:
+                        session.refresh(job)
+                    except Exception:
+                        pass
+                    if job.status == "canceled":
+                        job.finished_at = job.finished_at or utcnow()
+                        job.lease_expires_at = None
+                        job_log(session, job, "canceled; result ignored", level="warn")
+                        continue
+
                     job.result = result
                     job.status = "succeeded"
+                    job.error_message = None
+                    job.error_stack = None
                     job.finished_at = utcnow()
                     job.lease_expires_at = None
                     job_log(session, job, "succeeded")
                 except Exception as e:
+                    # If canceled while running, keep status=canceled and avoid retries.
+                    try:
+                        session.refresh(job)
+                    except Exception:
+                        pass
+                    if job.status == "canceled":
+                        job.finished_at = job.finished_at or utcnow()
+                        job.lease_expires_at = None
+                        job.worker_id = None
+                        job_log(session, job, "canceled", level="warn")
+                        continue
+
                     job.attempt += 1
                     job.max_attempts = _effective_max_attempts(job.type, job.max_attempts)
                     job.error_message = str(e)

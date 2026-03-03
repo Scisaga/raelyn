@@ -52,27 +52,49 @@
 
           <div class="flex items-center gap-2">
             <button
-              class="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-950/20 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60"
-              @click="refreshActive()"
+              class="inline-flex items-center gap-2 rounded-md border border-rose-900/60 bg-rose-950/20 px-3 py-1.5 text-sm text-rose-200 hover:bg-rose-900/30"
+              x-show="pause && pause.paused"
+              x-transition.opacity.duration.150ms
+              :title="pause && pause.message ? pause.message : '系统已暂停'"
+              @click="gotoCookiesSettings()"
             >
-              <svg
-                viewBox="0 0 24 24"
-                width="18"
-                height="18"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M21 12a9 9 0 0 1-15 6.36" />
-                <path d="M3 12a9 9 0 0 1 15-6.36" />
-                <path d="M6 18H3v-3" />
-                <path d="M18 6h3v3" />
-              </svg>
-              <span class="hidden sm:inline">刷新</span>
+              <span class="hidden sm:inline">已暂停</span>
+              <span class="text-xs truncate max-w-[360px] hidden md:inline" x-text="pauseBadgeText()"></span>
             </button>
+            <div class="inline-flex rounded-md overflow-hidden border border-slate-800 divide-x divide-slate-800">
+              <button
+                class="inline-flex items-center gap-2 bg-slate-950/20 px-3 py-1.5 hover:bg-slate-800/50"
+                @click="openJobsFromHeader('queue')"
+                title="查看队列任务（待处理）"
+              >
+                <span class="text-xs text-slate-400 hidden sm:inline">队列</span>
+                <span class="text-sm font-semibold text-slate-100 tabular-nums" x-text="jobStats.pending"></span>
+              </button>
+              <button
+                class="inline-flex items-center gap-2 bg-slate-950/20 px-3 py-1.5 hover:bg-slate-800/50"
+                @click="openJobsFromHeader('running')"
+                title="查看正在执行任务"
+              >
+                <span class="text-xs text-slate-400 hidden sm:inline">执行</span>
+                <span class="text-sm font-semibold text-slate-100 tabular-nums" x-text="jobStats.running"></span>
+              </button>
+              <button
+                class="inline-flex items-center gap-2 bg-emerald-950/20 px-3 py-1.5 hover:bg-emerald-900/25"
+                @click="openJobsFromHeader('succeeded_24h')"
+                title="查看 24h 内成功任务"
+              >
+                <span class="text-xs text-emerald-200/80 hidden md:inline">24h 成功</span>
+                <span class="text-sm font-semibold text-emerald-200 tabular-nums" x-text="jobStats.succeeded24h"></span>
+              </button>
+              <button
+                class="inline-flex items-center gap-2 bg-rose-950/20 px-3 py-1.5 hover:bg-rose-900/25"
+                @click="openJobsFromHeader('failed')"
+                title="查看 24h 内失败任务"
+              >
+                <span class="text-xs text-rose-200/80 hidden md:inline">24h 失败</span>
+                <span class="text-sm font-semibold text-rose-200 tabular-nums" x-text="jobStats.failed"></span>
+              </button>
+            </div>
           </div>
         </header>
 

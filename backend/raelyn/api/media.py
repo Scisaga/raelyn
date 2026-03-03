@@ -129,21 +129,31 @@ def update_media(media_id: uuid.UUID, payload: MediaUpdate) -> MediaOut:
 
 @router.delete("/media/{media_id}")
 def delete_media(media_id: uuid.UUID) -> dict:
+    bucket = settings.s3_bucket
+    prefixes: list[str] = []
+
+    # Delete DB row first (transactional), then best-effort cleanup S3 after commit.
+    # Reason: S3 operations can fail; we do not want partial deletes that roll back the DB.
     with session_scope() as session:
         media = session.get(Media, media_id)
         if not media:
             raise HTTPException(status_code=404, detail="media not found")
-        bucket = settings.s3_bucket
-        # Best-effort delete all S3 objects that belong to this media:
-        # - video assets: <provider>/<media_id>/...
-        # - cached avatar: media/<media_id>/...
         prefixes = [f"{media.provider}/{media.id}/", f"media/{media.id}/"]
-        for prefix in prefixes:
+        session.delete(media)
+
+    s3_errors: list[dict] = []
+    s3_deleted_total = 0
+    for prefix in prefixes:
+        try:
             res = s3_clear_bucket(bucket=bucket, prefix=prefix)
             if not res.get("ok"):
-                raise HTTPException(status_code=502, detail=f"s3 delete failed ({prefix}): {res.get('error')}")
-        session.delete(media)
-    return {"ok": True}
+                s3_errors.append({"prefix": prefix, "error": res.get("error")})
+                continue
+            s3_deleted_total += int(res.get("deleted") or 0)
+        except Exception as e:
+            s3_errors.append({"prefix": prefix, "error": str(e)})
+
+    return {"ok": True, "s3_deleted": s3_deleted_total, "s3_errors": s3_errors}
 
 
 @router.post("/media/{media_id}/sync")

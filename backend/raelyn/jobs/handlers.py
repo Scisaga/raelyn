@@ -32,8 +32,30 @@ from raelyn.services.asr import asr_enabled, asr_transcribe
 from raelyn.services.subtitles import normalize_subtitle
 from raelyn.services.video_meta import parse_published_at
 from raelyn.services.workdir import job_workdir
-from raelyn.services.ytdlp import load_info_json, ytdlp_download, ytdlp_extract_info
+from raelyn.services.ytdlp import YtdlpCookiesInvalidError, load_info_json, ytdlp_download, ytdlp_extract_info
+from raelyn.services.system_pause import set_paused
 from raelyn.timeutil import utcnow
+
+
+def _pause_all_jobs_for_cookies(session: Session, *, job: Job, err: YtdlpCookiesInvalidError) -> None:
+    reason = getattr(err, "reason", "") or "ytdlp_cookies_invalid"
+    msg = str(err) or "YTDLP_COOKIES invalid"
+    pause_msg = f"已暂停全部任务：{msg}（请在 UI -> 设置 更新 YTDLP_COOKIES）"
+    set_paused(session, reason=str(reason), message=pause_msg)
+    job_log(session, job, pause_msg, level="error")
+
+
+def _ytdlp_members_only_download_enabled(session: Session) -> bool:
+    # Persisted via /api/config (AppConfig key: "ytdlp_members_only").
+    try:
+        item = session.get(AppConfig, "ytdlp_members_only")
+        value = item.value if item else None
+    except Exception:
+        return False
+    if not isinstance(value, dict):
+        return False
+    enabled = value.get("enabled")
+    return bool(enabled) if isinstance(enabled, bool) else False
 
 
 def _provider_guard_name(provider: str, kind: str) -> str:
@@ -200,6 +222,25 @@ def _best_language_subtitle(assets: list[Asset]) -> Asset | None:
     return subs[0] if subs else None
 
 
+def _is_members_only_entry(provider: str, entry: dict[str, Any]) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    if str(provider or "").lower() != "youtube":
+        return False
+
+    availability = entry.get("availability")
+    if availability is None:
+        availability = entry.get("_availability")
+    a = str(availability or "").strip().lower()
+    if not a:
+        return False
+
+    # yt-dlp commonly uses values like "subscriber_only" / "premium_only".
+    if a in {"subscriber_only", "premium_only"}:
+        return True
+    return ("members" in a) or ("member" in a) or ("subscriber" in a) or ("premium" in a)
+
+
 @registry.register("media.sync_profile")
 def media_sync_profile(session: Session, job: Job) -> dict | None:
     media_id = uuid.UUID(job.params["media_id"])
@@ -257,6 +298,9 @@ def media_sync_profile(session: Session, job: Job) -> dict | None:
         # due to members-only content.
         try:
             info = ytdlp_extract_info(media.url, flat=True, max_entries=1)
+        except YtdlpCookiesInvalidError as e:
+            _pause_all_jobs_for_cookies(session, job=job, err=e)
+            raise
         except Exception as e:
             msg = str(e)
             if "members-only" in msg.lower() or "members only" in msg.lower():
@@ -322,6 +366,11 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
         # like upcoming livestreams (which can raise "requested format is not available" in non-flat mode).
         try:
             info = ytdlp_extract_info(sync_url, flat=True, max_entries=playlist_limit if raw_max is not None else process_limit)
+        except YtdlpCookiesInvalidError as e:
+            _pause_all_jobs_for_cookies(session, job=job, err=e)
+            # Mark as attempted so the scheduler doesn't hammer providers while paused.
+            media.last_video_sync_at = utcnow()
+            raise
         except Exception as e:
             # If the provider blocked us (e.g. bilibili 352/412), mark this run as "attempted" so the scheduler
             # won't immediately enqueue again and keep hammering the provider.
@@ -339,6 +388,7 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
             entries = _pick_latest_entries(info, process_limit)
         created = 0
         enqueued_downloads = 0
+        allow_members_only_download = _ytdlp_members_only_download_enabled(session)
         for e in entries:
             provider_video_id = e.get("id")
             if not provider_video_id:
@@ -378,6 +428,10 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                 status="discovered",
             )
             v.published_at = parse_published_at(e)
+            is_members_only = _is_members_only_entry(media.provider, e)
+            if is_members_only and not allow_members_only_download:
+                v.status = "members_only"
+                v.error_message = "members-only video; not enqueued"
             session.add(v)
             created += 1
             session.flush()
@@ -391,8 +445,9 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
             if has_transcript:
                 _enqueue_brief_for_video_playlists(session, video=v, delay_seconds=90)
             if settings.auto_download_new_videos:
-                enqueue_job(session, type_="video.download", params={"video_id": str(v.id)}, priority=5)
-                enqueued_downloads += 1
+                if (not is_members_only) or allow_members_only_download:
+                    enqueue_job(session, type_="video.download", params={"video_id": str(v.id)}, priority=5)
+                    enqueued_downloads += 1
 
         media.last_video_sync_at = utcnow()
         job_log(
@@ -480,12 +535,15 @@ def video_download(session: Session, job: Job) -> dict | None:
                         download_target = _normalize_bilibili_video_url(download_target)
                     info = ytdlp_download(url=download_target, out_dir=wd, progress_hook=_hook)
                     set_job_progress(job_id=job.id, current=10000, total=10000)
+                except YtdlpCookiesInvalidError as e:
+                    _pause_all_jobs_for_cookies(session, job=job, err=e)
+                    raise
                 except Exception as e:
                     msg = str(e)
                     lower = msg.lower()
                     members_only = ("members-only" in lower) or ("join this channel" in lower) or ("members only" in lower)
                     if members_only:
-                        video.status = "failed"
+                        video.status = "members_only"
                         video.error_message = "members-only video; skipped"
                         job_log(session, job, "members-only video; skipped", level="warn")
                         return {"skipped": "members_only"}

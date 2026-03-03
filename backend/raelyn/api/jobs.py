@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import case
+from sqlalchemy import delete
 from sqlalchemy import func, select
 
 from raelyn.api.orm import OrmModel
@@ -242,3 +243,30 @@ def retry_job(job_id: uuid.UUID) -> dict:
         )
         session.add(JobEvent(job_id=job.id, level="info", message="retry enqueued"))
     return {"ok": True}
+
+
+@router.post("/jobs/cancel_active")
+def cancel_active_jobs() -> dict:
+    with session_scope() as session:
+        now = utcnow()
+        jobs = session.execute(select(Job).where(Job.status.in_(["pending", "running"]))).scalars().all()
+        n = 0
+        for j in jobs:
+            if j.status not in {"pending", "running"}:
+                continue
+            j.status = "canceled"
+            j.finished_at = now
+            j.lease_expires_at = None
+            j.worker_id = None
+            session.add(JobEvent(job_id=j.id, level="info", message="canceled (bulk)"))
+            n += 1
+        session.flush()
+        return {"ok": True, "canceled": n}
+
+
+@router.post("/jobs/delete_failed")
+def delete_failed_jobs() -> dict:
+    with session_scope() as session:
+        res = session.execute(delete(Job).where(Job.status == "failed"))
+        n = int(res.rowcount or 0)
+        return {"ok": True, "deleted": n}

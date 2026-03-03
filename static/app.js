@@ -36,6 +36,8 @@ function RaelynApp() {
     pageTitle: "概览",
     healthOk: false,
     globalStatus: "",
+    pause: { paused: false, reason: null, message: null, set_at: null },
+    _pausePollId: null,
     toasts: [],
     _toastSeq: 0,
     _toastTimers: new Map(),
@@ -45,13 +47,18 @@ function RaelynApp() {
       asr: { ok: false, configured: false, url: "", error: null },
       llm: { ok: false, configured: false, url: "", error: null },
     },
+    jobStats: { pending: 0, running: 0, succeeded24h: 0, failed: 0 },
+    jobStatsWs: null,
+    jobStatsWsConnected: false,
+    jobStatsWsError: "",
+    _jobStatsWsRetryTimer: null,
     navItems: [
       { key: "overview", label: "概览", icon: _raelyn_icon('<path d="M4 4h7v7H4z"/><path d="M13 4h7v7h-7z"/><path d="M4 13h7v7H4z"/><path d="M13 13h7v7h-7z"/>') },
       { key: "media", label: "媒体", icon: _raelyn_icon('<path d="M16 18a4 4 0 0 0-8 0"/><circle cx="12" cy="10" r="4"/><path d="M5 20h14"/>') },
       { key: "videos", label: "视频", icon: _raelyn_icon('<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>') },
-      { key: "jobs", label: "任务", icon: _raelyn_icon('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>') },
       { key: "playlists", label: "播放列表", icon: _raelyn_icon('<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>') },
       { key: "playlist", label: "播放列表页", hidden: true, icon: _raelyn_icon('<path d="M4 19V5"/><path d="M8 5h12"/><path d="M8 12h12"/><path d="M8 19h12"/>') },
+      { key: "jobs", label: "任务", icon: _raelyn_icon('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>') },
       { key: "briefs", label: "提示词", icon: _raelyn_icon('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/>') },
       { key: "settings", label: "设置", icon: _raelyn_icon('<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2.2 2.2 0 0 1-1.56 3.76 2.2 2.2 0 0 1-1.56-.64l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.64V21a2.2 2.2 0 1 1-4.4 0v-.06a1.8 1.8 0 0 0-1.08-1.64 1.8 1.8 0 0 0-1.98.36l-.04.04a2.2 2.2 0 0 1-3.76-1.56 2.2 2.2 0 0 1 .64-1.56l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.64-1.08H2.9a2.2 2.2 0 1 1 0-4.4h.06A1.8 1.8 0 0 0 4.6 8.4a1.8 1.8 0 0 0-.36-1.98l-.04-.04A2.2 2.2 0 0 1 5.76 2.6a2.2 2.2 0 0 1 1.56.64l.04.04A1.8 1.8 0 0 0 9.34 3.6 1.8 1.8 0 0 0 10.42 2h.06a2.2 2.2 0 1 1 4.4 0h-.06a1.8 1.8 0 0 0 1.08 1.64 1.8 1.8 0 0 0 1.98-.36l.04-.04a2.2 2.2 0 0 1 3.76 1.56 2.2 2.2 0 0 1-.64 1.56l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.64 1.08h.06a2.2 2.2 0 1 1 0 4.4h-.06A1.8 1.8 0 0 0 19.4 15z"/>') },
     ],
@@ -101,6 +108,7 @@ function RaelynApp() {
     _jobsActiveLastFetchAt: 0,
     jobsDoneChart: null,
     jobsDoneSeries: null,
+    settingsTab: "cookies", // cookies | subtitles | members | format
     playlistList: [],
     playlistListQuery: "",
     selectedPlaylistId: null,
@@ -116,6 +124,10 @@ function RaelynApp() {
     ytdlpSubtitlesLoaded: false,
     ytdlpSubtitlesSaving: false,
     ytdlpSubtitlesError: "",
+    ytdlpMembersOnlyEnabled: false,
+    ytdlpMembersOnlyLoaded: false,
+    ytdlpMembersOnlySaving: false,
+    ytdlpMembersOnlyError: "",
     ytdlpFormatPreset: "1080", // 1080 | 720 | custom
     ytdlpFormatCustomText: "",
     ytdlpFormatLoaded: false,
@@ -619,11 +631,59 @@ function RaelynApp() {
     async api(path, options) {
       const resp = await fetch(`/api${path}`, options || {});
       if (!resp.ok) {
+        const ct = resp.headers.get("content-type") || "";
+        if (ct.includes("application/json")) {
+          try {
+            const payload = await resp.json();
+            const detail = payload && typeof payload === "object" ? payload.detail : null;
+            if (detail) throw new Error(`${resp.status}: ${detail}`);
+            throw new Error(`${resp.status}: ${JSON.stringify(payload)}`);
+          } catch (e) {
+            const msg = e && e.message ? e.message : String(e);
+            throw new Error(`${resp.status}: ${msg}`);
+          }
+        }
         const text = await resp.text();
         throw new Error(`${resp.status}: ${text}`);
       }
       const ct = resp.headers.get("content-type") || "";
       return ct.includes("application/json") ? resp.json() : resp.text();
+    },
+
+    async loadSystemStatus({ silent = true } = {}) {
+      try {
+        const payload = await this.api(`/system`);
+        const p = payload && payload.pause ? payload.pause : null;
+        if (p && typeof p === "object") {
+          this.pause = {
+            paused: !!p.paused,
+            reason: p.reason || null,
+            message: p.message || null,
+            set_at: p.set_at || null,
+          };
+        } else {
+          this.pause = { paused: false, reason: null, message: null, set_at: null };
+        }
+      } catch (e) {
+        if (!silent) this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    pauseBadgeText() {
+      try {
+        if (!this.pause || !this.pause.paused) return "";
+        const msg = String(this.pause.message || "").trim();
+        if (!msg) return "已暂停";
+        if (msg.length <= 24) return msg;
+        return msg.slice(0, 24) + "…";
+      } catch {
+        return "已暂停";
+      }
+    },
+
+    gotoCookiesSettings() {
+      this.switchView("settings");
+      this.globalStatus = "系统已暂停：请更新 YTDLP_COOKIES 后自动恢复";
     },
 
     toastPush({ level = "info", title = "", message = "", action = null } = {}) {
@@ -789,6 +849,10 @@ function RaelynApp() {
           this.playlistSelectedDate = this._todayIsoLocal();
         }
       }
+      if (viewKey === "settings") {
+        const t = (sp.get("tab") || this.settingsTab || "cookies").trim();
+        this.settingsTab = ["cookies", "subtitles", "members", "format"].includes(t) ? t : "cookies";
+      }
     },
 
     _buildSearchForView(viewKey) {
@@ -817,6 +881,9 @@ function RaelynApp() {
         if (pid) sp.set("playlist_id", String(pid));
         if (this.playlistSelectedDate) sp.set("date", String(this.playlistSelectedDate));
       }
+      if (viewKey === "settings") {
+        sp.set("tab", this.settingsTab || "cookies");
+      }
       const s = sp.toString();
       return s ? `?${s}` : "";
     },
@@ -838,6 +905,12 @@ function RaelynApp() {
       this.pageTitle = item ? item.label : key;
       this._syncUrl({ push: true });
       this.refreshActive();
+    },
+
+    setSettingsTab(tab) {
+      const t = String(tab || "").trim();
+      this.settingsTab = ["cookies", "subtitles", "members", "format"].includes(t) ? t : "cookies";
+      this._syncUrl({ push: false });
     },
 
     async refreshActive() {
@@ -981,6 +1054,15 @@ function RaelynApp() {
     },
 
     jobsActiveCount() {
+      // When not filtering by type, make the tab count match the header stats:
+      // "队列" (pending) + "执行" (running).
+      if (!String(this.jobsTypeFilter || "").trim()) {
+        const pending = Number(this.jobStats && this.jobStats.pending);
+        const running = Number(this.jobStats && this.jobStats.running);
+        if (Number.isFinite(pending) && Number.isFinite(running)) return pending + running;
+      }
+
+      // Fallback: match the visible list count (may be limited/filtered/hidden).
       const server = Array.isArray(this.jobListActive) ? this.jobListActive.length : 0;
       const extra = Array.isArray(this.jobsOptimisticActive) ? this.jobsOptimisticActive.length : 0;
       return server + extra;
@@ -1052,6 +1134,90 @@ function RaelynApp() {
     _wsUrl(path) {
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
       return `${proto}://${window.location.host}${path}`;
+    },
+
+    _disconnectJobStatsWs() {
+      try {
+        if (this.jobStatsWs) this.jobStatsWs.close();
+      } catch {
+        // ignore
+      }
+      this.jobStatsWs = null;
+      this.jobStatsWsConnected = false;
+    },
+
+    _connectJobStatsWs() {
+      if (this.jobStatsWs) return;
+      try {
+        if (this._jobStatsWsRetryTimer) clearTimeout(this._jobStatsWsRetryTimer);
+      } catch {
+        // ignore
+      }
+      this._jobStatsWsRetryTimer = null;
+
+      const qs = new URLSearchParams();
+      qs.set("interval_seconds", "1");
+      qs.set("window_hours", "24");
+      const url = this._wsUrl(`/api/ws/job_stats?${qs.toString()}`);
+
+      const ws = new WebSocket(url);
+      this.jobStatsWs = ws;
+      this.jobStatsWsError = "";
+
+      ws.onopen = () => {
+        this.jobStatsWsConnected = true;
+      };
+      ws.onclose = () => {
+        this.jobStatsWsConnected = false;
+        this.jobStatsWs = null;
+        try {
+          if (this._jobStatsWsRetryTimer) clearTimeout(this._jobStatsWsRetryTimer);
+        } catch {
+          // ignore
+        }
+        this._jobStatsWsRetryTimer = setTimeout(() => this._connectJobStatsWs(), 1500);
+      };
+      ws.onerror = () => {
+        this.jobStatsWsError = "ws error";
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data || "{}");
+          if (!msg || msg.type !== "job_stats") return;
+          const pending = Number(msg.pending || 0);
+          const running = Number(msg.running || 0);
+          const succeeded24h = Number(msg.succeeded_24h || 0);
+          const failed = Number(msg.failed || 0);
+          this.jobStats = {
+            pending: Number.isFinite(pending) ? pending : 0,
+            running: Number.isFinite(running) ? running : 0,
+            succeeded24h: Number.isFinite(succeeded24h) ? succeeded24h : 0,
+            failed: Number.isFinite(failed) ? failed : 0,
+          };
+        } catch {
+          // ignore
+        }
+      };
+    },
+
+    openJobsFromHeader(kind) {
+      const k = String(kind || "").trim();
+      let tab = "active";
+      if (k === "succeeded_24h") tab = "succeeded";
+      if (k === "failed") tab = "failed";
+
+      if (tab !== "active") {
+        // Make the meaning match the header numbers (24h window).
+        this.jobsDoneFrom = "";
+        this.jobsDoneTo = "";
+      }
+
+      if (this.activeView !== "jobs") {
+        this.jobsTab = tab;
+        this.switchView("jobs");
+        return;
+      }
+      this.setJobsTab(tab);
     },
 
     setJobsTab(tab) {
@@ -1200,7 +1366,7 @@ function RaelynApp() {
 
         const fromIso = this.jobsDoneFrom ? new Date(this.jobsDoneFrom).toISOString() : "";
         const toIso = this.jobsDoneTo ? new Date(this.jobsDoneTo).toISOString() : "";
-        const statusIn = this.jobsTab === "succeeded" ? "succeeded" : "failed,canceled";
+        const statusIn = this.jobsTab === "succeeded" ? "succeeded" : "failed";
 
         const qs = new URLSearchParams();
         qs.set("status_in", statusIn);
@@ -1328,21 +1494,18 @@ function RaelynApp() {
             const d = b.originalData;
             const succeeded = Number(d.succeeded || 0);
             const failed = Number(d.failed || 0);
-            const canceled = Number(d.canceled || 0);
-            const total = succeeded + failed + canceled;
+            const total = succeeded + failed;
             if (!total) continue;
 
             const x = Math.round(b.x * horizontalPixelRatio);
             const left = x - half;
 
             const y1v = priceToCoordinate(succeeded);
-            const y2v = priceToCoordinate(succeeded + failed);
-            const y3v = priceToCoordinate(total);
-            if (y1v == null || y2v == null || y3v == null) continue;
+            const y2v = priceToCoordinate(total);
+            if (y1v == null || y2v == null) continue;
 
             const y1 = Math.round(y1v * verticalPixelRatio);
             const y2 = Math.round(y2v * verticalPixelRatio);
-            const y3 = Math.round(y3v * verticalPixelRatio);
 
             const drawSeg = (yBottom, yTop, color) => {
               const top = Math.min(yBottom, yTop);
@@ -1353,17 +1516,16 @@ function RaelynApp() {
               context.fillRect(left, top, wPx, h);
             };
 
-            // Stack: succeeded (bottom) -> failed -> canceled (top)
+            // Stack: succeeded (bottom) -> failed (top)
             drawSeg(y0, y1, "rgba(16, 185, 129, 0.75)"); // emerald-500
             drawSeg(y1, y2, "rgba(244, 63, 94, 0.75)"); // rose-500
-            drawSeg(y2, y3, "rgba(148, 163, 184, 0.55)"); // slate-400
 
             // outline
             context.strokeStyle = "rgba(30, 41, 59, 0.55)"; // slate-800-ish
             context.lineWidth = Math.max(1, Math.floor(horizontalPixelRatio));
             const outW = Math.max(1, wPx - 1);
-            const outH = Math.max(1, Math.abs(y0 - y3) - 1);
-            context.strokeRect(left + 0.5, Math.min(y0, y3) + 0.5, outW, outH);
+            const outH = Math.max(1, Math.abs(y0 - y2) - 1);
+            context.strokeRect(left + 0.5, Math.min(y0, y2) + 0.5, outW, outH);
           }
         });
       };
@@ -1383,8 +1545,7 @@ function RaelynApp() {
       JobsDoneStackedBarsPaneView.prototype.priceValueBuilder = function (row) {
         const succeeded = Number((row && row.succeeded) || 0);
         const failed = Number((row && row.failed) || 0);
-        const canceled = Number((row && row.canceled) || 0);
-        const total = succeeded + failed + canceled;
+        const total = succeeded + failed;
         return [0, total, total];
       };
 
@@ -1507,7 +1668,6 @@ function RaelynApp() {
         countsByMinute.set(minute, {
           succeeded: Number(p.succeeded || 0),
           failed: Number(p.failed || 0),
-          canceled: Number(p.canceled || 0),
         });
       }
 
@@ -1516,7 +1676,7 @@ function RaelynApp() {
       if (r) {
         const start = Math.floor(r.from / 60) * 60;
         for (let t = start; t < r.to; t += 60) {
-          const c = countsByMinute.get(t) || { succeeded: 0, failed: 0, canceled: 0 };
+          const c = countsByMinute.get(t) || { succeeded: 0, failed: 0 };
           data.push({ time: t, ...c });
         }
       } else {
@@ -1743,7 +1903,7 @@ function RaelynApp() {
         if (this.jobsTypeFilter) commonQs.set("type", this.jobsTypeFilter);
 
         const qsDone = new URLSearchParams(commonQs);
-        qsDone.set("status_in", "succeeded,failed,canceled");
+        qsDone.set("status_in", "succeeded,failed");
         qsDone.set("ts_field", "finished_at");
 
         const done = await this.api(`/jobs/series?${qsDone.toString()}`);
@@ -1753,8 +1913,7 @@ function RaelynApp() {
           const c = (p && p.counts) || {};
           const succeeded = Number(c.succeeded || 0);
           const failed = Number(c.failed || 0);
-          const canceled = Number(c.canceled || 0);
-          return { ts: p.ts, succeeded, failed, canceled, total: succeeded + failed + canceled };
+          return { ts: p.ts, succeeded, failed, total: succeeded + failed };
         });
 
         this.jobsSeriesDoneMax = this._jobsSeriesMax(this.jobsSeriesDone);
@@ -1925,6 +2084,7 @@ function RaelynApp() {
     async loadSettings({ force = false } = {}) {
       await this.loadYtdlpCookies({ force });
       await this.loadYtdlpSubtitles({ force });
+      await this.loadYtdlpMembersOnly({ force });
       await this.loadYtdlpFormat({ force });
     },
 
@@ -1956,6 +2116,7 @@ function RaelynApp() {
         });
         this.ytdlpCookiesLoaded = true;
         this.globalStatus = "已保存 yt-dlp Cookies";
+        await this.loadSystemStatus({ silent: true });
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
         this.ytdlpCookiesError = msg;
@@ -1983,6 +2144,43 @@ function RaelynApp() {
         this.ytdlpSubtitlesLoaded = true;
       } catch (e) {
         this.ytdlpSubtitlesError = e && e.message ? e.message : String(e);
+      }
+    },
+
+    async loadYtdlpMembersOnly({ force = false } = {}) {
+      try {
+        if (this.ytdlpMembersOnlyLoaded && !force) return;
+        this.ytdlpMembersOnlyError = "";
+
+        const payload = await this.api(`/config`);
+        const data = (payload && payload.data) || {};
+        const cfg = data && data.ytdlp_members_only ? data.ytdlp_members_only : null;
+        const enabled = cfg && typeof cfg === "object" ? cfg.enabled : false;
+        this.ytdlpMembersOnlyEnabled = typeof enabled === "boolean" ? enabled : false;
+        this.ytdlpMembersOnlyLoaded = true;
+      } catch (e) {
+        this.ytdlpMembersOnlyError = e && e.message ? e.message : String(e);
+      }
+    },
+
+    async saveYtdlpMembersOnly() {
+      try {
+        this.ytdlpMembersOnlySaving = true;
+        this.ytdlpMembersOnlyError = "";
+        const enabled = !!this.ytdlpMembersOnlyEnabled;
+        await this.api(`/config/ytdlp_members_only`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ value: { enabled } }),
+        });
+        this.ytdlpMembersOnlyLoaded = true;
+        this.globalStatus = "已保存会员视频下载设置";
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.ytdlpMembersOnlyError = msg;
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.ytdlpMembersOnlySaving = false;
       }
     },
 
@@ -3363,6 +3561,8 @@ function RaelynApp() {
           body: JSON.stringify({ media_ids: Array.isArray(this.playlistEditMediaIds) ? this.playlistEditMediaIds : [] }),
         });
         this.globalStatus = "已更新播放列表媒体（已触发全量简报生成）";
+        this.playlistEditMediaOpen = false;
+        this.playlistEditMediaTagOpen = false;
         await this.loadPlaylistPage();
         await this.loadPlaylists();
       } catch (e) {
@@ -3470,12 +3670,20 @@ function RaelynApp() {
     },
 
     async deleteMedia(mediaId) {
+      const id = String(mediaId || "").trim();
+      if (!id) return;
       try {
-        await this.api(`/media/${mediaId}`, { method: "DELETE" });
+        const ok = confirm("确认删除该媒体？该操作会删除媒体及其关联数据（视频/任务/简报等可能会受影响）。");
+        if (!ok) return;
+        this.globalStatus = "正在删除媒体…";
+        await this.api(`/media/${encodeURIComponent(id)}`, { method: "DELETE" });
         await this.loadMedia();
         this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
+        this.globalStatus = "已删除媒体";
+        this.toastSuccess("已删除媒体");
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
+        this.toastError(`删除失败：${e.message}`);
       }
     },
 
@@ -3670,6 +3878,15 @@ function RaelynApp() {
         this.services.asr = h.asr || this.services.asr;
         this.services.llm = h.llm || this.services.llm;
         this.globalStatus = h.deps_ok ? "" : "部分依赖不可用";
+        await this.loadSystemStatus({ silent: true });
+        this._connectJobStatsWs();
+        try {
+          if (!this._pausePollId) {
+            this._pausePollId = setInterval(() => this.loadSystemStatus({ silent: true }), 15000);
+          }
+        } catch {
+          // ignore
+        }
         this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
         await this.refreshActive();
         // Always load stats for overview cards even if user lands on other views.

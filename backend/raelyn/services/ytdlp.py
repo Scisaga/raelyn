@@ -15,6 +15,12 @@ from raelyn.db import session_scope
 from raelyn.models import AppConfig
 
 
+class YtdlpCookiesInvalidError(RuntimeError):
+    def __init__(self, reason: str, message: str) -> None:
+        self.reason = str(reason or "").strip() or "ytdlp_cookies_invalid"
+        super().__init__(str(message or "").strip() or "yt-dlp cookies invalid")
+
+
 class _YtdlpCaptureLogger:
     def __init__(self) -> None:
         self.warnings: list[str] = []
@@ -32,6 +38,43 @@ class _YtdlpCaptureLogger:
         m = str(msg or "").strip()
         if m:
             self.errors.append(m)
+
+
+def _normalize_msg(msg: str) -> str:
+    m = str(msg or "").strip().lower()
+    # Normalize curly quotes to avoid missing patterns.
+    return m.replace("’", "'").replace("“", '"').replace("”", '"')
+
+
+def _cookie_invalid_reason_from_message(msg: str) -> str | None:
+    m = _normalize_msg(msg)
+    if not m:
+        return None
+    if "does not look like a netscape format cookies file" in m:
+        return "ytdlp_cookies_format_invalid"
+    if "provided youtube account cookies are no longer valid" in m:
+        return "ytdlp_cookies_expired"
+    if "cookies are no longer valid" in m:
+        return "ytdlp_cookies_expired"
+    return None
+
+
+def _raise_if_cookie_invalid_messages(msgs: list[str]) -> None:
+    for s in msgs:
+        reason = _cookie_invalid_reason_from_message(s)
+        if not reason:
+            continue
+        if reason == "ytdlp_cookies_format_invalid":
+            raise YtdlpCookiesInvalidError(
+                reason,
+                "YTDLP_COOKIES 无效：不是 Netscape cookies.txt 格式。请在 UI -> 设置 更新 cookies.txt（tab 分隔）。",
+            )
+        if reason == "ytdlp_cookies_expired":
+            raise YtdlpCookiesInvalidError(
+                reason,
+                "YTDLP_COOKIES 已失效：YouTube 登录态 cookies 过期。请在 UI -> 设置 更新 cookies.txt。",
+            )
+        raise YtdlpCookiesInvalidError(reason, "YTDLP_COOKIES 无效，请在 UI -> 设置 更新 cookies.txt。")
 
 
 def _js_runtimes() -> dict[str, dict[str, str | None]] | None:
@@ -97,6 +140,14 @@ def _load_ytdlp_subtitles_enabled() -> bool:
 def _ensure_ytdlp_cookies_file(text: str) -> Path | None:
     if not (text or "").strip():
         return None
+    # Fail fast for obviously invalid formats to avoid confusing yt-dlp errors.
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    looks_like_netscape = any(ln.count("\t") >= 6 for ln in lines)
+    if not looks_like_netscape:
+        raise YtdlpCookiesInvalidError(
+            "ytdlp_cookies_format_invalid",
+            "YTDLP_COOKIES 无效：不是 Netscape cookies.txt 格式。请在 UI -> 设置 更新 cookies.txt（tab 分隔）。",
+        )
 
     root = Path(__file__).resolve().parents[3]
     out_dir = root / "tmp"
@@ -237,6 +288,7 @@ def ytdlp_extract_info(url: str, *, flat: bool = False, max_entries: int | None 
         try:
             info = ydl.extract_info(url, download=False)
         except (DownloadError, ExtractorError) as e:
+            _raise_if_cookie_invalid_messages(logger.warnings + logger.errors + [str(e)])
             if _is_youtube_bot_check_error(e):
                 raise RuntimeError(_youtube_bot_check_hint()) from e
             if _is_bilibili_risk_control_error(e) or _is_bilibili_precondition_failed_error(e):
@@ -248,9 +300,11 @@ def ytdlp_extract_info(url: str, *, flat: bool = False, max_entries: int | None 
         # With ignoreerrors=True, yt-dlp may return None (and report via logger.error). Treat as failure.
         if info is None:
             last = logger.errors[-1] if logger.errors else "yt-dlp extraction returned no result"
+            _raise_if_cookie_invalid_messages(logger.warnings + logger.errors + [last])
             if _is_bilibili_risk_control_error(RuntimeError(last)) or _is_bilibili_precondition_failed_error(RuntimeError(last)):
                 raise RuntimeError(_bilibili_risk_control_hint())
             raise RuntimeError(last)
+        _raise_if_cookie_invalid_messages(logger.warnings + logger.errors)
         return info
 
 
@@ -265,18 +319,23 @@ def ytdlp_download(
 ) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     outtmpl = str(out_dir / "%(id)s.%(ext)s")
+    cookie_invalid_line: str | None = None
 
     class _YtdlpLogger:
         def debug(self, msg: str) -> None:  # noqa: D401
             return
 
         def warning(self, msg: str) -> None:
+            nonlocal cookie_invalid_line
             m = str(msg or "")
             if not m.strip():
                 return
+            if _cookie_invalid_reason_from_message(m):
+                cookie_invalid_line = cookie_invalid_line or m
             print(f"[ytdlp] warn: {m}")
 
         def error(self, msg: str) -> None:
+            nonlocal cookie_invalid_line
             m = str(msg or "")
             if not m.strip():
                 return
@@ -284,6 +343,8 @@ def ytdlp_download(
             # We'll print our own retry hints for this case.
             if "requested format is not available" in lower or "requested format not available" in lower:
                 return
+            if _cookie_invalid_reason_from_message(m):
+                cookie_invalid_line = cookie_invalid_line or m
             print(f"[ytdlp] error: {m}")
 
     base_opts: dict[str, Any] = {
@@ -348,9 +409,13 @@ def ytdlp_download(
 
         try:
             with YoutubeDL(opts) as ydl:
-                return ydl.extract_info(url, download=True)
+                info = ydl.extract_info(url, download=True)
+                if cookie_invalid_line:
+                    _raise_if_cookie_invalid_messages([cookie_invalid_line])
+                return info
         except (DownloadError, ExtractorError) as e:
             last_error = e
+            _raise_if_cookie_invalid_messages([cookie_invalid_line or "", str(e)])
             if _is_youtube_bot_check_error(e):
                 raise RuntimeError(_youtube_bot_check_hint()) from e
             if _is_bilibili_risk_control_error(e) or _is_bilibili_precondition_failed_error(e):

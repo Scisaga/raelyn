@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
+
+_BACKEND_DIR = Path(__file__).resolve().parents[2]
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn.db import engine
 from raelyn.models import Base
@@ -47,4 +52,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

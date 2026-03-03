@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from raelyn.models import Job, JobEvent
+from raelyn.services.system_pause import is_paused
 from raelyn.timeutil import utcnow
 
 
@@ -38,6 +39,8 @@ def claim_next_job(
     lease_seconds: int = 300,
     type_in: list[str] | None = None,
 ) -> Job | None:
+    if is_paused(session):
+        return None
     now = utcnow()
     rank = case(*[(Job.type == t, r) for t, r in _JOB_TYPE_RANK.items()], else_=10)
     stmt = select(Job).where(Job.status == "pending", Job.scheduled_for <= now)

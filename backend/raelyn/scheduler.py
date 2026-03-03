@@ -11,6 +11,7 @@ from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Media
 from raelyn.services.log_timestamps import install_if_needed
 from raelyn.services.s3 import s3_ensure_bucket
+from raelyn.services.system_pause import is_paused
 from raelyn.timeutil import utcnow
 
 
@@ -31,6 +32,8 @@ def tick() -> int:
     now = utcnow()
     threshold = now - timedelta(minutes=settings.sync_interval_minutes)
     with session_scope() as session:
+        if is_paused(session):
+            return 0
         stmt = (
             select(Media)
             .where(Media.monitor_enabled.is_(True))

@@ -3,14 +3,16 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime
+from datetime import timedelta
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from sqlalchemy import case, select
+from sqlalchemy import case, func, select
 
 from raelyn.db import session_scope
 from raelyn.models import Job, Media
+from raelyn.timeutil import utcnow
 
 
 router = APIRouter(tags=["ws"])
@@ -138,5 +140,50 @@ async def ws_jobs(
             )
             await ws.send_json(jsonable_encoder({"type": "jobs", "jobs": jobs}))
             await asyncio.sleep(max(0.2, float(interval_seconds)))
+    except WebSocketDisconnect:
+        return
+
+
+def _query_job_stats(*, window_hours: int = 24) -> dict[str, Any]:
+    hours = int(window_hours or 24)
+    hours = max(1, min(168, hours))
+    now = utcnow()
+    since = now - timedelta(hours=hours)
+
+    with session_scope() as session:
+        rows = session.execute(
+            select(Job.status, func.count(Job.id)).where(Job.status.in_(["pending", "running"])).group_by(Job.status)
+        ).all()
+        active_map = {str(st): int(n or 0) for st, n in rows}
+
+        done_rows = session.execute(
+            select(Job.status, func.count(Job.id))
+            .where(Job.finished_at.is_not(None), Job.finished_at >= since, Job.finished_at < now)
+            .where(Job.status.in_(["succeeded", "failed"]))
+            .group_by(Job.status)
+        ).all()
+        done_map = {str(st): int(n or 0) for st, n in done_rows}
+
+        return {
+            "pending": int(active_map.get("pending", 0)),
+            "running": int(active_map.get("running", 0)),
+            "succeeded_24h": int(done_map.get("succeeded", 0)),
+            "failed": int(done_map.get("failed", 0)),
+            "window_hours": hours,
+        }
+
+
+@router.websocket("/ws/job_stats")
+async def ws_job_stats(
+    ws: WebSocket,
+    interval_seconds: float = 1.0,
+    window_hours: int = 24,
+) -> None:
+    await ws.accept()
+    try:
+        while True:
+            payload = await asyncio.to_thread(_query_job_stats, window_hours=window_hours)
+            await ws.send_json(jsonable_encoder({"type": "job_stats", **payload}))
+            await asyncio.sleep(max(0.3, float(interval_seconds)))
     except WebSocketDisconnect:
         return

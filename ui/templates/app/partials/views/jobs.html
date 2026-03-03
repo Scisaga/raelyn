@@ -27,7 +27,7 @@
 	                      :class="jobsTab==='failed' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-slate-700 bg-slate-950/20 text-slate-200 hover:bg-slate-800/60'"
 	                      @click="setJobsTab('failed')"
 	                    >
-	                      失败 / 取消
+	                      失败
 		                    </button>
 		                  </div>
 
@@ -36,6 +36,12 @@
 		                      <span class="inline-flex items-center gap-2">
 		                        <span class="w-2 h-2 rounded-full" :class="jobsWsConnected ? 'bg-emerald-400' : 'bg-slate-500'"></span>
 		                        <span x-text="jobsWsConnected ? '实时已连接' : '连接中…'"></span>
+		                      </span>
+		                      <span
+		                        class="text-[11px] text-slate-500"
+		                        x-show="!jobsTypeFilter && (Number(jobStats.pending||0) + Number(jobStats.running||0)) > 200"
+		                      >
+		                        列表仅显示前 200 条
 		                      </span>
 		                      <span x-show="jobsWsError" class="text-rose-300" x-text="jobsWsError"></span>
 		                    </div>
@@ -119,25 +125,21 @@
 			                  <div class="text-xs text-rose-300" x-show="jobsSeriesError" x-text="jobsSeriesError"></div>
 			                </div>
 
-	                <div x-show="jobsTab!=='active'" class="rounded-lg border border-slate-800 bg-slate-950/25 p-3">
-	                  <div class="flex items-center justify-between gap-3">
-	                    <div class="text-xs text-slate-300 flex flex-wrap items-center gap-x-3 gap-y-2">
-	                      <span>成功 / 失败 / 取消（按完成时间）</span>
-	                      <span class="inline-flex items-center gap-1 text-[11px] text-slate-400">
-	                        <span class="w-2 h-2 rounded-sm bg-emerald-500/70"></span>
-	                        succeeded
-	                      </span>
-	                      <span class="inline-flex items-center gap-1 text-[11px] text-slate-400">
-	                        <span class="w-2 h-2 rounded-sm bg-rose-500/70"></span>
-	                        failed
-	                      </span>
-	                      <span class="inline-flex items-center gap-1 text-[11px] text-slate-400">
-	                        <span class="w-2 h-2 rounded-sm bg-slate-500/60"></span>
-	                        canceled
-	                      </span>
-	                    </div>
-	                    <div class="text-[11px] text-slate-500" x-text="jobsSeriesDoneMax ? ('max: ' + jobsSeriesDoneMax) : ''"></div>
-		                  </div>
+		                <div x-show="jobsTab!=='active'" class="rounded-lg border border-slate-800 bg-slate-950/25 p-3">
+		                  <div class="flex items-center justify-between gap-3">
+		                    <div class="text-xs text-slate-300 flex flex-wrap items-center gap-x-3 gap-y-2">
+		                      <span>成功 / 失败（按完成时间）</span>
+		                      <span class="inline-flex items-center gap-1 text-[11px] text-slate-400">
+		                        <span class="w-2 h-2 rounded-sm bg-emerald-500/70"></span>
+		                        succeeded
+		                      </span>
+		                      <span class="inline-flex items-center gap-1 text-[11px] text-slate-400">
+		                        <span class="w-2 h-2 rounded-sm bg-rose-500/70"></span>
+		                        failed
+		                      </span>
+		                    </div>
+		                    <div class="text-[11px] text-slate-500" x-text="jobsSeriesDoneMax ? ('max: ' + jobsSeriesDoneMax) : ''"></div>
+			                  </div>
 		                  <div class="mt-2">
 		                    <div x-ref="jobsDoneChart" class="h-32"></div>
 		                    <div class="h-32 flex items-center justify-center text-xs text-slate-500" x-show="!(jobsSeriesDone||[]).length">

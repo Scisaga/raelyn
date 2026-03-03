@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -15,17 +16,24 @@ from raelyn.api.jobs import router as jobs_router
 from raelyn.api.media import router as media_router
 from raelyn.api.playlists import router as playlists_router
 from raelyn.api.stats import router as stats_router
+from raelyn.api.system import router as system_router
 from raelyn.api.videos import router as videos_router
 from raelyn.api.video_assets import router as video_assets_router
 from raelyn.api.ws import router as ws_router
 from raelyn.db import init_db
 from raelyn.services.s3 import s3_ensure_bucket
+from raelyn.services.system_pause import SystemPausedError
 
 
 init_db()
 s3_ensure_bucket()
 
 app = FastAPI(title="raelyn", version="0.1.0")
+
+
+@app.exception_handler(SystemPausedError)
+def _system_paused_handler(_request, exc: SystemPausedError) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"ok": False, "detail": str(exc), "pause": exc.pause})
 
 static_dir = Path(__file__).resolve().parents[2] / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -47,6 +55,7 @@ app.include_router(playlists_router, prefix="/api")
 app.include_router(briefs_router, prefix="/api")
 app.include_router(config_router, prefix="/api")
 app.include_router(stats_router, prefix="/api")
+app.include_router(system_router, prefix="/api")
 app.include_router(ws_router, prefix="/api")
 
 

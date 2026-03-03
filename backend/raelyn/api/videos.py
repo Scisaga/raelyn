@@ -14,7 +14,7 @@ from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.jobs.enqueue import enqueue_job
 from raelyn.jobs.enqueue import enqueue_in
-from raelyn.models import Asset, Media, Video
+from raelyn.models import AppConfig, Asset, Media, Video
 from raelyn.services.asr import asr_enabled
 from raelyn.services.downloads import build_download_filename, content_disposition_attachment
 from raelyn.services.llm import llm_enabled
@@ -217,6 +217,14 @@ def download_video(video_id: uuid.UUID) -> dict:
         video = session.get(Video, video_id)
         if not video:
             raise HTTPException(status_code=404, detail="video not found")
+        if (video.status or "") == "members_only":
+            item = session.get(AppConfig, "ytdlp_members_only")
+            value = item.value if item else None
+            enabled = False
+            if isinstance(value, dict) and isinstance(value.get("enabled"), bool):
+                enabled = bool(value.get("enabled"))
+            if not enabled:
+                raise HTTPException(status_code=409, detail="members-only video; download not enqueued")
         enqueue_job(session, type_="video.download", params={"video_id": str(video.id)}, priority=10)
     return {"ok": True}
 
