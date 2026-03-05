@@ -9,7 +9,7 @@ from typing import Any
 from dateutil import tz
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import Date, cast, func, select
 
 from raelyn.api.orm import OrmModel
 from raelyn.config import settings
@@ -33,6 +33,8 @@ class PlaylistCreate(BaseModel):
 class PlaylistUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
+    brief_granularity: str | None = None  # day | week | month
+    brief_prompt: str | None = None  # null/empty => use default
 
 
 class PlaylistMediaOut(BaseModel):
@@ -49,6 +51,7 @@ class PlaylistOut(OrmModel):
     description: str | None = None
     avatar_url: str | None = None
     background_url: str | None = None
+    brief_granularity: str = "day"
     media_count: int | None = None
     media_preview: list[PlaylistMediaOut] = Field(default_factory=list)
     video_count: int | None = None
@@ -60,6 +63,7 @@ class PlaylistOut(OrmModel):
 
 
 class PlaylistDetailOut(PlaylistOut):
+    brief_prompt: str | None = None
     media: list[PlaylistMediaOut] = []
 
 
@@ -94,6 +98,7 @@ def _media_avatar_url(m: Any) -> str | None:
 
 def _playlist_out(session, p: Playlist, *, preview: list[PlaylistMediaOut] | None = None) -> PlaylistOut:
     out = PlaylistOut.model_validate(p)
+    out.brief_granularity = (getattr(p, "brief_granularity", None) or "day").strip() or "day"
 
     avatar_key = (getattr(p, "avatar_s3_key", None) or "").strip()
     if avatar_key:
@@ -162,6 +167,40 @@ def _day_bounds_utc(d: date) -> tuple[datetime, datetime]:
     return day_start, day_start + timedelta(days=1)
 
 
+def _period_start(d: date, granularity: str) -> date:
+    g = (granularity or "day").strip().lower()
+    if g == "day":
+        return d
+    if g == "week":
+        return d - timedelta(days=d.weekday())  # Monday
+    if g == "month":
+        return date(d.year, d.month, 1)
+    raise HTTPException(status_code=400, detail="invalid granularity (day/week/month)")
+
+
+def _month_add_one(d: date) -> date:
+    y = int(d.year)
+    m = int(d.month)
+    if m >= 12:
+        return date(y + 1, 1, 1)
+    return date(y, m + 1, 1)
+
+
+def _period_bounds_utc(period_start: date, granularity: str) -> tuple[datetime, datetime]:
+    tzinfo = tz.gettz(settings.timezone) or tz.tzlocal()
+    start = datetime.combine(period_start, datetime.min.time()).replace(tzinfo=tzinfo).astimezone(tz.tzutc())
+    g = (granularity or "day").strip().lower()
+    if g == "day":
+        return start, start + timedelta(days=1)
+    if g == "week":
+        return start, start + timedelta(days=7)
+    if g == "month":
+        end_date = _month_add_one(period_start)
+        end = datetime.combine(end_date, datetime.min.time()).replace(tzinfo=tzinfo).astimezone(tz.tzutc())
+        return start, end
+    raise HTTPException(status_code=400, detail="invalid granularity (day/week/month)")
+
+
 def _enqueue_brief_full_range(session, *, playlist_id: uuid.UUID, priority: int = 3) -> int:
     media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == playlist_id)).scalars().all()
     if not media_ids:
@@ -181,17 +220,30 @@ def _enqueue_brief_full_range(session, *, playlist_id: uuid.UUID, priority: int 
     if today < start_date:
         return 0
 
+    playlist = session.get(Playlist, playlist_id)
+    granularity = (getattr(playlist, "brief_granularity", None) or "day").strip().lower() if playlist else "day"
+    if granularity not in {"day", "week", "month"}:
+        granularity = "day"
+
+    start_date = _period_start(start_date, granularity)
+    end_date = _period_start(today, granularity)
+
     n = 0
     d = start_date
-    while d <= today:
+    while d <= end_date:
         enqueue_job(
             session,
-            type_="brief.generate_daily",
-            params={"playlist_id": str(playlist_id), "date": d.isoformat()},
+            type_="brief.generate_period",
+            params={"playlist_id": str(playlist_id), "granularity": granularity, "period_start": d.isoformat()},
             priority=priority,
         )
         n += 1
-        d = d + timedelta(days=1)
+        if granularity == "day":
+            d = d + timedelta(days=1)
+        elif granularity == "week":
+            d = d + timedelta(days=7)
+        else:
+            d = _month_add_one(d)
     return n
 
 
@@ -298,6 +350,7 @@ def list_playlists(limit: int = 100, offset: int = 0) -> list[PlaylistOut]:
         out_items: list[PlaylistOut] = []
         for p in items:
             out = PlaylistOut.model_validate(p)
+            out.brief_granularity = (getattr(p, "brief_granularity", None) or "day").strip() or "day"
             avatar_key = (getattr(p, "avatar_s3_key", None) or "").strip()
             if avatar_key:
                 try:
@@ -342,6 +395,7 @@ def get_playlist_detail(playlist_id: uuid.UUID) -> PlaylistDetailOut:
             raise HTTPException(status_code=404, detail="playlist not found")
 
         out = PlaylistDetailOut.model_validate(_playlist_out(session, playlist).model_dump())
+        out.brief_prompt = (getattr(playlist, "brief_prompt", None) or "").strip() or None
         rows = (
             session.execute(
                 select(Media)
@@ -377,6 +431,25 @@ def update_playlist(playlist_id: uuid.UUID, payload: PlaylistUpdate) -> Playlist
             playlist.name = payload.name
         if payload.description is not None:
             playlist.description = payload.description
+        if payload.brief_granularity is not None:
+            g = payload.brief_granularity.strip().lower()
+            if g not in {"day", "week", "month"}:
+                raise HTTPException(status_code=400, detail="invalid brief_granularity (day/week/month)")
+            playlist.brief_granularity = g
+        if "brief_prompt" in payload.model_fields_set:
+            p = (payload.brief_prompt or "").strip()
+            playlist.brief_prompt = p or None
+        session.flush()
+        return _playlist_out(session, playlist)
+
+
+@router.delete("/playlists/{playlist_id}/background", response_model=PlaylistOut)
+def clear_playlist_background(playlist_id: uuid.UUID) -> PlaylistOut:
+    with session_scope() as session:
+        playlist = session.get(Playlist, playlist_id)
+        if not playlist:
+            raise HTTPException(status_code=404, detail="playlist not found")
+        playlist.background_s3_key = None
         session.flush()
         return _playlist_out(session, playlist)
 
@@ -518,6 +591,11 @@ class PlaylistVideoOut(BaseModel):
     media_avatar_url: str | None = None
 
 
+class PlaylistPeriodCountOut(BaseModel):
+    period_start: date
+    count: int
+
+
 @router.get("/playlists/{playlist_id}/videos_by_date", response_model=list[PlaylistVideoOut])
 def list_playlist_videos_by_date(playlist_id: uuid.UUID, date: date) -> list[PlaylistVideoOut]:
     with session_scope() as session:
@@ -531,6 +609,142 @@ def list_playlist_videos_by_date(playlist_id: uuid.UUID, date: date) -> list[Pla
                 .join(Media, Media.id == Video.media_id)
                 .where(Video.media_id.in_(list(media_ids)), Video.published_at.is_not(None), Video.published_at >= start, Video.published_at < end)
                 .order_by(Video.published_at.desc(), Video.created_at.desc())
+            )
+            .all()
+        )
+
+        out: list[PlaylistVideoOut] = []
+        for v, m in rows:
+            desc = v.description
+            if (not desc) and v.raw_info and isinstance(v.raw_info, dict) and v.raw_info.get("description"):
+                try:
+                    desc = str(v.raw_info.get("description") or "")
+                except Exception:
+                    desc = None
+            if desc:
+                desc = desc.strip().replace("\n", " ")
+                if len(desc) > 140:
+                    desc = desc[:140].rstrip() + "…"
+            avatar_url = m.avatar_url
+            key = (getattr(m, "avatar_s3_key", None) or "").strip()
+            if key:
+                try:
+                    avatar_url = s3_presign_get(settings.s3_bucket, key)
+                except Exception:
+                    pass
+            out.append(
+                PlaylistVideoOut(
+                    id=v.id,
+                    media_id=v.media_id,
+                    url=v.url,
+                    title=v.title,
+                    description=desc,
+                    thumbnail_url=v.thumbnail_url,
+                    published_at=v.published_at,
+                    duration_sec=v.duration_sec,
+                    status=v.status,
+                    error_message=v.error_message,
+                    media_name=m.name,
+                    media_avatar_url=avatar_url,
+                )
+            )
+        return out
+
+
+@router.get("/playlists/{playlist_id}/video_counts_by_period", response_model=list[PlaylistPeriodCountOut])
+def list_playlist_video_counts_by_period(
+    playlist_id: uuid.UUID,
+    granularity: str = "day",
+    start: date = ...,
+    end: date = ...,
+) -> list[PlaylistPeriodCountOut]:
+    g = (granularity or "day").strip().lower()
+    if g not in {"day", "week", "month"}:
+        raise HTTPException(status_code=400, detail="invalid granularity (day/week/month)")
+
+    pstart = _period_start(start, g)
+    pend = _period_start(end, g)
+    if pend < pstart:
+        return []
+
+    if g == "day":
+        periods = (pend - pstart).days + 1
+    elif g == "week":
+        periods = ((pend - pstart).days // 7) + 1
+    else:
+        periods = (pend.year - pstart.year) * 12 + (pend.month - pstart.month) + 1
+    if periods > 400:
+        raise HTTPException(status_code=400, detail="range too large (max 400 periods)")
+
+    start_utc, _ = _period_bounds_utc(pstart, g)
+    _, end_utc = _period_bounds_utc(pend, g)
+
+    tzname = (getattr(settings, "timezone", None) or "UTC").strip() or "UTC"
+    unit = "day" if g == "day" else ("week" if g == "week" else "month")
+
+    with session_scope() as session:
+        local_ts = func.timezone(tzname, Video.published_at)
+        bucket = func.date_trunc(unit, local_ts)
+        period_start_expr = cast(bucket, Date)
+        rows = (
+            session.execute(
+                select(
+                    period_start_expr.label("period_start"),
+                    func.count(Video.id).label("count"),
+                )
+                .select_from(Video)
+                .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
+                .where(
+                    PlaylistMedia.playlist_id == playlist_id,
+                    Video.published_at.is_not(None),
+                    Video.published_at >= start_utc,
+                    Video.published_at < end_utc,
+                )
+                .group_by(period_start_expr)
+                .order_by(period_start_expr.asc())
+            )
+            .all()
+        )
+
+        out: list[PlaylistPeriodCountOut] = []
+        for ps, cnt in rows:
+            try:
+                out.append(PlaylistPeriodCountOut(period_start=ps, count=int(cnt or 0)))
+            except Exception:
+                continue
+        return out
+
+
+@router.get("/playlists/{playlist_id}/videos_by_period", response_model=list[PlaylistVideoOut])
+def list_playlist_videos_by_period(
+    playlist_id: uuid.UUID,
+    granularity: str = "day",
+    date: date = ...,
+    limit: int = 200,
+) -> list[PlaylistVideoOut]:
+    g = (granularity or "day").strip().lower()
+    if g not in {"day", "week", "month"}:
+        raise HTTPException(status_code=400, detail="invalid granularity (day/week/month)")
+    pstart = _period_start(date, g)
+    start, end = _period_bounds_utc(pstart, g)
+
+    n = max(1, min(int(limit or 200), 500))
+    with session_scope() as session:
+        media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == playlist_id)).scalars().all()
+        if not media_ids:
+            return []
+        rows = (
+            session.execute(
+                select(Video, Media)
+                .join(Media, Media.id == Video.media_id)
+                .where(
+                    Video.media_id.in_(list(media_ids)),
+                    Video.published_at.is_not(None),
+                    Video.published_at >= start,
+                    Video.published_at < end,
+                )
+                .order_by(Video.published_at.desc(), Video.created_at.desc())
+                .limit(n)
             )
             .all()
         )

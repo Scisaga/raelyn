@@ -1,11 +1,11 @@
           <!-- Media -->
           <div x-show="activeView==='media'" x-transition.opacity class="h-full">
             <div class="bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
-              <div class="shrink-0 px-4 py-3 flex items-center justify-between gap-3">
-                <div class="text-xs text-slate-400" x-text="mediaList.length ? ('已加载 ' + mediaList.length + ' 条') : ''"></div>
-                <div class="flex items-center gap-2">
+              <div class="shrink-0 px-4 py-3 flex items-center justify-between gap-2 sm:gap-3">
+	                <div class="hidden sm:block text-xs text-slate-400" x-text="mediaList.length ? ('已加载 ' + mediaList.length + ' 条') : ''"></div>
+                <div class="flex items-center gap-2 min-w-0 flex-1 justify-end">
                   <button
-                    class="inline-flex items-center gap-2 rounded-md bg-emerald-500 px-3 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-400"
+                    class="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-500 px-2.5 sm:px-3 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-400 shrink-0"
                     @click="openAddMedia()"
                     title="添加媒体"
                     aria-label="添加媒体"
@@ -27,16 +27,44 @@
                     <span class="hidden sm:inline">添加媒体</span>
                   </button>
                   <input
-                    class="w-64 max-w-full rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                    class="flex-1 min-w-0 sm:flex-none sm:w-64 rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
                     placeholder="搜索名称/描述"
                     x-model="mediaQuery"
                     @input.debounce.400ms="loadMedia()"
                   />
+                  <div class="inline-flex overflow-hidden rounded-md border border-slate-700 bg-slate-950/20 shrink-0">
+                    <button
+                      type="button"
+                      class="px-2.5 py-2 text-slate-200 hover:bg-slate-800/60"
+                      @click="exportMediaAll()"
+                      title="导出媒体"
+                      aria-label="导出媒体"
+                    >
+                      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <path d="M17 8l-5-5-5 5" />
+                        <path d="M12 3v12" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      class="px-2.5 py-2 text-slate-200 hover:bg-slate-800/60 border-l border-slate-700"
+                      @click="openMediaImport()"
+                      title="导入媒体"
+                      aria-label="导入媒体"
+                    >
+                      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <path d="M7 10l5 5 5-5" />
+                        <path d="M12 15V3" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
               </div>
-              <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar divide-y divide-slate-800">
-                <template x-for="m in mediaList" :key="m.id">
-                  <div class="p-4 flex flex-col gap-3 hover:bg-slate-900/50 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+	              <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar divide-y divide-slate-800">
+	                <template x-for="m in mediaList" :key="m.id">
+	                  <div class="p-4 flex flex-col gap-3 hover:bg-slate-900/50 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                     <div class="flex items-center gap-3 min-w-0 sm:flex-1">
                       <div
                         class="w-10 h-10 rounded-lg ring-1 flex items-center justify-center overflow-hidden shrink-0"
@@ -54,25 +82,25 @@
                         <template x-if="!m.avatar_url">
                           <span class="text-xs font-semibold" x-text="mediaAvatarLabel(m)"></span>
                         </template>
-                      </div>
-                      <div class="min-w-0">
-                        <div class="font-medium truncate" x-text="mediaDisplayName(m)"></div>
-                        <a
-                          class="text-xs text-slate-400 truncate hover:text-slate-200 hover:underline"
-                          :href="(m.url||'').startsWith('http') ? m.url : ('https://' + (m.url||''))"
-                          target="_blank"
-                          rel="noreferrer"
-                          x-text="m.url"
-                        ></a>
-                        <div class="mt-1 flex items-center gap-2">
-                          <span
-                            class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/20 px-2 py-0.5 text-[11px] text-slate-300 whitespace-nowrap"
-                            x-text="'视频 ' + ((m.video_count===0 || m.video_count) ? m.video_count : '-')"
-                          ></span>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="flex flex-wrap items-center gap-2 justify-end">
+	                      </div>
+	                      <div class="min-w-0">
+		                        <div class="flex items-center gap-2 min-w-0">
+		                          <div class="font-medium truncate min-w-0 max-w-[14rem] sm:max-w-[18rem] lg:max-w-[24rem]" x-text="mediaDisplayName(m)"></div>
+		                          <span
+		                            class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/20 px-2 py-0.5 text-[11px] text-slate-300 whitespace-nowrap shrink-0"
+		                            x-text="'视频 ' + ((m.video_count===0 || m.video_count) ? m.video_count : '-')"
+		                          ></span>
+		                        </div>
+	                        <a
+	                          class="text-xs text-slate-400 truncate hover:text-slate-200 hover:underline"
+	                          :href="(m.url||'').startsWith('http') ? m.url : ('https://' + (m.url||''))"
+	                          target="_blank"
+	                          rel="noreferrer"
+	                          x-text="m.url"
+	                        ></a>
+	                      </div>
+	                    </div>
+	                    <div class="flex flex-wrap items-center gap-2 justify-end">
                       <div class="flex items-center gap-2 mr-1">
                         <span class="text-xs text-slate-400">监控</span>
                         <label class="relative inline-flex items-center cursor-pointer select-none">
@@ -85,27 +113,59 @@
                           <div class="relative w-9 h-5 rounded-full bg-slate-700/60 peer-focus:ring-2 peer-focus:ring-emerald-500/30 peer-checked:bg-emerald-600/80 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:h-4 after:w-4 after:rounded-full after:bg-slate-100 after:transition-all peer-checked:after:translate-x-4"></div>
                         </label>
                       </div>
-                      <button
-                        class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
-                        @click="syncMediaRecent(m.id)"
+                      <div
+                        class="inline-flex overflow-hidden rounded-md border border-slate-700 bg-slate-950/20"
+                        role="group"
+                        aria-label="媒体操作"
                       >
-                        同步近期
-                      </button>
-                      <button
-                        class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
-                        @click="syncMediaAll(m.id)"
-                      >
-                        同步全部
-                      </button>
-                      <button
-                        class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
-                        @click="deleteMedia(m.id)"
-                      >
-                        删除
-                      </button>
-                    </div>
-                  </div>
-                </template>
-              </div>
+                        <button
+                          type="button"
+                          class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset border-r border-slate-700"
+                          @click="syncMediaRecent(m.id)"
+                          title="同步近期"
+                        >
+                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M21 12a9 9 0 0 0-9-9 9 9 0 0 0-6.36 2.64L3 8"></path>
+                            <path d="M3 3v5h5"></path>
+                            <path d="M3 12a9 9 0 0 0 9 9 9 9 0 0 0 6.36-2.64L21 16"></path>
+                            <path d="M21 21v-5h-5"></path>
+                          </svg>
+                          <span>近期</span>
+                        </button>
+                        <button
+                          type="button"
+                          class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset border-r border-slate-700"
+                          @click="syncMediaAll(m.id)"
+                          title="同步全部"
+                        >
+                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M21 12a9 9 0 0 0-9-9 9 9 0 0 0-6.36 2.64L3 8"></path>
+                            <path d="M3 3v5h5"></path>
+                            <path d="M3 12a9 9 0 0 0 9 9 9 9 0 0 0 6.36-2.64L21 16"></path>
+                            <path d="M21 21v-5h-5"></path>
+                          </svg>
+                          <span>全部</span>
+                        </button>
+                        <button
+                          type="button"
+                          class="inline-flex items-center justify-center px-2.5 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset"
+                          @click="deleteMedia(m.id)"
+                          title="删除"
+                          aria-label="删除"
+                        >
+                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+                            <path d="M10 11v6"></path>
+                            <path d="M14 11v6"></path>
+                            <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+                          </svg>
+                        </button>
+                      </div>
+	                    </div>
+	                  </div>
+	                </template>
+                  <div class="h-0 border-t border-slate-800" x-show="mediaList.length>0"></div>
+	              </div>
             </div>
           </div>

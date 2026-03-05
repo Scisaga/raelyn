@@ -15,17 +15,28 @@ def ffmpeg_bin() -> str:
 
 def extract_audio_to_m4a(*, input_path: Path, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    codec = str(settings.audio_codec or "").strip() or "aac"
+    bitrate = str(settings.audio_bitrate or "").strip() or "64k"
+    sample_rate_hz = settings.audio_sample_rate_hz
+    channels = settings.audio_channels
     cmd = [
         ffmpeg_bin(),
         "-y",
         "-i",
         str(input_path),
         "-vn",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k",
-        str(output_path),
     ]
+    if isinstance(channels, int) and channels > 0:
+        cmd.extend(["-ac", str(int(channels))])
+    if isinstance(sample_rate_hz, int) and sample_rate_hz > 0:
+        cmd.extend(["-ar", str(int(sample_rate_hz))])
+    cmd.extend(
+        [
+        "-c:a",
+        codec,
+        "-b:a",
+        bitrate,
+        str(output_path),
+        ]
+    )
     subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-

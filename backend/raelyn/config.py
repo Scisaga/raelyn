@@ -22,6 +22,14 @@ class Settings(BaseSettings):
 
     ytdlp_bin: str = "./bin/yt-dlp"
     ffmpeg_bin: str = "./bin/ffmpeg"
+
+    # --- Audio extraction (ffmpeg) ---
+    # Used by video.extract_audio to generate an audio-only asset for mobile playback and ASR.
+    # Defaults bias toward speech (lower bandwidth) while staying broadly compatible (AAC in M4A).
+    audio_codec: str = Field(default="aac", validation_alias=AliasChoices("AUDIO_CODEC"))
+    audio_bitrate: str = Field(default="64k", validation_alias=AliasChoices("AUDIO_BITRATE"))
+    audio_sample_rate_hz: int | None = Field(default=16000, validation_alias=AliasChoices("AUDIO_SAMPLE_RATE_HZ"))
+    audio_channels: int | None = Field(default=1, validation_alias=AliasChoices("AUDIO_CHANNELS"))
     ytdlp_proxy: str = ""
     # yt-dlp format selector for downloads (see: https://github.com/yt-dlp/yt-dlp#format-selection)
     # Default: cap at 1080p, prefer MP4+M4A, then fall back to best available.
@@ -47,6 +55,14 @@ class Settings(BaseSettings):
     bilibili_sync_concurrency: int = 1
     youtube_download_concurrency: int = 2
     bilibili_download_concurrency: int = 2
+
+    # --- Worker heartbeats / orphan running job recovery ---
+    # Worker writes a heartbeat row periodically so other workers can detect crashed peers.
+    worker_heartbeat_interval_seconds: int = 5
+    # Consider a worker dead if its heartbeat hasn't updated within this window.
+    worker_stale_after_seconds: int = 20
+    # When requeuing orphaned "running" jobs, bump their priority to the head of the queue.
+    orphan_requeue_priority_bump: int = 1000
 
     # --- ASR (qwen3-asr / OpenAI-compatible servers) ---
     # Back-compat: also accepts SPEACHES_* env vars.

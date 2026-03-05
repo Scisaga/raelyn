@@ -19,52 +19,26 @@
               <div class="relative flex flex-col h-full min-h-0 divide-y divide-slate-800">
 	                <!-- Row 1: Playlist Info (fixed height) -->
 	                <div class="relative h-20 overflow-hidden bg-slate-950/20">
-	                  <div class="absolute top-0 right-0 flex">
+	                  <div class="absolute right-0 top-1/2 -translate-y-1/2 flex">
 	                    <button
-	                      class="p-2 border-l border-b border-slate-800 bg-slate-950/80 lg:bg-slate-950/20 backdrop-blur text-slate-200 hover:bg-slate-800/60 rounded-bl-xl"
-	                      @click="$refs && $refs.playlistBgInput && $refs.playlistBgInput.click()"
+	                      class="p-2 border-l border-slate-800 bg-slate-800/70 lg:bg-slate-800/40 backdrop-blur text-slate-200 hover:bg-slate-700/80 rounded-l-xl ring-1 ring-inset ring-slate-700/60 hover:ring-slate-600/70"
+	                      @click="playlistToggleSubview()"
 	                      :disabled="!playlistDetail"
 	                      :class="playlistDetail ? '' : 'opacity-60 cursor-not-allowed'"
-	                      title="编辑背景"
-	                      aria-label="编辑背景"
-                    >
-                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <rect x="3" y="4" width="18" height="16" rx="2"></rect>
-                        <circle cx="8.5" cy="9.5" r="1.5"></circle>
-                        <path d="M21 15l-5-5L5 21"></path>
-                      </svg>
-                    </button>
-                    <input x-ref="playlistBgInput" type="file" class="hidden" accept="image/png,image/jpeg,image/webp" @change="playlistUploadBackground($event)" />
-
-	                    <button
-	                      class="p-2 border-l border-b border-slate-800 bg-slate-950/80 lg:bg-slate-950/20 backdrop-blur text-slate-200 hover:bg-slate-800/60"
-	                      @click="playlistRegenerateAllBriefs()"
-	                      :disabled="!playlistDetail"
-	                      :class="playlistDetail ? '' : 'opacity-60 cursor-not-allowed'"
-	                      title="全量重新生成简报（从最早视频到今天）"
-	                      aria-label="全量重新生成简报"
-                    >
-                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="M21 12a9 9 0 1 1-3-6.7" />
-                        <path d="M21 3v6h-6" />
-                      </svg>
-	                    </button>
-
-	                    <button
-	                      class="p-2 border-l border-b border-slate-800 bg-rose-500/25 lg:bg-rose-500/10 backdrop-blur text-rose-200 hover:bg-rose-500/20"
-	                      @click="playlistDelete()"
-	                      :disabled="!playlistDetail"
-	                      :class="playlistDetail ? '' : 'opacity-60 cursor-not-allowed'"
-	                      title="删除播放列表"
-	                      aria-label="删除播放列表"
-                    >
-                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="M3 6h18" />
-                        <path d="M8 6V4h8v2" />
-                        <path d="M19 6l-1 14H6L5 6" />
-                        <path d="M10 11v6" />
-                        <path d="M14 11v6" />
-                      </svg>
+	                      :title="playlistSubview==='settings' ? '返回播放列表' : '播放列表设置'"
+	                      :aria-label="playlistSubview==='settings' ? '返回播放列表' : '播放列表设置'"
+                      >
+                        <template x-if="playlistSubview!=='settings'">
+                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <circle cx="12" cy="12" r="3"></circle>
+                            <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2.2 2.2 0 0 1-1.56 3.76 2.2 2.2 0 0 1-1.56-.64l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.64V21a2.2 2.2 0 1 1-4.4 0v-.06a1.8 1.8 0 0 0-1.08-1.64 1.8 1.8 0 0 0-1.98.36l-.04.04a2.2 2.2 0 0 1-3.76-1.56 2.2 2.2 0 0 1 .64-1.56l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.64-1.08H2.9a2.2 2.2 0 1 1 0-4.4h.06A1.8 1.8 0 0 0 4.6 8.4a1.8 1.8 0 0 0-.36-1.98l-.04-.04A2.2 2.2 0 0 1 5.76 2.6a2.2 2.2 0 0 1 1.56.64l.04.04A1.8 1.8 0 0 0 9.34 3.6 1.8 1.8 0 0 0 10.42 2h.06a2.2 2.2 0 1 1 4.4 0h-.06a1.8 1.8 0 0 0 1.08 1.64 1.8 1.8 0 0 0 1.98-.36l.04-.04a2.2 2.2 0 0 1 3.76 1.56 2.2 2.2 0 0 1-.64 1.56l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.64 1.08h.06a2.2 2.2 0 1 1 0 4.4h-.06A1.8 1.8 0 0 0 19.4 15z"></path>
+                          </svg>
+                        </template>
+                        <template x-if="playlistSubview==='settings'">
+                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M15 18l-6-6 6-6"></path>
+                          </svg>
+                        </template>
 	                    </button>
 	                  </div>
 
@@ -79,7 +53,7 @@
                       aria-label="修改头像"
                     >
                       <template x-if="playlistDetail && playlistDetail.avatar_url">
-                        <img class="w-14 h-14 rounded-xl object-cover" :src="playlistDetail.avatar_url" alt="" loading="lazy" @error="playlistDetail.avatar_url=null" />
+                        <img class="w-14 h-14 rounded-sm object-cover" :src="playlistDetail.avatar_url" alt="" loading="lazy" @error="playlistDetail.avatar_url=null" />
                       </template>
                       <template x-if="!playlistDetail || !playlistDetail.avatar_url">
                         <div class="w-14 h-14 flex items-center justify-center">
@@ -90,26 +64,72 @@
                     <input x-ref="playlistAvatarInput" type="file" class="hidden" accept="image/png,image/jpeg,image/webp" @change="playlistUploadAvatar($event)" />
 
 	                    <div class="min-w-0 flex-1">
-	                      <div class="flex items-center gap-3 min-w-0">
-	                        <div class="flex items-center gap-2 text-xs text-slate-400 min-w-0 overflow-hidden">
-	                          <div class="hidden lg:block text-sm text-slate-200 font-semibold truncate" x-text="playlistDetail ? playlistDetail.name : '-'"></div>
-	                          <span class="inline-flex items-center gap-2 rounded-full border border-slate-800 bg-slate-950/20 px-3 py-1.5 shrink-0">
-	                            <span class="text-slate-500">媒体</span>
-	                            <span class="text-slate-200" x-text="playlistDetail ? (playlistDetail.media_count||0) : 0"></span>
-	                            <button
-                              class="p-0 rounded hover:bg-slate-500/60 text-slate-200"
-                              @click="playlistEditMediaOpen = !playlistEditMediaOpen"
-                              :disabled="!playlistDetail"
-                              :class="playlistDetail ? '' : 'opacity-60 cursor-not-allowed'"
-                              title="编辑包含媒体"
-                              aria-label="编辑包含媒体"
-                            >
-                              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                <path d="M12 5v14" />
-                                <path d="M5 12h14" />
-                              </svg>
-                            </button>
-                          </span>
+		                      <div class="flex items-center gap-3 min-w-0">
+		                        <div class="flex items-center gap-4 text-xs text-slate-400 min-w-0 overflow-hidden">
+		                          <div class="hidden lg:block min-w-0">
+		                            <template x-if="!playlistNameEditing">
+		                              <button
+		                                type="button"
+		                                class="text-sm text-slate-200 font-semibold truncate -mx-1 px-1 rounded hover:bg-slate-800/40 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+		                                x-text="playlistDetail ? playlistDetail.name : '-'"
+		                                @click="playlistStartEditName()"
+		                                :disabled="!playlistDetail"
+		                                title="点击编辑标题"
+		                                aria-label="点击编辑标题"
+		                              ></button>
+		                            </template>
+		                            <template x-if="playlistNameEditing">
+		                              <input
+		                                x-ref="playlistNameInput"
+		                                type="text"
+		                                class="min-w-0 flex-1 h-6 border border-slate-800 bg-slate-950/20 px-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+		                                placeholder="播放列表标题…"
+		                                x-model="playlistNameDraft"
+		                                :disabled="playlistNameSaving"
+		                                @keydown.enter.prevent="playlistSaveName()"
+		                                @keydown.escape.prevent="playlistCancelEditName()"
+		                                @blur="playlistCancelEditName()"
+		                              />
+		                            </template>
+		                          </div>
+		                          <button
+                                type="button"
+                                class="inline-flex items-center shrink-0 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+                                @click="playlistEditMediaOpen = true"
+                                :disabled="!playlistDetail"
+                                :class="playlistDetail ? 'cursor-pointer hover:opacity-90' : 'opacity-60 cursor-not-allowed'"
+                                title="编辑包含媒体"
+                                aria-label="编辑包含媒体"
+                              >
+                                <div class="flex items-center -space-x-2">
+                                  <template x-for="m in (((playlistDetail && Array.isArray(playlistDetail.media)) ? playlistDetail.media : [])).slice(0,5)" :key="m.id">
+                                    <div class="w-6 h-6 rounded-full ring-2 ring-slate-900/80 bg-slate-800 overflow-hidden">
+                                      <template x-if="m.avatar_url">
+                                        <img class="w-6 h-6 object-cover" :src="m.avatar_url" alt="" loading="lazy" @error="m.avatar_url=null" />
+                                      </template>
+                                      <template x-if="!m.avatar_url">
+                                        <div class="w-6 h-6 flex items-center justify-center text-[10px] font-semibold text-slate-200">
+                                          <span x-text="mediaAvatarLabel(m)"></span>
+                                        </div>
+                                      </template>
+                                    </div>
+                                  </template>
+                                  <template x-if="playlistDetail && Array.isArray(playlistDetail.media) && playlistDetail.media.length > 5">
+                                    <div class="w-6 h-6 rounded-full ring-2 ring-slate-900/80 bg-slate-950/40 border border-slate-700 flex items-center justify-center text-[10px] font-semibold text-slate-200">
+                                      <span x-text="`+${(playlistDetail.media.length||0)-5}`"></span>
+                                    </div>
+                                  </template>
+                                  <template x-if="!playlistDetail || !Array.isArray(playlistDetail.media) || playlistDetail.media.length===0">
+                                    <div class="w-6 h-6 rounded-full ring-2 ring-slate-900/80 bg-slate-950/40 border border-slate-700 flex items-center justify-center text-slate-200">
+                                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <path d="M16 18a4 4 0 0 0-8 0"></path>
+                                        <circle cx="12" cy="10" r="4"></circle>
+                                        <path d="M5 20h14"></path>
+                                      </svg>
+                                    </div>
+                                  </template>
+                                </div>
+                              </button>
                           <span class="inline-flex items-center gap-2 rounded-full border border-slate-800 bg-slate-950/20 px-3 py-1.5 hidden md:inline-flex shrink-0">
                             <span class="text-slate-500">视频</span>
                             <span class="text-slate-200" x-text="playlistDetail ? (playlistDetail.video_count||0) : 0"></span>
@@ -123,7 +143,7 @@
 		                        <template x-if="!playlistDescEditing">
 		                          <button
 		                            type="button"
-		                            class="min-w-0 flex-1 h-8 -mx-2 px-2 rounded-md text-xs truncate text-left hover:bg-slate-800/40 hover:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-inherit"
+		                            class="min-w-0 flex-1 h-6 -mx-2 px-2 rounded-md text-xs truncate text-left hover:bg-slate-800/40 hover:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-inherit"
 		                            :class="playlistDetail && playlistDetail.description ? 'text-slate-400' : 'text-slate-600'"
 		                            x-text="playlistDetail ? (playlistDetail.description || '点击添加描述') : ''"
 		                            @click="playlistStartEditDescription()"
@@ -132,48 +152,19 @@
 		                            aria-label="点击编辑描述"
 		                          ></button>
 		                        </template>
-		                        <template x-if="playlistDescEditing">
-		                          <input
-		                            x-ref="playlistDescInput"
-		                            type="text"
-		                            class="min-w-0 flex-1 h-8 rounded-md border border-slate-800 bg-slate-950/20 px-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
-		                            placeholder="添加描述…"
-		                            x-model="playlistDescDraft"
-		                            :disabled="playlistDescSaving"
-		                            @keydown.enter.prevent="playlistSaveDescription()"
-		                            @keydown.escape.prevent="playlistCancelEditDescription()"
-		                          />
-		                        </template>
-
-		                        <template x-if="playlistDescEditing">
-		                          <div class="shrink-0 flex items-center gap-1">
-		                            <button
-		                              class="p-1.5 rounded-md border border-slate-800 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/20"
-		                              @click="playlistSaveDescription()"
-		                              :disabled="playlistDescSaving"
-		                              :class="playlistDescSaving ? 'opacity-60 cursor-not-allowed' : ''"
-		                              title="保存"
-		                              aria-label="保存"
-		                            >
-		                              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-		                                <path d="M20 6 9 17l-5-5"></path>
-		                              </svg>
-		                            </button>
-		                            <button
-		                              class="p-1.5 rounded-md border border-slate-800 bg-slate-950/20 text-slate-200 hover:bg-slate-800/60"
-		                              @click="playlistCancelEditDescription()"
-		                              :disabled="playlistDescSaving"
-		                              :class="playlistDescSaving ? 'opacity-60 cursor-not-allowed' : ''"
-		                              title="取消"
-		                              aria-label="取消"
-		                            >
-		                              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-		                                <path d="M18 6 6 18"></path>
-		                                <path d="M6 6l12 12"></path>
-		                              </svg>
-		                            </button>
-		                          </div>
-		                        </template>
+			                        <template x-if="playlistDescEditing">
+			                          <input
+			                            x-ref="playlistDescInput"
+			                            type="text"
+			                            class="min-w-0 flex-1 h-6 border border-slate-800 bg-slate-950/20 px-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+			                            placeholder="添加描述…"
+			                            x-model="playlistDescDraft"
+			                            :disabled="playlistDescSaving"
+			                            @keydown.enter.prevent="playlistSaveDescription()"
+			                            @keydown.escape.prevent="playlistCancelEditDescription()"
+			                            @blur="playlistCancelEditDescription()"
+			                          />
+			                        </template>
 		                      </div>
 		                    </div>
 		                  </div>
@@ -249,13 +240,13 @@
                           </div>
                         </div>
 
-                        <div class="flex items-center justify-end gap-2">
-                          <button
-                            class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60"
-                            @click="playlistEditResetFromDetail()"
-                          >
-                            重置
-                          </button>
+	                        <div class="flex items-center justify-end gap-2">
+	                          <button
+	                            class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-800/60 text-xs text-slate-200 hover:bg-slate-700/70"
+	                            @click="playlistEditResetFromDetail()"
+	                          >
+	                            重置
+	                          </button>
                           <button
                             class="px-3 py-1.5 rounded-md bg-emerald-500 text-xs font-medium text-slate-950 hover:bg-emerald-400"
                             @click="playlistEditSaveMedia()"
@@ -269,7 +260,7 @@
                 </div>
 
                 <!-- Row 2: Mobile tabs; wide screens split into 3 columns -->
-                <div class="flex-1 min-h-0 flex flex-col" x-data="{ playlistRow2Tab: 'play' }">
+                <div class="flex-1 min-h-0 flex flex-col" x-data="{ playlistRow2Tab: 'play' }" x-show="playlistSubview==='main'" x-transition.opacity>
                   <!-- Mobile tabs -->
                   <div class="lg:hidden h-11 grid grid-cols-2 divide-x divide-slate-800 border-b border-slate-800 bg-slate-950/20">
                     <button
@@ -294,7 +285,7 @@
                   <div class="flex-1 min-h-0 flex flex-col lg:grid lg:grid-cols-2 lg:grid-rows-[auto_minmax(0,1fr)] 2xl:grid-cols-3 2xl:grid-rows-1">
                     <!-- Player panel -->
                     <div
-                      class="bg-slate-950/10 border-b border-slate-800 2xl:border-b-0 lg:border-l lg:border-slate-800 lg:col-start-2 lg:row-start-1 2xl:col-start-3 2xl:row-start-1 flex flex-col min-h-0"
+                      class="bg-slate-950/10 border-b border-slate-800 2xl:border-b-0 lg:border-l lg:border-slate-800 lg:col-start-2 lg:row-start-1 2xl:col-start-3 2xl:row-start-1 flex flex-col min-h-0 shrink-0"
                       :class="playlistRow2Tab==='brief' ? 'hidden lg:block' : ''"
                     >
                       <template x-if="playlistDayVideosLoading || playlistDayVideosError || (Array.isArray(playlistDayVideos) && playlistDayVideos.length>0)">
@@ -378,7 +369,12 @@
                       </template>
 
                       <div class="grid grid-cols-5 divide-x divide-slate-800 border-t border-slate-800 bg-slate-950/15 overflow-hidden shrink-0">
-                        <button class="h-11 text-slate-200 hover:bg-slate-800/60 inline-flex items-center justify-center" @click="playlistPrevDay()" title="前一天" aria-label="前一天">
+                        <button
+                          class="h-11 text-slate-200 hover:bg-slate-800/60 inline-flex items-center justify-center"
+                          @click="playlistPrevDay()"
+                          :title="playlistPrevPeriodTitle()"
+                          :aria-label="playlistPrevPeriodTitle()"
+                        >
                           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                             <path d="M15 18l-6-6 6-6"></path>
                           </svg>
@@ -400,15 +396,36 @@
                           class="h-11 text-slate-200 hover:bg-slate-800/60 inline-flex items-center justify-center"
                           @click="playlistToggleAudioOnly()"
                           :disabled="!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0"
-                          :class="(!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0) ? 'opacity-40 cursor-not-allowed hover:bg-transparent' : (playlistAudioOnly ? 'bg-emerald-500/10 text-emerald-200' : '')"
+                          :class="(!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0) ? 'opacity-40 cursor-not-allowed hover:bg-transparent' : (playlistAudioOnly ? 'bg-emerald-500/10' : '')"
                           title="切换：只播放音频"
                           aria-label="切换：只播放音频"
                         >
-                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <path d="M9 18V5l12-2v13"></path>
-                            <circle cx="6" cy="18" r="3"></circle>
-                            <circle cx="18" cy="16" r="3"></circle>
-                          </svg>
+                          <span class="inline-flex items-center justify-center gap-0.5">
+                            <span
+                              class="transition-all"
+                              :class="playlistAudioOnly ? 'text-slate-500 scale-[.80] opacity-70' : 'text-emerald-200 scale-100 opacity-100'"
+                            >
+                              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M23 7l-7 5 7 5V7z"></path>
+                                <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+                              </svg>
+                            </span>
+                            <span
+                              class="text-slate-600 select-none transition-all"
+                              :class="playlistAudioOnly ? 'scale-[.90] opacity-70' : 'scale-100 opacity-90'"
+                              aria-hidden="true"
+                            >/</span>
+                            <span
+                              class="transition-all"
+                              :class="playlistAudioOnly ? 'text-emerald-200 scale-100 opacity-100' : 'text-slate-500 scale-[.80] opacity-70'"
+                            >
+                              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M9 18V5l12-2v13"></path>
+                                <circle cx="6" cy="18" r="3"></circle>
+                                <circle cx="18" cy="16" r="3"></circle>
+                              </svg>
+                            </span>
+                          </span>
                         </button>
                         <button
                           class="h-11 text-slate-200 hover:bg-slate-800/60 inline-flex items-center justify-center"
@@ -423,7 +440,12 @@
                             <line x1="19" y1="5" x2="19" y2="19"></line>
                           </svg>
                         </button>
-                        <button class="h-11 text-slate-200 hover:bg-slate-800/60 inline-flex items-center justify-center" @click="playlistNextDay()" title="后一天" aria-label="后一天">
+                        <button
+                          class="h-11 text-slate-200 hover:bg-slate-800/60 inline-flex items-center justify-center"
+                          @click="playlistNextDay()"
+                          :title="playlistNextPeriodTitle()"
+                          :aria-label="playlistNextPeriodTitle()"
+                        >
                           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                             <path d="M9 18l6-6-6-6"></path>
                           </svg>
@@ -446,7 +468,7 @@
                           <div class="text-xs text-slate-400" x-show="playlistTranscriptLoading">加载中…</div>
                           <div class="text-xs text-rose-200" x-show="playlistTranscriptError" x-text="playlistTranscriptError"></div>
                           <div
-                            class="text-sm text-slate-300 leading-6 whitespace-pre-wrap"
+                            class="text-sm text-slate-400 leading-6 whitespace-pre-wrap"
                             x-show="!playlistTranscriptLoading && !playlistTranscriptError"
                             x-text="playlistTranscriptText || '暂无文本（需要字幕或 ASR）'"
                           ></div>
@@ -456,7 +478,7 @@
 
                     <!-- Day videos list -->
                     <div
-                      class="bg-slate-950/10 min-h-0 flex flex-col lg:border-l lg:border-slate-800 lg:col-start-2 lg:row-start-2 2xl:col-start-2 2xl:row-start-1"
+                      class="bg-slate-950/10 flex-1 min-h-0 flex flex-col lg:border-l lg:border-slate-800 lg:col-start-2 lg:row-start-2 2xl:col-start-2 2xl:row-start-1"
                       :class="playlistRow2Tab==='brief' ? 'hidden lg:flex' : ''"
                     >
                       <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar divide-y divide-slate-800">
@@ -479,20 +501,55 @@
                         </template>
                         <div class="p-4 text-sm text-slate-400" x-show="playlistDayVideosLoading">加载中…</div>
                         <div class="p-4 text-sm text-rose-200" x-show="playlistDayVideosError" x-text="playlistDayVideosError"></div>
-                        <div class="p-4 text-sm text-slate-400" x-show="!playlistDayVideosLoading && !playlistDayVideosError && playlistDayVideos.length===0">当天暂无视频</div>
+                        <div class="p-4 text-sm text-slate-400" x-show="!playlistDayVideosLoading && !playlistDayVideosError && playlistDayVideos.length===0">本周期暂无视频</div>
                       </div>
                     </div>
 
                     <!-- Brief -->
                     <div
-                      class="bg-slate-950/10 min-h-0 flex flex-col lg:col-start-1 lg:row-start-1 lg:row-span-2 2xl:col-start-1 2xl:row-start-1 2xl:row-span-1"
+                      class="relative bg-slate-950/10 flex-1 min-h-0 flex flex-col lg:col-start-1 lg:row-start-1 lg:row-span-2 2xl:col-start-1 2xl:row-start-1 2xl:row-span-1"
                       :class="playlistRow2Tab==='play' ? 'hidden lg:flex' : ''"
                     >
+                      <div
+                        class="absolute top-14 right-4 z-10 inline-flex overflow-hidden rounded-md border border-slate-800 bg-slate-950/30 backdrop-blur divide-x divide-slate-800"
+                        role="group"
+                        aria-label="简报操作"
+                      >
+                        <button
+                          class="inline-flex h-8 w-8 items-center justify-center text-slate-200 transition hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-500/30"
+                          @click="playlistCopyBriefPrompt()"
+                          :disabled="!playlistDetail || !playlistSelectedDate || (Array.isArray(playlistDayVideos) && playlistDayVideos.length===0) || playlistBriefPromptCopying"
+                          :class="(playlistDetail && playlistSelectedDate && (!Array.isArray(playlistDayVideos) || playlistDayVideos.length>0) && !playlistBriefPromptCopying) ? '' : 'opacity-60 cursor-not-allowed'"
+                          :title="playlistBriefPromptCopying ? '提示词复制中…' : '复制简报生成提示词（合并内容）'"
+                          :aria-label="playlistBriefPromptCopying ? '提示词复制中' : '复制简报生成提示词（合并内容）'"
+                        >
+                          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                            <polyline points="16 3 21 3 21 8"></polyline>
+                            <line x1="8" y1="16" x2="21" y2="3"></line>
+                          </svg>
+                        </button>
+
+                        <button
+                          class="inline-flex h-8 w-8 items-center justify-center text-slate-200 transition hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-500/30"
+                          @click="playlistCopyBriefText()"
+                          :disabled="!playlistBriefCanCopy() || playlistBriefCopying"
+                          :class="(playlistBriefCanCopy() && !playlistBriefCopying) ? '' : 'opacity-60 cursor-not-allowed'"
+                          :title="playlistBriefCopying ? '复制中…' : '复制全部简报文本'"
+                          :aria-label="playlistBriefCopying ? '复制中' : '复制全部简报文本'"
+                        >
+                          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                          </svg>
+                        </button>
+                      </div>
+
                       <div class="h-12 shrink-0 flex items-center justify-between gap-3 px-4 border-b border-slate-800 bg-slate-950/20">
                         <div class="min-w-0 flex items-center gap-3">
-                          <div class="text-sm font-semibold text-slate-200 shrink-0">日报简报</div>
+                          <div class="text-sm font-semibold text-slate-200 shrink-0" x-text="playlistBriefTitle()"></div>
                           <div class="text-xs text-slate-400 truncate">
-                            日期：<span class="text-slate-200" x-text="playlistSelectedDate || '-'"></span>
+                            周期：<span class="text-slate-200" x-text="playlistPeriodLabel() || '-'"></span>
                           </div>
                         </div>
                         <button
@@ -500,8 +557,8 @@
                           @click="playlistGenerateBriefForSelectedDate()"
                           :disabled="!playlistDetail || !playlistSelectedDate || playlistBriefGeneratingForSelectedDate() || (Array.isArray(playlistDayVideos) && playlistDayVideos.length===0)"
                           :class="playlistDetail && playlistSelectedDate && !playlistBriefGeneratingForSelectedDate() && (!Array.isArray(playlistDayVideos) || playlistDayVideos.length>0) ? '' : 'opacity-60 cursor-not-allowed'"
-                          title="生成当天简报"
-                          aria-label="生成当天简报"
+                          :title="'生成' + playlistBriefTitle()"
+                          :aria-label="'生成' + playlistBriefTitle()"
                         >
                           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                             <path d="M12 2v6"></path>
@@ -522,25 +579,158 @@
                         <div class="text-xs text-slate-400" x-show="playlistBriefLoading" x-text="playlistBriefGeneratingForSelectedDate() ? '生成中…' : '加载中…'"></div>
                         <div class="text-xs text-rose-200" x-show="playlistBriefError" x-text="playlistBriefError"></div>
                         <div
-                          class="prose prose-invert max-w-none text-sm text-slate-300 prose-p:text-slate-300 prose-li:text-slate-300 prose-li:marker:text-slate-400 prose-strong:text-slate-100 prose-headings:text-slate-200 prose-hr:border-slate-700 prose-a:text-emerald-200 prose-a:hover:text-emerald-100"
+                          class="raelyn-brief prose prose-invert max-w-none text-md text-slate-400 prose-p:text-slate-400 prose-li:text-slate-400 prose-li:marker:text-slate-500 prose-strong:text-slate-200 prose-headings:text-slate-300 prose-hr:border-slate-700 prose-a:text-emerald-300 prose-a:hover:text-emerald-100"
                           x-show="!playlistBriefLoading && !playlistBriefError"
+                          x-ref="playlistBriefContentEl"
                           @click="playlistBriefClick($event)"
-                          x-html="playlistBriefHtml || (playlistBriefGeneratingForSelectedDate() ? '<div class=&quot;text-slate-400 text-sm&quot;>生成中…</div>' : '<div class=&quot;text-slate-400 text-sm&quot;>暂无简报（可能还在生成中，或当日无可用文本）</div>')"
+                          x-html="playlistBriefHtml || (playlistBriefGeneratingForSelectedDate() ? '<div class=&quot;text-slate-400 text-sm&quot;>生成中…</div>' : '<div class=&quot;text-slate-400 text-sm&quot;>暂无简报（可能还在生成中，或本周期无可用文本）</div>')"
                         ></div>
                       </div>
                     </div>
                   </div>
                 </div>
 
+                <!-- Playlist Settings (subview) -->
+                <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar" x-show="playlistSubview==='settings'" x-transition.opacity>
+                  <div class="p-4 space-y-6">
+                    <div class="rounded-lg border border-slate-800 bg-slate-950/20 overflow-hidden divide-y divide-slate-800">
+                      <div class="px-4 py-3 flex items-start justify-between gap-3">
+                        <div>
+                          <div class="text-sm font-semibold text-slate-100">背景图</div>
+                          <div class="text-xs text-slate-400 mt-1">上传/清除播放列表背景图（最大 2MB，jpg/png/webp）。</div>
+                        </div>
+                        <div class="shrink-0 flex items-center gap-2 pt-0.5">
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-800/60 text-xs text-slate-200 hover:bg-slate-700/70 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="$refs && $refs.playlistBgInput && $refs.playlistBgInput.click()"
+                            :disabled="!playlistDetail"
+                          >
+                            上传背景
+                          </button>
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-800/60 text-xs text-slate-200 hover:bg-slate-700/70 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="playlistClearBackground()"
+                            :disabled="!playlistDetail || !playlistDetail.background_url"
+                            :class="(!playlistDetail || !playlistDetail.background_url) ? 'opacity-60 cursor-not-allowed' : ''"
+                          >
+                            清除背景
+                          </button>
+                          <input x-ref="playlistBgInput" type="file" class="hidden" accept="image/png,image/jpeg,image/webp" @change="playlistUploadBackground($event)" />
+                        </div>
+                      </div>
+
+                      <div class="px-4 py-3 flex items-start justify-between gap-3">
+                        <div>
+                          <div class="text-sm font-semibold text-slate-100">重新生成全部简报</div>
+                          <div class="text-xs text-slate-400 mt-1">按当前聚合粒度（天/周/月）从最早视频到今天逐周期投递任务。</div>
+                        </div>
+                        <div class="shrink-0 pt-0.5">
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-800/60 text-xs text-slate-200 hover:bg-slate-700/70 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="playlistRegenerateAllBriefs()"
+                            :disabled="!playlistDetail"
+                          >
+                            重新生成
+                          </button>
+                        </div>
+                      </div>
+
+                      <div class="px-4 py-3 flex items-start justify-between gap-3">
+                        <div>
+                          <div class="text-sm font-semibold text-slate-100">信息聚合粒度</div>
+                          <div class="text-xs text-slate-400 mt-1">影响时间轴单位、视频列表与简报生成范围。</div>
+                        </div>
+                        <div class="shrink-0 flex flex-col items-end gap-1 pt-0.5">
+                          <div class="flex items-center gap-3">
+                            <select
+                              class="h-7 w-38 rounded-md border border-slate-700 bg-slate-800/60 px-3 text-xs text-slate-100 hover:bg-slate-700/70 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                              x-model="playlistSettingsGranularityDraft"
+                              @change="playlistSettingsSaveGranularity()"
+                              :disabled="!playlistDetail || playlistSettingsGranularitySaving"
+                            >
+                              <option value="day">按天</option>
+                              <option value="week">按周</option>
+                              <option value="month">按月</option>
+                            </select>
+                            <div class="text-xs text-slate-500" x-show="playlistSettingsGranularitySaving">保存中…</div>
+                          </div>
+                          <div class="text-xs text-rose-200" x-show="playlistSettingsGranularityError" x-text="playlistSettingsGranularityError"></div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="rounded-lg border border-slate-800 bg-slate-950/20 overflow-hidden">
+                      <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
+                        <div>
+                          <div class="text-sm font-semibold text-slate-100">简报生成提示词</div>
+                          <div class="text-xs text-slate-400 mt-1">
+                            本播放列表独立配置（天/周/月共用一份）。占位符：
+                            <code class="text-slate-200">{{date}}</code>、
+                            <code class="text-slate-200">{{period_start}}</code>、
+                            <code class="text-slate-200">{{period_end}}</code>、
+                            <code class="text-slate-200">{{blocks}}</code>。
+                          </div>
+                        </div>
+	                        <div class="shrink-0 flex items-center gap-2">
+	                          <button
+	                            class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-800/60 text-xs text-slate-200 hover:bg-slate-700/70 disabled:opacity-60 disabled:cursor-not-allowed"
+	                            @click="playlistSettingsResetPrompt()"
+	                            :disabled="playlistSettingsPromptSaving"
+	                          >
+	                            恢复默认
+                          </button>
+                          <button
+                            class="px-3 py-1.5 rounded-md bg-emerald-500 text-xs font-medium text-slate-950 hover:bg-emerald-400 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="playlistSettingsSavePrompt()"
+                            :disabled="playlistSettingsPromptSaving || !playlistDetail"
+                          >
+                            <span x-show="!playlistSettingsPromptSaving">保存</span>
+                            <span x-show="playlistSettingsPromptSaving">保存中…</span>
+                          </button>
+                        </div>
+                      </div>
+                      <div class="p-4 space-y-3">
+                        <div class="text-xs text-rose-200" x-show="playlistSettingsPromptError" x-text="playlistSettingsPromptError"></div>
+                        <textarea
+                          class="w-full h-64 m-0 p-0 border-0 rounded-none bg-transparent text-xs text-slate-100 font-mono leading-5 placeholder-slate-500 focus:outline-none focus:ring-0 focus:border-transparent resize-none raelyn-scrollbar disabled:opacity-60 disabled:cursor-not-allowed"
+                          placeholder="请输入简报提示词…"
+                          x-model="playlistSettingsPromptDraft"
+                          :disabled="!playlistDetail || playlistSettingsPromptSaving"
+                        ></textarea>
+                      </div>
+                    </div>
+
+                    <div class="rounded-lg border border-rose-900/60 bg-rose-950/10 overflow-hidden">
+                      <div class="px-4 py-3 border-b border-rose-900/60 flex items-center justify-between gap-3">
+                        <div>
+                          <div class="text-sm font-semibold text-rose-200">危险操作</div>
+                          <div class="text-xs text-rose-200/70 mt-1">删除播放列表后将无法恢复。</div>
+                        </div>
+                        <div class="shrink-0">
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-rose-900/60 bg-rose-950/30 text-xs text-rose-200 hover:bg-rose-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="playlistDelete()"
+                            :disabled="!playlistDetail"
+                          >
+                            删除播放列表
+                          </button>
+                        </div>
+                      </div>
+                      <div class="p-4 text-xs text-rose-200/70">提示：删除会级联清理该播放列表的简报记录。</div>
+                    </div>
+                  </div>
+                </div>
+
                 <!-- Row 3: Calendar (fixed height) -->
-                <div class="h-16 bg-slate-950/10 overflow-hidden">
-                  <div class="h-16 flex items-stretch divide-x divide-slate-800 bg-slate-950/15">
+		                <div class="h-16 bg-slate-950/10 overflow-hidden relative z-10 border-t-[2px] border-slate-700/90 shadow-[0_-12px_18px_-10px_rgba(0,0,0,0.55)]" x-show="playlistSubview==='main'" x-transition.opacity>
+		                  <div class="pointer-events-none absolute inset-x-0 top-[2px] h-2 bg-gradient-to-b from-black/35 to-transparent"></div>
+		                  <div class="h-16 flex items-stretch divide-x divide-slate-800 bg-slate-950/15">
                     <button
                       type="button"
                       class="h-16 w-12 sm:w-14 text-slate-200 hover:bg-slate-800/40 inline-flex items-center justify-center"
-                      @click="playlistJump(-30)"
-                      title="-1月"
-                      aria-label="-1月"
+                      @click="playlistJump(playlistJumpDelta('back_big'))"
+                      :title="playlistJumpTitle('back_big')"
+                      :aria-label="playlistJumpTitle('back_big')"
                     >
                       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <path d="M11 17l-5-5 5-5"></path>
@@ -550,9 +740,9 @@
                     <button
                       type="button"
                       class="h-16 w-12 sm:w-14 text-slate-200 hover:bg-slate-800/40 inline-flex items-center justify-center"
-                      @click="playlistJump(-7)"
-                      title="-1周"
-                      aria-label="-1周"
+                      @click="playlistJump(playlistJumpDelta('back'))"
+                      :title="playlistJumpTitle('back')"
+                      :aria-label="playlistJumpTitle('back')"
                     >
                       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <path d="M15 18l-6-6 6-6"></path>
@@ -563,7 +753,7 @@
                       <template x-for="d in playlistCalendarItems()" :key="d.date">
                         <button
                           type="button"
-                          class="h-16 px-2 flex flex-col items-center justify-center text-center hover:bg-slate-800/40 transition"
+                          class="h-16 px-2 flex flex-col items-center justify-center text-center hover:bg-slate-800/40 transition relative"
                           :class="(d.selected ? 'bg-emerald-500/15 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.35)]' : (d.today ? 'bg-sky-500/15 shadow-[inset_0_0_0_1px_rgba(56,189,248,0.25)]' : '')) + (d.disabled ? ' opacity-40 cursor-not-allowed' : '')"
                           @click="playlistSetDate(d.date)"
                           :disabled="d.disabled"
@@ -571,6 +761,11 @@
                         >
                           <div class="text-sm font-semibold text-slate-100 whitespace-nowrap leading-4" x-text="d.md"></div>
                           <div class="mt-0.5 text-[11px] text-slate-400 whitespace-nowrap leading-4" x-text="d.weekday"></div>
+	                          <div class="pointer-events-none absolute top-0.5 right-0.5 sm:top-1 sm:right-1 flex flex-col items-end gap-[1px]" x-show="!d.disabled && playlistCalendarDotCount(d.date) > 0">
+	                            <template x-for="(x, i) in playlistCalendarDots(d.date)" :key="i">
+	                              <div class="w-[3px] h-[3px] rounded-full bg-teal-600/80 drop-shadow-[0_0_2px_rgba(0,0,0,0.25)]"></div>
+	                            </template>
+	                          </div>
                         </button>
                       </template>
                     </div>
@@ -578,9 +773,9 @@
                     <button
                       type="button"
                       class="h-16 w-12 sm:w-14 text-slate-200 hover:bg-slate-800/40 inline-flex items-center justify-center"
-                      @click="playlistJump(7)"
-                      title="+1周"
-                      aria-label="+1周"
+                      @click="playlistJump(playlistJumpDelta('forward'))"
+                      :title="playlistJumpTitle('forward')"
+                      :aria-label="playlistJumpTitle('forward')"
                     >
                       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <path d="M9 18l6-6-6-6"></path>
@@ -589,9 +784,9 @@
                     <button
                       type="button"
                       class="h-16 w-12 sm:w-14 text-slate-200 hover:bg-slate-800/40 inline-flex items-center justify-center"
-                      @click="playlistJump(30)"
-                      title="+1月"
-                      aria-label="+1月"
+                      @click="playlistJump(playlistJumpDelta('forward_big'))"
+                      :title="playlistJumpTitle('forward_big')"
+                      :aria-label="playlistJumpTitle('forward_big')"
                     >
                       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <path d="M6 7l5 5-5 5"></path>

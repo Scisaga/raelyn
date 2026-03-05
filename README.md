@@ -78,6 +78,13 @@ docker compose up --build
 > 注意：该脚本只提供 `node`，不包含 `npm`；UI 首次安装依赖仍需要可用的 `npm`。
 
 #### 3.2.3 `yt-dlp-ejs`（必需，Python 包）
+说明：项目通过 `backend/requirements.txt` 使用 `yt-dlp[default]`，会自动安装 `yt-dlp-ejs`（用于 YouTube 的 EJS/JS challenge）。
+
+如果日志出现类似：
+- `n challenge solving failed`
+- `Only images are available for download`
+
+通常意味着 EJS 解析失败（版本过旧或环境缺依赖）。可直接执行脚本进行升级/自检：
 ```bash
 ./scripts/dev/install-ytdlp-ejs.sh
 ```
@@ -100,11 +107,14 @@ source ./scripts/dev/load-env.sh
 2) 导出 **Netscape 格式** `cookies.txt`（Chrome/Firefox 常用扩展：`Get cookies.txt`）
 3) 打开 UI -> **设置** -> `YTDLP_COOKIES（cookies.txt）`，把内容粘贴进去并保存（不会写入 `.env`）。
 
-### 3.4 启动（3 个终端）
+### 3.4 启动（多个终端）
 ```bash
 ./scripts/dev/run-api.sh
-./scripts/dev/run-worker-download.sh
+./scripts/dev/run-worker-download-youtube.sh
+./scripts/dev/run-worker-download-bilibili.sh
+./scripts/dev/run-worker-audio.sh
 ./scripts/dev/run-worker-process.sh
+./scripts/dev/run-worker-asr.sh
 ./scripts/dev/run-worker-sync.sh
 ./scripts/dev/run-worker-ai.sh
 ./scripts/dev/run-scheduler.sh
@@ -171,3 +181,29 @@ WSL 提示：如果你的 `npm` 指向 Windows 安装路径（如 `/mnt/c/Progra
 
 - API 健康检查：`GET /api/health`
 - UI 首页：`GET /`
+
+---
+
+## 7) 数据迁移（Postgres + MinIO）
+
+将当前 `.env` 指向的 **源** PostgreSQL/MinIO 数据，迁移到 `.env.migrate` 指向的 **目标** PostgreSQL/MinIO。
+
+1) 准备目标环境配置：
+```bash
+cp .env.migrate.example .env.migrate
+```
+按需修改 `.env.migrate` 里的 `DATABASE_URL` / `S3_*` 为目标环境。
+
+2) Dry-run（不写入）：
+```bash
+./.venv/bin/python backend/raelyn/tools/migrate_data.py
+```
+
+3) 真正执行（会清空目标 DB + 目标桶对象，再全量迁移）：
+```bash
+./.venv/bin/python backend/raelyn/tools/migrate_data.py --yes
+```
+
+说明：
+- 默认要求 `.env.migrate` 的 `S3_BUCKET` 与 `.env` 相同（保持原桶名）；如需跳过校验可用 `--allow-bucket-mismatch`。
+- 可用 `--db` / `--s3` 只迁移其中一项。

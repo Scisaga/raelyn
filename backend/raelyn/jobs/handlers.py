@@ -19,12 +19,21 @@ from raelyn.jobs.enqueue import enqueue_in, enqueue_job
 from raelyn.jobs.log import job_log
 from raelyn.jobs.progress import set_job_progress
 from raelyn.jobs.registry import registry
-from raelyn.models import AppConfig, Asset, DailyBrief, Job, Media, PlaylistMedia, Video
+from raelyn.models import AppConfig, Asset, Brief, Job, Media, Playlist, PlaylistMedia, Video
 from raelyn.services.assets import ensure_asset
+from raelyn.services.brief_prompt import (
+    DEFAULT_BRIEF_PROMPT_TEMPLATE,
+    brief_period_bounds_utc,
+    brief_period_end_inclusive,
+    brief_period_start,
+    build_brief_blocks,
+    compose_brief_prompt,
+    load_plain_transcript_asset,
+)
 from raelyn.services.ffmpeg import extract_audio_to_m4a
 from raelyn.services.http_client import httpx_client
 from raelyn.services.llm import llm_enabled, llm_generate_markdown
-from raelyn.services.pg_lock import advisory_lock
+from raelyn.services.pg_lock import advisory_lock_any
 from raelyn.services.profile_fetch import fetch_media_profile
 from raelyn.services.provider import build_media_videos_url
 from raelyn.services.s3 import s3_download_file, s3_upload_file
@@ -60,6 +69,46 @@ def _ytdlp_members_only_download_enabled(session: Session) -> bool:
 
 def _provider_guard_name(provider: str, kind: str) -> str:
     return f"{provider}:{kind}"
+
+
+def _clamp_int(value: Any, *, default: int, lo: int, hi: int) -> int:
+    try:
+        n = int(value)
+    except Exception:
+        n = int(default)
+    return max(int(lo), min(int(hi), int(n)))
+
+
+def _provider_guard_names(provider: str, kind: str) -> list[str]:
+    """
+    Provider-level concurrency guard.
+    - sync: controlled by {youtube,bilibili}_sync_concurrency
+    - download: controlled by {youtube,bilibili}_download_concurrency
+    """
+    p = str(provider or "").strip().lower()
+    k = str(kind or "").strip().lower()
+    base = _provider_guard_name(p or provider, k or kind)
+
+    if k == "sync":
+        if p == "youtube":
+            n = _clamp_int(settings.youtube_sync_concurrency, default=1, lo=1, hi=10)
+        elif p == "bilibili":
+            n = _clamp_int(settings.bilibili_sync_concurrency, default=1, lo=1, hi=10)
+        else:
+            n = 1
+    elif k == "download":
+        if p == "youtube":
+            n = _clamp_int(settings.youtube_download_concurrency, default=1, lo=1, hi=10)
+        elif p == "bilibili":
+            n = _clamp_int(settings.bilibili_download_concurrency, default=1, lo=1, hi=10)
+        else:
+            n = 1
+    else:
+        n = 1
+
+    if n <= 1:
+        return [base]
+    return [f"{base}:{i}" for i in range(n)]
 
 
 _BILIBILI_BV_PART_RE = re.compile(r"^[A-Za-z0-9]{10}$")
@@ -248,9 +297,9 @@ def media_sync_profile(session: Session, job: Job) -> dict | None:
     if not media:
         return {"skipped": "media not found"}
 
-    with advisory_lock(session, _provider_guard_name(media.provider, "sync")) as ok:
-        if not ok:
-            job_log(session, job, "provider sync locked; reschedule", level="warn")
+    with advisory_lock_any(session, _provider_guard_names(media.provider, "sync")) as lock_name:
+        if not lock_name:
+            job_log(session, job, "provider sync locked (all slots busy); reschedule", level="warn")
             enqueue_in(session, seconds=30, type_=job.type, params=job.params, priority=job.priority)
             return {"rescheduled": True}
 
@@ -334,9 +383,9 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
     if (not force) and (not media.monitor_enabled):
         return {"skipped": "monitor_disabled"}
 
-    with advisory_lock(session, _provider_guard_name(media.provider, "sync")) as ok:
-        if not ok:
-            job_log(session, job, "provider sync locked; reschedule", level="warn")
+    with advisory_lock_any(session, _provider_guard_names(media.provider, "sync")) as lock_name:
+        if not lock_name:
+            job_log(session, job, "provider sync locked (all slots busy); reschedule", level="warn")
             enqueue_in(session, seconds=30, type_=job.type, params=job.params, priority=job.priority)
             return {"rescheduled": True}
 
@@ -446,7 +495,12 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                 _enqueue_brief_for_video_playlists(session, video=v, delay_seconds=90)
             if settings.auto_download_new_videos:
                 if (not is_members_only) or allow_members_only_download:
-                    enqueue_job(session, type_="video.download", params={"video_id": str(v.id)}, priority=5)
+                    download_type = (
+                        "video.download.youtube"
+                        if media.provider == "youtube"
+                        else ("video.download.bilibili" if media.provider == "bilibili" else "video.download")
+                    )
+                    enqueue_job(session, type_=download_type, params={"video_id": str(v.id)}, priority=5)
                     enqueued_downloads += 1
 
         media.last_video_sync_at = utcnow()
@@ -465,6 +519,13 @@ def _infer_language_from_filename(name: str) -> str | None:
     if not m:
         return None
     return m.group(1)
+
+
+_CJK_RE = re.compile(r"[\u3400-\u9FFF]")
+
+
+def _contains_cjk(text: str) -> bool:
+    return bool(_CJK_RE.search(str(text or "")))
 
 
 @registry.register("video.download")
@@ -490,9 +551,9 @@ def video_download(session: Session, job: Job) -> dict | None:
         except Exception:
             pass
 
-    with advisory_lock(session, _provider_guard_name(video.provider, "download")) as ok:
-        if not ok:
-            job_log(session, job, "provider download locked; reschedule", level="warn")
+    with advisory_lock_any(session, _provider_guard_names(video.provider, "download")) as lock_name:
+        if not lock_name:
+            job_log(session, job, "provider download locked (all slots busy); reschedule", level="warn")
             enqueue_in(session, seconds=30, type_=job.type, params=job.params, priority=job.priority)
             return {"rescheduled": True}
 
@@ -607,7 +668,18 @@ def video_download(session: Session, job: Job) -> dict | None:
                     raw_info = load_info_json(sorted(info_json_candidates, key=lambda x: x.stat().st_size, reverse=True)[0])
             if raw_info:
                 # 避免 raw_info 过大：裁剪部分字段
-                keep_keys = ["id", "title", "description", "uploader", "channel", "upload_date", "timestamp", "duration", "webpage_url"]
+                keep_keys = [
+                    "id",
+                    "title",
+                    "original_title",
+                    "description",
+                    "uploader",
+                    "channel",
+                    "upload_date",
+                    "timestamp",
+                    "duration",
+                    "webpage_url",
+                ]
                 video.raw_info = {k: raw_info.get(k) for k in keep_keys}
                 if (not video.description) and raw_info.get("description"):
                     video.description = str(raw_info.get("description"))
@@ -618,8 +690,13 @@ def video_download(session: Session, job: Job) -> dict | None:
                         video.duration_sec = int(raw_info.get("duration"))
                     except Exception:
                         pass
-                if (not video.title) and raw_info.get("title"):
-                    video.title = str(raw_info.get("title"))
+                new_title = str(raw_info.get("title") or "").strip()
+                if new_title:
+                    if not video.title:
+                        video.title = new_title
+                    elif video.provider == "youtube" and _contains_cjk(new_title) and (not _contains_cjk(video.title)):
+                        # When YouTube provides a localized Chinese title, prefer it for download filename/UI.
+                        video.title = new_title
 
             if not video_file:
                 raise RuntimeError("yt-dlp 未产出视频文件")
@@ -696,6 +773,16 @@ def video_download(session: Session, job: Job) -> dict | None:
                 parent_job_id=str(job.id),
             )
         return {"subtitles": sub_count}
+
+
+@registry.register("video.download.youtube")
+def video_download_youtube(session: Session, job: Job) -> dict | None:
+    return video_download(session, job)
+
+
+@registry.register("video.download.bilibili")
+def video_download_bilibili(session: Session, job: Job) -> dict | None:
+    return video_download(session, job)
 
 
 @registry.register("video.extract_audio")
@@ -818,19 +905,20 @@ def video_normalize_subtitle(session: Session, job: Job) -> dict | None:
             replace=force,
         )
 
-        _maybe_polish_transcript(
-            session,
-            job=job,
-            video=video,
-            language=lang,
-            source="subtitle",
-            plain_text=plain,
-            output_path=wd / "polished.txt",
-            s3_key=f"{base}/polished.txt",
-            force=force,
-        )
-
     _enqueue_brief_for_video_playlists(session, video=video)
+    if llm_enabled():
+        enqueue_job(
+            session,
+            type_="video.polish_transcript",
+            params={
+                "video_id": str(video.id),
+                "language": lang,
+                "source": "subtitle",
+                "force": bool(job.params.get("force")),
+            },
+            priority=job.priority,
+            parent_job_id=str(job.id),
+        )
 
     video.status = "ready"
     return {"ok": True}
@@ -905,22 +993,112 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
             replace=force,
         )
 
-        _maybe_polish_transcript(
-            session,
-            job=job,
-            video=video,
-            language="zh",
-            source="qwen3-asr",
-            plain_text=text,
-            output_path=wd / "polished.txt",
-            s3_key=f"{base}/qwen3-asr-polished.txt",
-            force=force,
-        )
-
     _enqueue_brief_for_video_playlists(session, video=video)
+    if llm_enabled():
+        enqueue_job(
+            session,
+            type_="video.polish_transcript",
+            params={
+                "video_id": str(video.id),
+                "language": "zh",
+                "source": "qwen3-asr",
+                "force": bool(job.params.get("force")),
+            },
+            priority=job.priority,
+            parent_job_id=str(job.id),
+        )
 
     video.status = "ready"
     return {"ok": True}
+
+
+@registry.register("video.polish_transcript")
+def video_polish_transcript(session: Session, job: Job) -> dict | None:
+    if not llm_enabled():
+        return {"skipped": "llm not configured"}
+
+    video_id = uuid.UUID(job.params["video_id"])
+    video = session.get(Video, video_id)
+    if not video:
+        return {"skipped": "video not found"}
+
+    language = str(job.params.get("language") or "").strip().lower()
+    source = str(job.params.get("source") or "").strip()
+    force = bool(job.params.get("force"))
+
+    if not language or not source:
+        job_log(session, job, "polish_transcript skipped: missing language/source", level="warn")
+        return {"skipped": "missing params"}
+
+    # Locate the plain transcript that was created by subtitle normalization or ASR.
+    plain = session.execute(
+        select(Asset).where(
+            Asset.video_id == video.id,
+            Asset.type == "transcript",
+            Asset.format == "txt",
+            Asset.variant == "plain",
+            Asset.source == source,
+            Asset.language == language,
+        )
+    ).scalar_one_or_none()
+    if not plain:
+        return {"skipped": "plain transcript not found"}
+
+    if not force:
+        exists = session.execute(
+            select(Asset.id).where(
+                Asset.video_id == video.id,
+                Asset.type == "transcript",
+                Asset.format == "txt",
+                Asset.variant == "polished",
+                Asset.source == source,
+                Asset.language == language,
+            )
+        ).scalar_one_or_none()
+        if exists:
+            return {"skipped": "already polished"}
+
+    base = f"{video.provider}/{video.media_id}/{video.provider_video_id}/transcript/{language}"
+    if source == "subtitle":
+        s3_key = f"{base}/polished.txt"
+    else:
+        s3_key = f"{base}/{source}-polished.txt"
+
+    try:
+        with job_workdir(job.id) as wd:
+            local_plain = wd / "plain.txt"
+            s3_download_file(bucket=plain.s3_bucket, key=plain.s3_key, local_path=local_plain)
+            text = local_plain.read_text(encoding="utf-8", errors="ignore").strip()
+            if not text:
+                return {"skipped": "plain transcript empty"}
+
+            polished = _polish_transcript_via_llm(text=text)
+            polished = _sanitize_llm_plain_text(polished).strip()
+            if not polished:
+                job_log(session, job, "llm transcript polish returned empty; keep plain transcript", level="warn")
+                return {"skipped": "empty polish result"}
+
+            out_path = wd / "polished.txt"
+            out_path.write_text(polished, encoding="utf-8")
+            ensure_asset(
+                session,
+                video_id=video.id,
+                type_="transcript",
+                format_="txt",
+                language=language,
+                source=source,
+                variant="polished",
+                local_path=out_path,
+                s3_key=s3_key,
+                content_type="text/plain; charset=utf-8",
+                metadata={"variant": "polished", "polish_method": "llm", "polished": True},
+                replace=force,
+            )
+            job_log(session, job, "llm transcript polish saved", level="info", data={"language": language, "source": source})
+            return {"ok": True}
+    except Exception as e:
+        job_log(session, job, f"llm transcript polish failed: {e}", level="warn")
+        return {"skipped": "llm failed"}
 
 
 @registry.register("video.generate_note")
@@ -933,7 +1111,7 @@ def video_generate_note(session: Session, job: Job) -> dict | None:
     if not llm_enabled():
         return {"skipped": "llm not configured"}
 
-    bucket, key = _load_plain_transcript(session, video.id)
+    bucket, key = load_plain_transcript_asset(session, video.id)
     if not bucket or not key:
         return {"skipped": "transcript not found"}
 
@@ -956,7 +1134,7 @@ def video_generate_note(session: Session, job: Job) -> dict | None:
             f"{text}\n"
         )
 
-        md = llm_generate_markdown(prompt=prompt)
+        md = llm_generate_markdown(prompt=prompt, think=True)
         out = wd / "note.md"
         out.write_text(md, encoding="utf-8")
 
@@ -977,49 +1155,15 @@ def video_generate_note(session: Session, job: Job) -> dict | None:
         return {"asset_id": str(asset.id)}
 
 
-def _load_plain_transcript(session: Session, video_id: uuid.UUID) -> tuple[str | None, str | None]:
-    # Prefer polished first, then plain. Prefer subtitle zh, then ASR zh, then any transcript.
-    variants = ["polished", "plain"]
-    order = [
-        ("subtitle", "zh"),
-        ("qwen3-asr", "zh"),
-        ("speaches", "zh"),  # legacy
-    ]
-    for variant in variants:
-        for source, lang in order:
-            a = session.execute(
-                select(Asset).where(
-                    Asset.video_id == video_id,
-                    Asset.type == "transcript",
-                    Asset.format == "txt",
-                    Asset.variant == variant,
-                    Asset.source == source,
-                    Asset.language == lang,
-                )
-            ).scalar_one_or_none()
-            if a:
-                return a.s3_bucket, a.s3_key
-
-    for variant in variants:
-        a = session.execute(
-            select(Asset)
-            .where(
-                Asset.video_id == video_id,
-                Asset.type == "transcript",
-                Asset.format == "txt",
-                Asset.variant == variant,
-            )
-            .order_by(Asset.created_at.desc())
-        ).scalar_one_or_none()
-        if a:
-            return a.s3_bucket, a.s3_key
-    return None, None
 
 
 def _sanitize_llm_plain_text(text: str) -> str:
     s = (text or "").strip()
     if not s:
         return ""
+    # Strip "thinking" blocks if a model accidentally includes them in the content.
+    s = re.sub(r"(?is)<think>.*?</think>", "", s)
+    s = re.sub(r"(?is)</?think>", "", s)
     # Strip common markdown wrappers/models' formatting.
     if s.startswith("```"):
         s = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", s)
@@ -1058,6 +1202,29 @@ def _split_text_for_llm(text: str, *, max_chars: int) -> list[str]:
     return [c for c in chunks if c]
 
 
+def _build_transcript_polish_prompt(*, chunk: str, index: int, total: int) -> str:
+    return (
+        "你是一名中文文字稿编辑兼翻译。下面是一段从视频字幕/转写得到的原始文本，可能存在：口语化、断句混乱、错别字、同音错词、"
+        "标点缺失、段落缺失，也可能原文是英文或中英混杂。\n"
+        "请在不增删事实的前提下，把文本整理成更易读的中文正文；如果原文不是中文，请准确翻译为自然、通顺的简体中文。\n"
+        "要求（必须遵守）：\n"
+        "1) 最终输出必须是简体中文正文；即使原文是英文或其他语言，也不要保留大段外文原文。\n"
+        "2) 自动分段：只在语义转折/话题切换处换段；不要逐句换段；段落宁可更长一些，避免出现大量短段。\n"
+        "3) 段落之间用**单个**空行分隔；不要出现连续多个空行；不要把每一句都写成单独一行。\n"
+        "4) 补充必要标点（保持原意）；\n"
+        "5) 修正常见错别字/同音错词；不确定就保留原样；专有名词优先使用常见中文译名，不确定时保留原文名称；\n"
+        "6) **所有阿拉伯数字（0-9）必须逐字保留**：不得新增、删除、改动任何数字字符（含小数点/负号/%）。\n"
+        "   - 不要把阿拉伯数字改写成中文数字，也不要把中文数字改写成阿拉伯数字；\n"
+        "   - 不要推断缺失单位/小数点/时间窗口；\n"
+        "7) 不要总结、不要加标题、不要加解释、不要附带翻译说明；只输出整理/翻译后的正文纯文本。\n"
+        "8) 这是整段文本的一个片段（"
+        f"{index}/{total}"
+        "），输出中不要提及片段编号。\n\n"
+        "原始文本：\n"
+        f"{chunk}\n"
+    )
+
+
 def _polish_transcript_via_llm(*, text: str) -> str:
     # Keep chunks reasonably small to reduce the chance of context overflow.
     chunks = _split_text_for_llm(text, max_chars=12_000)
@@ -1067,28 +1234,9 @@ def _polish_transcript_via_llm(*, text: str) -> str:
     outputs: list[str] = []
     total = len(chunks)
     for i, chunk in enumerate(chunks, start=1):
-        prompt = (
-            "你是一名中文文字稿编辑。下面是一段从视频字幕/转写得到的原始文本，可能存在：口语化、断句混乱、错别字、同音错词、"
-            "标点缺失、段落缺失。\n"
-            "请在不增删事实的前提下，把文本润色成更易读的中文正文。\n"
-            "要求（必须遵守）：\n"
-            "1) 自动分段：只在语义转折/话题切换处换段；不要逐句换段；段落宁可更长一些，避免出现大量短段。\n"
-            "2) 段落之间用**单个**空行分隔；不要出现连续多个空行；不要把每一句都写成单独一行。\n"
-            "3) 补充必要标点（保持原意）；\n"
-            "4) 修正常见错别字/同音错词；不确定就保留原样；不要改写专有名词；\n"
-            "4) **所有阿拉伯数字（0-9）必须逐字保留**：不得新增、删除、改动任何数字字符（含小数点/负号/%）。\n"
-            "   - 只允许在数字与单位之间补空格、加千分位这类不改变字符的格式化；\n"
-            "   - 不要把中文数字转换成阿拉伯数字；\n"
-            "   - 不要推断缺失单位/小数点/时间窗口；\n"
-            "5) 不要总结、不要加标题、不要加解释；只输出润色后的正文纯文本。\n"
-            "6) 这是整段文本的一个片段（"
-            f"{i}/{total}"
-            "），输出中不要提及片段编号。\n\n"
-            "原始文本：\n"
-            f"{chunk}\n"
-        )
+        prompt = _build_transcript_polish_prompt(chunk=chunk, index=i, total=total)
 
-        out = llm_generate_markdown(prompt=prompt)
+        out = llm_generate_markdown(prompt=prompt, think=False)
         out = _sanitize_llm_plain_text(out)
         if out:
             outputs.append(out.strip())
@@ -1180,62 +1328,88 @@ def _enqueue_brief_for_video_playlists(session: Session, *, video: Video, delay_
         .scalars()
         .all()
     )
+    if not playlist_ids:
+        return 0
+
+    rows = session.execute(select(Playlist.id, Playlist.brief_granularity).where(Playlist.id.in_(list(playlist_ids)))).all()
     n = 0
-    for pid in playlist_ids:
+    for pid, granularity in rows:
+        g = (granularity or "day").strip().lower()
+        if g not in {"day", "week", "month"}:
+            g = "day"
+        pstart = brief_period_start(d, g)
         enqueue_in(
             session,
             seconds=delay_seconds,
-            type_="brief.generate_daily",
-            params={"playlist_id": str(pid), "date": d.isoformat()},
+            type_="brief.generate_period",
+            params={"playlist_id": str(pid), "granularity": g, "period_start": pstart.isoformat()},
             priority=2,
         )
         n += 1
     return n
 
 
-@registry.register("brief.generate_daily")
-def brief_generate_daily(session: Session, job: Job) -> dict | None:
-    playlist_id = uuid.UUID(job.params["playlist_id"])
-    brief_date = date.fromisoformat(job.params["date"])
+def _brief_generate_period_impl(
+    session: Session,
+    job: Job,
+    *,
+    playlist_id: uuid.UUID,
+    granularity: str,
+    period_start: date,
+) -> dict | None:
+    g = (granularity or "day").strip().lower()
+    if g not in {"day", "week", "month"}:
+        g = "day"
+    period_start = brief_period_start(period_start, g)
+    period_end = brief_period_end_inclusive(period_start, g)
 
-    tzinfo = tz.gettz(settings.timezone) or tz.tzlocal()
-    day_start = datetime.combine(brief_date, datetime.min.time()).replace(tzinfo=tzinfo).astimezone(tz.tzutc())
-    day_end = day_start + timedelta(days=1)
+    playlist = session.get(Playlist, playlist_id)
+    if not playlist:
+        job_log(session, job, f"brief failed: playlist not found {playlist_id}", level="warn")
+        return {"failed": True, "reason": "playlist not found"}
+
+    start_utc, end_utc = brief_period_bounds_utc(period_start, g)
 
     media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == playlist_id)).scalars().all()
     if not media_ids:
         br = session.execute(
-            select(DailyBrief).where(DailyBrief.playlist_id == playlist_id, DailyBrief.brief_date == brief_date)
+            select(Brief).where(Brief.playlist_id == playlist_id, Brief.granularity == g, Brief.period_start == period_start)
         ).scalar_one_or_none()
         if not br:
-            br = DailyBrief(playlist_id=playlist_id, brief_date=brief_date, status="running")
+            br = Brief(playlist_id=playlist_id, granularity=g, period_start=period_start, status="running")
             session.add(br)
             session.flush()
         else:
             br.status = "running"
         br.status = "failed"
         br.error_message = "播放列表为空"
+        br.markdown_asset_id = None
         return {"failed": True, "reason": "empty playlist"}
 
     videos = (
         session.execute(
             select(Video)
-            .where(Video.media_id.in_(list(media_ids)), Video.published_at >= day_start, Video.published_at < day_end)
+            .where(Video.media_id.in_(list(media_ids)), Video.published_at >= start_utc, Video.published_at < end_utc)
             .order_by(Video.published_at.asc().nullslast())
         )
         .scalars()
         .all()
     )
-
     if not videos:
-        job_log(session, job, f"skip brief: no videos on {brief_date.isoformat()}", level="info")
+        job_log(
+            session,
+            job,
+            f"skip brief: no videos in period {g} {period_start.isoformat()}",
+            level="info",
+            data={"granularity": g, "period_start": period_start.isoformat()},
+        )
         return {"skipped": True, "reason": "no videos"}
 
     br = session.execute(
-        select(DailyBrief).where(DailyBrief.playlist_id == playlist_id, DailyBrief.brief_date == brief_date)
+        select(Brief).where(Brief.playlist_id == playlist_id, Brief.granularity == g, Brief.period_start == period_start)
     ).scalar_one_or_none()
     if not br:
-        br = DailyBrief(playlist_id=playlist_id, brief_date=brief_date, status="running")
+        br = Brief(playlist_id=playlist_id, granularity=g, period_start=period_start, status="running")
         session.add(br)
         session.flush()
     else:
@@ -1244,128 +1418,26 @@ def brief_generate_daily(session: Session, job: Job) -> dict | None:
     if not llm_enabled():
         br.status = "failed"
         br.error_message = "llm 未配置"
+        br.markdown_asset_id = None
         return {"failed": True, "reason": "llm not configured"}
 
     with job_workdir(job.id) as wd:
-        blocks: list[str] = []
-        video_urls: list[str] = []
-        for v in videos:
-            bucket, key = _load_plain_transcript(session, v.id)
-            if not bucket or not key:
-                continue
-            local = wd / f"{v.id}.txt"
-            s3_download_file(bucket=bucket, key=key, local_path=local)
-            text = local.read_text(encoding="utf-8", errors="ignore").strip()
-            if not text:
-                continue
-            video_urls.append(v.url)
-            blocks.append(f"## {v.title or v.provider_video_id}\n来源：{v.url}\n\n{text}\n")
-
+        blocks, video_urls = build_brief_blocks(session, videos)
         if not blocks:
             br.status = "failed"
-            br.error_message = "当日无可用文本（字幕/文字稿缺失）"
+            br.error_message = "本周期无可用文本（字幕/文字稿缺失）"
+            br.markdown_asset_id = None
             return {"failed": True, "reason": "no transcript"}
 
-        default_tpl = "\n".join(
-            [
-                "## 提示词",
-                "",
-                "你是一个**财经内容分析助手**。请基于下面提供的多条视频文字内容（可能含转写、字幕、摘要、片段拼接），生成一份可直接发布的**Markdown**财经简报。",
-                "",
-                "### 核心约束（必须遵守）",
-                "",
-                "1. **只使用文本中明确出现的信息**：",
-                "",
-                "   * 不要补充常识性“背景”来充当事实。",
-                "   * 任何无法从文本直接验证的内容，一律写：**“文本未提及”** 或 **“文本表述不充分，无法确认”**。",
-                "2. **每条要点必须附 1–3 个来源链接**：",
-                "",
-                "   * 来源链接必须来自文本中的视频链接/来源字段。",
-                "   * 统一写法：句末用 `（来源：https://...，https://...）`（可用纯 URL 或 Markdown 链接）。",
-                "3. 输出语言：**中文**。",
-                "4. 输出必须是 **Markdown**，段落清晰，便于直接发布。",
-                "5. 不需要：**主体归类**、**今日视频清单**。",
-                "6. **不要输出“总标题/日期/分割线”**：",
-                "",
-                "   * 不要输出 H1（例如 `# ...`）或任何“总标题”。",
-                "   * 不要输出“每日财经简报”字样。",
-                "   * 不要输出“日期：...”或任何单独的日期行。",
-                "   * 不要输出 Markdown 水平分割线（例如 `---`）。",
-                "",
-                "### 输出结构",
-                "",
-                "你必须严格按以下结构输出，并且**标题行必须用 Markdown 标题语法，单独成行**（不要写成正文里的小标题）：",
-                "",
-                "## 今日要点",
-                "",
-                "* 用 **bullet** 列出关键信息点（只写要点，不要写散文段落）。",
-                "* 每条要点：",
-                "",
-                "  * 句式尽量短，先给“结论/信息”，再给“条件/范围/时间”。",
-                "  * 必须在句末附 **1–3 个来源链接**，格式：`（来源：...）`。",
-                "  * 若文本出现具体数值（涨跌幅、利率、通胀、盈利、库存、产量等），必须原样保留，并注明它属于谁/哪个时间窗口；若时间窗口不清楚，写“文本未提及”。",
-                "",
-                "示例格式（示例仅展示格式，不要复用示例内容）：",
-                "",
-                "* 美债收益率在文本中被描述为____，并被归因于____（来源：[视频标题](https://...)）",
-                "* 某公司业绩/指引被提到____，但对同比/环比口径未说明（文本未提及）（来源：[视频标题](https://...)）",
-                "",
-                "## 影响与逻辑链",
-                "",
-                "* 写清楚“**因 → 果**”或“**事件 → 资产影响**”的链条。",
-                "* 每条链条必须满足：链条中的每个关键节点都能在文本中找到依据；找不到就标注“文本未提及”。",
-                "* 仍然要在句末附来源链接。",
-                "",
-                "## 风险与不确定性",
-                "",
-                "* 重点写：口径不一致、数据缺失、时间不明、推断过度、样本偏差、叙述互相矛盾之处。",
-                "* 如不同视频说法冲突：明确写出“视频 A 说…；视频 B 说…；无法判定”（并分别给来源）。",
-                "",
-                "## 关注清单",
-                "",
-                "* 给出“接下来应继续跟踪”的观察项（不是预测结论），如：",
-                "",
-                "  * 关键数据发布、会议/财报、政策口径、价格/利差/汇率阈值、行业库存、地缘事件进展等。",
-                "* 每一条都要说明：为什么要跟踪（依据文本哪个说法），并附来源链接。",
-                "* 如果文本没有足够依据，写“文本未提及”。",
-                "",
-                "## 行动建议",
-                "",
-                "* 给“**条件触发式**”建议，形式如：",
-                "",
-                "  * “若文本中提到的 A 指标继续…，可考虑…；否则…（文本未提及具体阈值）”",
-                "* **不允许直接给确定性买卖指令**；只能写“可考虑/可关注/需验证”。",
-                "* 每条建议仍需来源链接；若建议的关键条件缺失，标注“文本未提及”。",
-                "",
-                "简报日期（仅供你理解上下文，不要在输出中出现）：{{date}}",
-                "",
-                "以下是视频文本（多条，可能包含标题与链接；若未包含链接，请在输出中把来源写为“文本未提供链接”）：",
-                "{{blocks}}",
-            ]
-        ).strip()
+        tpl = (getattr(playlist, "brief_prompt", None) or "").strip() or DEFAULT_BRIEF_PROMPT_TEMPLATE
+        prompt = compose_brief_prompt(tpl, granularity=g, period_start=period_start, period_end=period_end, blocks=blocks)
 
-        cfg_tpl: str | None = None
-        try:
-            cfg = session.get(AppConfig, "briefs")
-            if cfg and isinstance(cfg.value, dict):
-                v = cfg.value.get("daily_prompt")
-                if isinstance(v, str) and v.strip():
-                    cfg_tpl = v.strip()
-        except Exception:
-            cfg_tpl = None
-
-        blocks_text = "\n\n\n".join(blocks)
-        tpl = cfg_tpl or default_tpl
-        prompt = tpl.replace("{{date}}", brief_date.isoformat()).replace("{{blocks}}", blocks_text)
-        if "{{blocks}}" not in tpl:
-            prompt = (prompt.rstrip() + "\n\n\n" + blocks_text).strip()
-
-        md = llm_generate_markdown(prompt=prompt)
+        md = llm_generate_markdown(prompt=prompt, think=True)
         md = _sanitize_brief_markdown(md)
         out = wd / "brief.md"
         out.write_text(md, encoding="utf-8")
 
-        key = f"brief/{playlist_id}/{brief_date.isoformat()}.md"
+        key = f"brief/{playlist_id}/{g}/{period_start.isoformat()}.md"
         asset = ensure_asset(
             session,
             video_id=None,
@@ -1377,13 +1449,40 @@ def brief_generate_daily(session: Session, job: Job) -> dict | None:
             local_path=out,
             s3_key=key,
             content_type="text/markdown; charset=utf-8",
-            metadata={"playlist_id": str(playlist_id), "date": brief_date.isoformat(), "job_id": str(job.id), "video_urls": video_urls},
+            metadata={
+                "playlist_id": str(playlist_id),
+                "granularity": g,
+                "period_start": period_start.isoformat(),
+                "period_end": period_end.isoformat(),
+                "job_id": str(job.id),
+                "video_urls": video_urls,
+            },
             dedupe=False,
         )
         br.status = "ready"
         br.markdown_asset_id = asset.id
         br.error_message = None
         return {"asset_id": str(asset.id)}
+
+
+@registry.register("brief.generate_period")
+def brief_generate_period(session: Session, job: Job) -> dict | None:
+    playlist_id = uuid.UUID(job.params["playlist_id"])
+    g = str(job.params.get("granularity") or "day")
+    if "period_start" in job.params and job.params.get("period_start"):
+        pstart = date.fromisoformat(str(job.params["period_start"]))
+    elif "date" in job.params and job.params.get("date"):
+        pstart = date.fromisoformat(str(job.params["date"]))
+    else:
+        pstart = date.today()
+    return _brief_generate_period_impl(session, job, playlist_id=playlist_id, granularity=g, period_start=pstart)
+
+
+@registry.register("brief.generate_daily")
+def brief_generate_daily(session: Session, job: Job) -> dict | None:
+    playlist_id = uuid.UUID(job.params["playlist_id"])
+    brief_date = date.fromisoformat(job.params["date"])
+    return _brief_generate_period_impl(session, job, playlist_id=playlist_id, granularity="day", period_start=brief_date)
 
 
 def _sanitize_brief_markdown(md: str) -> str:

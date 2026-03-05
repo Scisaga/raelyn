@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
@@ -12,6 +14,7 @@ from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Media, Video
+from raelyn.services.downloads import content_disposition_attachment
 from raelyn.services.provider import detect_provider, extract_media_identity
 from raelyn.services.s3 import s3_clear_bucket, s3_presign_get
 
@@ -41,6 +44,10 @@ class MediaOut(OrmModel):
 
 class MediaUpdate(BaseModel):
     monitor_enabled: bool | None = None
+
+
+class MediaImportIn(BaseModel):
+    text: str
 
 
 def _media_out(m: Media, *, local_video_count: int | None = None) -> MediaOut:
@@ -102,6 +109,118 @@ def list_media(provider: str | None = None, q: str | None = None, limit: int = 5
         stmt = stmt.order_by(Media.updated_at.desc()).limit(limit).offset(offset)
         rows = session.execute(stmt).all()
         return [_media_out(m, local_video_count=int(c or 0)) for m, c in rows]
+
+
+@router.get("/media/export")
+def export_media() -> PlainTextResponse:
+    with session_scope() as session:
+        urls = (
+            session.execute(select(Media.url).order_by(Media.updated_at.desc()))
+            .scalars()
+            .all()
+        )
+    lines = [str(u).strip() for u in urls if str(u or "").strip()]
+    body = "\n".join(lines)
+    if body:
+        body += "\n"
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    filename = f"media-export-{ts}.txt"
+    return PlainTextResponse(
+        body,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": content_disposition_attachment(filename)},
+    )
+
+
+@router.post("/media/import")
+def import_media(payload: MediaImportIn) -> dict:
+    text = str(payload.text or "")
+    max_chars = 2_000_000
+    if len(text) > max_chars:
+        raise HTTPException(status_code=413, detail=f"导入文本过大（>{max_chars} chars）")
+
+    invalid: list[dict] = []
+    duplicates_in_input: list[str] = []
+    items: list[tuple[tuple[str, str], str, int]] = []
+    seen_keys: set[tuple[str, str]] = set()
+
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        s = str(raw or "").strip()
+        if not s or s.startswith("#"):
+            continue
+
+        provider = detect_provider(s)
+        if not provider:
+            invalid.append({"line": lineno, "url": s, "error": "无法识别 provider"})
+            continue
+
+        try:
+            identity = extract_media_identity(provider=provider, url=s)
+        except Exception as e:
+            invalid.append({"line": lineno, "url": s, "error": f"无法解析媒体：{e}"})
+            continue
+
+        key = (identity.provider, identity.provider_media_id)
+        if key in seen_keys:
+            duplicates_in_input.append(s)
+            continue
+        seen_keys.add(key)
+
+        items.append((key, s, lineno))
+        if len(items) > 10_000:
+            raise HTTPException(status_code=413, detail="导入媒体过多（>10000 条有效 URL）")
+
+    by_provider: dict[str, set[str]] = {}
+    for (provider, pid), _url, _lineno in items:
+        if provider not in by_provider:
+            by_provider[provider] = set()
+        by_provider[provider].add(pid)
+
+    created: list[str] = []
+    existing: list[str] = []
+
+    with session_scope() as session:
+        existing_by_key: dict[tuple[str, str], Media] = {}
+        for provider, ids in by_provider.items():
+            if not ids:
+                continue
+            rows = (
+                session.execute(
+                    select(Media).where(Media.provider == provider, Media.provider_media_id.in_(list(ids)))
+                )
+                .scalars()
+                .all()
+            )
+            for m in rows:
+                existing_by_key[(m.provider, m.provider_media_id)] = m
+
+        created_medias: list[Media] = []
+        for (provider, pid), url, _lineno in items:
+            m = existing_by_key.get((provider, pid))
+            if m:
+                m.url = url
+                existing.append(url)
+                continue
+            m = Media(provider=provider, provider_media_id=pid, url=url)
+            session.add(m)
+            created_medias.append(m)
+            created.append(url)
+
+        session.flush()
+
+        for m in created_medias:
+            enqueue_job(session, type_="media.sync_profile", params={"media_id": str(m.id)}, priority=10)
+            enqueue_job(session, type_="media.sync_videos", params={"media_id": str(m.id)}, priority=5)
+
+    return {
+        "ok": True,
+        "created": created,
+        "existing": existing,
+        "invalid": invalid,
+        "duplicates_in_input": duplicates_in_input,
+        "total_effective": len(items),
+    }
 
 
 @router.get("/media/{media_id}", response_model=MediaOut)

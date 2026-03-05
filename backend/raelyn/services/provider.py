@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 
 def detect_provider(url: str) -> str | None:
@@ -20,10 +20,37 @@ class MediaIdentity:
     provider_media_id: str
 
 
-_YOUTUBE_HANDLE_RE = re.compile(r"^/@(?P<handle>[A-Za-z0-9._-]{1,100})(?:/|$)")
+# Note: Some handles can appear URL-encoded (e.g. /@%E4%B9%9D...). We unquote the path before matching,
+# and accept unicode word characters plus common handle symbols.
+_YOUTUBE_HANDLE_RE = re.compile(r"^/@(?P<handle>[\w._-]{1,100})(?:/|$)")
 _YOUTUBE_CHANNEL_RE = re.compile(r"^/channel/(?P<cid>UC[A-Za-z0-9_-]{10,})(?:/|$)")
 _YOUTUBE_USER_RE = re.compile(r"^/user/(?P<user>[A-Za-z0-9._-]{1,100})(?:/|$)")
 _YOUTUBE_C_RE = re.compile(r"^/c/(?P<cname>[A-Za-z0-9._-]{1,100})(?:/|$)")
+_YOUTUBE_VANITY_RE = re.compile(r"^/(?P<name>[\w._-]{1,100})(?:/|$)")
+
+_YOUTUBE_RESERVED_TOPLEVEL = {
+    "watch",
+    "playlist",
+    "results",
+    "feed",
+    "shorts",
+    "channel",
+    "c",
+    "user",
+    "live",
+    "videos",
+    "trending",
+    "music",
+    "gaming",
+    "news",
+    "sports",
+    "movies",
+    "kids",
+    "premium",
+    "account",
+    "signin",
+    "logout",
+}
 
 _BILIBILI_SPACE_RE = re.compile(r"^/(?P<mid>\d{1,20})(?:/|$)")
 
@@ -42,7 +69,12 @@ def _extract_media_id_from_url(*, provider: str, url: str) -> str | None:
     u = _normalize_url(url)
     p = urlparse(u)
     host = (p.netloc or "").lower()
-    path = p.path or ""
+    raw_path = p.path or ""
+    # Decode percent-encoded path segments (e.g. /@%E4%B9%9D...).
+    try:
+        path = unquote(raw_path)
+    except Exception:
+        path = raw_path
 
     if provider == "youtube":
         # Typical channel URLs:
@@ -50,11 +82,15 @@ def _extract_media_id_from_url(*, provider: str, url: str) -> str | None:
         # - https://www.youtube.com/channel/UCxxxx
         # - https://www.youtube.com/user/username
         # - https://www.youtube.com/c/customname
+        # - https://www.youtube.com/customname   (legacy vanity URL, usually redirects to @handle)
         if "youtube.com" not in host and "youtu.be" not in host:
             return None
         m = _YOUTUBE_HANDLE_RE.match(path)
         if m:
-            return f"@{m.group('handle')}"
+            handle = (m.group("handle") or "").strip()
+            if not handle or any(ch.isspace() for ch in handle):
+                return None
+            return f"@{handle}"
         m = _YOUTUBE_CHANNEL_RE.match(path)
         if m:
             return m.group("cid")
@@ -64,6 +100,15 @@ def _extract_media_id_from_url(*, provider: str, url: str) -> str | None:
         m = _YOUTUBE_C_RE.match(path)
         if m:
             return f"c:{m.group('cname')}"
+        m = _YOUTUBE_VANITY_RE.match(path)
+        if m:
+            name = (m.group("name") or "").strip()
+            if not name:
+                return None
+            # Avoid accidentally accepting non-channel URLs like /watch, /playlist, etc.
+            if name.lower() in _YOUTUBE_RESERVED_TOPLEVEL:
+                return None
+            return f"path:{name}"
         return None
 
     if provider == "bilibili":
@@ -83,7 +128,9 @@ def extract_media_identity(*, provider: str, url: str) -> MediaIdentity:
     if provider_media_id:
         return MediaIdentity(provider=provider, provider_media_id=provider_media_id)
 
-    raise ValueError("仅支持添加频道/UP 主主页 URL（例如 YouTube /@handle 或 bilibili space 链接）")
+    raise ValueError(
+        "仅支持添加频道/UP 主主页 URL（例如 YouTube /@handle、/channel/UC...、/user/...、/c/...、/name 或 bilibili space 链接）"
+    )
 
 
 def build_media_videos_url(*, provider: str, provider_media_id: str) -> str | None:
@@ -104,14 +151,21 @@ def build_media_videos_url(*, provider: str, provider_media_id: str) -> str | No
         # - "UCxxxx" (channel id)
         # - "user:username"
         # - "c:customname"
+        # - "path:customname" (legacy vanity URL)
         if pid.startswith("@"):
-            return f"https://www.youtube.com/{pid}/videos"
+            handle = pid.removeprefix("@")
+            safe_handle = quote(handle, safe="._-")
+            return f"https://www.youtube.com/@{safe_handle}/videos"
         if pid.startswith("UC"):
             return f"https://www.youtube.com/channel/{pid}/videos"
         if pid.startswith("user:"):
             return f"https://www.youtube.com/user/{pid.removeprefix('user:')}/videos"
         if pid.startswith("c:"):
             return f"https://www.youtube.com/c/{pid.removeprefix('c:')}/videos"
+        if pid.startswith("path:"):
+            name = pid.removeprefix("path:")
+            safe_name = quote(name, safe="._-")
+            return f"https://www.youtube.com/{safe_name}/videos"
         return None
 
     if provider == "bilibili":

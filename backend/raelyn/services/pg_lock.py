@@ -34,3 +34,22 @@ def advisory_lock(session: Session, name: str):
         if ok:
             unlock(session, name)
 
+
+@contextmanager
+def advisory_lock_any(session: Session, names: list[str]):
+    """
+    Try to acquire any lock from `names` (in order). Yields the acquired name, or None.
+    """
+    acquired: str | None = None
+    for n in names or []:
+        s = str(n or "").strip()
+        if not s:
+            continue
+        if try_lock(session, s):
+            acquired = s
+            break
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            unlock(session, acquired)

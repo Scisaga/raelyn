@@ -112,7 +112,7 @@ def _extract_openai_completion_text(payload: Any) -> str:
     return ""
 
 
-def llm_generate_markdown(*, prompt: str) -> str:
+def llm_generate_markdown(*, prompt: str, think: bool | str | None = None) -> str:
     if not llm_enabled():
         raise RuntimeError("llm is not configured")
 
@@ -123,6 +123,8 @@ def llm_generate_markdown(*, prompt: str) -> str:
 
     if mode == "ollama_generate":
         payload: dict[str, Any] = {"model": model or "qwen2.5:7b", "prompt": prompt, "stream": False}
+        if think is not None:
+            payload["think"] = think
     elif mode == "openai_chat":
         if not model:
             raise RuntimeError("LLM_MODEL is required for /chat/completions endpoints")

@@ -68,7 +68,7 @@
                 title="查看队列任务（待处理）"
               >
                 <span class="text-xs text-slate-400 hidden sm:inline">队列</span>
-                <span class="text-sm font-semibold text-slate-100 tabular-nums" x-text="jobStats.pending"></span>
+                <span class="text-sm text-slate-100 tabular-nums" x-text="jobStats.pending"></span>
               </button>
               <button
                 class="inline-flex items-center gap-2 bg-slate-950/20 px-3 py-1.5 hover:bg-slate-800/50"
@@ -76,7 +76,7 @@
                 title="查看正在执行任务"
               >
                 <span class="text-xs text-slate-400 hidden sm:inline">执行</span>
-                <span class="text-sm font-semibold text-slate-100 tabular-nums" x-text="jobStats.running"></span>
+                <span class="text-sm text-slate-100 tabular-nums" x-text="jobStats.running"></span>
               </button>
               <button
                 class="inline-flex items-center gap-2 bg-emerald-950/20 px-3 py-1.5 hover:bg-emerald-900/25"
@@ -84,7 +84,7 @@
                 title="查看 24h 内成功任务"
               >
                 <span class="text-xs text-emerald-200/80 hidden md:inline">24h 成功</span>
-                <span class="text-sm font-semibold text-emerald-200 tabular-nums" x-text="jobStats.succeeded24h"></span>
+                <span class="text-sm text-emerald-200 tabular-nums" x-text="jobStats.succeeded24h"></span>
               </button>
               <button
                 class="inline-flex items-center gap-2 bg-rose-950/20 px-3 py-1.5 hover:bg-rose-900/25"
@@ -92,7 +92,7 @@
                 title="查看 24h 内失败任务"
               >
                 <span class="text-xs text-rose-200/80 hidden md:inline">24h 失败</span>
-                <span class="text-sm font-semibold text-rose-200 tabular-nums" x-text="jobStats.failed"></span>
+                <span class="text-sm text-rose-200 tabular-nums" x-text="jobStats.failed"></span>
               </button>
             </div>
           </div>
@@ -100,8 +100,8 @@
 
         <section
           class="min-h-0"
-          :class="['overview','settings','playlist','playlists','videos','media','jobs','briefs'].includes(activeView) ? 'p-0 sm:p-0 space-y-0 overflow-hidden' : 'p-4 sm:p-5 space-y-4'"
-          :style="['overview','settings','playlist','playlists','videos','media','jobs','briefs'].includes(activeView) ? 'height: calc(100vh - 3.5rem);' : ''"
+          :class="['overview','settings','playlist','playlists','videos','media','jobs'].includes(activeView) ? 'p-0 sm:p-0 space-y-0 overflow-hidden' : 'p-4 sm:p-5 space-y-4'"
+          :style="['overview','settings','playlist','playlists','videos','media','jobs'].includes(activeView) ? 'height: calc(100vh - 3.5rem);' : ''"
         >
 <!-- @include views/overview.html -->
 
@@ -114,8 +114,6 @@
 <!-- @include views/playlists.html -->
 
 <!-- @include views/playlist.html -->
-
-<!-- @include views/briefs.html -->
 
 <!-- @include views/settings.html -->
         </section>

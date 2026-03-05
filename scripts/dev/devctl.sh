@@ -7,15 +7,21 @@ PID_DIR="tmp/pids"
 LOG_DIR="tmp/logs"
 
 API_PID_FILE="${PID_DIR}/api.pid"
-WORKER_DL_PID_FILE="${PID_DIR}/worker-download.pid"
+WORKER_YT_DL_PID_FILE="${PID_DIR}/worker-download-youtube.pid"
+WORKER_BILI_DL_PID_FILE="${PID_DIR}/worker-download-bilibili.pid"
+WORKER_AUDIO_PID_FILE="${PID_DIR}/worker-audio.pid"
 WORKER_PROCESS_PID_FILE="${PID_DIR}/worker-process.pid"
+WORKER_ASR_PID_FILE="${PID_DIR}/worker-asr.pid"
 WORKER_SYNC_PID_FILE="${PID_DIR}/worker-sync.pid"
 WORKER_AI_PID_FILE="${PID_DIR}/worker-ai.pid"
 SCHED_PID_FILE="${PID_DIR}/scheduler.pid"
 
 API_LOG="${LOG_DIR}/api.log"
-WORKER_DL_LOG="${LOG_DIR}/worker-download.log"
+WORKER_YT_DL_LOG="${LOG_DIR}/worker-download-youtube.log"
+WORKER_BILI_DL_LOG="${LOG_DIR}/worker-download-bilibili.log"
+WORKER_AUDIO_LOG="${LOG_DIR}/worker-audio.log"
 WORKER_PROCESS_LOG="${LOG_DIR}/worker-process.log"
+WORKER_ASR_LOG="${LOG_DIR}/worker-asr.log"
 WORKER_SYNC_LOG="${LOG_DIR}/worker-sync.log"
 WORKER_AI_LOG="${LOG_DIR}/worker-ai.log"
 SCHED_LOG="${LOG_DIR}/scheduler.log"
@@ -50,8 +56,11 @@ Notes:
   - Uses pidfiles under tmp/pids/ and logs under tmp/logs/
   - Uses existing run scripts:
       scripts/dev/run-api.sh
-      scripts/dev/run-worker-download.sh
+      scripts/dev/run-worker-download-youtube.sh
+      scripts/dev/run-worker-download-bilibili.sh
+      scripts/dev/run-worker-audio.sh
       scripts/dev/run-worker-process.sh
+      scripts/dev/run-worker-asr.sh
       scripts/dev/run-worker-sync.sh
       scripts/dev/run-worker-ai.sh
       scripts/dev/run-scheduler.sh
@@ -172,10 +181,13 @@ kill_strays() {
 }
 
 do_status() {
-  local api_pid dl_pid process_pid sync_pid ai_pid sched_pid
+  local api_pid yt_dl_pid bili_dl_pid audio_pid process_pid asr_pid sync_pid ai_pid sched_pid
   api_pid="$(read_pid "$API_PID_FILE")"
-  dl_pid="$(read_pid "$WORKER_DL_PID_FILE")"
+  yt_dl_pid="$(read_pid "$WORKER_YT_DL_PID_FILE")"
+  bili_dl_pid="$(read_pid "$WORKER_BILI_DL_PID_FILE")"
+  audio_pid="$(read_pid "$WORKER_AUDIO_PID_FILE")"
   process_pid="$(read_pid "$WORKER_PROCESS_PID_FILE")"
+  asr_pid="$(read_pid "$WORKER_ASR_PID_FILE")"
   sync_pid="$(read_pid "$WORKER_SYNC_PID_FILE")"
   ai_pid="$(read_pid "$WORKER_AI_PID_FILE")"
   sched_pid="$(read_pid "$SCHED_PID_FILE")"
@@ -186,16 +198,34 @@ do_status() {
     echo "[status] api: stopped"
   fi
 
-  if is_running "$dl_pid"; then
-    echo "[status] worker-download: running pid=${dl_pid} log=${WORKER_DL_LOG}"
+  if is_running "$yt_dl_pid"; then
+    echo "[status] worker-download-youtube: running pid=${yt_dl_pid} log=${WORKER_YT_DL_LOG}"
   else
-    echo "[status] worker-download: stopped"
+    echo "[status] worker-download-youtube: stopped"
+  fi
+
+  if is_running "$bili_dl_pid"; then
+    echo "[status] worker-download-bilibili: running pid=${bili_dl_pid} log=${WORKER_BILI_DL_LOG}"
+  else
+    echo "[status] worker-download-bilibili: stopped"
+  fi
+
+  if is_running "$audio_pid"; then
+    echo "[status] worker-audio: running pid=${audio_pid} log=${WORKER_AUDIO_LOG}"
+  else
+    echo "[status] worker-audio: stopped"
   fi
 
   if is_running "$process_pid"; then
     echo "[status] worker-process: running pid=${process_pid} log=${WORKER_PROCESS_LOG}"
   else
     echo "[status] worker-process: stopped"
+  fi
+
+  if is_running "$asr_pid"; then
+    echo "[status] worker-asr: running pid=${asr_pid} log=${WORKER_ASR_LOG}"
+  else
+    echo "[status] worker-asr: stopped"
   fi
 
   if is_running "$sync_pid"; then
@@ -222,8 +252,11 @@ case "$cmd" in
   start)
     ensure_ui_built
     start_one "api" "$API_PID_FILE" "$API_LOG" bash scripts/dev/run-api.sh
-    start_one "worker-download" "$WORKER_DL_PID_FILE" "$WORKER_DL_LOG" bash scripts/dev/run-worker-download.sh
+    start_one "worker-download-youtube" "$WORKER_YT_DL_PID_FILE" "$WORKER_YT_DL_LOG" bash scripts/dev/run-worker-download-youtube.sh
+    start_one "worker-download-bilibili" "$WORKER_BILI_DL_PID_FILE" "$WORKER_BILI_DL_LOG" bash scripts/dev/run-worker-download-bilibili.sh
+    start_one "worker-audio" "$WORKER_AUDIO_PID_FILE" "$WORKER_AUDIO_LOG" bash scripts/dev/run-worker-audio.sh
     start_one "worker-process" "$WORKER_PROCESS_PID_FILE" "$WORKER_PROCESS_LOG" bash scripts/dev/run-worker-process.sh
+    start_one "worker-asr" "$WORKER_ASR_PID_FILE" "$WORKER_ASR_LOG" bash scripts/dev/run-worker-asr.sh
     start_one "worker-sync" "$WORKER_SYNC_PID_FILE" "$WORKER_SYNC_LOG" bash scripts/dev/run-worker-sync.sh
     start_one "worker-ai" "$WORKER_AI_PID_FILE" "$WORKER_AI_LOG" bash scripts/dev/run-worker-ai.sh
     start_one "scheduler" "$SCHED_PID_FILE" "$SCHED_LOG" bash scripts/dev/run-scheduler.sh
@@ -233,8 +266,11 @@ case "$cmd" in
     stop_one "scheduler" "$SCHED_PID_FILE"
     stop_one "worker-ai" "$WORKER_AI_PID_FILE"
     stop_one "worker-sync" "$WORKER_SYNC_PID_FILE"
+    stop_one "worker-asr" "$WORKER_ASR_PID_FILE"
     stop_one "worker-process" "$WORKER_PROCESS_PID_FILE"
-    stop_one "worker-download" "$WORKER_DL_PID_FILE"
+    stop_one "worker-audio" "$WORKER_AUDIO_PID_FILE"
+    stop_one "worker-download-bilibili" "$WORKER_BILI_DL_PID_FILE"
+    stop_one "worker-download-youtube" "$WORKER_YT_DL_PID_FILE"
     stop_one "api" "$API_PID_FILE"
     kill_strays
     do_status
@@ -255,8 +291,8 @@ case "$cmd" in
     do_status
     ;;
   logs)
-    echo "[logs] tail -f ${API_LOG} ${WORKER_DL_LOG} ${WORKER_PROCESS_LOG} ${WORKER_SYNC_LOG} ${WORKER_AI_LOG} ${SCHED_LOG}"
-    tail -n 200 -f "$API_LOG" "$WORKER_DL_LOG" "$WORKER_PROCESS_LOG" "$WORKER_SYNC_LOG" "$WORKER_AI_LOG" "$SCHED_LOG"
+    echo "[logs] tail -f ${API_LOG} ${WORKER_YT_DL_LOG} ${WORKER_BILI_DL_LOG} ${WORKER_AUDIO_LOG} ${WORKER_PROCESS_LOG} ${WORKER_ASR_LOG} ${WORKER_SYNC_LOG} ${WORKER_AI_LOG} ${SCHED_LOG}"
+    tail -n 200 -f "$API_LOG" "$WORKER_YT_DL_LOG" "$WORKER_BILI_DL_LOG" "$WORKER_AUDIO_LOG" "$WORKER_PROCESS_LOG" "$WORKER_ASR_LOG" "$WORKER_SYNC_LOG" "$WORKER_AI_LOG" "$SCHED_LOG"
     ;;
   -h|--help|help|"")
     usage

@@ -225,7 +225,12 @@ def download_video(video_id: uuid.UUID) -> dict:
                 enabled = bool(value.get("enabled"))
             if not enabled:
                 raise HTTPException(status_code=409, detail="members-only video; download not enqueued")
-        enqueue_job(session, type_="video.download", params={"video_id": str(video.id)}, priority=10)
+        download_type = (
+            "video.download.youtube"
+            if video.provider == "youtube"
+            else ("video.download.bilibili" if video.provider == "bilibili" else "video.download")
+        )
+        enqueue_job(session, type_=download_type, params={"video_id": str(video.id)}, priority=10)
     return {"ok": True}
 
 

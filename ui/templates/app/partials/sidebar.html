@@ -12,16 +12,16 @@
           <div class="flex items-center gap-2 min-w-0">
             <button
               type="button"
-              class="shrink-0 rounded-md bg-emerald-500/10 ring-1 ring-emerald-500/15 flex items-center justify-center"
-              :class="sidebarCollapsed ? 'h-7 w-7 hover:bg-emerald-500/15 cursor-pointer' : 'h-8 w-8 cursor-default'"
+              class="shrink-0 rounded-sm bg-emerald-500/10 flex items-center justify-center"
+              :class="sidebarCollapsed ? 'h-8 w-8 hover:bg-emerald-500/15 cursor-pointer' : 'h-8 w-8 cursor-default'"
               :title="sidebarCollapsed ? (sidebarMobilePortrait ? '隐藏菜单' : '展开菜单') : ''"
               @click="sidebarCollapsed ? toggleSidebar() : null"
             >
               <img
                 src="/static/brand/logo.png"
                 alt="raelyn"
-                class="shrink-0"
-                :class="sidebarCollapsed ? 'h-6 w-6' : 'h-8 w-8'"
+                class="shrink-0 rounded-sm"
+                :class="sidebarCollapsed ? 'h-7 w-7' : 'h-8 w-8'"
               />
             </button>
             <div class="min-w-0" x-show="!sidebarCollapsed" x-transition.opacity.duration.150ms>
@@ -53,11 +53,11 @@
           </button>
         </div>
 
-        <nav class="flex-1 overflow-y-auto space-y-1 raelyn-sidebar-nav">
+        <nav class="flex-1 overflow-y-auto space-y-1 px-2 py-1 raelyn-sidebar-nav">
           <template x-for="item in navItems.filter(i => !i.hidden)" :key="item.key">
             <button
               class="group flex items-center rounded-md text-sm leading-none transition border border-transparent"
-              :class="[(sidebarCollapsed ? 'w-10 justify-center mx-2 my-1' : 'w-full gap-1 mx-2 my-1'), activeView===item.key ? 'bg-slate-800/70 text-slate-50 border-slate-700/60' : 'text-slate-300 hover:bg-slate-800/40 hover:text-slate-100']"
+              :class="[(sidebarCollapsed ? 'w-10 justify-center mx-auto my-1' : 'w-full gap-1 my-1'), activeView===item.key ? 'bg-slate-800/70 text-slate-50 border-slate-700/60' : 'text-slate-300 hover:bg-slate-800/40 hover:text-slate-100']"
               @click="switchView(item.key)"
               :title="sidebarCollapsed ? item.label : ''"
             >

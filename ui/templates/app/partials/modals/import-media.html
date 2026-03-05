@@ -1,0 +1,107 @@
+      <!-- Import media modal -->
+      <div x-show="modals.mediaImport" class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" x-transition>
+        <div class="w-full max-w-3xl rounded-xl border border-slate-800 bg-slate-900 shadow-lg p-4">
+          <div class="flex items-center justify-between gap-3">
+            <div class="text-sm font-semibold">导入媒体</div>
+            <button
+              type="button"
+              class="shrink-0 p-1.5 rounded-md text-slate-300 hover:text-slate-100 hover:bg-slate-800/60"
+              @click="closeMediaImport()"
+              title="关闭"
+              aria-label="关闭"
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M18 6L6 18"/>
+                <path d="M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="mt-3 space-y-3">
+            <div class="text-xs text-slate-300">
+              选择 <span class="text-slate-200 font-medium">.txt</span> 文件，一行一个媒体链接（空行与 <span class="text-slate-200 font-medium">#</span> 注释行会被忽略）。
+            </div>
+
+            <input type="file" accept=".txt,text/plain" class="hidden" x-ref="mediaImportFile" @change="handleMediaImportFile($event)" />
+
+            <div class="text-xs text-rose-200" x-show="mediaImportError" x-text="mediaImportError"></div>
+
+            <div class="text-xs text-slate-300" x-show="mediaImportSubmitting">导入中…</div>
+
+            <div class="space-y-4" x-show="mediaImportResult && !mediaImportSubmitting">
+              <div class="rounded-lg border border-slate-800 bg-slate-950/20 p-3">
+                <div class="text-xs font-semibold text-slate-100">
+                  新导入（<span x-text="(mediaImportResult && mediaImportResult.created ? mediaImportResult.created.length : 0)"></span>）
+                </div>
+                <div class="mt-2 text-[11px] text-slate-400" x-show="mediaImportResult && mediaImportResult.created && mediaImportResult.created.length>200">仅展示前 200 条</div>
+                <div class="mt-2 max-h-[14rem] overflow-auto raelyn-scrollbar space-y-1" x-show="mediaImportResult && mediaImportResult.created && mediaImportResult.created.length">
+                  <template x-for="u in ((mediaImportResult && mediaImportResult.created) ? mediaImportResult.created : []).slice(0,200)" :key="u">
+                    <a
+                      class="block text-xs text-slate-300 truncate hover:text-slate-100 hover:underline"
+                      :href="(u||'').startsWith('http') ? u : ('https://' + (u||''))"
+                      target="_blank"
+                      rel="noreferrer"
+                      x-text="u"
+                    ></a>
+                  </template>
+                </div>
+                <div class="mt-2 text-xs text-slate-500" x-show="!mediaImportResult || !mediaImportResult.created || !mediaImportResult.created.length">无</div>
+              </div>
+
+              <div class="rounded-lg border border-slate-800 bg-slate-950/20 p-3">
+                <div class="text-xs font-semibold text-slate-100">
+                  已存在（<span x-text="(mediaImportResult && mediaImportResult.existing ? mediaImportResult.existing.length : 0)"></span>）
+                </div>
+                <div class="mt-2 text-[11px] text-slate-400" x-show="mediaImportResult && mediaImportResult.existing && mediaImportResult.existing.length>200">仅展示前 200 条</div>
+                <div class="mt-2 max-h-[14rem] overflow-auto raelyn-scrollbar space-y-1" x-show="mediaImportResult && mediaImportResult.existing && mediaImportResult.existing.length">
+                  <template x-for="u in ((mediaImportResult && mediaImportResult.existing) ? mediaImportResult.existing : []).slice(0,200)" :key="u">
+                    <a
+                      class="block text-xs text-slate-300 truncate hover:text-slate-100 hover:underline"
+                      :href="(u||'').startsWith('http') ? u : ('https://' + (u||''))"
+                      target="_blank"
+                      rel="noreferrer"
+                      x-text="u"
+                    ></a>
+                  </template>
+                </div>
+                <div class="mt-2 text-xs text-slate-500" x-show="!mediaImportResult || !mediaImportResult.existing || !mediaImportResult.existing.length">无</div>
+              </div>
+
+              <div class="rounded-lg border border-slate-800 bg-slate-950/20 p-3">
+                <div class="text-xs font-semibold text-slate-100">
+                  无效（<span x-text="(mediaImportResult && mediaImportResult.invalid ? mediaImportResult.invalid.length : 0)"></span>）
+                </div>
+                <div class="mt-2 text-[11px] text-slate-400" x-show="mediaImportResult && mediaImportResult.invalid && mediaImportResult.invalid.length>200">仅展示前 200 条</div>
+                <div class="mt-2 max-h-[14rem] overflow-auto raelyn-scrollbar space-y-1" x-show="mediaImportResult && mediaImportResult.invalid && mediaImportResult.invalid.length">
+                  <template x-for="x in ((mediaImportResult && mediaImportResult.invalid) ? mediaImportResult.invalid : []).slice(0,200)" :key="String(x.line||'') + ':' + String(x.url||'')">
+                    <div class="text-xs text-slate-300 break-words">
+                      <span class="text-slate-400">#</span><span x-text="x.line || '-'"></span>
+                      <span class="text-slate-400">：</span>
+                      <span class="text-slate-200" x-text="x.url || ''"></span>
+                      <span class="text-slate-400">（</span><span class="text-rose-200" x-text="x.error || ''"></span><span class="text-slate-400">）</span>
+                    </div>
+                  </template>
+                </div>
+                <div class="mt-2 text-xs text-slate-500" x-show="!mediaImportResult || !mediaImportResult.invalid || !mediaImportResult.invalid.length">无</div>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
+                @click="triggerMediaImportFile()"
+              >
+                重新选择文件
+              </button>
+              <button
+                type="button"
+                class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
+                @click="closeMediaImport()"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>

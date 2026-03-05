@@ -12,7 +12,9 @@ from yt_dlp.utils import DownloadError, ExtractorError
 
 from raelyn.config import settings
 from raelyn.db import session_scope
+from raelyn.jobs.reschedule import JobReschedule
 from raelyn.models import AppConfig
+from raelyn.services.ytdlp_errors import is_ffmpeg_segfault, parse_upcoming_live_delay_seconds
 
 
 class YtdlpCookiesInvalidError(RuntimeError):
@@ -137,6 +139,56 @@ def _load_ytdlp_subtitles_enabled() -> bool:
     return bool(enabled) if isinstance(enabled, bool) else False
 
 
+def _load_ytdlp_youtube_lang() -> str:
+    # Persisted via /api/config (AppConfig key: "ytdlp_youtube_lang").
+    # Default: "zh-CN" (yt-dlp's YouTube extractors accept a limited, case-sensitive set of language codes).
+    try:
+        with session_scope() as session:
+            item = session.get(AppConfig, "ytdlp_youtube_lang")
+            value = item.value if item else None
+    except Exception:
+        return "zh-CN"
+
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, dict):
+        return "zh-CN"
+    if value.get("enabled") is False:
+        return ""
+    lang = value.get("lang")
+    return str(lang).strip() if isinstance(lang, str) else "zh-CN"
+
+
+def _normalize_youtube_lang(lang: str) -> str:
+    s = str(lang or "").strip()
+    if not s:
+        return ""
+    lower = s.lower().replace("_", "-")
+
+    # yt-dlp's YouTube extractors validate language codes (case-sensitive).
+    # Map common Chinese variants to the closest supported codes.
+    if lower in {"zh", "zh-hans", "zh-cn", "zh-sg"}:
+        return "zh-CN"
+    if lower in {"zh-hant", "zh-tw"}:
+        return "zh-TW"
+    if lower in {"zh-hk", "zh-mo"}:
+        return "zh-HK"
+
+    # Canonicalize to a typical BCP-47 casing so "en-gb" works as "en-GB", etc.
+    parts = [p for p in lower.split("-") if p]
+    if not parts:
+        return ""
+    out: list[str] = [parts[0]]
+    for p in parts[1:]:
+        if len(p) == 2 and p.isalpha():
+            out.append(p.upper())
+        elif len(p) == 4 and p.isalpha():
+            out.append(p.title())
+        else:
+            out.append(p)
+    return "-".join(out)
+
+
 def _ensure_ytdlp_cookies_file(text: str) -> Path | None:
     if not (text or "").strip():
         return None
@@ -169,6 +221,47 @@ def _is_youtube_bot_check_error(err: Exception) -> bool:
     msg = str(err or "").lower()
     msg = msg.replace("’", "'")
     return "sign in to confirm you're not a bot" in msg or "confirm you're not a bot" in msg
+
+
+def _is_youtube_js_challenge_failed_messages(msgs: list[str]) -> bool:
+    for s in msgs:
+        m = _normalize_msg(s)
+        if not m:
+            continue
+        if "n challenge solving failed" in m:
+            return True
+        if "only images are available for download" in m:
+            return True
+        if "challenge solver script distribution" in m:
+            return True
+        if ("js challenge provider" in m) and ("invalid response" in m or "no solutions" in m):
+            return True
+        if "github.com/yt-dlp/yt-dlp/wiki/ejs" in m or "/wiki/ejs" in m:
+            return True
+    return False
+
+
+def _youtube_js_challenge_hint() -> str:
+    # This error frequently happens when:
+    # - yt-dlp is outdated relative to YouTube's latest "n" JS challenge
+    # - yt-dlp-ejs is missing/outdated
+    # - node runtime isn't available
+    node_path = None
+    try:
+        js = _js_runtimes() or {}
+        node_path = (js.get("node") or {}).get("path")  # type: ignore[assignment]
+    except Exception:
+        node_path = None
+
+    node_desc = f"node={node_path}" if isinstance(node_path, str) and node_path else "node=not_found"
+    return (
+        "YouTube JS challenge 解析失败（EJS / n challenge），导致视频/音频格式不可用（可能只剩缩略图等图片格式）。\n"
+        f"环境信息：{node_desc}\n"
+        "解决建议：\n"
+        "1) 升级 Python 依赖：`.venv/bin/python -m pip install -U yt-dlp[default]`；\n"
+        "2) 或直接运行：`./scripts/dev/install-ytdlp-ejs.sh`（会升级 yt-dlp-ejs 并做基础自检）；\n"
+        "3) 若仍失败：配置 cookies（UI -> 设置 -> YTDLP_COOKIES）或代理（YTDLP_PROXY），并重试。"
+    )
 
 
 def _is_bilibili_risk_control_error(err: Exception) -> bool:
@@ -211,6 +304,14 @@ def _bilibili_risk_control_hint() -> str:
 
 
 def _apply_common_ytdlp_opts(opts: dict[str, Any], *, url: str | None = None) -> None:
+    # Force project-local ffmpeg when available so post-processing is consistent across hosts.
+    try:
+        p = Path(settings.ffmpeg_bin)
+        if p.exists():
+            opts["ffmpeg_location"] = str(p.resolve())
+    except Exception:
+        pass
+
     persisted = _load_ytdlp_cookies_text()
     if (persisted or "").strip():
         p = _ensure_ytdlp_cookies_file(persisted)
@@ -240,11 +341,43 @@ def _apply_common_ytdlp_opts(opts: dict[str, Any], *, url: str | None = None) ->
     else:
         if settings.ytdlp_proxy.strip():
             opts["proxy"] = settings.ytdlp_proxy.strip()
+            # ffmpeg cannot use SOCKS proxies for some download flows (notably HLS),
+            # and yt-dlp will warn and may fail. Prefer native HLS handling in this case.
+            try:
+                p = str(opts.get("proxy") or "").strip().lower()
+                if p.startswith("socks"):
+                    opts["hls_prefer_native"] = True
+            except Exception:
+                pass
+
+    is_yt = ("youtube.com" in lower_u) or ("youtu.be" in lower_u)
+    if is_yt:
+        lang = _normalize_youtube_lang(_load_ytdlp_youtube_lang())
+        if lang:
+            extractor_args = dict(opts.get("extractor_args") or {})
+            youtube_args = dict(extractor_args.get("youtube") or {})
+            youtube_args["lang"] = [lang]
+            extractor_args["youtube"] = youtube_args
+            opts["extractor_args"] = extractor_args
     return
 
 
-def ytdlp_extract_info(url: str, *, flat: bool = False, max_entries: int | None = None) -> dict[str, Any]:
+def ytdlp_extract_info(
+    url: str,
+    *,
+    flat: bool = False,
+    max_entries: int | None = None,
+    socket_timeout: int | None = None,
+) -> dict[str, Any]:
     logger = _YtdlpCaptureLogger()
+    sock = None
+    if socket_timeout is not None:
+        try:
+            sock = int(socket_timeout)
+        except Exception:
+            sock = None
+    if isinstance(sock, int) and sock <= 0:
+        sock = None
     opts: dict[str, Any] = {
         # Do not let a user's global yt-dlp config break the app (e.g. an overly strict -f selector).
         "ignoreconfig": True,
@@ -257,7 +390,7 @@ def ytdlp_extract_info(url: str, *, flat: bool = False, max_entries: int | None 
         "ignore_no_formats_error": True,
         "extract_flat": "in_playlist" if flat else False,
         # Prevent hanging on slow/huge pages (channel playlists can be very large).
-        "socket_timeout": 15,
+        "socket_timeout": sock or 15,
     }
     if not flat:
         # Even with skip_download, yt-dlp may still do format selection; keep it permissive.
@@ -291,6 +424,8 @@ def ytdlp_extract_info(url: str, *, flat: bool = False, max_entries: int | None 
             _raise_if_cookie_invalid_messages(logger.warnings + logger.errors + [str(e)])
             if _is_youtube_bot_check_error(e):
                 raise RuntimeError(_youtube_bot_check_hint()) from e
+            if _is_youtube_js_challenge_failed_messages(logger.warnings + logger.errors + [str(e)]):
+                raise RuntimeError(_youtube_js_challenge_hint()) from e
             if _is_bilibili_risk_control_error(e) or _is_bilibili_precondition_failed_error(e):
                 raise RuntimeError(_bilibili_risk_control_hint()) from e
             # Prefer the last captured yt-dlp error line (more user-friendly than a Python traceback).
@@ -320,6 +455,8 @@ def ytdlp_download(
     out_dir.mkdir(parents=True, exist_ok=True)
     outtmpl = str(out_dir / "%(id)s.%(ext)s")
     cookie_invalid_line: str | None = None
+    captured_warnings: list[str] = []
+    captured_errors: list[str] = []
 
     class _YtdlpLogger:
         def debug(self, msg: str) -> None:  # noqa: D401
@@ -330,9 +467,10 @@ def ytdlp_download(
             m = str(msg or "")
             if not m.strip():
                 return
+            captured_warnings.append(m)
             if _cookie_invalid_reason_from_message(m):
                 cookie_invalid_line = cookie_invalid_line or m
-            print(f"[ytdlp] warn: {m}")
+            print(f"[ytdlp] warn: {m}", flush=True)
 
         def error(self, msg: str) -> None:
             nonlocal cookie_invalid_line
@@ -343,9 +481,10 @@ def ytdlp_download(
             # We'll print our own retry hints for this case.
             if "requested format is not available" in lower or "requested format not available" in lower:
                 return
+            captured_errors.append(m)
             if _cookie_invalid_reason_from_message(m):
                 cookie_invalid_line = cookie_invalid_line or m
-            print(f"[ytdlp] error: {m}")
+            print(f"[ytdlp] error: {m}", flush=True)
 
     base_opts: dict[str, Any] = {
         # Do not let a user's global yt-dlp config break the app (e.g. an overly strict -f selector).
@@ -365,6 +504,13 @@ def ytdlp_download(
         "writeinfojson": True,
         "writethumbnail": True,
         "noplaylist": True,
+        # Network resilience (common failure: "bytes read ... more expected").
+        "continuedl": True,
+        "retries": 8,
+        "fragment_retries": 8,
+        "socket_timeout": 30,
+        # More stable for flaky networks; slower but avoids bursts.
+        "concurrent_fragment_downloads": 1,
     }
     subtitles_enabled = _load_ytdlp_subtitles_enabled()
     base_opts["writesubtitles"] = bool(subtitles_enabled and write_subtitles)
@@ -398,6 +544,7 @@ def ytdlp_download(
     format_attempts.append(("fallback_plain_best", "b", None))
 
     last_error: Exception | None = None
+    tried_progressive_mp4 = False
     for idx, (label, fmt, merge) in enumerate(format_attempts, start=1):
         opts = dict(base_opts)
         _apply_common_ytdlp_opts(opts, url=url)
@@ -408,6 +555,8 @@ def ytdlp_download(
             opts.pop("merge_output_format", None)
 
         try:
+            if "ffmpeg_location" in opts:
+                print(f"[ytdlp] ffmpeg_location={opts.get('ffmpeg_location')}", flush=True)
             with YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if cookie_invalid_line:
@@ -415,19 +564,66 @@ def ytdlp_download(
                 return info
         except (DownloadError, ExtractorError) as e:
             last_error = e
-            _raise_if_cookie_invalid_messages([cookie_invalid_line or "", str(e)])
+            joined = "\n".join([cookie_invalid_line or "", *captured_warnings[-12:], *captured_errors[-12:], str(e)]).strip()
+            _raise_if_cookie_invalid_messages([joined])
             if _is_youtube_bot_check_error(e):
                 raise RuntimeError(_youtube_bot_check_hint()) from e
+            if _is_youtube_js_challenge_failed_messages(captured_warnings + captured_errors + [str(e)]):
+                raise RuntimeError(_youtube_js_challenge_hint()) from e
             if _is_bilibili_risk_control_error(e) or _is_bilibili_precondition_failed_error(e):
                 raise RuntimeError(_bilibili_risk_control_hint()) from e
+
+            delay = parse_upcoming_live_delay_seconds(joined)
+            if isinstance(delay, int) and delay > 0:
+                # Add a small buffer so we don't retry too early around the start time.
+                raise JobReschedule(delay_seconds=delay + 120, reason="upcoming livestream") from e
+
             if _is_requested_format_unavailable(e) and idx < len(format_attempts):
                 next_label, next_fmt, _next_merge = format_attempts[idx]
                 print(
-                    f"[ytdlp] requested format not available for {label}: {fmt!r}; "
-                    f"retrying with {next_label}: {next_fmt!r}"
+                    f"[ytdlp] requested format not available for {label}: {fmt!r}; retrying with {next_label}: {next_fmt!r}",
+                    flush=True,
                 )
                 continue
-            raise
+            if (not tried_progressive_mp4) and is_ffmpeg_segfault(joined):
+                tried_progressive_mp4 = True
+                prog_opts = dict(base_opts)
+                _apply_common_ytdlp_opts(prog_opts, url=url)
+                prog_opts["format"] = "best[ext=mp4][height<=720]/best[ext=mp4]/b"
+                prog_opts.pop("merge_output_format", None)
+                print("[ytdlp] ffmpeg crash detected; retrying with progressive mp4 (<=720p) to avoid merge", flush=True)
+                try:
+                    with YoutubeDL(prog_opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                        if cookie_invalid_line:
+                            _raise_if_cookie_invalid_messages([cookie_invalid_line])
+                        return info
+                except (DownloadError, ExtractorError) as e2:
+                    last_error = e2
+                    joined2 = "\n".join(
+                        [cookie_invalid_line or "", *captured_warnings[-12:], *captured_errors[-12:], str(e2)]
+                    ).strip()
+                    _raise_if_cookie_invalid_messages([joined2])
+                    # Fall through to raise a readable error below.
+                    joined = joined2 or joined
+                    e = e2
+            last = captured_errors[-1] if captured_errors else str(e)
+            important_warns: list[str] = []
+            for w in captured_warnings[-24:]:
+                lw = str(w or "").lower()
+                if "ffmpeg does not support socks proxies" in lw:
+                    important_warns.append(str(w))
+            tail_err = "\n".join(captured_errors[-8:]).strip()
+            lines = [*important_warns[-3:], *(tail_err.split("\n") if tail_err else []), str(e)]
+            out: list[str] = []
+            for ln in [str(x or "").rstrip() for x in lines]:
+                if not ln.strip():
+                    continue
+                if ln in out:
+                    continue
+                out.append(ln)
+            detail = "\n".join(out).strip() or (tail_err or last)
+            raise RuntimeError(detail) from e
 
     if last_error:
         raise last_error

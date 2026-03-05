@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import os
 import socket
+import threading
 import time
 import traceback
+import uuid
 from datetime import timedelta
 
+from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.db import init_db
-from raelyn.jobs.claim import claim_next_job, requeue_expired_running_jobs
+from raelyn.jobs.claim import claim_next_job, requeue_expired_running_jobs, requeue_orphan_running_jobs
+from raelyn.jobs.heartbeat import touch_worker_heartbeat
 from raelyn.jobs.handlers import *  # noqa: F403  注册 handlers
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
+from raelyn.jobs.reschedule import JobReschedule
 from raelyn.services.log_timestamps import install_if_needed
 from raelyn.services.s3 import s3_ensure_bucket
 from raelyn.timeutil import utcnow
@@ -20,7 +25,9 @@ from raelyn.timeutil import utcnow
 def _worker_id() -> str:
     host = socket.gethostname()
     pid = os.getpid()
-    return f"{host}:{pid}"
+    # Add a short per-process nonce to avoid collisions across restarts where PIDs may repeat.
+    nonce = uuid.uuid4().hex[:8]
+    return f"{host}:{pid}:{nonce}"
 
 
 def _parse_csv(value: str | None) -> list[str]:
@@ -30,16 +37,19 @@ def _parse_csv(value: str | None) -> list[str]:
 
 
 _ROLE_TYPES: dict[str, list[str]] = {
-    "download": ["video.download"],
-    "process": ["video.extract_audio", "video.normalize_subtitle", "video.asr_transcribe"],
+    "download_youtube": ["video.download.youtube"],
+    "download_bilibili": ["video.download.bilibili"],
+    "audio": ["video.extract_audio"],
+    "process": ["video.normalize_subtitle"],
+    "asr": ["video.asr_transcribe"],
     "sync": ["media.sync_profile", "media.sync_videos"],
-    "ai": ["video.generate_note", "brief.generate_daily"],
+    "ai": ["video.polish_transcript", "video.generate_note", "brief.generate_daily", "brief.generate_period"],
 }
 
 
 def _effective_max_attempts(job_type: str, current: int) -> int:
     # Reduce retries for provider-facing jobs to avoid repeated blocks.
-    if job_type in {"media.sync_profile", "media.sync_videos", "video.download"}:
+    if job_type in {"media.sync_profile", "media.sync_videos", "video.download", "video.download.youtube", "video.download.bilibili"}:
         return min(int(current or 0) or 5, 2)
     return int(current or 0) or 5
 
@@ -61,6 +71,27 @@ def _resolve_worker_types() -> list[str] | None:
     return None
 
 
+class _HeartbeatThread(threading.Thread):
+    def __init__(self, *, worker_id: str, interval_seconds: int, role: str) -> None:
+        super().__init__(daemon=True)
+        self._worker_id = worker_id
+        self._interval = max(1, int(interval_seconds or 0))
+        self._role = str(role or "").strip() or "all"
+        self._stop = threading.Event()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run(self) -> None:
+        while not self._stop.wait(self._interval):
+            try:
+                with session_scope() as session:
+                    touch_worker_heartbeat(session, worker_id=self._worker_id, role=self._role)
+            except Exception:
+                # Best-effort heartbeat; ignore transient DB errors.
+                pass
+
+
 def run_loop() -> None:
     init_db()
     s3_ensure_bucket()
@@ -73,11 +104,33 @@ def run_loop() -> None:
         print(f"[worker] started id={worker_id} role={role} types=ALL")
     last_reap = 0.0
 
+    # Ensure the heartbeat row exists before we claim any jobs, so peers won't
+    # mis-classify us as stale during startup.
+    with session_scope() as session:
+        touch_worker_heartbeat(session, worker_id=worker_id, role=role)
+
+    hb = _HeartbeatThread(worker_id=worker_id, interval_seconds=settings.worker_heartbeat_interval_seconds, role=role)
+    hb.start()
+
+    # On restart, promptly recover orphaned "running" jobs from dead workers.
+    with session_scope() as session:
+        requeue_expired_running_jobs(session)
+        requeue_orphan_running_jobs(
+            session,
+            stale_after_seconds=settings.worker_stale_after_seconds,
+            priority_bump=settings.orphan_requeue_priority_bump,
+        )
+
     while True:
         now = time.time()
         if now - last_reap > 15:
             with session_scope() as session:
                 requeue_expired_running_jobs(session)
+                requeue_orphan_running_jobs(
+                    session,
+                    stale_after_seconds=settings.worker_stale_after_seconds,
+                    priority_bump=settings.orphan_requeue_priority_bump,
+                )
             last_reap = now
 
         with session_scope() as session:
@@ -124,6 +177,28 @@ def run_loop() -> None:
                     job.finished_at = utcnow()
                     job.lease_expires_at = None
                     job_log(session, job, "succeeded")
+                except JobReschedule as e:
+                    # Best-effort: if an operator canceled the job while it was running, keep status=canceled.
+                    try:
+                        session.refresh(job)
+                    except Exception:
+                        pass
+                    if job.status == "canceled":
+                        job.finished_at = job.finished_at or utcnow()
+                        job.lease_expires_at = None
+                        job_log(session, job, "canceled", level="warn")
+                        continue
+
+                    job.status = "pending"
+                    job.scheduled_for = utcnow() + timedelta(seconds=int(e.delay_seconds or 0))
+                    job.error_message = None
+                    job.error_stack = None
+                    job.lease_expires_at = None
+                    job.worker_id = None
+                    job.progress_current = None
+                    job.progress_total = None
+                    job.finished_at = None
+                    job_log(session, job, f"rescheduled: {e.reason}", level="warn", data={"delay_seconds": e.delay_seconds})
                 except Exception as e:
                     # If canceled while running, keep status=canceled and avoid retries.
                     try:

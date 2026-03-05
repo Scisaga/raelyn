@@ -121,6 +121,8 @@ class Playlist(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     avatar_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
     background_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    brief_granularity: Mapped[str] = mapped_column(String, nullable=False, default="day")
+    brief_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -153,6 +155,22 @@ class DailyBrief(Base):
     __table_args__ = (UniqueConstraint("playlist_id", "brief_date", name="daily_brief_ux"),)
 
 
+class Brief(Base):
+    __tablename__ = "brief"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    playlist_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("playlist.id", ondelete="CASCADE"), nullable=False)
+    granularity: Mapped[str] = mapped_column(String, nullable=False, default="day")
+    period_start: Mapped[Any] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    markdown_asset_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("asset.id"), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (UniqueConstraint("playlist_id", "granularity", "period_start", name="brief_ux"),)
+
+
 class Job(Base):
     __tablename__ = "job"
 
@@ -160,6 +178,7 @@ class Job(Base):
     type: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dedupe_key: Mapped[str | None] = mapped_column(String, nullable=True)
     params: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
@@ -191,6 +210,15 @@ class JobEvent(Base):
     level: Mapped[str] = mapped_column(String, nullable=False, default="info")
     message: Mapped[str] = mapped_column(Text, nullable=False)
     data: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeat"
+
+    # worker_id is formatted as "{hostname}:{pid}:{nonce}" (see raelyn.worker._worker_id).
+    worker_id: Mapped[str] = mapped_column(String, primary_key=True)
+    role: Mapped[str | None] = mapped_column(String, nullable=True)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class AppConfig(Base):

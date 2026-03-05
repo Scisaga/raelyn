@@ -1,7 +1,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>raelyn</title>
+    <title>RAELYN🪅</title>
     <meta name="theme-color" content="#020617" />
     <link rel="icon" href="/static/brand/logo.png" type="image/svg+xml" />
     <link rel="stylesheet" href="/static/css/tailwind.min.css" />
@@ -79,6 +79,24 @@
         height: 0;
       }
 
+      /* Center-clear, edge-darkening overlay for image cards (radial vignette). */
+      .raelyn-vignette {
+        background:
+          radial-gradient(
+            ellipse at center,
+            rgba(2, 6, 23, 0) 0%,
+            rgba(2, 6, 23, 0.08) 42%,
+            rgba(2, 6, 23, 0.45) 70%,
+            rgba(2, 6, 23, 0.9) 100%
+          ),
+          radial-gradient(
+            ellipse at 50% 110%,
+            rgba(2, 6, 23, 0) 0%,
+            rgba(2, 6, 23, 0.35) 55%,
+            rgba(2, 6, 23, 0.85) 100%
+          );
+      }
+
       @media (prefers-reduced-motion: reduce) {
         .video-card {
           transition: none;
@@ -86,6 +104,16 @@
         .video-card:hover {
           transform: none;
         }
+      }
+
+      .raelyn-brief h2 {
+        display: inline-block;
+        width: fit-content;
+        max-width: 100%;
+        padding: 0.25rem 0.6rem;
+        border-radius: 0.75rem;
+        background: rgba(148, 163, 184, 0.14);
+        border: 1px solid rgba(148, 163, 184, 0.18);
       }
     </style>
     <script defer src="/static/vendor/lightweight-charts.min.js"></script>

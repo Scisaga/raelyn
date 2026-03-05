@@ -11,7 +11,6 @@ COPY scripts /app/scripts
 
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN python -m pip install --no-cache-dir -r /app/backend/requirements.txt
-RUN python -m pip install --no-cache-dir yt-dlp-ejs
 
 # Dev builds are expected to run on Linux/WSL and provide project-local tool binaries under ./bin.
 # Fail fast (and ensure the binaries are actually runnable in this image).

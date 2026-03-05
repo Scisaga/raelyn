@@ -25,6 +25,10 @@ function RaelynApp() {
   const YTDLP_FORMAT_PRESET_720 =
     "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/bestvideo[height<=720]+bestaudio/best[height<=720]/best";
 
+  const PLAYLIST_ASSETS_CACHE_TTL_MS = 60_000;
+  const PLAYLIST_TRANSCRIPT_CACHE_TTL_MS = 10 * 60_000;
+  const PLAYLIST_BRIEF_CACHE_TTL_MS = 10 * 60_000;
+
   return {
     // layout
     sidebarCollapsed: initialCollapsed,
@@ -42,7 +46,7 @@ function RaelynApp() {
     _toastSeq: 0,
     _toastTimers: new Map(),
     services: {
-      db: { ok: false, error: null },
+      db: { ok: false, url: "", error: null },
       s3: { ok: false, bucket: "", error: null },
       asr: { ok: false, configured: false, url: "", error: null },
       llm: { ok: false, configured: false, url: "", error: null },
@@ -59,10 +63,20 @@ function RaelynApp() {
       { key: "playlists", label: "播放列表", icon: _raelyn_icon('<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>') },
       { key: "playlist", label: "播放列表页", hidden: true, icon: _raelyn_icon('<path d="M4 19V5"/><path d="M8 5h12"/><path d="M8 12h12"/><path d="M8 19h12"/>') },
       { key: "jobs", label: "任务", icon: _raelyn_icon('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>') },
-      { key: "briefs", label: "提示词", icon: _raelyn_icon('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h8"/>') },
       { key: "settings", label: "设置", icon: _raelyn_icon('<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.04.04a2.2 2.2 0 0 1-1.56 3.76 2.2 2.2 0 0 1-1.56-.64l-.04-.04a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.64V21a2.2 2.2 0 1 1-4.4 0v-.06a1.8 1.8 0 0 0-1.08-1.64 1.8 1.8 0 0 0-1.98.36l-.04.04a2.2 2.2 0 0 1-3.76-1.56 2.2 2.2 0 0 1 .64-1.56l.04-.04A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.64-1.08H2.9a2.2 2.2 0 1 1 0-4.4h.06A1.8 1.8 0 0 0 4.6 8.4a1.8 1.8 0 0 0-.36-1.98l-.04-.04A2.2 2.2 0 0 1 5.76 2.6a2.2 2.2 0 0 1 1.56.64l.04.04A1.8 1.8 0 0 0 9.34 3.6 1.8 1.8 0 0 0 10.42 2h.06a2.2 2.2 0 1 1 4.4 0h-.06a1.8 1.8 0 0 0 1.08 1.64 1.8 1.8 0 0 0 1.98-.36l.04-.04a2.2 2.2 0 0 1 3.76 1.56 2.2 2.2 0 0 1-.64 1.56l-.04.04a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.64 1.08h.06a2.2 2.2 0 1 1 0 4.4h-.06A1.8 1.8 0 0 0 19.4 15z"/>') },
     ],
-    stats: { mediaCount: 0, videoCount: 0, pendingJobs: 0, failedJobs: 0 },
+    stats: {
+      mediaCount: 0,
+      videoCount: 0,
+      pendingJobs: 0,
+      failedJobs: 0,
+      recentMedia: [],
+      recentVideos: [],
+      recentPlaylists: [],
+      s3TrackedSizeBytes: null,
+      asrCalls: 0,
+      llmCalls: 0,
+    },
 
     mediaIndex: [],
     mediaList: [],
@@ -90,6 +104,7 @@ function RaelynApp() {
     _jobVideoFetchInFlight: {},
     _jobPlaylistFetchInFlight: {},
     jobsTypeFilter: "",
+    jobsDeleteFailedSubmitting: false,
     jobsDoneFrom: "",
     jobsDoneTo: "",
     jobsSeriesDone: [],
@@ -97,13 +112,24 @@ function RaelynApp() {
     jobsSeriesLoading: false,
     jobsSeriesError: "",
     jobsSeriesLastAt: 0,
-    jobsWs: null,
-    jobsWsConnected: false,
-    jobsWsError: "",
-    jobActionInFlight: {},
-    jobsHiddenDoneIds: {},
-    jobsHiddenActiveIds: {},
-    jobsOptimisticActive: [],
+	    jobsWs: null,
+	    jobsWsConnected: false,
+	    jobsWsError: "",
+	    workersRoles: [],
+	    workersLoading: false,
+	    workersError: "",
+	    _workersLastFetchAt: 0,
+	    _workersStaleAfterSeconds: 20,
+	    _workersWindowSeconds: 0,
+	    _workersPollId: null,
+	    jobActionInFlight: {},
+	    jobErrorDetailsOpen: {},
+	    jobErrorDetailsById: {},
+	    jobErrorDetailsLoading: {},
+	    jobErrorDetailsError: {},
+	    jobsHiddenDoneIds: {},
+	    jobsHiddenActiveIds: {},
+	    jobsOptimisticActive: [],
     _jobsActiveServerCount: 0,
     _jobsActiveLastFetchAt: 0,
     jobsDoneChart: null,
@@ -112,10 +138,6 @@ function RaelynApp() {
     playlistList: [],
     playlistListQuery: "",
     selectedPlaylistId: null,
-    briefDailyPrompt: "",
-    briefDailyPromptLoaded: false,
-    briefDailyPromptSaving: false,
-    briefDailyPromptError: "",
     ytdlpCookiesText: "",
     ytdlpCookiesLoaded: false,
     ytdlpCookiesSaving: false,
@@ -156,10 +178,13 @@ function RaelynApp() {
     playerError: "",
     playerTab: "transcript", // transcript
 
-    modals: { addMedia: false, createPlaylist: false, videoPlayer: false },
+    modals: { addMedia: false, createPlaylist: false, videoPlayer: false, mediaImport: false },
     addMediaUrl: "",
     addMediaSubmitting: false,
     addMediaError: "",
+    mediaImportSubmitting: false,
+    mediaImportError: "",
+    mediaImportResult: null,
     createPlaylistName: "",
     createPlaylistDesc: "",
     createPlaylistMediaIds: [],
@@ -170,6 +195,7 @@ function RaelynApp() {
 
     playlistPageId: null,
     playlistDetail: null,
+    playlistSubview: "main", // main | settings
     playlistSelectedDate: "",
     playlistDayVideos: [],
     playlistDayVideosLoading: false,
@@ -182,18 +208,21 @@ function RaelynApp() {
     playlistTranscriptText: "",
     playlistTranscriptLoading: false,
     playlistTranscriptError: "",
-    playlistTranscriptLanguage: "",
-    playlistTranscriptSource: "",
-    playlistTranscriptUpdatedAt: "",
-    playlistBriefHtml: "",
-    playlistBriefLoading: false,
-    playlistBriefError: "",
-    playlistBriefGeneratingKey: "",
-    playlistBriefAutoRequests: new Set(),
-    playlistBriefAutoPoll: new Map(),
-    playlistMediaDurationSec: 0,
-    playlistMediaCurrentTimeSec: 0,
-    playlistMediaPlaying: false,
+	    playlistTranscriptLanguage: "",
+	    playlistTranscriptSource: "",
+	    playlistTranscriptUpdatedAt: "",
+	    playlistBriefHtml: "",
+	    playlistBriefMarkdown: "",
+	    playlistBriefLoading: false,
+	    playlistBriefError: "",
+	    playlistBriefGeneratingKey: "",
+		    playlistBriefAutoRequests: new Set(),
+		    playlistBriefAutoPoll: new Map(),
+		    playlistBriefCopying: false,
+		    playlistBriefPromptCopying: false,
+		    playlistMediaDurationSec: 0,
+		    playlistMediaCurrentTimeSec: 0,
+		    playlistMediaPlaying: false,
     playlistMediaMuted: false,
     playlistMediaVolume: 1,
     playlistTimelineStart: "",
@@ -202,6 +231,17 @@ function RaelynApp() {
     playlistTimelineValue: 0,
     playlistCalendarCount: 14,
     playlistCalendarAnchor: "",
+    playlistPeriodCounts: new Map(),
+    playlistPeriodCountsKey: "",
+    playlistPeriodCountsLoading: false,
+    playlistPeriodCountsError: "",
+    playlistPeriodCountsToken: 0,
+    playlistSettingsGranularityDraft: "day",
+    playlistSettingsGranularitySaving: false,
+    playlistSettingsGranularityError: "",
+    playlistSettingsPromptDraft: "",
+    playlistSettingsPromptSaving: false,
+    playlistSettingsPromptError: "",
     playlistNameEditing: false,
     playlistNameDraft: "",
     playlistNameSaving: false,
@@ -212,6 +252,15 @@ function RaelynApp() {
     playlistEditMediaIds: [],
     playlistEditMediaTagQuery: "",
     playlistEditMediaTagOpen: false,
+    playlistLoadToken: 0,
+    _playlistDayAbortCtrl: null,
+    _playlistBriefAbortCtrl: null,
+    _playlistBriefMdAbortCtrl: null,
+    _playlistSelectAbortCtrl: null,
+	    playlistVideoAssetsCache: new Map(),
+	    playlistVideoTranscriptCache: new Map(),
+	    playlistBriefHtmlCache: new Map(),
+	    playlistBriefMarkdownCache: new Map(),
 
     mediaDisplayName(m) {
       return (m && (m.name || m.provider_media_id || m.url)) || "";
@@ -385,6 +434,17 @@ function RaelynApp() {
       }
     },
 
+    formatBytes(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v) || v < 0) return "-";
+      if (v === 0) return "0 B";
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      const i = Math.min(units.length - 1, Math.floor(Math.log(v) / Math.log(1024)));
+      const num = v / Math.pow(1024, i);
+      const digits = num >= 100 || i === 0 ? 0 : num >= 10 ? 1 : 2;
+      return `${num.toFixed(digits)} ${units[i]}`;
+    },
+
     servicePillClass(ok) {
       return ok
         ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-200"
@@ -401,6 +461,7 @@ function RaelynApp() {
       if (!v || !v.id) return;
       this.modals.addMedia = false;
       this.modals.createPlaylist = false;
+      this.modals.mediaImport = false;
       this.modals.videoPlayer = true;
       this.playerVideo = v;
       this.playerAssets = [];
@@ -630,24 +691,84 @@ function RaelynApp() {
 
     async api(path, options) {
       const resp = await fetch(`/api${path}`, options || {});
-      if (!resp.ok) {
-        const ct = resp.headers.get("content-type") || "";
-        if (ct.includes("application/json")) {
-          try {
-            const payload = await resp.json();
-            const detail = payload && typeof payload === "object" ? payload.detail : null;
-            if (detail) throw new Error(`${resp.status}: ${detail}`);
-            throw new Error(`${resp.status}: ${JSON.stringify(payload)}`);
-          } catch (e) {
-            const msg = e && e.message ? e.message : String(e);
-            throw new Error(`${resp.status}: ${msg}`);
-          }
-        }
-        const text = await resp.text();
-        throw new Error(`${resp.status}: ${text}`);
-      }
+	      if (!resp.ok) {
+	        const ct = resp.headers.get("content-type") || "";
+	        if (ct.includes("application/json")) {
+	          try {
+	            const payload = await resp.json();
+	            const detail = payload && typeof payload === "object" ? payload.detail : null;
+	            if (detail !== undefined && detail !== null) {
+	              const detailText = typeof detail === "string" ? detail : JSON.stringify(detail);
+	              throw new Error(`${resp.status}: ${detailText}`);
+	            }
+	            throw new Error(`${resp.status}: ${JSON.stringify(payload)}`);
+	          } catch (e) {
+	            const msg = e && e.message ? e.message : String(e);
+	            if (String(msg).startsWith(`${resp.status}:`)) throw new Error(String(msg));
+	            throw new Error(`${resp.status}: ${msg}`);
+	          }
+	        }
+	        const text = await resp.text();
+	        throw new Error(`${resp.status}: ${text}`);
+	      }
       const ct = resp.headers.get("content-type") || "";
       return ct.includes("application/json") ? resp.json() : resp.text();
+    },
+
+    _isAbortError(e) {
+      try {
+        if (!e) return false;
+        if (e.name === "AbortError") return true;
+        const msg = e && e.message ? String(e.message) : String(e);
+        return msg.toLowerCase().includes("abort");
+      } catch {
+        return false;
+      }
+    },
+
+    _abortCtrl(name) {
+      try {
+        const ctrl = this && name ? this[name] : null;
+        if (ctrl && typeof ctrl.abort === "function") ctrl.abort();
+      } catch {
+        // ignore
+      }
+      try {
+        if (this && name) this[name] = null;
+      } catch {
+        // ignore
+      }
+    },
+
+    _cacheGet(cache, key) {
+      try {
+        if (!cache || typeof cache.get !== "function") return null;
+        const item = cache.get(key);
+        if (!item) return null;
+        const exp = Number(item.expiresAt || 0);
+        if (exp && Date.now() > exp) {
+          try {
+            cache.delete(key);
+          } catch {
+            // ignore
+          }
+          return null;
+        }
+        return item.value;
+      } catch {
+        return null;
+      }
+    },
+
+    _cacheSet(cache, key, value, ttlMs) {
+      try {
+        if (!cache || typeof cache.set !== "function") return;
+        const ttl = Number(ttlMs || 0);
+        const expiresAt = ttl > 0 ? Date.now() + ttl : 0;
+        cache.set(key, { value, expiresAt });
+      } catch {
+        // ignore
+      }
     },
 
     async loadSystemStatus({ silent = true } = {}) {
@@ -781,6 +902,7 @@ function RaelynApp() {
           this.modals.videoPlayer = false;
           this.modals.addMedia = false;
           this.modals.createPlaylist = false;
+          this.modals.mediaImport = false;
         }
         this.jobsTab = "active";
         this.switchView("jobs");
@@ -848,6 +970,8 @@ function RaelynApp() {
         if (!this.playlistSelectedDate) {
           this.playlistSelectedDate = this._todayIsoLocal();
         }
+        const sv = (sp.get("subview") || this.playlistSubview || "main").trim();
+        this.playlistSubview = ["main", "settings"].includes(sv) ? sv : "main";
       }
       if (viewKey === "settings") {
         const t = (sp.get("tab") || this.settingsTab || "cookies").trim();
@@ -880,6 +1004,7 @@ function RaelynApp() {
         const pid = this.playlistPageId || this.selectedPlaylistId;
         if (pid) sp.set("playlist_id", String(pid));
         if (this.playlistSelectedDate) sp.set("date", String(this.playlistSelectedDate));
+        sp.set("subview", this.playlistSubview || "main");
       }
       if (viewKey === "settings") {
         sp.set("tab", this.settingsTab || "cookies");
@@ -925,7 +1050,6 @@ function RaelynApp() {
         if (this.activeView === "jobs") return await this.loadJobs();
         if (this.activeView === "playlists") return await this.loadPlaylists();
         if (this.activeView === "playlist") return await this.loadPlaylistPage();
-        if (this.activeView === "briefs") return await this.loadBriefs();
         if (this.activeView === "settings") return await this.loadSettings();
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
@@ -939,6 +1063,13 @@ function RaelynApp() {
         this.stats.videoCount = s.video_count || 0;
         this.stats.pendingJobs = s.pending_jobs || 0;
         this.stats.failedJobs = s.failed_jobs || 0;
+        this.stats.recentMedia = Array.isArray(s.recent_media) ? s.recent_media : [];
+        this.stats.recentVideos = Array.isArray(s.recent_videos) ? s.recent_videos : [];
+        this.stats.recentPlaylists = Array.isArray(s.recent_playlists) ? s.recent_playlists : [];
+        this.stats.s3TrackedSizeBytes =
+          s.s3_tracked_size_bytes === null || s.s3_tracked_size_bytes === undefined ? null : Number(s.s3_tracked_size_bytes);
+        this.stats.asrCalls = Number(s.asr_calls || 0);
+        this.stats.llmCalls = Number(s.llm_calls || 0);
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
       }
@@ -1406,6 +1537,111 @@ function RaelynApp() {
       return Array.from(s).filter(Boolean).sort();
     },
 
+    _workersKnownRoleOrder() {
+      return ["download_youtube", "download_bilibili", "audio", "process", "asr", "sync", "ai", "all"];
+    },
+
+    workerRoleLabel(role) {
+      const r = String(role || "").trim().toLowerCase();
+      const map = {
+        download_youtube: "下载YT",
+        download_bilibili: "下载B站",
+        audio: "音频",
+        process: "处理",
+        asr: "ASR",
+        sync: "同步",
+        ai: "AI",
+        all: "ALL",
+      };
+      return map[r] || (r || "unknown");
+    },
+
+    workersRoleStatusList() {
+      const roles = Array.isArray(this.workersRoles) ? this.workersRoles : [];
+      const byRole = new Map();
+      for (const x of roles) {
+        const role = x && x.role ? String(x.role) : "";
+        if (role) byRole.set(role, x);
+      }
+
+      const out = [];
+      const known = this._workersKnownRoleOrder();
+      const seen = new Set();
+      for (const r of known) {
+        const item = byRole.get(r) || { role: r, online: 0, total: 0, last_seen_at: null };
+        out.push(item);
+        seen.add(r);
+      }
+      for (const x of roles) {
+        const role = x && x.role ? String(x.role) : "";
+        if (!role || seen.has(role)) continue;
+        out.push(x);
+      }
+      return out;
+    },
+
+    workerRolePillClass(r) {
+      const online = Number((r && r.online) || 0);
+      const total = Number((r && r.total) || 0);
+      if (!total || total <= 0) {
+        return "border-slate-700 bg-slate-950/20 text-slate-400";
+      }
+      if (online > 0) {
+        return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+      }
+      return "border-rose-900/60 bg-rose-950/20 text-rose-200";
+    },
+
+    workerRoleDotClass(r) {
+      const online = Number((r && r.online) || 0);
+      const total = Number((r && r.total) || 0);
+      if (!total || total <= 0) return "bg-slate-500";
+      return online > 0 ? "bg-emerald-400" : "bg-rose-400";
+    },
+
+    workerRoleTitle(r) {
+      const role = r && r.role ? String(r.role) : "";
+      const last = r && r.last_seen_at ? String(r.last_seen_at) : "";
+      const online = Number((r && r.online) || 0);
+      const total = Number((r && r.total) || 0);
+      const stale = Number(this._workersStaleAfterSeconds || 20);
+      const windowSec = Number(this._workersWindowSeconds || 0);
+      const parts = [];
+      parts.push(`role=${role || "unknown"}`);
+      parts.push(`online=${online}/${total}`);
+      parts.push(`stale_after=${stale}s`);
+      if (windowSec > 0) parts.push(`window=${windowSec}s`);
+      if (last) parts.push(`last_seen_at=${last}`);
+      return parts.join("  ");
+    },
+
+    async refreshWorkers({ force = false } = {}) {
+      try {
+        if (this.activeView !== "jobs") return;
+        if (this.jobsTab !== "active") return;
+
+        const now = Date.now();
+        if (!force && this._workersLastFetchAt && now - this._workersLastFetchAt < 3000) return;
+        this._workersLastFetchAt = now;
+
+        this.workersLoading = true;
+        if (force) this.workersError = "";
+
+        const payload = await this.api(`/workers`);
+        const roles = payload && Array.isArray(payload.roles) ? payload.roles : [];
+        this.workersRoles = roles;
+        const stale = payload && typeof payload.stale_after_seconds === "number" ? payload.stale_after_seconds : null;
+        if (stale != null && isFinite(stale) && stale > 0) this._workersStaleAfterSeconds = Math.floor(stale);
+        const windowSec = payload && typeof payload.window_seconds === "number" ? payload.window_seconds : null;
+        if (windowSec != null && isFinite(windowSec) && windowSec > 0) this._workersWindowSeconds = Math.floor(windowSec);
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.workersError = msg;
+      } finally {
+        this.workersLoading = false;
+      }
+    },
+
     applyJobsTypeFilter() {
       this._disconnectJobsWs();
       this._syncUrl({ push: false });
@@ -1416,6 +1652,52 @@ function RaelynApp() {
     clearJobsTypeFilter() {
       this.jobsTypeFilter = "";
       this.applyJobsTypeFilter();
+    },
+
+    async deleteFailedJobsBulk() {
+      if (this.activeView !== "jobs") return;
+      if (this.jobsTab !== "failed") return;
+      if (this.jobsDeleteFailedSubmitting) return;
+
+      this._ensureJobsDoneRange();
+      const type = String(this.jobsTypeFilter || "").trim();
+      const fromIso = this.jobsDoneFrom ? new Date(this.jobsDoneFrom).toISOString() : "";
+      const toIso = this.jobsDoneTo ? new Date(this.jobsDoneTo).toISOString() : "";
+
+      const details = [];
+      if (type) details.push(`类型：${type}`);
+      if (this.jobsDoneFrom && this.jobsDoneTo) details.push(`完成时间：${this.jobsDoneFrom} ~ ${this.jobsDoneTo}`);
+      const detailText = details.length ? `\n\n${details.join("\n")}` : "";
+
+      const ok = confirm(`确认删除失败任务？${detailText}\n\n该操作不可恢复。`);
+      if (!ok) return;
+
+      try {
+        this.jobsDeleteFailedSubmitting = true;
+        this.globalStatus = "正在删除失败任务…";
+
+        const qs = new URLSearchParams();
+        if (type) qs.set("type", type);
+        if (fromIso) qs.set("finished_since", fromIso);
+        if (toIso) qs.set("finished_until", toIso);
+
+        const suffix = qs.toString() ? `?${qs.toString()}` : "";
+        const res = await this.api(`/jobs/delete_failed${suffix}`, { method: "POST" });
+        const deleted = res && typeof res.deleted === "number" ? res.deleted : 0;
+
+        this.jobListDone = [];
+        this.jobsSeriesLastAt = 0;
+        await Promise.all([this.loadJobsDone(), this.refreshJobsSeries({ force: true })]);
+
+        this.globalStatus = `已删除失败任务：${deleted}`;
+        this.toastSuccess(`已删除失败任务：${deleted}`);
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.globalStatus = `error: ${msg}`;
+        this.toastError(`删除失败：${msg}`);
+      } finally {
+        this.jobsDeleteFailedSubmitting = false;
+      }
     },
 
     async applyJobsRange() {
@@ -1735,6 +2017,16 @@ function RaelynApp() {
 
     jobMetaLabel(j) {
       if (!j || typeof j !== "object") return "";
+      const t = j.type ? String(j.type) : "";
+      if (t === "brief.generate_period" || t === "brief.generate_daily") {
+        const pid = this.jobPlaylistId(j);
+        const dateStr = this.jobPlaylistDate(j);
+        const pLabel = pid ? this.jobPlaylistLabel(j) : "";
+        const parts = [];
+        if (pLabel) parts.push(pLabel);
+        if (dateStr) parts.push(dateStr);
+        return parts.join(" · ");
+      }
       if (j.media_name) return String(j.media_name || "");
       const mid = j.params && j.params.media_id ? String(j.params.media_id) : "";
       if (!mid) return "";
@@ -1768,7 +2060,7 @@ function RaelynApp() {
     },
 
     jobPlaylistDate(j) {
-      return this.jobParamId(j, "date");
+      return this.jobParamId(j, "date") || this.jobParamId(j, "period_start");
     },
 
     jobVideoLabel(j) {
@@ -1935,6 +2227,7 @@ function RaelynApp() {
         // so the "待处理 / 运行中" count updates in real time.
         this._connectJobsWs();
         this._fetchJobsActiveSnapshot();
+        this.refreshWorkers();
 
         if (this.jobsTab === "active") {
           this.jobListDone = [];
@@ -2031,54 +2324,6 @@ function RaelynApp() {
         "以下是视频文本（多条，可能包含标题与链接；若未包含链接，请在输出中把来源写为“文本未提供链接”）：",
         "{{blocks}}",
       ].join("\n").trim();
-    },
-
-    async loadBriefs({ force = false } = {}) {
-      try {
-        if (this.briefDailyPromptLoaded && !force) return;
-        this.briefDailyPromptError = "";
-
-        const payload = await this.api(`/config`);
-        const data = (payload && payload.data) || {};
-        const briefs = data && data.briefs ? data.briefs : null;
-        const p = briefs && typeof briefs === "object" ? briefs.daily_prompt : "";
-        const text = typeof p === "string" ? p.trim() : "";
-        this.briefDailyPrompt = text || this.briefDefaultDailyPrompt();
-        this.briefDailyPromptLoaded = true;
-      } catch (e) {
-        this.briefDailyPromptError = e && e.message ? e.message : String(e);
-        if (!String(this.briefDailyPrompt || "").trim()) this.briefDailyPrompt = this.briefDefaultDailyPrompt();
-      }
-    },
-
-    resetBriefDailyPrompt() {
-      this.briefDailyPromptError = "";
-      this.briefDailyPrompt = this.briefDefaultDailyPrompt();
-    },
-
-    async saveBriefDailyPrompt() {
-      try {
-        this.briefDailyPromptSaving = true;
-        this.briefDailyPromptError = "";
-        const v = String(this.briefDailyPrompt || "").trim();
-        if (!v) {
-          this.briefDailyPromptError = "提示词不能为空";
-          return;
-        }
-        await this.api(`/config/briefs`, {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ value: { daily_prompt: v } }),
-        });
-        this.briefDailyPromptLoaded = true;
-        this.globalStatus = "已保存简报提示词";
-      } catch (e) {
-        const msg = e && e.message ? e.message : String(e);
-        this.briefDailyPromptError = msg;
-        this.globalStatus = `error: ${msg}`;
-      } finally {
-        this.briefDailyPromptSaving = false;
-      }
     },
 
     async loadSettings({ force = false } = {}) {
@@ -2308,6 +2553,7 @@ function RaelynApp() {
       if (!pid) return;
       this.modals.addMedia = false;
       this.modals.createPlaylist = false;
+      this.modals.mediaImport = false;
       this.closeVideoPlayer();
       this.playlistNameEditing = false;
       this.playlistNameDraft = "";
@@ -2316,6 +2562,7 @@ function RaelynApp() {
       this.playlistDescDraft = "";
       this.playlistPageId = pid;
       this.selectedPlaylistId = pid;
+      this.playlistSubview = "main";
       this.playlistSelectedDate = String(dateStr || "").trim() || this._todayIsoLocal();
       this.playlistCalendarUpdateCount();
       this.switchView("playlist");
@@ -2369,16 +2616,22 @@ function RaelynApp() {
       }
     },
 
-    async loadPlaylistPage() {
-      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
-      if (!pid) {
-        this.playlistDetail = null;
-        this.playlistDayVideos = [];
-        this.playlistBriefHtml = "";
-        this.playlistNameEditing = false;
-        this.playlistNameDraft = "";
-        this.playlistNameSaving = false;
-        this.playlistDescEditing = false;
+	    async loadPlaylistPage() {
+	      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+	      if (!pid) {
+	        this.playlistDetail = null;
+	        this.playlistDayVideos = [];
+	        this.playlistBriefHtml = "";
+	        this.playlistBriefMarkdown = "";
+	        this._abortCtrl("_playlistCountsAbortCtrl");
+	        this.playlistPeriodCounts = new Map();
+	        this.playlistPeriodCountsKey = "";
+	        this.playlistPeriodCountsLoading = false;
+	        this.playlistPeriodCountsError = "";
+	        this.playlistNameEditing = false;
+	        this.playlistNameDraft = "";
+	        this.playlistNameSaving = false;
+	        this.playlistDescEditing = false;
         this.playlistDescDraft = "";
         this.pageTitle = "播放列表页";
         return;
@@ -2392,6 +2645,11 @@ function RaelynApp() {
         const detail = await this.api(`/playlists/${encodeURIComponent(pid)}/detail`);
         this.playlistDetail = detail || null;
         this.pageTitle = (detail && detail.name) || "播放列表页";
+        this._abortCtrl("_playlistCountsAbortCtrl");
+        this.playlistPeriodCounts = new Map();
+        this.playlistPeriodCountsKey = "";
+        this.playlistPeriodCountsLoading = false;
+        this.playlistPeriodCountsError = "";
 
         this.playlistCalendarUpdateCount();
         try {
@@ -2400,24 +2658,28 @@ function RaelynApp() {
           // ignore
         }
         setTimeout(() => this.playlistCalendarUpdateCount(), 0);
-        const today = this._todayIsoLocal();
-        const start = (detail && detail.earliest_date) || today;
-        const end = today;
+        const g = detail && detail.brief_granularity ? String(detail.brief_granularity).trim().toLowerCase() : "day";
+        const todayRaw = this._todayIsoLocal();
+        const startRaw = (detail && detail.earliest_date) || todayRaw;
+        const start = this._periodStartIso(startRaw, g);
+        const end = this._periodStartIso(todayRaw, g);
         this.playlistTimelineStart = start;
         this.playlistTimelineEnd = end;
-        const max = Math.max(0, this._dateDiffDays(start, end));
+        const max = Math.max(0, this._periodDiff(start, end, g));
         this.playlistTimelineMax = max;
 
-        if (!this.playlistSelectedDate) this.playlistSelectedDate = today;
-        this.playlistSelectedDate = this._dateClamp(this.playlistSelectedDate, start, end);
-        this.playlistTimelineValue = Math.max(0, Math.min(max, this._dateDiffDays(start, this.playlistSelectedDate)));
+        if (!this.playlistSelectedDate) this.playlistSelectedDate = end;
+        this.playlistSelectedDate = this._periodStartIso(this.playlistSelectedDate, g);
+        this.playlistSelectedDate = this._periodClampIso(this.playlistSelectedDate, start, end);
+        this.playlistTimelineValue = Math.max(0, Math.min(max, this._periodDiff(start, this.playlistSelectedDate, g)));
 
-        this.playlistCalendarAnchor = this._dateClamp(
-          this._dateAddDays(this.playlistSelectedDate, -(Number(this.playlistCalendarCount || 14) - 1)),
+        this.playlistCalendarAnchor = this._periodClampIso(
+          this._periodAddIso(this.playlistSelectedDate, g, -(Number(this.playlistCalendarCount || 14) - 1)),
           start,
           end
         );
         this.playlistCalendarEnsureVisible();
+        this.playlistPrefetchCalendarCounts();
         this.playlistEditResetFromDetail();
         await this.playlistLoadDay(this.playlistSelectedDate);
       } catch (e) {
@@ -2426,16 +2688,18 @@ function RaelynApp() {
     },
 
     playlistRangeLabel() {
-      const a = String(this.playlistTimelineStart || "").trim();
-      const b = String(this.playlistTimelineEnd || "").trim();
+      const d = this.playlistDetail;
+      const a = d && d.earliest_date ? String(d.earliest_date).trim() : "";
+      const b = this._todayIsoLocal();
       if (!a && !b) return "-";
       if (a && b) return `${a} ~ ${b}`;
       return a || b || "-";
     },
 
     playlistRangeLabelShort() {
-      const a = String(this.playlistTimelineStart || "").trim();
-      const b = String(this.playlistTimelineEnd || "").trim();
+      const d = this.playlistDetail;
+      const a = d && d.earliest_date ? String(d.earliest_date).trim() : "";
+      const b = this._todayIsoLocal();
       if (!a && !b) return "-";
       if (!a || !b) return this._mdLabel(a || b);
 
@@ -2475,6 +2739,7 @@ function RaelynApp() {
         if (n !== this.playlistCalendarCount) {
           this.playlistCalendarCount = n;
           this.playlistCalendarEnsureVisible();
+          this.playlistPrefetchCalendarCounts();
         }
       } catch {
         // ignore
@@ -2504,50 +2769,368 @@ function RaelynApp() {
       }
     },
 
+    playlistGranularity() {
+      try {
+        const g = this.playlistDetail && this.playlistDetail.brief_granularity ? String(this.playlistDetail.brief_granularity) : "";
+        const v = (g || this.playlistSettingsGranularityDraft || "day").trim().toLowerCase();
+        return ["day", "week", "month"].includes(v) ? v : "day";
+      } catch {
+        return "day";
+      }
+    },
+
+    playlistBriefTitle() {
+      const g = this.playlistGranularity();
+      if (g === "week") return "周报简报";
+      if (g === "month") return "月报简报";
+      return "日报简报";
+    },
+
+    playlistPeriodLabel() {
+      const g = this.playlistGranularity();
+      const s = String(this.playlistSelectedDate || "").trim();
+      if (!s) return "-";
+      const end = this._periodEndIso(s, g);
+      if (g === "day") return s;
+      return `${s} ~ ${end}`;
+    },
+
+    _isoParts(iso) {
+      const parts = String(iso || "").split("-");
+      if (parts.length !== 3) return null;
+      const y = Number(parts[0]);
+      const m = Number(parts[1]);
+      const d = Number(parts[2]);
+      if (![y, m, d].every((x) => Number.isFinite(x))) return null;
+      return { y, m, d };
+    },
+
+    _periodStartIso(iso, granularity) {
+      const g = String(granularity || "day").trim().toLowerCase();
+      const s = String(iso || "").trim();
+      if (!s) return s;
+      if (g === "day") return s;
+      if (g === "month") {
+        const p = this._isoParts(s);
+        if (!p) return s;
+        return `${String(p.y).padStart(4, "0")}-${String(p.m).padStart(2, "0")}-01`;
+      }
+      if (g === "week") {
+        try {
+          const d = new Date(`${s}T00:00:00Z`);
+          if (Number.isNaN(d.getTime())) return s;
+          const dowMon0 = (d.getUTCDay() + 6) % 7;
+          return this._dateAddDays(s, -dowMon0);
+        } catch {
+          return s;
+        }
+      }
+      return s;
+    },
+
+    _periodAddIso(periodStartIso, granularity, delta) {
+      const g = String(granularity || "day").trim().toLowerCase();
+      const s = String(periodStartIso || "").trim();
+      const n = Number(delta || 0);
+      if (!s || !Number.isFinite(n) || n === 0) return s;
+      if (g === "day") return this._dateAddDays(s, n);
+      if (g === "week") return this._dateAddDays(s, n * 7);
+      if (g === "month") {
+        const p = this._isoParts(s);
+        if (!p) return s;
+        const total = p.y * 12 + (p.m - 1) + n;
+        const y = Math.floor(total / 12);
+        const m = (total % 12) + 1;
+        return `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-01`;
+      }
+      return s;
+    },
+
+    _periodDiff(periodStartIso, otherIso, granularity) {
+      const g = String(granularity || "day").trim().toLowerCase();
+      const a = String(periodStartIso || "").trim();
+      const b = String(otherIso || "").trim();
+      if (!a || !b) return 0;
+      if (g === "day") return this._dateDiffDays(a, b);
+      if (g === "week") return Math.round(this._dateDiffDays(a, b) / 7);
+      if (g === "month") {
+        const pa = this._isoParts(a);
+        const pb = this._isoParts(b);
+        if (!pa || !pb) return 0;
+        return (pb.y - pa.y) * 12 + (pb.m - pa.m);
+      }
+      return this._dateDiffDays(a, b);
+    },
+
+    _isoMs(iso) {
+      try {
+        const d = new Date(`${iso}T00:00:00Z`);
+        return d.getTime();
+      } catch {
+        return NaN;
+      }
+    },
+
+    _periodClampIso(iso, startIso, endIso) {
+      const d = this._isoMs(iso);
+      const s = this._isoMs(startIso);
+      const e = this._isoMs(endIso);
+      if ([d, s, e].some((x) => Number.isNaN(x))) return iso;
+      if (d < s) return startIso;
+      if (d > e) return endIso;
+      return iso;
+    },
+
+    _periodEndIso(periodStartIso, granularity) {
+      const g = String(granularity || "day").trim().toLowerCase();
+      const s = String(periodStartIso || "").trim();
+      if (!s) return s;
+      if (g === "day") return s;
+      if (g === "week") return this._dateAddDays(s, 6);
+      if (g === "month") {
+        const next = this._periodAddIso(s, "month", 1);
+        return this._dateAddDays(next, -1);
+      }
+      return s;
+    },
+
+    playlistToggleSubview() {
+      if (!this.playlistDetail) return;
+      this.playlistSubview = this.playlistSubview === "settings" ? "main" : "settings";
+      this._syncUrl({ push: false });
+    },
+
+    playlistPeriodUnitZh() {
+      const g = this.playlistGranularity();
+      if (g === "week") return "周";
+      if (g === "month") return "月";
+      return "天";
+    },
+
+    playlistPrevPeriodTitle() {
+      return `前一${this.playlistPeriodUnitZh()}`;
+    },
+
+    playlistNextPeriodTitle() {
+      return `后一${this.playlistPeriodUnitZh()}`;
+    },
+
+    playlistJumpDelta(kind) {
+      const g = this.playlistGranularity();
+      const k = String(kind || "").trim();
+      if (g === "day") {
+        if (k === "back_big") return -30;
+        if (k === "back") return -7;
+        if (k === "forward") return 7;
+        if (k === "forward_big") return 30;
+        return 0;
+      }
+      if (g === "week") {
+        if (k === "back_big") return -12;
+        if (k === "back") return -1;
+        if (k === "forward") return 1;
+        if (k === "forward_big") return 12;
+        return 0;
+      }
+      // month
+      if (k === "back_big") return -6;
+      if (k === "back") return -1;
+      if (k === "forward") return 1;
+      if (k === "forward_big") return 6;
+      return 0;
+    },
+
+    playlistJumpTitle(kind) {
+      const g = this.playlistGranularity();
+      const k = String(kind || "").trim();
+      if (g === "day") {
+        if (k === "back_big") return "-1月";
+        if (k === "back") return "-1周";
+        if (k === "forward") return "+1周";
+        if (k === "forward_big") return "+1月";
+        return "";
+      }
+      if (g === "week") {
+        if (k === "back_big") return "-12周";
+        if (k === "back") return "-1周";
+        if (k === "forward") return "+1周";
+        if (k === "forward_big") return "+12周";
+        return "";
+      }
+      if (k === "back_big") return "-6月";
+      if (k === "back") return "-1月";
+      if (k === "forward") return "+1月";
+      if (k === "forward_big") return "+6月";
+      return "";
+    },
+
     playlistCalendarEnsureVisible() {
-      const start = String(this.playlistTimelineStart || "").trim();
-      const end = String(this.playlistTimelineEnd || "").trim();
-      const selected = String(this.playlistSelectedDate || "").trim();
+      const g = this.playlistGranularity();
+      const rawStart = String(this.playlistTimelineStart || "").trim();
+      const rawEnd = String(this.playlistTimelineEnd || "").trim();
+      const start = this._periodStartIso(rawStart, g);
+      const end = this._periodStartIso(rawEnd, g);
+      const selected = this._periodStartIso(String(this.playlistSelectedDate || "").trim(), g);
       const n = Math.max(5, Number(this.playlistCalendarCount || 14));
       if (!start || !end || !selected) return;
-      const maxAnchor = this._dateAddDays(end, -(n - 1));
-      let anchor = String(this.playlistCalendarAnchor || "").trim();
-      if (!anchor) anchor = this._dateAddDays(selected, -(n - 1));
-      // Ensure selected within window
-      const windowEnd = this._dateAddDays(anchor, n - 1);
-      if (this._dateDiffDays(selected, anchor) > 0) {
-        // selected < anchor
+
+      const maxAnchor = this._periodAddIso(end, g, -(n - 1));
+      let anchor = this._periodStartIso(String(this.playlistCalendarAnchor || "").trim(), g);
+      if (!anchor) anchor = this._periodAddIso(selected, g, -(n - 1));
+
+      const windowEnd = this._periodAddIso(anchor, g, n - 1);
+      const selMs = this._isoMs(selected);
+      if (selMs < this._isoMs(anchor)) {
         anchor = selected;
-      } else if (this._dateDiffDays(windowEnd, selected) > 0) {
-        // selected > windowEnd
-        anchor = this._dateAddDays(selected, -(n - 1));
+      } else if (selMs > this._isoMs(windowEnd)) {
+        anchor = this._periodAddIso(selected, g, -(n - 1));
       }
-      // Clamp to range
-      if (this._dateDiffDays(maxAnchor, start) > 0) {
+
+      if (this._isoMs(maxAnchor) < this._isoMs(start)) {
         anchor = start;
       } else {
-        anchor = this._dateClamp(anchor, start, maxAnchor);
+        anchor = this._periodClampIso(anchor, start, maxAnchor);
       }
-      this.playlistCalendarAnchor = anchor;
+      this.playlistCalendarAnchor = this._periodStartIso(anchor, g);
+    },
+
+    playlistCalendarVisibleEnabledRange() {
+      const g = this.playlistGranularity();
+      const rawStart = String(this.playlistTimelineStart || "").trim();
+      const rawEnd = String(this.playlistTimelineEnd || "").trim();
+      const start = this._periodStartIso(rawStart, g);
+      const end = this._periodStartIso(rawEnd, g);
+      const n = Math.max(5, Number(this.playlistCalendarCount || 14));
+      if (!start || !end) return null;
+
+      const anchor = this._periodStartIso(String(this.playlistCalendarAnchor || "").trim(), g);
+      if (!anchor) return null;
+
+      let winStart = anchor;
+      let winEnd = this._periodAddIso(anchor, g, n - 1);
+
+      if (this._isoMs(winStart) < this._isoMs(start)) winStart = start;
+      if (this._isoMs(winEnd) > this._isoMs(end)) winEnd = end;
+      if (this._isoMs(winEnd) < this._isoMs(winStart)) return null;
+
+      return { start: this._periodStartIso(winStart, g), end: this._periodStartIso(winEnd, g) };
+    },
+
+    async playlistPrefetchCalendarCounts() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return;
+      const g = this.playlistGranularity();
+      const r = this.playlistCalendarVisibleEnabledRange();
+      if (!r || !r.start || !r.end) return;
+
+      const key = `${pid}:${g}:${r.start}:${r.end}`;
+      if (String(this.playlistPeriodCountsKey || "") === key) {
+        if (this.playlistPeriodCountsLoading) return;
+        if (!this.playlistPeriodCountsError) return;
+      }
+
+      const nextToken = Number(this.playlistPeriodCountsToken || 0) + 1;
+      this.playlistPeriodCountsToken = nextToken;
+      const token = nextToken;
+
+      this.playlistPeriodCountsKey = key;
+      this.playlistPeriodCountsLoading = true;
+      this.playlistPeriodCountsError = "";
+
+      this._abortCtrl("_playlistCountsAbortCtrl");
+      const ctrl = new AbortController();
+      this._playlistCountsAbortCtrl = ctrl;
+      try {
+        const rows = await this.api(
+          `/playlists/${encodeURIComponent(pid)}/video_counts_by_period?granularity=${encodeURIComponent(g)}&start=${encodeURIComponent(
+            r.start
+          )}&end=${encodeURIComponent(r.end)}`,
+          { signal: ctrl.signal }
+        );
+        if (Number(this.playlistPeriodCountsToken || 0) !== token) return;
+
+        const next = new Map();
+        if (Array.isArray(rows)) {
+          for (const row of rows) {
+            const ps = row && row.period_start ? String(row.period_start).slice(0, 10) : "";
+            const c = row && row.count != null ? Number(row.count) : 0;
+            if (!ps || !Number.isFinite(c) || c <= 0) continue;
+            next.set(this._periodStartIso(ps, g), Math.floor(c));
+          }
+        }
+        this.playlistPeriodCounts = next;
+      } catch (e) {
+        if (Number(this.playlistPeriodCountsToken || 0) !== token) return;
+        if (this._isAbortError(e)) return;
+        this.playlistPeriodCountsError = e && e.message ? e.message : String(e);
+      } finally {
+        if (Number(this.playlistPeriodCountsToken || 0) === token) this.playlistPeriodCountsLoading = false;
+      }
+    },
+
+    playlistCalendarDotCount(periodStartIso) {
+      try {
+        const g = this.playlistGranularity();
+        const iso = this._periodStartIso(String(periodStartIso || "").trim(), g);
+        if (!iso) return 0;
+        const map = this.playlistPeriodCounts;
+        const c =
+          map && typeof map.get === "function"
+            ? Number(map.get(iso) || 0)
+            : 0;
+        if (!Number.isFinite(c) || c <= 0) return 0;
+        if (c <= 3) return 1;
+        if (c <= 10) return 2;
+        return 3;
+      } catch {
+        return 0;
+      }
+    },
+
+    playlistCalendarDots(periodStartIso) {
+      const n = this.playlistCalendarDotCount(periodStartIso);
+      if (!n) return [];
+      try {
+        return Array.from({ length: n }, (_, i) => i);
+      } catch {
+        return [];
+      }
     },
 
     playlistCalendarItems() {
-      const start = String(this.playlistTimelineStart || "").trim();
-      const end = String(this.playlistTimelineEnd || "").trim();
-      const selected = String(this.playlistSelectedDate || "").trim();
+      const g = this.playlistGranularity();
+      const rawStart = String(this.playlistTimelineStart || "").trim();
+      const rawEnd = String(this.playlistTimelineEnd || "").trim();
+      const start = this._periodStartIso(rawStart, g);
+      const end = this._periodStartIso(rawEnd, g);
+      const selected = this._periodStartIso(String(this.playlistSelectedDate || "").trim(), g);
       const n = Math.max(5, Number(this.playlistCalendarCount || 14));
       if (!start || !end) return [];
-      const today = end || this._todayIsoLocal();
-      let anchor = String(this.playlistCalendarAnchor || "").trim();
-      if (!anchor) anchor = selected ? this._dateAddDays(selected, -(n - 1)) : start;
+
+      const today = this._periodStartIso(this._todayIsoLocal(), g);
+      let anchor = this._periodStartIso(String(this.playlistCalendarAnchor || "").trim(), g);
+      if (!anchor) anchor = selected ? this._periodAddIso(selected, g, -(n - 1)) : start;
+
       const out = [];
       for (let i = 0; i < n; i++) {
-        const date = this._dateAddDays(anchor, i);
-        const disabled = this._dateDiffDays(date, start) > 0 || this._dateDiffDays(end, date) > 0;
+        const date = this._periodAddIso(anchor, g, i);
+        const disabled = this._isoMs(date) < this._isoMs(start) || this._isoMs(date) > this._isoMs(end);
+
+        let md = this._mdLabel(date);
+        let weekday = this._weekdayZh(date);
+        if (g === "week") {
+          md = this._mdLabel(date);
+          weekday = `~${this._mdLabel(this._periodEndIso(date, "week"))}`;
+        } else if (g === "month") {
+          const p = this._isoParts(date);
+          md = p ? `${p.y}/${String(p.m).padStart(2, "0")}` : date.slice(0, 7);
+          weekday = "";
+        }
+
         out.push({
           date,
-          md: this._mdLabel(date),
-          weekday: this._weekdayZh(date),
+          md,
+          weekday,
           selected: !!selected && date === selected,
           today: date === today,
           disabled,
@@ -2557,33 +3140,49 @@ function RaelynApp() {
     },
 
     playlistTimelineApply() {
+      const g = this.playlistGranularity();
       const start = String(this.playlistTimelineStart || "").trim();
       const end = String(this.playlistTimelineEnd || "").trim();
       if (!start || !end) return;
       const v = Number(this.playlistTimelineValue || 0);
-      const next = this._dateAddDays(start, v);
-      this.playlistSetDate(this._dateClamp(next, start, end));
+      const next = this._periodAddIso(start, g, v);
+      this.playlistSetDate(this._periodClampIso(next, start, end));
     },
 
     playlistSetDate(iso) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       if (!pid) return;
-      const next = String(iso || "").trim();
+      const g = this.playlistGranularity();
+      const next = this._periodStartIso(String(iso || "").trim(), g);
       if (!next || next === this.playlistSelectedDate) return;
-      this.playlistSelectedDate = next;
+      const start = String(this.playlistTimelineStart || "").trim();
+      const end = String(this.playlistTimelineEnd || "").trim();
+      const clamped = start && end ? this._periodClampIso(next, start, end) : next;
+      this.playlistSelectedDate = clamped;
       this.playlistCalendarEnsureVisible();
+      this.playlistPrefetchCalendarCounts();
       if (this.playlistTimelineStart) {
         const max = Number(this.playlistTimelineMax || 0);
-        this.playlistTimelineValue = Math.max(0, Math.min(max, this._dateDiffDays(this.playlistTimelineStart, next)));
+        this.playlistTimelineValue = Math.max(0, Math.min(max, this._periodDiff(this.playlistTimelineStart, clamped, g)));
       }
       this._syncUrl({ push: false });
-      this.playlistLoadDay(next);
+      this.playlistLoadDay(clamped);
     },
 
     async playlistLoadDay(iso) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
-      const day = String(iso || "").trim();
+      const g = this.playlistGranularity();
+      const day = this._periodStartIso(String(iso || "").trim(), g);
       if (!pid || !day) return;
+
+      const nextToken = Number(this.playlistLoadToken || 0) + 1;
+      this.playlistLoadToken = nextToken;
+      const loadToken = nextToken;
+
+      this._abortCtrl("_playlistDayAbortCtrl");
+      this._abortCtrl("_playlistBriefAbortCtrl");
+      this._abortCtrl("_playlistBriefMdAbortCtrl");
+      this._abortCtrl("_playlistSelectAbortCtrl");
 
       const prevCurrentId =
         this.playlistCurrentVideo && this.playlistCurrentVideo.id ? String(this.playlistCurrentVideo.id) : "";
@@ -2600,13 +3199,20 @@ function RaelynApp() {
       this.playlistDayVideosLoading = true;
       this.playlistDayVideosError = "";
       try {
-        const items = await this.api(`/playlists/${encodeURIComponent(pid)}/videos_by_date?date=${encodeURIComponent(day)}`);
+        const ctrl = new AbortController();
+        this._playlistDayAbortCtrl = ctrl;
+        const items = await this.api(
+          `/playlists/${encodeURIComponent(pid)}/videos_by_period?granularity=${encodeURIComponent(g)}&date=${encodeURIComponent(day)}`,
+          { signal: ctrl.signal }
+        );
+        if (Number(this.playlistLoadToken || 0) !== loadToken) return;
         this.playlistDayVideos = Array.isArray(items) ? items : [];
         const keep = prevCurrentId ? this.playlistDayVideos.find((x) => x && String(x.id) === prevCurrentId) : null;
         if (keep) this.playlistCurrentVideo = keep;
         else this.playlistCurrentVideo = this.playlistDayVideos.length ? this.playlistDayVideos[0] : null;
-        if (this.playlistCurrentVideo) await this.playlistSelectVideo(this.playlistCurrentVideo, { autoPlay: false });
       } catch (e) {
+        if (Number(this.playlistLoadToken || 0) !== loadToken) return;
+        if (this._isAbortError(e)) return;
         this.playlistDayVideosError = e && e.message ? e.message : String(e);
         this.playlistDayVideos = [];
         this.playlistCurrentVideo = null;
@@ -2616,30 +3222,47 @@ function RaelynApp() {
         this.playlistTranscriptLanguage = "";
         this.playlistTranscriptSource = "";
       } finally {
-        this.playlistDayVideosLoading = false;
+        if (Number(this.playlistLoadToken || 0) === loadToken) this.playlistDayVideosLoading = false;
       }
 
-      await this.playlistLoadBrief(day);
+      if (Number(this.playlistLoadToken || 0) !== loadToken) return;
+      const selectPromise = this.playlistCurrentVideo
+        ? this.playlistSelectVideo(this.playlistCurrentVideo, { autoPlay: false, loadToken })
+        : Promise.resolve();
+      const briefPromise = this.playlistLoadBrief(day, { loadToken });
+      try {
+        await Promise.allSettled([selectPromise, briefPromise]);
+      } catch {
+        // ignore
+      }
     },
 
-    async playlistSelectVideo(v, { autoPlay = false } = {}) {
+    async playlistSelectVideo(v, { autoPlay = false, loadToken = null } = {}) {
       if (!v) return;
       const vid = String(v.id || "").trim();
       if (!vid) return;
+      const token = Number(loadToken || this.playlistLoadToken || 0);
       this.playlistCurrentVideo = v;
       this.playlistPlayerError = "";
       const selectingId = vid;
+
+      this._abortCtrl("_playlistSelectAbortCtrl");
+      const ctrl = new AbortController();
+      this._playlistSelectAbortCtrl = ctrl;
+
       this.playlistMediaDurationSec = 0;
       this.playlistMediaCurrentTimeSec = 0;
       this.playlistMediaPlaying = false;
-      this.playlistTranscriptText = "";
-      this.playlistTranscriptLoading = true;
       this.playlistTranscriptError = "";
-      this.playlistTranscriptLanguage = "";
-      this.playlistTranscriptSource = "";
-      this.playlistTranscriptUpdatedAt = "";
-      try {
-        const assets = await this.api(`/videos/${encodeURIComponent(vid)}/assets?presign=1&download=0`);
+
+      const isStale = () => {
+        if (Number(this.playlistLoadToken || 0) !== token) return true;
+        if (!this.playlistCurrentVideo || String(this.playlistCurrentVideo.id || "") !== String(selectingId)) return true;
+        return false;
+      };
+
+      const applyAssets = (assets) => {
+        if (isStale()) return;
         const list = Array.isArray(assets) ? assets : [];
         const videos = list.filter((a) => a && a.type === "video" && a.presigned_url);
         const audios = list.filter((a) => a && a.type === "audio" && a.presigned_url);
@@ -2648,6 +3271,7 @@ function RaelynApp() {
         this.playlistPlayerVideoUrl = (mp4 && mp4.presigned_url) || "";
         this.playlistPlayerAudioUrl = (m4a && m4a.presigned_url) || "";
         this.$nextTick(() => {
+          if (isStale()) return;
           try {
             const el = this.playlistAudioOnly ? this.$refs && this.$refs.playlistAudioEl : this.$refs && this.$refs.playlistVideoEl;
             if (autoPlay && el && typeof el.play === "function") el.play();
@@ -2656,36 +3280,71 @@ function RaelynApp() {
           }
           this.playlistSyncMediaState();
         });
+      };
 
-        try {
-          const transcript = await this.api(`/videos/${encodeURIComponent(vid)}/transcript`);
-          if (!this.playlistCurrentVideo || String(this.playlistCurrentVideo.id || "") !== String(selectingId)) return;
-          if (transcript && typeof transcript === "object" && transcript.ok) {
-            this.playlistTranscriptText = transcript.text || "";
-            this.playlistTranscriptLanguage = transcript.language || "";
-            this.playlistTranscriptSource = transcript.source || "";
-            this.playlistTranscriptUpdatedAt = transcript.updated_at || transcript.created_at || "";
-          } else {
-            this.playlistTranscriptText = "";
-            this.playlistTranscriptLanguage = "";
-            this.playlistTranscriptSource = "";
-            this.playlistTranscriptUpdatedAt = "";
-          }
-        } catch (e2) {
-          if (!this.playlistCurrentVideo || String(this.playlistCurrentVideo.id || "") !== String(selectingId)) return;
-          this.playlistTranscriptError = e2 && e2.message ? e2.message : String(e2);
-        } finally {
-          if (!this.playlistCurrentVideo || String(this.playlistCurrentVideo.id || "") !== String(selectingId)) return;
-          this.playlistTranscriptLoading = false;
+      const applyTranscript = (transcript) => {
+        if (isStale()) return;
+        if (transcript && typeof transcript === "object" && transcript.ok) {
+          this.playlistTranscriptText = transcript.text || "";
+          this.playlistTranscriptLanguage = transcript.language || "";
+          this.playlistTranscriptSource = transcript.source || "";
+          this.playlistTranscriptUpdatedAt = transcript.updated_at || transcript.created_at || "";
+        } else {
+          this.playlistTranscriptText = "";
+          this.playlistTranscriptLanguage = "";
+          this.playlistTranscriptSource = "";
+          this.playlistTranscriptUpdatedAt = "";
         }
-      } catch (e) {
-        this.playlistPlayerError = e && e.message ? e.message : String(e);
+      };
+
+      const cachedAssets = this._cacheGet(this.playlistVideoAssetsCache, selectingId);
+      if (cachedAssets) applyAssets(cachedAssets);
+      else {
         this.playlistPlayerVideoUrl = "";
         this.playlistPlayerAudioUrl = "";
-        if (this.playlistCurrentVideo && String(this.playlistCurrentVideo.id || "") === String(selectingId)) {
-          this.playlistTranscriptLoading = false;
-        }
       }
+
+      const cachedTranscript = this._cacheGet(this.playlistVideoTranscriptCache, selectingId);
+      if (cachedTranscript) {
+        applyTranscript(cachedTranscript);
+        this.playlistTranscriptLoading = false;
+      } else {
+        this.playlistTranscriptText = "";
+        this.playlistTranscriptLoading = true;
+        this.playlistTranscriptLanguage = "";
+        this.playlistTranscriptSource = "";
+        this.playlistTranscriptUpdatedAt = "";
+      }
+
+      try {
+        const assetsPromise = cachedAssets
+          ? Promise.resolve(cachedAssets)
+          : this.api(`/videos/${encodeURIComponent(vid)}/assets?presign=1&download=0&localize_title=0`, { signal: ctrl.signal });
+        const transcriptPromise = cachedTranscript
+          ? Promise.resolve(cachedTranscript)
+          : this.api(`/videos/${encodeURIComponent(vid)}/transcript`, { signal: ctrl.signal });
+
+        const [assetsRes, transcriptRes] = await Promise.allSettled([assetsPromise, transcriptPromise]);
+
+        if (assetsRes.status === "fulfilled") {
+          applyAssets(assetsRes.value);
+          if (!cachedAssets) this._cacheSet(this.playlistVideoAssetsCache, selectingId, assetsRes.value, PLAYLIST_ASSETS_CACHE_TTL_MS);
+        } else if (!cachedAssets) {
+          const err = assetsRes.reason;
+          if (!this._isAbortError(err) && !isStale()) this.playlistPlayerError = err && err.message ? err.message : String(err);
+        }
+
+        if (transcriptRes.status === "fulfilled") {
+          applyTranscript(transcriptRes.value);
+          if (!cachedTranscript) this._cacheSet(this.playlistVideoTranscriptCache, selectingId, transcriptRes.value, PLAYLIST_TRANSCRIPT_CACHE_TTL_MS);
+        } else if (!cachedTranscript) {
+          const err2 = transcriptRes.reason;
+          if (!this._isAbortError(err2) && !isStale()) this.playlistTranscriptError = err2 && err2.message ? err2.message : String(err2);
+        }
+      } catch (e) {
+        if (!this._isAbortError(e) && !isStale()) this.playlistPlayerError = e && e.message ? e.message : String(e);
+      }
+      if (!isStale()) this.playlistTranscriptLoading = false;
     },
 
     playlistActiveMediaEl() {
@@ -2955,62 +3614,76 @@ function RaelynApp() {
     },
 
     playlistPrevDay() {
+      const g = this.playlistGranularity();
       const start = String(this.playlistTimelineStart || "").trim();
       const end = String(this.playlistTimelineEnd || "").trim();
       if (!start || !end || !this.playlistSelectedDate) return;
-      const next = this._dateClamp(this._dateAddDays(this.playlistSelectedDate, -1), start, end);
+      const next = this._periodClampIso(this._periodAddIso(this.playlistSelectedDate, g, -1), start, end);
       this.playlistSetDate(next);
     },
 
     playlistNextDay() {
+      const g = this.playlistGranularity();
       const start = String(this.playlistTimelineStart || "").trim();
       const end = String(this.playlistTimelineEnd || "").trim();
       if (!start || !end || !this.playlistSelectedDate) return;
-      const next = this._dateClamp(this._dateAddDays(this.playlistSelectedDate, 1), start, end);
+      const next = this._periodClampIso(this._periodAddIso(this.playlistSelectedDate, g, 1), start, end);
       this.playlistSetDate(next);
     },
 
-    playlistJump(days) {
+    playlistJump(deltaPeriods) {
+      const g = this.playlistGranularity();
       const start = String(this.playlistTimelineStart || "").trim();
       const end = String(this.playlistTimelineEnd || "").trim();
       if (!start || !end || !this.playlistSelectedDate) return;
+      const delta = Number(deltaPeriods || 0);
+      if (!Number.isFinite(delta) || delta === 0) return;
       try {
         const anchor = String(this.playlistCalendarAnchor || "").trim();
-        if (anchor) this.playlistCalendarAnchor = this._dateAddDays(anchor, Number(days || 0));
+        if (anchor) this.playlistCalendarAnchor = this._periodAddIso(anchor, g, delta);
       } catch {
         // ignore
       }
-      const next = this._dateClamp(this._dateAddDays(this.playlistSelectedDate, Number(days || 0)), start, end);
-      this.playlistSetDate(next);
+      const next = this._periodClampIso(this._periodAddIso(this.playlistSelectedDate, g, delta), start, end);
+      if (next !== this.playlistSelectedDate) {
+        this.playlistSetDate(next);
+      } else {
+        this.playlistCalendarEnsureVisible();
+        this.playlistPrefetchCalendarCounts();
+      }
     },
 
-    _playlistBriefKey(pid, day) {
+    _playlistBriefKey(pid, granularity, periodStart) {
       const p = String(pid || "").trim();
-      const d = String(day || "").trim();
-      if (!p || !d) return "";
-      return `${p}:${d}`;
+      const g = String(granularity || "").trim();
+      const d = String(periodStart || "").trim();
+      if (!p || !g || !d) return "";
+      return `${p}:${g}:${d}`;
     },
 
     playlistBriefGeneratingForSelectedDate() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const g = this.playlistGranularity();
       const day = String(this.playlistSelectedDate || "").trim();
-      const k = this._playlistBriefKey(pid, day);
+      const k = this._playlistBriefKey(pid, g, day);
       return !!k && String(this.playlistBriefGeneratingKey || "") === k;
     },
 
-    async playlistGenerateBriefForSelectedDate() {
+	    async playlistGenerateBriefForSelectedDate() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const g = this.playlistGranularity();
       const day = String(this.playlistSelectedDate || "").trim();
       if (!pid || !day) return;
-      const k = this._playlistBriefKey(pid, day);
-      if (k) this.playlistBriefGeneratingKey = k;
-      this.playlistBriefError = "";
-      this.playlistBriefHtml = "";
-      try {
-        await this.api(`/briefs/generate`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ playlist_id: pid, date: day }),
+      const k = this._playlistBriefKey(pid, g, day);
+	      if (k) this.playlistBriefGeneratingKey = k;
+	      this.playlistBriefError = "";
+	      this.playlistBriefHtml = "";
+	      this.playlistBriefMarkdown = "";
+	      try {
+	        await this.api(`/briefs/generate`, {
+	          method: "POST",
+	          headers: { "content-type": "application/json" },
+	          body: JSON.stringify({ playlist_id: pid, granularity: g, date: day }),
         });
         this.globalStatus = "已投递简报生成任务（Jobs 可查看进度）";
         this.toastSuccess("已提交简报生成任务", { action: this.toastJobsAction() });
@@ -3025,6 +3698,7 @@ function RaelynApp() {
 
     async playlistRegenerateAllBriefs() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const g = this.playlistGranularity();
       const detail = this.playlistDetail;
       const from = detail && detail.earliest_date ? String(detail.earliest_date) : "";
       const to = this._todayIsoLocal();
@@ -3034,11 +3708,17 @@ function RaelynApp() {
         this.globalStatus = msg;
         return;
       }
+      if (
+        !confirm(
+          `确认重新生成全部简报？\n\n粒度：${g}\n范围：${from} ~ ${to}\n\n该操作会投递大量任务，可在 Jobs 查看进度。`
+        )
+      )
+        return;
       try {
         await this.api(`/briefs/generate_range`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ playlist_id: pid, from_date: from, to_date: to }),
+          body: JSON.stringify({ playlist_id: pid, granularity: g, from_date: from, to_date: to }),
         });
         this.globalStatus = "已投递全量简报生成任务（Jobs 可查看进度）";
         this.toastSuccess("已提交全量简报生成任务", { action: this.toastJobsAction() });
@@ -3095,6 +3775,17 @@ function RaelynApp() {
         return s;
       };
 
+      const BRIEF_REF_MAX_CHARS = 8;
+      const briefTruncLabel = (value) => {
+        const raw = String(value || "").trim().replace(/\s+/g, " ");
+        if (!raw) return "";
+        const chars = Array.from(raw);
+        const max = Math.max(1, Number(BRIEF_REF_MAX_CHARS || 0) || 8);
+        if (chars.length <= max) return raw;
+        if (max === 1) return "…";
+        return chars.slice(0, max - 1).join("") + "…";
+      };
+
       const briefUrlLabel = (url) => {
         try {
           const u = String(url || "").trim();
@@ -3103,8 +3794,7 @@ function RaelynApp() {
           const hit = items.find((v) => v && String(v.url || "").trim() === u);
           const title = hit && hit.title ? String(hit.title).trim() : "";
           if (!title) return "视频...";
-          const head = Array.from(title).slice(0, 4).join("");
-          return `${head}...`;
+          return briefTruncLabel(title) || "视频...";
         } catch {
           return "视频...";
         }
@@ -3115,12 +3805,13 @@ function RaelynApp() {
         if (!u) return "";
         const enc = encodeURIComponent(u);
         const safeUrl = this._escapeHtml(u);
-        const text = String(label || "").trim() || briefUrlLabel(u);
+        const rawText = String(label || "").trim() || briefUrlLabel(u);
+        const text = briefTruncLabel(rawText) || "视频...";
         const safeText = formatInlineEsc(this._escapeHtml(text));
         return [
-          '<span class="inline-flex items-stretch rounded-full border border-slate-700 bg-slate-950/30 overflow-hidden align-middle ml-1 mr-1">',
-          `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" title="${safeUrl}" class="min-w-0 max-w-xs px-3 py-0.5 text-[11px] text-slate-200 hover:bg-slate-800/60 truncate no-underline">${safeText}</a>`,
-          `<button type="button" class="shrink-0 px-2.5 py-0.5 border-l border-slate-700 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20 text-[11px]" data-play-url="${enc}" title="播放该视频">▶</button>`,
+          '<span class="inline-flex items-stretch rounded-none border border-slate-700 bg-slate-950/30 overflow-hidden align-middle ml-1 mr-1">',
+          `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" title="${safeUrl}" class="min-w-0 max-w-xs px-1 py-0.5 text-[11px] text-slate-200 hover:bg-slate-800/60 truncate no-underline">${safeText}</a>`,
+          `<button type="button" class="shrink-0 px-1 py-0.5 border-l border-slate-700 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20 text-[11px]" data-play-url="${enc}" title="播放该视频">▶</button>`,
           "</span>",
         ].join("");
       };
@@ -3204,17 +3895,17 @@ function RaelynApp() {
           continue;
         }
         if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-          if (!inList) {
-            out.push('<ul class="list-disc pl-5 space-y-1">');
-            inList = true;
-          }
-          const body = linkifyAndFormat(trimmed.slice(2));
-          out.push(`<li>${body}</li>`);
-          continue;
-        }
-        flushList();
-        out.push(`<p class="my-1">${linkifyAndFormat(line)}</p>`);
-      }
+	          if (!inList) {
+	            out.push('<ul class="list-disc pl-5 space-y-2 leading-relaxed">');
+	            inList = true;
+	          }
+	          const body = linkifyAndFormat(trimmed.slice(2));
+	          out.push(`<li>${body}</li>`);
+	          continue;
+	        }
+	        flushList();
+	        out.push(`<p class="my-2 leading-relaxed">${linkifyAndFormat(line)}</p>`);
+	      }
       flushList();
       return out.join("");
     },
@@ -3233,30 +3924,155 @@ function RaelynApp() {
       }
     },
 
-    playlistSelectVideoByUrl(url) {
-      const u = String(url || "").trim();
-      if (!u) return;
+    playlistBriefCanCopy() {
+      const md = String(this.playlistBriefMarkdown || "").trim();
+      if (md) return true;
+      const html = String(this.playlistBriefHtml || "").trim();
+      return !!html;
+    },
+
+    _playlistBriefTextFromDom() {
+      try {
+        const el = this.$refs && this.$refs.playlistBriefContentEl ? this.$refs.playlistBriefContentEl : null;
+        if (!el) return "";
+        const clone = el.cloneNode(true);
+        try {
+          const btns = clone.querySelectorAll ? clone.querySelectorAll("button[data-play-url]") : [];
+          for (const b of btns || []) {
+            try {
+              b.remove();
+            } catch {
+              // ignore
+            }
+          }
+        } catch {
+          // ignore
+        }
+        const text = String(clone.innerText || clone.textContent || "").trim();
+        return text;
+      } catch {
+        return "";
+      }
+    },
+
+    async _copyToClipboard(text) {
+      const s = String(text || "");
+      if (!s.trim()) throw new Error("empty");
+      try {
+        if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+          await navigator.clipboard.writeText(s);
+          return;
+        }
+      } catch {
+        // fallback below
+      }
+      const ta = document.createElement("textarea");
+      ta.value = s;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "0";
+      ta.style.left = "0";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      try {
+        ta.select();
+        const ok = document.execCommand("copy");
+        if (!ok) throw new Error("copy failed");
+      } finally {
+        try {
+          document.body.removeChild(ta);
+        } catch {
+          // ignore
+        }
+      }
+    },
+
+	    async playlistCopyBriefText() {
+	      if (this.playlistBriefCopying) return;
+	      this.playlistBriefCopying = true;
+	      try {
+        let text = String(this.playlistBriefMarkdown || "").trim();
+        if (!text) text = this._playlistBriefTextFromDom();
+        if (!text) throw new Error("没有可复制的简报内容");
+        await this._copyToClipboard(text);
+        this.toastSuccess("已复制简报文本");
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.toastError(`复制失败：${msg}`);
+	      } finally {
+	        this.playlistBriefCopying = false;
+	      }
+	    },
+
+	    async playlistCopyBriefPrompt() {
+	      if (this.playlistBriefPromptCopying) return;
+	      this.playlistBriefPromptCopying = true;
+	      try {
+	        const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+	        const g = this.playlistGranularity();
+	        const day = String(this.playlistSelectedDate || "").trim();
+	        if (!pid || !day) throw new Error("缺少播放列表或日期");
+	        const data = await this.api(
+	          `/briefs/prompt_by_period?playlist_id=${encodeURIComponent(pid)}&granularity=${encodeURIComponent(g)}&date=${encodeURIComponent(day)}`
+	        );
+	        const prompt = data && data.prompt ? String(data.prompt) : "";
+	        if (!prompt.trim()) throw new Error("提示词为空");
+	        await this._copyToClipboard(prompt);
+	        this.toastSuccess("已复制简报提示词");
+	      } catch (e) {
+	        const msg = e && e.message ? e.message : String(e);
+	        this.toastError(`复制失败：${msg}`);
+	      } finally {
+	        this.playlistBriefPromptCopying = false;
+	      }
+	    },
+
+	    playlistSelectVideoByUrl(url) {
+	      const u = String(url || "").trim();
+	      if (!u) return;
       const items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
       const found = items.find((v) => v && String(v.url || "").trim() === u);
       if (found) {
         this.playlistSelectVideo(found, { autoPlay: true });
         return;
       }
-      this.globalStatus = "该链接不在当天视频列表中";
+      this.globalStatus = "该链接不在本周期视频列表中";
     },
 
-    async playlistLoadBrief(day) {
+	    async playlistLoadBrief(day, { loadToken = null } = {}) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const g = this.playlistGranularity();
       const d = String(day || "").trim();
       if (!pid || !d) return;
-      const k = this._playlistBriefKey(pid, d);
-      const manualGenerating = !!k && String(this.playlistBriefGeneratingKey || "") === k;
-      this.playlistBriefLoading = true;
-      this.playlistBriefError = "";
-      this.playlistBriefHtml = "";
-      const hasVideos = Array.isArray(this.playlistDayVideos) && this.playlistDayVideos.length > 0;
-      try {
-        const brief = await this.api(`/briefs/by_date?playlist_id=${encodeURIComponent(pid)}&date=${encodeURIComponent(d)}`);
+      const token = Number(loadToken || this.playlistLoadToken || 0);
+      const k = this._playlistBriefKey(pid, g, d);
+	      const manualGenerating = !!k && String(this.playlistBriefGeneratingKey || "") === k;
+	      if (!manualGenerating) {
+	        const cached = this._cacheGet(this.playlistBriefHtmlCache, k);
+	        if (cached && Number(this.playlistLoadToken || 0) === token) {
+	          this.playlistBriefLoading = false;
+	          this.playlistBriefError = "";
+	          this.playlistBriefHtml = cached;
+	          const cachedMd = this._cacheGet(this.playlistBriefMarkdownCache, k);
+	          this.playlistBriefMarkdown = cachedMd ? String(cachedMd) : "";
+	          return;
+	        }
+	      }
+	      this.playlistBriefLoading = true;
+	      this.playlistBriefError = "";
+	      this.playlistBriefHtml = "";
+	      this.playlistBriefMarkdown = "";
+	      const hasVideos = Array.isArray(this.playlistDayVideos) && this.playlistDayVideos.length > 0;
+	      try {
+        this._abortCtrl("_playlistBriefAbortCtrl");
+        this._abortCtrl("_playlistBriefMdAbortCtrl");
+        const ctrl = new AbortController();
+        this._playlistBriefAbortCtrl = ctrl;
+        const brief = await this.api(
+          `/briefs/by_period?playlist_id=${encodeURIComponent(pid)}&granularity=${encodeURIComponent(g)}&date=${encodeURIComponent(d)}`,
+          { signal: ctrl.signal }
+        );
+        if (Number(this.playlistLoadToken || 0) !== token) return;
         if (!brief || brief.status !== "ready" || !brief.markdown_url) {
           const s = brief && brief.status ? String(brief.status) : "pending";
           if (s === "failed") {
@@ -3271,60 +4087,70 @@ function RaelynApp() {
             this.playlistBriefHtml = `<div class="text-slate-400 text-sm">简报状态：${this._escapeHtml(s)}</div>`;
           }
           if (hasVideos) {
-            this._playlistEnsureBriefEnqueued(pid, d);
-            this._playlistPollBrief(pid, d);
+            this._playlistEnsureBriefEnqueued(pid, g, d);
+            this._playlistPollBrief(pid, g, d);
           }
           return;
         }
-        const resp = await fetch(brief.markdown_url);
+        const mdCtrl = new AbortController();
+        this._playlistBriefMdAbortCtrl = mdCtrl;
+        const resp = await fetch(brief.markdown_url, { signal: mdCtrl.signal });
         if (!resp.ok) throw new Error(`${resp.status}: brief markdown fetch failed`);
-        const md = await resp.text();
-        this.playlistBriefHtml = this._briefToHtml(md);
-        if (manualGenerating) this.playlistBriefGeneratingKey = "";
-        try {
-          const k = `${String(pid)}:${String(d)}`;
-          if (this.playlistBriefAutoPoll) this.playlistBriefAutoPoll.delete(k);
+	        const md = await resp.text();
+	        if (Number(this.playlistLoadToken || 0) !== token) return;
+	        this.playlistBriefMarkdown = md;
+	        this.playlistBriefHtml = this._briefToHtml(md);
+	        this._cacheSet(this.playlistBriefHtmlCache, k, this.playlistBriefHtml, PLAYLIST_BRIEF_CACHE_TTL_MS);
+	        this._cacheSet(this.playlistBriefMarkdownCache, k, md, PLAYLIST_BRIEF_CACHE_TTL_MS);
+	        if (manualGenerating) this.playlistBriefGeneratingKey = "";
+	        try {
+	          const k = this._playlistBriefKey(pid, g, d);
+	          if (this.playlistBriefAutoPoll) this.playlistBriefAutoPoll.delete(k);
         } catch {}
       } catch (e) {
+        if (Number(this.playlistLoadToken || 0) !== token) return;
+        if (this._isAbortError(e)) return;
         const msg = e && e.message ? e.message : String(e);
         if (String(msg).startsWith("404:") || String(msg).includes(" 404")) {
           if (!hasVideos) {
-            this.playlistBriefHtml = `<div class="text-slate-400 text-sm">当天暂无视频，不生成简报</div>`;
+            this.playlistBriefHtml = `<div class="text-slate-400 text-sm">本周期暂无视频，不生成简报</div>`;
             if (manualGenerating) this.playlistBriefGeneratingKey = "";
             return;
           }
           this.playlistBriefHtml = manualGenerating
             ? `<div class="text-slate-400 text-sm">生成中…</div>`
             : `<div class="text-slate-400 text-sm">暂无简报，已自动触发生成…</div>`;
-          this._playlistEnsureBriefEnqueued(pid, d);
-          this._playlistPollBrief(pid, d);
+          this._playlistEnsureBriefEnqueued(pid, g, d);
+          this._playlistPollBrief(pid, g, d);
         } else {
           this.playlistBriefError = msg;
         }
       } finally {
-        this.playlistBriefLoading = false;
+        if (Number(this.playlistLoadToken || 0) === token) this.playlistBriefLoading = false;
       }
     },
 
-    _playlistEnsureBriefEnqueued(pid, day) {
+    _playlistEnsureBriefEnqueued(pid, granularity, day) {
       try {
-        const k = `${String(pid)}:${String(day)}`;
+        const g = String(granularity || "").trim() || "day";
+        const k = this._playlistBriefKey(pid, g, day);
         if (this.playlistBriefAutoRequests && this.playlistBriefAutoRequests.has(k)) return;
         if (!this.playlistBriefAutoRequests) this.playlistBriefAutoRequests = new Set();
         this.playlistBriefAutoRequests.add(k);
         this.api(`/briefs/generate`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ playlist_id: pid, date: day }),
+          body: JSON.stringify({ playlist_id: pid, granularity: g, date: day }),
         }).catch(() => {});
       } catch {
         // ignore
       }
     },
 
-    _playlistPollBrief(pid, day) {
+    _playlistPollBrief(pid, granularity, day) {
       try {
-        const k = `${String(pid)}:${String(day)}`;
+        const g = String(granularity || "").trim() || "day";
+        const k = this._playlistBriefKey(pid, g, day);
         if (!this.playlistBriefAutoPoll) this.playlistBriefAutoPoll = new Map();
         const tries = Number(this.playlistBriefAutoPoll.get(k) || 0);
         const manual = String(this.playlistBriefGeneratingKey || "") === k;
@@ -3335,6 +4161,7 @@ function RaelynApp() {
         const delay = manual ? Math.min(8000, rawDelay) : rawDelay;
         setTimeout(() => {
           if (String(this.playlistPageId || this.selectedPlaylistId || "").trim() !== String(pid)) return;
+          if (this.playlistGranularity() !== g) return;
           if (String(this.playlistSelectedDate || "").trim() !== String(day)) return;
           this.playlistLoadBrief(day);
         }, delay);
@@ -3378,6 +4205,80 @@ function RaelynApp() {
         try {
           if (ev && ev.target) ev.target.value = "";
         } catch {}
+      }
+    },
+
+    async playlistClearBackground() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid || !this.playlistDetail) return;
+      try {
+        const updated = await this.api(`/playlists/${encodeURIComponent(pid)}/background`, { method: "DELETE" });
+        if (this.playlistDetail) this.playlistDetail.background_url = (updated && updated.background_url) || null;
+        await this.loadPlaylists();
+        this.globalStatus = "已清除背景";
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    playlistSettingsResetPrompt() {
+      this.playlistSettingsPromptError = "";
+      this.playlistSettingsPromptDraft = this.briefDefaultDailyPrompt();
+    },
+
+    async playlistSettingsSavePrompt() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid || !this.playlistDetail) return;
+      if (this.playlistSettingsPromptSaving) return;
+      try {
+        this.playlistSettingsPromptSaving = true;
+        this.playlistSettingsPromptError = "";
+        const v = String(this.playlistSettingsPromptDraft || "").trim();
+        const payload = { brief_prompt: v ? v : null };
+        await this.api(`/playlists/${encodeURIComponent(pid)}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (this.playlistDetail) this.playlistDetail.brief_prompt = v || null;
+        this.globalStatus = "已保存播放列表提示词";
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.playlistSettingsPromptError = msg;
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.playlistSettingsPromptSaving = false;
+      }
+    },
+
+    async playlistSettingsSaveGranularity() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid || !this.playlistDetail) return;
+      if (this.playlistSettingsGranularitySaving) return;
+      const g = String(this.playlistSettingsGranularityDraft || "day")
+        .trim()
+        .toLowerCase();
+      if (!["day", "week", "month"].includes(g)) {
+        this.playlistSettingsGranularityError = "无效的聚合粒度";
+        return;
+      }
+      try {
+        this.playlistSettingsGranularitySaving = true;
+        this.playlistSettingsGranularityError = "";
+        await this.api(`/playlists/${encodeURIComponent(pid)}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ brief_granularity: g }),
+        });
+        if (this.playlistDetail) this.playlistDetail.brief_granularity = g;
+        this.globalStatus = "已保存聚合粒度";
+        await this.loadPlaylistPage();
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.playlistSettingsGranularityError = msg;
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.playlistSettingsGranularitySaving = false;
       }
     },
 
@@ -3502,6 +4403,14 @@ function RaelynApp() {
       this.playlistEditMediaIds = media.map((m) => String(m.id)).filter(Boolean);
       this.playlistEditMediaTagQuery = "";
       this.playlistEditMediaTagOpen = false;
+
+      const g = d && d.brief_granularity ? String(d.brief_granularity).trim().toLowerCase() : "day";
+      this.playlistSettingsGranularityDraft = ["day", "week", "month"].includes(g) ? g : "day";
+      this.playlistSettingsGranularityError = "";
+
+      const prompt = d && d.brief_prompt ? String(d.brief_prompt).trim() : "";
+      this.playlistSettingsPromptDraft = prompt || this.briefDefaultDailyPrompt();
+      this.playlistSettingsPromptError = "";
     },
 
     playlistEditSelectedMedia() {
@@ -3570,8 +4479,124 @@ function RaelynApp() {
       }
     },
 
+    _mediaExportFilename() {
+      try {
+        const d = new Date();
+        const pad = (n) => String(n).padStart(2, "0");
+        const y = d.getFullYear();
+        const m = pad(d.getMonth() + 1);
+        const day = pad(d.getDate());
+        const hh = pad(d.getHours());
+        const mm = pad(d.getMinutes());
+        const ss = pad(d.getSeconds());
+        return `media-export-${y}${m}${day}-${hh}${mm}${ss}.txt`;
+      } catch {
+        return `media-export.txt`;
+      }
+    },
+
+    async exportMediaAll() {
+      try {
+        const text = await this.api(`/media/export`);
+        const blob = new Blob([text || ""], { type: "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = this._mediaExportFilename();
+        a.rel = "noreferrer";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1200);
+        this.globalStatus = "已导出媒体";
+        this.toastSuccess("已导出媒体");
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.globalStatus = `error: ${msg}`;
+        this.toastError(`导出失败：${msg}`);
+      }
+    },
+
+    closeMediaImport() {
+      if (this.modals) this.modals.mediaImport = false;
+    },
+
+    triggerMediaImportFile() {
+      try {
+        const el = this.$refs && this.$refs.mediaImportFile ? this.$refs.mediaImportFile : null;
+        if (!el) return;
+        el.value = "";
+        el.click();
+      } catch {
+        // ignore
+      }
+    },
+
+    openMediaImport() {
+      if (this.modals) {
+        this.modals.addMedia = false;
+        this.modals.createPlaylist = false;
+        this.modals.mediaImport = true;
+      }
+      this.closeVideoPlayer();
+      this.mediaImportSubmitting = false;
+      this.mediaImportError = "";
+      this.mediaImportResult = null;
+      this.$nextTick(() => this.triggerMediaImportFile());
+    },
+
+    async handleMediaImportFile(ev) {
+      const file = ev && ev.target && ev.target.files ? ev.target.files[0] : null;
+      if (!file) return;
+      const maxBytes = 2 * 1024 * 1024;
+      if (file.size > maxBytes) {
+        this.mediaImportError = "文件超过 2MB";
+        this.toastError("导入失败：文件超过 2MB");
+        return;
+      }
+      try {
+        const text = await file.text();
+        await this.submitMediaImportText(text);
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.mediaImportError = msg;
+        this.toastError(`导入失败：${msg}`);
+      }
+    },
+
+    async submitMediaImportText(text) {
+      if (this.mediaImportSubmitting) return;
+      try {
+        this.mediaImportSubmitting = true;
+        this.mediaImportError = "";
+        this.mediaImportResult = null;
+        const res = await this.api(`/media/import`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: String(text || "") }),
+        });
+        if (!res || res.ok !== true) throw new Error("导入失败：服务端返回异常");
+        this.mediaImportResult = res;
+        const created = Array.isArray(res.created) ? res.created.length : 0;
+        const existing = Array.isArray(res.existing) ? res.existing.length : 0;
+        const invalid = Array.isArray(res.invalid) ? res.invalid.length : 0;
+        this.toastSuccess(`导入完成：新增 ${created} / 已存在 ${existing} / 无效 ${invalid}`);
+        await this.loadMedia();
+        this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
+        await this.loadStats();
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.mediaImportError = msg;
+        this.toastError(`导入失败：${msg}`);
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.mediaImportSubmitting = false;
+      }
+    },
+
     openAddMedia() {
       this.modals.createPlaylist = false;
+      this.modals.mediaImport = false;
       this.closeVideoPlayer();
       this.addMediaUrl = "";
       this.addMediaError = "";
@@ -3688,7 +4713,7 @@ function RaelynApp() {
     },
 
 
-    async retryJob(jobId) {
+	    async retryJob(jobId) {
       const id = String(jobId || "").trim();
       if (!id) return;
       if (this.jobActionInFlight && this.jobActionInFlight[id]) return;
@@ -3738,11 +4763,55 @@ function RaelynApp() {
           // ignore
         }
       }
-    },
+	    },
 
-    async cancelJob(jobId) {
-      const id = String(jobId || "").trim();
-      if (!id) return;
+	    jobErrorDetailsText(jobId) {
+	      const id = String(jobId || "").trim();
+	      if (!id) return "";
+	      const d = this.jobErrorDetailsById ? this.jobErrorDetailsById[id] : null;
+	      if (!d) return "";
+	      const parts = [];
+	      const msg = d.error_message != null ? String(d.error_message).trim() : "";
+	      if (msg) parts.push(msg);
+	      const stack = d.error_stack != null ? String(d.error_stack).trim() : "";
+	      if (stack) parts.push(stack);
+	      return parts.filter(Boolean).join("\n\n");
+	    },
+
+	    async toggleJobErrorDetails(jobId) {
+	      const id = String(jobId || "").trim();
+	      if (!id) return;
+	      if (!this.jobErrorDetailsOpen) this.jobErrorDetailsOpen = {};
+	      const isOpen = !!this.jobErrorDetailsOpen[id];
+	      this.jobErrorDetailsOpen[id] = !isOpen;
+	      if (isOpen) return;
+	      if (this.jobErrorDetailsById && this.jobErrorDetailsById[id]) return;
+	      await this.loadJobErrorDetails(id);
+	    },
+
+	    async loadJobErrorDetails(jobId) {
+	      const id = String(jobId || "").trim();
+	      if (!id) return;
+	      if (!this.jobErrorDetailsLoading) this.jobErrorDetailsLoading = {};
+	      if (!this.jobErrorDetailsError) this.jobErrorDetailsError = {};
+	      if (!this.jobErrorDetailsById) this.jobErrorDetailsById = {};
+	      if (this.jobErrorDetailsLoading[id]) return;
+	      this.jobErrorDetailsLoading[id] = true;
+	      this.jobErrorDetailsError[id] = "";
+	      try {
+	        const data = await this.api(`/jobs/${encodeURIComponent(id)}`);
+	        this.jobErrorDetailsById[id] = data || {};
+	      } catch (e) {
+	        const msg = e && e.message ? e.message : String(e);
+	        this.jobErrorDetailsError[id] = msg;
+	      } finally {
+	        this.jobErrorDetailsLoading[id] = false;
+	      }
+	    },
+
+	    async cancelJob(jobId) {
+	      const id = String(jobId || "").trim();
+	      if (!id) return;
       if (this.jobActionInFlight && this.jobActionInFlight[id]) return;
 
       if (!this.jobActionInFlight) this.jobActionInFlight = {};
@@ -3774,6 +4843,7 @@ function RaelynApp() {
 
     openCreatePlaylist() {
       this.modals.addMedia = false;
+      this.modals.mediaImport = false;
       this.closeVideoPlayer();
       this.createPlaylistName = "";
       this.createPlaylistDesc = "";
@@ -3883,6 +4953,13 @@ function RaelynApp() {
         try {
           if (!this._pausePollId) {
             this._pausePollId = setInterval(() => this.loadSystemStatus({ silent: true }), 15000);
+          }
+        } catch {
+          // ignore
+        }
+        try {
+          if (!this._workersPollId) {
+            this._workersPollId = setInterval(() => this.refreshWorkers(), 5000);
           }
         } catch {
           // ignore

@@ -94,30 +94,64 @@
 		                      </div>
 		                    </div>
 
-		                    <div class="flex items-center gap-2">
-		                      <input
-		                        list="jobsTypeOptions"
-		                        x-model="jobsTypeFilter"
-	                        @change="applyJobsTypeFilter()"
-	                        @keyup.enter="applyJobsTypeFilter()"
-	                        placeholder="按任务类型筛选（可输入）"
-	                        class="w-64 max-w-[60vw] rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
-	                      />
-	                      <datalist id="jobsTypeOptions">
-	                        <template x-for="t in jobsTypeOptions()" :key="t">
-	                          <option :value="t"></option>
-	                        </template>
-	                      </datalist>
-	                      <button
-	                        class="px-3 py-2 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60"
-	                        x-show="jobsTypeFilter"
-	                        @click="clearJobsTypeFilter()"
-	                      >
-	                        清除
+			                    <div class="flex items-center gap-2">
+			                      <input
+			                        list="jobsTypeOptions"
+			                        x-model="jobsTypeFilter"
+		                        @change="applyJobsTypeFilter()"
+		                        @keyup.enter="applyJobsTypeFilter()"
+		                        placeholder="按任务类型筛选（可输入）"
+		                        class="w-64 max-w-[60vw] rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+		                      />
+		                      <datalist id="jobsTypeOptions">
+		                        <template x-for="t in jobsTypeOptions()" :key="t">
+		                          <option :value="t"></option>
+		                        </template>
+		                      </datalist>
+		                      <button
+		                        class="px-3 py-2 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60"
+		                        x-show="jobsTypeFilter"
+		                        @click="clearJobsTypeFilter()"
+		                      >
+		                        清除
+			                      </button>
+		                      <button
+		                        class="px-3 py-2 rounded-md border border-rose-900/60 bg-rose-950/20 text-xs text-rose-200 hover:bg-rose-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+		                        x-show="jobsTab==='failed'"
+		                        :disabled="!!jobsDeleteFailedSubmitting"
+		                        @click="deleteFailedJobsBulk()"
+		                        title="删除当前筛选范围内的所有失败任务"
+		                      >
+		                        <span x-text="jobsDeleteFailedSubmitting ? '删除中…' : '删除所有失败的任务'"></span>
 		                      </button>
-		                    </div>
-		                  </div>
-		                </div>
+			                    </div>
+			                  </div>
+			                </div>
+
+                      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400" x-show="jobsTab==='active'">
+                        <span class="text-slate-500">Workers:</span>
+	                        <template x-for="r in workersRoleStatusList()" :key="r.role">
+	                          <span
+	                            class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border"
+	                            :class="workerRolePillClass(r)"
+	                            :title="workerRoleTitle(r)"
+	                          >
+	                            <span class="w-1.5 h-1.5 rounded-full" :class="workerRoleDotClass(r)"></span>
+	                            <span x-text="workerRoleLabel(r.role)"></span>
+	                            <span class="tabular-nums text-[11px]" x-text="String(Number(r.online||0)) + '/' + String(Number(r.total||0))"></span>
+	                          </span>
+	                        </template>
+                        <span x-show="workersLoading" class="text-[11px] text-slate-500">刷新中…</span>
+                        <span x-show="workersError" class="text-[11px] text-rose-300 truncate" x-text="workersError"></span>
+                        <button
+                          type="button"
+                          class="px-2 py-0.5 rounded-md border border-slate-700 bg-slate-950/20 text-[11px] text-slate-300 hover:bg-slate-800/60"
+                          @click="refreshWorkers({ force: true })"
+                          title="手动刷新 worker 状态"
+                        >
+                          刷新
+                        </button>
+                      </div>
 
 			                <div x-show="jobsTab!=='active' && (jobsDoneLoading || jobsSeriesLoading || jobsSeriesError)" class="flex items-center justify-between gap-3">
 			                  <div class="text-xs text-slate-400" x-show="jobsDoneLoading">列表加载中…</div>
@@ -150,8 +184,8 @@
 		              </div>
 	              <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar">
 		              <div x-show="jobsTab==='active'" class="divide-y divide-slate-800">
-	                <template x-for="j in jobListActive" :key="j.id">
-	                  <div class="p-4 flex items-center justify-between gap-4 hover:bg-slate-900/50">
+		                <template x-for="j in jobListActive" :key="j.id">
+		                  <div class="p-4 flex items-center justify-between gap-4 hover:bg-slate-900/50">
 	                    <div class="min-w-0 flex-1">
 	                      <div class="flex items-start justify-between gap-3">
 	                        <div class="min-w-0">
@@ -188,56 +222,78 @@
 	                        </div>
 	                      </div>
 	                    </div>
-	                  </div>
-	                </template>
-	              </div>
+		                  </div>
+		                </template>
+                    <div class="h-0 border-t border-slate-800" x-show="jobListActive.length>0"></div>
+		              </div>
 
-	              <div x-show="jobsTab!=='active'" class="divide-y divide-slate-800">
-	                <template x-for="j in jobListDone" :key="j.id">
-	                  <div class="p-4 flex items-center justify-between gap-4 hover:bg-slate-900/50">
-	                    <div class="min-w-0 flex-1">
-	                      <div class="flex items-start justify-between gap-3">
-	                        <div class="min-w-0">
-	                          <div class="font-medium truncate flex items-center gap-2">
-	                            <span class="truncate" x-text="j.type"></span>
-	                            <template x-if="jobMetaLabel(j)">
-	                              <span
-	                                class="inline-flex items-center px-2 py-0.5 rounded-full border border-slate-700 bg-slate-950/30 text-[11px] text-slate-300"
-	                                x-text="jobMetaLabel(j)"
-	                              ></span>
-	                            </template>
-	                          </div>
-	                          <div class="mt-1 text-[11px] text-slate-500 flex flex-wrap gap-x-3 gap-y-1">
-	                            <span>创建: <span class="text-slate-300" x-text="formatTsShort(j.created_at)"></span></span>
-	                            <span>开始: <span class="text-slate-300" x-text="formatTsShort(j.started_at)"></span></span>
-	                            <span>完成: <span class="text-slate-300" x-text="formatTsShort(j.finished_at)"></span></span>
-	                            <span class="truncate">id: <span class="text-slate-400" x-text="j.id"></span></span>
-	                            <template x-if="j.error_message">
-	                              <span class="text-rose-300 truncate" x-text="j.error_message"></span>
-	                            </template>
-	                          </div>
-	                        </div>
-	                        <div class="shrink-0 flex flex-wrap items-center justify-end gap-2">
-	                          <span
-	                            class="inline-flex items-center px-2.5 py-0.5 rounded-full border text-xs"
-	                            :class="jobStatusPillClass(j.status)"
-	                            x-text="jobStatusLabel(j)"
-	                          ></span>
-	                          <button
-	                            class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
-	                            :class="jobActionInFlight[j.id] ? 'opacity-60 cursor-not-allowed' : ''"
-	                            :disabled="!!jobActionInFlight[j.id]"
-	                            x-show="j.status!=='succeeded'"
-	                            @click="retryJob(j.id)"
-	                          >
-	                            <span x-text="jobActionInFlight[j.id]==='retry' ? '重试中…' : '重试'"></span>
-	                          </button>
-	                        </div>
-	                      </div>
-	                    </div>
-	                  </div>
-	                </template>
-	              </div>
+		              <div x-show="jobsTab!=='active'" class="divide-y divide-slate-800">
+		                <template x-for="j in jobListDone" :key="j.id">
+		                  <div class="hover:bg-slate-900/50">
+		                    <div class="p-4 flex items-center justify-between gap-4">
+		                      <div class="min-w-0 flex-1">
+		                        <div class="flex items-start justify-between gap-3">
+		                          <div class="min-w-0">
+		                            <div class="font-medium truncate flex items-center gap-2">
+		                              <span class="truncate" x-text="j.type"></span>
+		                              <template x-if="jobMetaLabel(j)">
+		                                <span
+		                                  class="inline-flex items-center px-2 py-0.5 rounded-full border border-slate-700 bg-slate-950/30 text-[11px] text-slate-300"
+		                                  x-text="jobMetaLabel(j)"
+		                                ></span>
+		                              </template>
+		                            </div>
+		                            <div class="mt-1 text-[11px] text-slate-500 flex flex-wrap gap-x-3 gap-y-1">
+		                              <span>创建: <span class="text-slate-300" x-text="formatTsShort(j.created_at)"></span></span>
+		                              <span>开始: <span class="text-slate-300" x-text="formatTsShort(j.started_at)"></span></span>
+		                              <span>完成: <span class="text-slate-300" x-text="formatTsShort(j.finished_at)"></span></span>
+		                              <span class="truncate">id: <span class="text-slate-400" x-text="j.id"></span></span>
+		                              <template x-if="j.error_message">
+		                                <span class="text-rose-300 truncate" x-text="j.error_message"></span>
+		                              </template>
+		                            </div>
+		                          </div>
+		                          <div class="shrink-0 flex flex-wrap items-center justify-end gap-2">
+		                            <span
+		                              class="inline-flex items-center px-2.5 py-0.5 rounded-full border text-xs"
+		                              :class="jobStatusPillClass(j.status)"
+		                              x-text="jobStatusLabel(j)"
+		                            ></span>
+		                            <button
+		                              class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
+		                              x-show="j.status==='failed'"
+		                              @click="toggleJobErrorDetails(j.id)"
+		                            >
+		                              <span x-text="jobErrorDetailsOpen[String(j.id)] ? '收起' : '详情'"></span>
+		                            </button>
+		                            <button
+		                              class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-sm text-slate-200 hover:bg-slate-800/60"
+		                              :class="jobActionInFlight[j.id] ? 'opacity-60 cursor-not-allowed' : ''"
+		                              :disabled="!!jobActionInFlight[j.id]"
+		                              x-show="j.status!=='succeeded'"
+		                              @click="retryJob(j.id)"
+		                            >
+		                              <span x-text="jobActionInFlight[j.id]==='retry' ? '重试中…' : '重试'"></span>
+		                            </button>
+		                          </div>
+		                        </div>
+		                      </div>
+		                    </div>
+		                    <div class="px-4 pb-4" x-show="jobErrorDetailsOpen[String(j.id)]" x-transition.opacity>
+		                      <div class="rounded-md border border-slate-800 bg-slate-950/30 p-3">
+		                        <div class="text-xs text-slate-400" x-show="jobErrorDetailsLoading[String(j.id)]">加载中…</div>
+		                        <div class="text-xs text-rose-200" x-show="jobErrorDetailsError[String(j.id)]" x-text="jobErrorDetailsError[String(j.id)]"></div>
+		                        <pre
+		                          class="text-[11px] text-slate-200 whitespace-pre-wrap leading-5 max-h-72 overflow-auto raelyn-scrollbar"
+		                          x-show="jobErrorDetailsById[String(j.id)]"
+		                          x-text="jobErrorDetailsText(j.id)"
+		                        ></pre>
+		                      </div>
+		                    </div>
+		                  </div>
+		                </template>
+                    <div class="h-0 border-t border-slate-800" x-show="jobListDone.length>0"></div>
+		              </div>
               </div>
             </div>
           </div>

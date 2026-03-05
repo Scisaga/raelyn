@@ -20,7 +20,7 @@ from raelyn.timeutil import utcnow
 router = APIRouter(tags=["jobs"])
 
 
-class JobOut(OrmModel):
+class JobListOut(OrmModel):
     id: uuid.UUID
     type: str
     status: str
@@ -39,6 +39,10 @@ class JobOut(OrmModel):
     worker_id: str | None = None
     parent_job_id: uuid.UUID | None = None
     media_name: str | None = None
+
+
+class JobOut(JobListOut):
+    error_stack: str | None = None
 
 
 class JobEventOut(OrmModel):
@@ -82,7 +86,7 @@ def _media_name_map(session, jobs: list[Job]) -> dict[str, str]:
     return out
 
 
-@router.get("/jobs", response_model=list[JobOut])
+@router.get("/jobs", response_model=list[JobListOut])
 def list_jobs(
     status: str | None = None,
     status_in: str | None = None,
@@ -93,7 +97,7 @@ def list_jobs(
     finished_until: datetime | None = None,
     limit: int = 50,
     offset: int = 0,
-) -> list[JobOut]:
+) -> list[JobListOut]:
     with session_scope() as session:
         stmt = select(Job)
         statuses: list[str] = []
@@ -132,16 +136,16 @@ def list_jobs(
         stmt = stmt.limit(limit).offset(offset)
         items = session.execute(stmt).scalars().all()
         media_name_by_id = _media_name_map(session, items)
-        out: list[JobOut] = []
+        out: list[JobListOut] = []
         for j in items:
-            payload = JobOut.model_validate(j).model_dump()
+            payload = JobListOut.model_validate(j).model_dump()
             try:
                 mid = (j.params or {}).get("media_id")
                 if mid:
                     payload["media_name"] = media_name_by_id.get(str(mid))
             except Exception:
                 pass
-            out.append(JobOut(**payload))
+            out.append(JobListOut(**payload))
         return out
 
 
@@ -265,8 +269,35 @@ def cancel_active_jobs() -> dict:
 
 
 @router.post("/jobs/delete_failed")
-def delete_failed_jobs() -> dict:
+def delete_failed_jobs(
+    *,
+    type: str | None = None,
+    type_in: str | None = None,
+    error_contains: str | None = None,
+    created_since: datetime | None = None,
+    created_until: datetime | None = None,
+    finished_since: datetime | None = None,
+    finished_until: datetime | None = None,
+) -> dict:
     with session_scope() as session:
-        res = session.execute(delete(Job).where(Job.status == "failed"))
+        stmt = delete(Job).where(Job.status == "failed")
+        types = _parse_csv(type_in)
+        if type and str(type).strip():
+            types.append(str(type).strip())
+        types = list(dict.fromkeys([t for t in types if t]))
+        if types:
+            stmt = stmt.where(Job.type.in_(types))
+        if error_contains and str(error_contains).strip():
+            stmt = stmt.where(Job.error_message.is_not(None), Job.error_message.ilike(f"%{str(error_contains).strip()}%"))
+        if created_since:
+            stmt = stmt.where(Job.created_at >= created_since)
+        if created_until:
+            stmt = stmt.where(Job.created_at < created_until)
+        if finished_since:
+            stmt = stmt.where(Job.finished_at.is_not(None), Job.finished_at >= finished_since)
+        if finished_until:
+            stmt = stmt.where(Job.finished_at.is_not(None), Job.finished_at < finished_until)
+
+        res = session.execute(stmt)
         n = int(res.rowcount or 0)
-        return {"ok": True, "deleted": n}
+        return {"ok": True, "deleted": n, "status": "failed", "type_in": types or None, "error_contains": error_contains or None}

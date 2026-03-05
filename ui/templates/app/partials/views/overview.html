@@ -2,22 +2,173 @@
           <div x-show="activeView==='overview'" x-transition.opacity class="h-full">
             <div class="rounded-none bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0">
               <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar p-4 space-y-4">
-                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div>
+                  <div class="flex items-center justify-between gap-3">
+                    <div class="text-xs text-slate-400">Playlists</div>
+                    <button
+                      type="button"
+                      class="text-xs text-slate-400 hover:text-emerald-200"
+                      @click="switchView('playlists')"
+                      title="查看全部播放列表"
+                      aria-label="查看全部播放列表"
+                    >
+                      全部
+                    </button>
+                  </div>
+                  <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <template x-for="p in (Array.isArray(stats.recentPlaylists) ? stats.recentPlaylists : [])" :key="p.id">
+                      <button
+                        type="button"
+                        class="group relative w-full overflow-hidden rounded-xl border border-slate-800 bg-slate-950/20 hover:bg-slate-900/40 hover:border-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+                        style="aspect-ratio: 1 / 1;"
+                        @click="openPlaylistPage(p.id)"
+                        :title="p && p.name ? p.name : '打开播放列表'"
+                        aria-label="打开播放列表"
+                      >
+                        <div class="absolute inset-0">
+                          <template x-if="p && p.avatar_url">
+	                            <img
+	                              class="w-full h-full object-cover will-change-transform transition-transform duration-500 ease-out group-hover:scale-110 motion-reduce:transition-none motion-reduce:transform-none"
+	                              :src="p.avatar_url"
+	                              alt=""
+	                              loading="lazy"
+	                              @error="p.avatar_url=null"
+	                            />
+                          </template>
+                          <template x-if="!p || !p.avatar_url">
+                            <div class="w-full h-full bg-slate-900/40 flex items-center justify-center">
+                              <span class="text-2xl font-semibold text-slate-100" x-text="p ? (String(p.name||'?').trim().slice(0,2) || '?') : '?'"></span>
+                            </div>
+                          </template>
+                          <div class="absolute inset-0 raelyn-vignette"></div>
+                        </div>
+
+	                        <div class="absolute inset-0 p-3 flex flex-col text-left">
+	                          <div class="min-w-0">
+	                            <div class="text-md font-normal truncate text-slate-100" x-text="p && p.name ? p.name : '-'"></div>
+	                            <div class="mt-1 text-[11px] text-slate-300">
+	                              <span class="text-slate-400">更新</span>
+	                              <span class="mx-1">·</span>
+	                              <span x-text="formatDateTimeShort(p.latest_video_at) || '-'"></span>
+	                            </div>
+	                            <div
+	                              class="mt-2 flex items-center gap-2 text-[11px] text-slate-300"
+	                              x-show="p && ((p.media_count||0) > 0 || ((p.media_preview||[]).length || 0) > 0)"
+	                            >
+	                              <div class="flex items-center -space-x-2">
+	                                <template x-for="m in (p.media_preview || []).slice(0,5)" :key="m.id">
+	                                  <div class="w-6 h-6 rounded-full ring-2 ring-slate-900/80 bg-slate-800 overflow-hidden">
+	                                    <template x-if="m.avatar_url">
+	                                      <img class="w-6 h-6 object-cover" :src="m.avatar_url" alt="" loading="lazy" @error="m.avatar_url=null" />
+	                                    </template>
+	                                    <template x-if="!m.avatar_url">
+	                                      <div class="w-6 h-6 flex items-center justify-center text-[10px] font-semibold text-slate-200">
+	                                        <span x-text="mediaAvatarLabel(m)"></span>
+	                                      </div>
+	                                    </template>
+	                                  </div>
+	                                </template>
+	                                <template x-if="(p.media_count||0) > ((p.media_preview||[]).length || 0)">
+	                                  <div class="w-6 h-6 rounded-full ring-2 ring-slate-900/80 bg-slate-950/40 border border-slate-700 flex items-center justify-center text-[10px] font-semibold text-slate-200">
+	                                    <span x-text="`+${(p.media_count||0)-((p.media_preview||[]).length||0)}`"></span>
+	                                  </div>
+	                                </template>
+	                              </div>
+	                              <span x-text="`媒体 ${p.media_count||0}`"></span>
+	                            </div>
+	                          </div>
+	
+	                          <div class="mt-3 min-h-0 flex-1 flex flex-col justify-end">
+	                            <div class="text-[11px] text-slate-300 truncate">
+	                              <span
+                                x-text="(p && p.latest_period_start) ? ((p.latest_period_end && String(p.latest_period_end)!==String(p.latest_period_start)) ? (_mdLabel(p.latest_period_start) + ' ~ ' + _mdLabel(p.latest_period_end)) : _mdLabel(p.latest_period_start)) : '-'"
+                              ></span>
+                            </div>
+
+                            <div class="mt-2 space-y-1">
+                              <template x-for="(v, idx) in ((p && Array.isArray(p.latest_period_videos)) ? p.latest_period_videos.slice(0,3) : [])" :key="(v && (v.url || v.title || v.published_at)) || idx">
+                                <div class="flex items-start gap-2 text-xs text-slate-200/95">
+                                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0 mt-0.5 text-slate-300/90" aria-hidden="true">
+                                    <path d="M8 5v14l11-7z"></path>
+                                  </svg>
+                                  <span class="truncate min-w-0 flex-1" x-text="(v && v.title) ? v.title : '-'"></span>
+                                </div>
+                              </template>
+                              <div class="text-xs text-slate-400" x-show="!p || !Array.isArray(p.latest_period_videos) || p.latest_period_videos.length===0">-</div>
+                            </div>
+
+                            <div class="mt-2 text-[11px] text-slate-300/90 truncate hidden sm:block" x-show="p && p.latest_brief_snippet" x-text="p.latest_brief_snippet || ''"></div>
+                          </div>
+                        </div>
+                      </button>
+                    </template>
+                    <div class="text-xs text-slate-500" x-show="!Array.isArray(stats.recentPlaylists) || stats.recentPlaylists.length===0">-</div>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 gap-4">
                   <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
                     <div class="text-xs text-slate-400">Media</div>
                     <div class="text-2xl font-semibold mt-1" x-text="stats.mediaCount"></div>
+                    <div class="mt-3 border-t border-slate-800/60 pt-3">
+	                      <div class="text-[11px] text-slate-500">Latest 5</div>
+	                      <div class="mt-2 space-y-1">
+	                        <template x-for="m in (Array.isArray(stats.recentMedia) ? stats.recentMedia : [])" :key="m.id">
+	                          <a
+	                            class="flex items-center gap-2 text-xs text-slate-200 hover:text-emerald-200"
+	                            :href="(m.url||'').startsWith('http') ? m.url : ('https://' + (m.url||''))"
+	                            target="_blank"
+	                            rel="noopener"
+	                          >
+	                            <div
+	                              class="w-7 h-7 rounded-md ring-1 flex items-center justify-center overflow-hidden shrink-0"
+	                              :class="mediaAvatarClasses(m)"
+	                            >
+	                              <template x-if="m.avatar_url">
+	                                <img class="w-7 h-7 object-cover" :src="m.avatar_url" alt="" loading="lazy" @error="m.avatar_url=null" />
+	                              </template>
+	                              <template x-if="!m.avatar_url">
+	                                <span class="text-[10px] font-semibold" x-text="mediaAvatarLabel(m)"></span>
+	                              </template>
+		                            </div>
+		                            <span class="truncate min-w-0 flex-1" x-text="mediaDisplayName(m) || '-'"></span>
+		                            <span
+		                              class="text-[11px] text-slate-500 whitespace-nowrap shrink-0"
+		                              x-text="m.provider==='youtube' ? 'YouTube' : (m.provider==='bilibili' ? 'Bilibili' : (m.provider || '-'))"
+		                            ></span>
+		                            <span
+		                              class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/20 px-2 py-0.5 text-[11px] text-slate-300 whitespace-nowrap shrink-0"
+		                              x-text="'视频 ' + ((m.video_count===0 || m.video_count) ? m.video_count : '-')"
+		                            ></span>
+	                          </a>
+	                        </template>
+	                        <div class="text-xs text-slate-500" x-show="!Array.isArray(stats.recentMedia) || stats.recentMedia.length===0">-</div>
+	                      </div>
+	                    </div>
                   </div>
-                  <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-                    <div class="text-xs text-slate-400">Videos</div>
-                    <div class="text-2xl font-semibold mt-1" x-text="stats.videoCount"></div>
-                  </div>
-                  <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-                    <div class="text-xs text-slate-400">Jobs (pending)</div>
-                    <div class="text-2xl font-semibold mt-1" x-text="stats.pendingJobs"></div>
-                  </div>
-                  <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-                    <div class="text-xs text-slate-400">Jobs (failed)</div>
-                    <div class="text-2xl font-semibold mt-1" x-text="stats.failedJobs"></div>
+	                  <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+	                    <div class="text-xs text-slate-400">Videos</div>
+	                    <div class="text-2xl font-semibold mt-1" x-text="stats.videoCount"></div>
+	                    <div class="mt-3 border-t border-slate-800/60 pt-3">
+	                      <div class="text-[11px] text-slate-500">Latest 7</div>
+	                      <div class="mt-2 space-y-1">
+	                        <template x-for="v in (Array.isArray(stats.recentVideos) ? stats.recentVideos : [])" :key="v.id">
+	                          <button
+	                            type="button"
+                            class="w-full text-left text-xs text-slate-200 hover:text-emerald-200 truncate"
+                            @click="openVideoPlayer(v)"
+                            :title="(v.title || v.url || '')"
+                          >
+                            <span class="text-slate-400" x-text="formatDateTimeShort(v.published_at) || ''"></span>
+                            <span class="text-slate-500" x-show="v.media_name"> • </span>
+                            <span class="text-slate-300" x-show="v.media_name" x-text="v.media_name || ''"></span>
+                            <span class="text-slate-500"> • </span>
+                            <span x-text="v.title || v.url || '-'"></span>
+                          </button>
+                        </template>
+                        <div class="text-xs text-slate-500" x-show="!Array.isArray(stats.recentVideos) || stats.recentVideos.length===0">-</div>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -27,6 +178,7 @@
                       <div class="text-xs text-slate-400">Database</div>
                       <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.db.ok)" x-text="serviceText(services.db)"></span>
                     </div>
+                    <div class="mt-2 text-xs text-slate-400 truncate" x-show="services.db.url" x-text="services.db.url"></div>
                     <div class="mt-2 text-xs text-slate-400 truncate" x-show="services.db.error" x-text="services.db.error"></div>
                   </div>
 
@@ -39,6 +191,10 @@
                       <span class="text-slate-300">bucket:</span>
                       <span x-text="services.s3.bucket || '-'"></span>
                     </div>
+                    <div class="mt-1 text-xs text-slate-400 truncate">
+                      <span class="text-slate-300">占用:</span>
+                      <span x-text="stats.s3TrackedSizeBytes===null ? '-' : formatBytes(stats.s3TrackedSizeBytes)"></span>
+                    </div>
                     <div class="mt-1 text-xs text-slate-400 truncate" x-show="services.s3.error" x-text="services.s3.error"></div>
                   </div>
 
@@ -48,6 +204,10 @@
                       <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.asr.ok)" x-text="serviceText(services.asr)"></span>
                     </div>
                     <div class="mt-2 text-xs text-slate-400 truncate" x-show="services.asr.url" x-text="services.asr.url"></div>
+                    <div class="mt-1 text-xs text-slate-400 truncate" x-show="services.asr.configured">
+                      <span class="text-slate-300">调用:</span>
+                      <span x-text="stats.asrCalls || 0"></span>
+                    </div>
                     <div class="mt-1 text-xs text-slate-400 truncate" x-show="services.asr.error && services.asr.configured" x-text="services.asr.error"></div>
                   </div>
 
@@ -57,6 +217,10 @@
                       <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.llm.ok)" x-text="serviceText(services.llm)"></span>
                     </div>
                     <div class="mt-2 text-xs text-slate-400 truncate" x-show="services.llm.url" x-text="services.llm.url"></div>
+                    <div class="mt-1 text-xs text-slate-400 truncate" x-show="services.llm.configured">
+                      <span class="text-slate-300">调用:</span>
+                      <span x-text="stats.llmCalls || 0"></span>
+                    </div>
                     <div class="mt-1 text-xs text-slate-400 truncate" x-show="services.llm.error && services.llm.configured" x-text="services.llm.error"></div>
                   </div>
                 </div>

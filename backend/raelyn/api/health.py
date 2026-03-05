@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import APIRouter
@@ -12,6 +13,24 @@ from raelyn.services.s3 import s3_check_bucket
 
 
 router = APIRouter(tags=["health"])
+
+
+def _sanitize_dsn(dsn: str) -> str:
+    s = (dsn or "").strip()
+    if not s:
+        return ""
+    try:
+        parts = urlsplit(s)
+        if parts.scheme.startswith("sqlite"):
+            return s
+        netloc = parts.hostname or ""
+        if parts.port:
+            netloc = f"{netloc}:{parts.port}"
+        if parts.username:
+            netloc = f"{parts.username}@{netloc}"
+        return urlunsplit((parts.scheme, netloc, parts.path or "", "", ""))
+    except Exception:
+        return s
 
 
 def _check_http_get(url: str, *, timeout_seconds: float = 2.0, headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -34,6 +53,7 @@ def health() -> dict:
         db = {"ok": True, "error": None}
     except Exception as e:
         db = {"ok": False, "error": str(e)}
+    db["url"] = _sanitize_dsn(settings.database_url)
 
     # S3/MinIO
     s3 = s3_check_bucket()

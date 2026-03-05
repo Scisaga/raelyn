@@ -3,10 +3,12 @@ from __future__ import annotations
 from datetime import timedelta
 
 from sqlalchemy import case
+from sqlalchemy import exists
+from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from raelyn.models import Job, JobEvent
+from raelyn.models import Job, JobEvent, WorkerHeartbeat
 from raelyn.services.system_pause import is_paused
 from raelyn.timeutil import utcnow
 
@@ -29,6 +31,56 @@ def requeue_expired_running_jobs(session: Session) -> int:
         job.worker_id = None
         job.lease_expires_at = None
         session.add(JobEvent(job_id=job.id, level="warn", message="lease expired; requeued"))
+    return len(jobs)
+
+
+def requeue_orphan_running_jobs(
+    session: Session,
+    *,
+    stale_after_seconds: int,
+    priority_bump: int = 1000,
+) -> int:
+    """
+    Requeue "running" jobs whose worker heartbeat is missing/stale.
+
+    This is designed to make restarts safer: if the container/process restarts,
+    previously "running" jobs should quickly return to pending and be retried.
+    """
+    now = utcnow()
+    stale_before = now - timedelta(seconds=int(stale_after_seconds))
+
+    hb = WorkerHeartbeat
+    stmt = (
+        select(Job)
+        .where(
+            Job.status == "running",
+            Job.worker_id.is_not(None),
+            ~exists(
+                select(1).select_from(hb).where(
+                    hb.worker_id == Job.worker_id,
+                    hb.updated_at >= stale_before,
+                )
+            ),
+        )
+        .with_for_update(skip_locked=True)
+    )
+    jobs = session.execute(stmt).scalars().all()
+    if not jobs:
+        return 0
+
+    max_pending_priority = session.execute(select(func.max(Job.priority)).where(Job.status == "pending")).scalar_one_or_none()
+    base_priority = int((max_pending_priority or 0) + max(1, int(priority_bump or 0)))
+
+    for idx, job in enumerate(jobs):
+        job.status = "pending"
+        job.worker_id = None
+        job.lease_expires_at = None
+        job.scheduled_for = now
+        job.progress_current = None
+        job.progress_total = None
+        job.priority = max(int(job.priority or 0), base_priority + idx)
+        session.add(JobEvent(job_id=job.id, level="warn", message="worker stale; requeued (promoted)"))
+
     return len(jobs)
 
 
