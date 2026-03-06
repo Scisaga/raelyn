@@ -351,6 +351,24 @@ function RaelynApp() {
       this.loadVideos();
     },
 
+    openMediaVideos(mediaId) {
+      const id = String(mediaId || "").trim();
+      if (!id) return;
+
+      this.videoMediaIds = [id];
+      this.videoStatus = "";
+      this.videoQuery = "";
+      this.videoMediaTagQuery = "";
+      this.videoMediaTagOpen = false;
+
+      const now = new Date();
+      const since = new Date(now.getTime() - 90 * 24 * 3600 * 1000);
+      this.videoFrom = this._toLocalInputValue(since);
+      this.videoTo = this._toLocalInputValue(now);
+
+      this.switchView("videos");
+    },
+
     createPlaylistSelectedMedia() {
       const ids = Array.isArray(this.createPlaylistMediaIds) ? this.createPlaylistMediaIds : [];
       if (!ids.length) return [];

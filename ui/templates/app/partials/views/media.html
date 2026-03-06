@@ -90,7 +90,14 @@
               </div>
 	              <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar divide-y divide-slate-800">
 	                <template x-for="m in mediaList" :key="m.id">
-	                  <div class="p-4 flex flex-col gap-3 hover:bg-slate-900/50 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+	                  <div
+                      class="p-4 flex flex-col gap-3 hover:bg-slate-900/50 sm:flex-row sm:items-center sm:justify-between sm:gap-4 cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset"
+                      role="button"
+                      tabindex="0"
+                      @click="openMediaVideos(m.id)"
+                      @keydown.enter.prevent="openMediaVideos(m.id)"
+                      @keydown.space.prevent="openMediaVideos(m.id)"
+                    >
                     <div class="flex items-center gap-3 min-w-0 sm:flex-1">
                       <div
                         class="w-10 h-10 rounded-lg ring-1 flex items-center justify-center overflow-hidden shrink-0"
@@ -122,6 +129,7 @@
 	                          :href="(m.url||'').startsWith('http') ? m.url : ('https://' + (m.url||''))"
 	                          target="_blank"
 	                          rel="noreferrer"
+                            @click.stop
 	                          x-text="m.url"
 	                        ></a>
 	                      </div>
@@ -129,12 +137,12 @@
 	                    <div class="flex flex-wrap items-center gap-2 justify-end">
                       <div class="flex items-center gap-2 mr-1">
                         <span class="text-xs text-slate-400">监控</span>
-                        <label class="relative inline-flex items-center cursor-pointer select-none">
+                        <label class="relative inline-flex items-center cursor-pointer select-none" @click.stop>
                           <input
                             type="checkbox"
                             class="sr-only peer"
                             :checked="m.monitor_enabled !== false"
-                            @change="setMediaMonitor(m.id, $event.target.checked)"
+                            @change.stop="setMediaMonitor(m.id, $event.target.checked)"
                           />
                           <div class="relative w-9 h-5 rounded-full bg-slate-700/60 peer-focus:ring-2 peer-focus:ring-emerald-500/30 peer-checked:bg-emerald-600/80 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:h-4 after:w-4 after:rounded-full after:bg-slate-100 after:transition-all peer-checked:after:translate-x-4"></div>
                         </label>
@@ -147,7 +155,7 @@
                         <button
                           type="button"
                           class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset border-r border-slate-700"
-                          @click="syncMediaRecent(m.id)"
+                          @click.stop="syncMediaRecent(m.id)"
                           title="同步近期"
                         >
                           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -161,7 +169,7 @@
                         <button
                           type="button"
                           class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset border-r border-slate-700"
-                          @click="syncMediaAll(m.id)"
+                          @click.stop="syncMediaAll(m.id)"
                           title="同步全部"
                         >
                           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -175,7 +183,7 @@
                         <button
                           type="button"
                           class="inline-flex items-center justify-center px-2.5 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset"
-                          @click="deleteMedia(m.id)"
+                          @click.stop="deleteMedia(m.id)"
                           title="删除"
                           aria-label="删除"
                         >
