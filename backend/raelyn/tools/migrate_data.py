@@ -9,10 +9,12 @@ from pathlib import Path
 import re
 import threading
 import sys
+import tempfile
 import time
 from typing import Any, Iterable
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotoConfig
 import psycopg
 from sqlalchemy import create_engine, inspect, text
@@ -486,11 +488,11 @@ def _fix_sequences(dst, tables: list[str]) -> None:
         cur.execute(
             """
 select table_name, column_name,
-       pg_get_serial_sequence(format('public.%I', table_name), column_name) as seq
+       pg_get_serial_sequence(format('public.%%I', table_name), column_name) as seq
 from information_schema.columns
 where table_schema = 'public'
   and table_name = any(%s)
-  and column_default like 'nextval(%'
+  and column_default like 'nextval(%%'
 """,
             (tables,),
         )
@@ -650,6 +652,13 @@ def _migrate_s3(*, src_cfg: EnvConfig, dst_cfg: EnvConfig, yes: bool, concurrenc
     src_client = _client(src_cfg)
     dst_client = _client(dst_cfg)
     bucket = src_cfg.s3_bucket
+    transfer_config = TransferConfig(
+        multipart_threshold=8 * 1024 * 1024,
+        multipart_chunksize=8 * 1024 * 1024,
+        max_concurrency=1,
+        use_threads=False,
+    )
+    max_attempts = 3
 
     if not yes:
         print(f"[dry-run] s3: would ensure target bucket and copy ALL objects: bucket={bucket}")
@@ -671,23 +680,44 @@ def _migrate_s3(*, src_cfg: EnvConfig, dst_cfg: EnvConfig, yes: bool, concurrenc
     failures: list[tuple[str, str]] = []
 
     def _copy_one(key: str) -> None:
-        resp = None
-        body = None
+        suffix = Path(key).suffix
+        fd, tmp_path = tempfile.mkstemp(prefix="migrate-s3-", suffix=suffix)
+        os.close(fd)
         try:
-            resp = src_client.get_object(Bucket=bucket, Key=key)
-            body = resp.get("Body")
-            extra: dict[str, Any] = {}
-            ct = resp.get("ContentType")
-            if ct:
-                extra["ContentType"] = ct
-            md = resp.get("Metadata")
-            if isinstance(md, dict) and md:
-                extra["Metadata"] = md
-            dst_client.upload_fileobj(body, bucket, key, ExtraArgs=extra or None)
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    head = src_client.head_object(Bucket=bucket, Key=key)
+                    extra: dict[str, Any] = {}
+                    ct = head.get("ContentType")
+                    if ct:
+                        extra["ContentType"] = ct
+                    md = head.get("Metadata")
+                    if isinstance(md, dict) and md:
+                        extra["Metadata"] = md
+
+                    src_client.download_file(bucket, key, tmp_path, Config=transfer_config)
+                    dst_client.upload_file(tmp_path, bucket, key, ExtraArgs=extra or None, Config=transfer_config)
+                    return
+                except Exception:
+                    try:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    fd, tmp_path = tempfile.mkstemp(prefix="migrate-s3-", suffix=suffix)
+                    os.close(fd)
+                    if attempt >= max_attempts:
+                        raise
+                    wait_seconds = min(5.0, float(2 ** (attempt - 1)))
+                    print(
+                        f"[s3] retry: key={key} attempt={attempt}/{max_attempts} wait={wait_seconds:.1f}s",
+                        file=sys.stderr,
+                    )
+                    time.sleep(wait_seconds)
         finally:
             try:
-                if body is not None:
-                    body.close()
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
             except Exception:
                 pass
 
