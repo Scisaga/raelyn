@@ -227,5 +227,6 @@ cp .env.migrate.example .env.migrate
 ```
 
 说明：
-- 默认要求 `.env.migrate` 的 `S3_BUCKET` 与 `.env` 相同（保持原桶名）；如需跳过校验可用 `--allow-bucket-mismatch`。
+- 默认要求 `.env.migrate` 的 `S3_BUCKET` 与 `.env` 相同；如需迁移到不同桶名可用 `--allow-bucket-mismatch`。
+- 使用 `--allow-bucket-mismatch` 时，脚本会把对象复制到目标桶，并将数据库里的 `asset.s3_bucket` 改写为目标桶名。
 - 可用 `--db` / `--s3` 只迁移其中一项。

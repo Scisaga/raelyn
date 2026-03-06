@@ -5,6 +5,32 @@
 	                <div class="hidden sm:block text-xs text-slate-400" x-text="mediaList.length ? ('已加载 ' + mediaList.length + ' 条') : ''"></div>
                 <div class="flex items-center gap-2 min-w-0 flex-1 justify-end">
                   <button
+                    type="button"
+                    class="inline-flex items-center justify-center gap-2 rounded-md border border-slate-700 bg-slate-950/20 px-2.5 sm:px-3 py-2 text-sm font-medium text-slate-100 hover:bg-slate-800/60 shrink-0 disabled:cursor-not-allowed disabled:opacity-60"
+                    @click="syncAllMediaHistory()"
+                    :disabled="syncAllMediaSubmitting"
+                    :title="syncAllMediaSubmitting ? '正在投递全部历史同步任务' : '同步全部媒体的历史视频'"
+                    aria-label="同步全部媒体的历史视频"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="18"
+                      height="18"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M21 12a9 9 0 0 0-9-9 9 9 0 0 0-6.36 2.64L3 8" />
+                      <path d="M3 3v5h5" />
+                      <path d="M3 12a9 9 0 0 0 9 9 9 9 0 0 0 6.36-2.64L21 16" />
+                      <path d="M21 21v-5h-5" />
+                    </svg>
+                    <span class="hidden sm:inline" x-text="syncAllMediaSubmitting ? '同步中…' : '同步全部历史'"></span>
+                  </button>
+                  <button
                     class="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-500 px-2.5 sm:px-3 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-400 shrink-0"
                     @click="openAddMedia()"
                     title="添加媒体"

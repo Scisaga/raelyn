@@ -182,6 +182,7 @@ function RaelynApp() {
     addMediaUrl: "",
     addMediaSubmitting: false,
     addMediaError: "",
+    syncAllMediaSubmitting: false,
     mediaImportSubmitting: false,
     mediaImportError: "",
     mediaImportResult: null,
@@ -4668,6 +4669,31 @@ function RaelynApp() {
       this.globalStatus = msg;
       this.toastSuccess(msg, { action: this.toastJobsAction() });
       await this.loadJobs();
+    },
+
+    async syncAllMediaHistory() {
+      if (this.syncAllMediaSubmitting) return;
+      const total = Array.isArray(this.mediaList) ? this.mediaList.length : 0;
+      const ok = confirm(
+        `确认同步全部媒体的历史视频？\n\n当前媒体数：${total}\n\n系统会为每个媒体投递全量同步任务；已采集的视频会按 provider_video_id 自动跳过。`
+      );
+      if (!ok) return;
+
+      try {
+        this.syncAllMediaSubmitting = true;
+        const res = await this.api(`/media/sync?scope=all`, { method: "POST" });
+        const count = Number(res && res.count) || 0;
+        const msg = count > 0 ? `已投递 ${count} 个媒体的历史同步任务` : "没有可同步的媒体";
+        this.globalStatus = msg;
+        this.toastSuccess(msg, { action: this.toastJobsAction() });
+        await this.loadJobs();
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.toastError(`批量同步提交失败：${msg}`, { action: this.toastJobsAction() });
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.syncAllMediaSubmitting = false;
+      }
     },
 
     async syncMediaRecent(mediaId) {

@@ -466,6 +466,14 @@ def _build_select_sql(*, table: str, columns: list[str], overrides: dict[str, st
     return f"select {', '.join(parts)} from public.{_quote_ident(table)}"
 
 
+def _column_overrides_for_migration(*, table: str, columns: list[str], src_cfg: EnvConfig, dst_cfg: EnvConfig) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    if "s3_bucket" in columns and src_cfg.s3_bucket != dst_cfg.s3_bucket:
+        dst_bucket = dst_cfg.s3_bucket.replace("'", "''")
+        overrides["s3_bucket"] = f"'{dst_bucket}'"
+    return overrides
+
+
 def _truncate_all_tables(dst, tables: list[str]) -> None:
     # TRUNCATE too many tables in one statement can be unwieldy; batch.
     batch: list[str] = []
@@ -603,19 +611,22 @@ def _migrate_db(*, src_cfg: EnvConfig, dst_cfg: EnvConfig, yes: bool) -> None:
             cols = cols_by_table[t]
             table_rows = row_counts.get(t, 0)
             table_started = time.time()
+            overrides = _column_overrides_for_migration(table=t, columns=cols, src_cfg=src_cfg, dst_cfg=dst_cfg)
             print(
                 f"[db] copy start: {table_index}/{len(order)} "
                 f"table={t} rows={table_rows} copied_rows={copied_rows}/{total_rows}"
             )
             if t == "job" and has_job:
+                overrides = dict(overrides)
+                overrides["parent_job_id"] = "NULL::uuid"
                 select_sql = _build_select_sql(
                     table=t,
                     columns=cols,
-                    overrides={"parent_job_id": "NULL::uuid"},
+                    overrides=overrides,
                 )
                 _copy_table(src=src, dst=dst, table=t, columns=cols, select_sql=select_sql)
             else:
-                select_sql = _build_select_sql(table=t, columns=cols)
+                select_sql = _build_select_sql(table=t, columns=cols, overrides=overrides)
                 _copy_table(src=src, dst=dst, table=t, columns=cols, select_sql=select_sql)
             dst.commit()
             copied_rows += table_rows
@@ -651,7 +662,8 @@ where j.id = t.job_id
 def _migrate_s3(*, src_cfg: EnvConfig, dst_cfg: EnvConfig, yes: bool, concurrency: int) -> None:
     src_client = _client(src_cfg)
     dst_client = _client(dst_cfg)
-    bucket = src_cfg.s3_bucket
+    src_bucket = src_cfg.s3_bucket
+    dst_bucket = dst_cfg.s3_bucket
     transfer_config = TransferConfig(
         multipart_threshold=8 * 1024 * 1024,
         multipart_chunksize=8 * 1024 * 1024,
@@ -661,19 +673,19 @@ def _migrate_s3(*, src_cfg: EnvConfig, dst_cfg: EnvConfig, yes: bool, concurrenc
     max_attempts = 3
 
     if not yes:
-        print(f"[dry-run] s3: would ensure target bucket and copy ALL objects: bucket={bucket}")
+        print(f"[dry-run] s3: would ensure target bucket and copy ALL objects: src_bucket={src_bucket} dst_bucket={dst_bucket}")
         return
 
-    _ensure_bucket(dst_client, bucket)
-    print("[s3] clear target bucket")
-    deleted = _clear_bucket(dst_client, bucket)
-    print(f"[s3] cleared: deleted={deleted}")
+    _ensure_bucket(dst_client, dst_bucket)
+    print(f"[s3] clear target bucket: bucket={dst_bucket}")
+    deleted = _clear_bucket(dst_client, dst_bucket)
+    print(f"[s3] cleared: bucket={dst_bucket} deleted={deleted}")
 
-    objects = list(_iter_bucket_objects(src_client, bucket))
+    objects = list(_iter_bucket_objects(src_client, src_bucket))
     total_bytes = sum(sz for _, sz in objects)
     total_objects = len(objects)
     print(
-        f"[s3] source objects: count={total_objects} bytes={total_bytes} "
+        f"[s3] source objects: bucket={src_bucket} count={total_objects} bytes={total_bytes} "
         f"human_bytes={_format_bytes(total_bytes)}"
     )
 
@@ -686,7 +698,7 @@ def _migrate_s3(*, src_cfg: EnvConfig, dst_cfg: EnvConfig, yes: bool, concurrenc
         try:
             for attempt in range(1, max_attempts + 1):
                 try:
-                    head = src_client.head_object(Bucket=bucket, Key=key)
+                    head = src_client.head_object(Bucket=src_bucket, Key=key)
                     extra: dict[str, Any] = {}
                     ct = head.get("ContentType")
                     if ct:
@@ -695,8 +707,8 @@ def _migrate_s3(*, src_cfg: EnvConfig, dst_cfg: EnvConfig, yes: bool, concurrenc
                     if isinstance(md, dict) and md:
                         extra["Metadata"] = md
 
-                    src_client.download_file(bucket, key, tmp_path, Config=transfer_config)
-                    dst_client.upload_file(tmp_path, bucket, key, ExtraArgs=extra or None, Config=transfer_config)
+                    src_client.download_file(src_bucket, key, tmp_path, Config=transfer_config)
+                    dst_client.upload_file(tmp_path, dst_bucket, key, ExtraArgs=extra or None, Config=transfer_config)
                     return
                 except Exception:
                     try:
@@ -782,7 +794,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--db", action="store_true", help="Migrate DB only")
     ap.add_argument("--s3", action="store_true", help="Migrate S3 only")
     ap.add_argument("--s3-concurrency", type=int, default=8, help="S3 copy concurrency (default: 8)")
-    ap.add_argument("--allow-bucket-mismatch", action="store_true", help="Allow dst S3_BUCKET != src S3_BUCKET (not recommended)")
+    ap.add_argument(
+        "--allow-bucket-mismatch",
+        action="store_true",
+        help="Allow dst S3_BUCKET != src S3_BUCKET and remap copied assets to the destination bucket",
+    )
     args = ap.parse_args(argv)
 
     do_db = args.db or (not args.db and not args.s3)
@@ -812,7 +828,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.allow_bucket_mismatch and src_cfg.s3_bucket != dst_cfg.s3_bucket:
             print(
                 f"[warn] S3_BUCKET mismatch (src={src_cfg.s3_bucket} dst={dst_cfg.s3_bucket}); "
-                f"keeping original bucket name and migrating bucket={src_cfg.s3_bucket}",
+                f"objects will be copied to dst bucket and DB asset references will be remapped to bucket={dst_cfg.s3_bucket}",
                 file=sys.stderr,
             )
 
