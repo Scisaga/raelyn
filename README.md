@@ -56,7 +56,6 @@ docker compose up --build
 本项目在本地开发/运行（无 Docker）时，建议用脚本把依赖工具统一放到 `./bin/`，并通过 `scripts/dev/load-env.sh` 将其加入 `PATH`（优先使用项目内二进制）。
 
 #### 3.2.1 `yt-dlp` + `ffmpeg`（必需）
-二选一即可：
 ```bash
 # A) 推荐：下载到 ./bin/
 ./scripts/dev/download-ytdlp.sh
