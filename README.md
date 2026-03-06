@@ -19,6 +19,7 @@
 ## 2) 推荐：Docker 一键启动（含 Postgres + MinIO）
 
 说明：本项目的 `Dockerfile` 会直接 **COPY 开发环境已下载的 `./bin/*` 工具二进制**（避免在镜像构建时重新下载）。因此请确保你在 **Linux/WSL** 环境下先准备好这些文件：
+
 ```bash
 ./scripts/dev/download-ytdlp.sh
 ./scripts/dev/download-ffmpeg.sh
@@ -39,38 +40,47 @@ docker compose up --build
 - Python 3.12+
 - PostgreSQL
 - MinIO（或任意 S3 兼容存储）
-- `ffmpeg`（系统安装或使用脚本下载）
 
 ### 3.1 Python 依赖
-优先使用 venv（避免 PEP 668 的 `externally-managed-environment` 限制）：
-```bash
-./scripts/dev/bootstrap-python.sh
-```
 
-若系统缺少 `python3-venv` / `ensurepip`（需要 sudo）：
+如果当前 Ubuntu/WSL 缺少 `python3-venv` / `python3-pip` / `ensurepip`，再使用下面的脚本安装系统包后复用 `bootstrap-python.sh`（需要 sudo）：
+
 ```bash
 ./scripts/dev/bootstrap-ubuntu.sh
 ```
 
+推荐先创建/修复项目自己的 `.venv`（避免 PEP 668 的 `externally-managed-environment` 限制）：
+
+```bash
+./scripts/dev/bootstrap-python.sh
+```
+
+说明：
+- `bootstrap-python.sh` 负责创建或修复 `.venv`，并安装 `backend/requirements.txt`
+- `bootstrap-ubuntu.sh` 只负责补齐 Python 启动所需的系统包；它不会替你安装项目运行所需的 `ffmpeg` / `yt-dlp`
+
 ### 3.2 工具准备（开发必需）
-本项目在本地开发/运行（无 Docker）时，建议用脚本把依赖工具统一放到 `./bin/`，并通过 `scripts/dev/load-env.sh` 将其加入 `PATH`（优先使用项目内二进制）。
+本项目在本地开发/运行（无 Docker）时，推荐把依赖工具统一放到 `./bin/`。`scripts/dev/load-env.sh` 会将 `./bin` 加到 `PATH` 最前，后端也会优先使用项目内二进制；只有在 `./bin/...` 不存在时才回退到系统 `PATH`。
 
 #### 3.2.1 `yt-dlp` + `ffmpeg`（必需）
+推荐直接下载到项目目录：
+
 ```bash
-# A) 推荐：下载到 ./bin/
 ./scripts/dev/download-ytdlp.sh
 ./scripts/dev/download-ffmpeg.sh
-
-# B) 或：系统安装（确保在 PATH 里）
 ```
+
+如果你已经在系统里安装了 `yt-dlp` / `ffmpeg`，也可以不下载到 `./bin/`；但这只是 fallback 路径，不是推荐开发方式。
 
 #### 3.2.2 Node.js + npm（必需，用于 UI 构建）
 推荐在 WSL 里安装 Node（避免使用 `/mnt/c/...` 的 Windows npm 导致构建失败）：
+
 ```bash
 ./scripts/dev/bootstrap-node-wsl.sh
 ```
 
 如果你只想把 `node` 放到 `./bin/node`（不改系统环境），可用：
+
 ```bash
 ./scripts/dev/download-node.sh
 ```
@@ -84,16 +94,21 @@ docker compose up --build
 - `Only images are available for download`
 
 通常意味着 EJS 解析失败（版本过旧或环境缺依赖）。可直接执行脚本进行升级/自检：
+
 ```bash
 ./scripts/dev/install-ytdlp-ejs.sh
 ```
 
 ### 3.3 配置
+
 ```bash
 cp .env.example .env
 ```
 
-建议在手动运行命令前先加载环境变量（`run-*.sh` / `devctl.sh` 检测到 `.env` 时也会自动加载）：
+`run-*.sh`、`run-scheduler.sh`、`devctl.sh` 检测到 `.env` 时会自动加载环境变量并把 `./bin` 放到 `PATH` 最前，因此正常启动服务时不需要手动执行 `source ./scripts/dev/load-env.sh`。
+
+如果你要在当前 shell 里直接运行零散命令（例如手动执行 `python` / `yt-dlp` / `ffmpeg`），再手动加载：
+
 ```bash
 source ./scripts/dev/load-env.sh
 ```
@@ -107,6 +122,7 @@ source ./scripts/dev/load-env.sh
 3) 打开 UI -> **设置** -> `YTDLP_COOKIES（cookies.txt）`，把内容粘贴进去并保存（不会写入 `.env`）。
 
 ### 3.4 启动（多个终端）
+
 ```bash
 ./scripts/dev/run-api.sh
 ./scripts/dev/run-worker-download-youtube.sh
@@ -122,6 +138,7 @@ source ./scripts/dev/load-env.sh
 打开 UI：`http://127.0.0.1:8000/`
 
 也可以用一个脚本统一管理（后台启动/停止/重启），默认会启动多个 worker：
+
 ```bash
 ./scripts/dev/devctl.sh start
 ./scripts/dev/devctl.sh status
@@ -150,16 +167,19 @@ npm run ui:build
 ```
 
 也可以直接运行：
+
 ```bash
 ./scripts/dev/build-ui.sh
 ```
 
 如果你暂时没有 Node，但希望先让 UI 能跑起来（无 Tailwind 样式），至少下载 Alpine：
+
 ```bash
 ./scripts/dev/download-alpine.sh
 ```
 
 WSL 提示：如果你的 `npm` 指向 Windows 安装路径（如 `/mnt/c/Program Files/nodejs/npm`），在 WSL 中运行构建经常会因路径翻译失败。推荐在 WSL 内安装 Node：
+
 ```bash
 ./scripts/dev/bootstrap-node-wsl.sh
 ./scripts/dev/build-ui.sh
@@ -188,17 +208,20 @@ WSL 提示：如果你的 `npm` 指向 Windows 安装路径（如 `/mnt/c/Progra
 将当前 `.env` 指向的 **源** PostgreSQL/MinIO 数据，迁移到 `.env.migrate` 指向的 **目标** PostgreSQL/MinIO。
 
 1) 准备目标环境配置：
+
 ```bash
 cp .env.migrate.example .env.migrate
 ```
 按需修改 `.env.migrate` 里的 `DATABASE_URL` / `S3_*` 为目标环境。
 
 2) Dry-run（不写入）：
+
 ```bash
 ./.venv/bin/python backend/raelyn/tools/migrate_data.py
 ```
 
 3) 真正执行（会清空目标 DB + 目标桶对象，再全量迁移）：
+
 ```bash
 ./.venv/bin/python backend/raelyn/tools/migrate_data.py --yes
 ```
