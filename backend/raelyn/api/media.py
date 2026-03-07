@@ -106,7 +106,7 @@ def list_media(provider: str | None = None, q: str | None = None, limit: int = 5
         if q:
             like = f"%{q}%"
             stmt = stmt.where((Media.name.ilike(like)) | (Media.description.ilike(like)))
-        stmt = stmt.order_by(Media.updated_at.desc()).limit(limit).offset(offset)
+        stmt = stmt.order_by(Media.created_at.desc(), Media.id.desc()).limit(limit).offset(offset)
         rows = session.execute(stmt).all()
         return [_media_out(m, local_video_count=int(c or 0)) for m, c in rows]
 

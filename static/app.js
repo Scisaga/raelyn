@@ -89,6 +89,9 @@ function RaelynApp() {
       s3TrackedSizeBytes: null,
       asrCalls: 0,
       llmCalls: 0,
+      llmInputTokens: 0,
+      llmOutputTokens: 0,
+      llmTotalTokens: 0,
     },
 
     mediaIndex: [],
@@ -147,7 +150,7 @@ function RaelynApp() {
     _jobsActiveLastFetchAt: 0,
     jobsDoneChart: null,
     jobsDoneSeries: null,
-    settingsTab: "cookies", // cookies | subtitles | members | format
+    settingsTab: "cookies", // cookies | subtitles | members | format | llm
     playlistList: [],
     playlistListQuery: "",
     selectedPlaylistId: null,
@@ -168,6 +171,12 @@ function RaelynApp() {
     ytdlpFormatLoaded: false,
     ytdlpFormatSaving: false,
     ytdlpFormatError: "",
+    llmPolishPromptText: "",
+    llmPolishPromptDefaultText: "",
+    llmPolishPromptLoaded: false,
+    llmPolishPromptSaving: false,
+    llmPolishPromptLoadingDefault: false,
+    llmPolishPromptError: "",
     playerVideo: null,
     playerAssets: [],
     playerVideoUrl: "",
@@ -475,6 +484,22 @@ function RaelynApp() {
       const num = v / Math.pow(1024, i);
       const digits = num >= 100 || i === 0 ? 0 : num >= 10 ? 1 : 2;
       return `${num.toFixed(digits)} ${units[i]}`;
+    },
+
+    formatInteger(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v) || v < 0) return "0";
+      return Math.trunc(v).toLocaleString();
+    },
+
+    playlistVideoSortValue(v) {
+      if (!v || !v.published_at) return 0;
+      try {
+        const ts = new Date(v.published_at).getTime();
+        return Number.isFinite(ts) ? ts : 0;
+      } catch {
+        return 0;
+      }
     },
 
     servicePillClass(ok) {
@@ -1007,7 +1032,7 @@ function RaelynApp() {
       }
       if (viewKey === "settings") {
         const t = (sp.get("tab") || this.settingsTab || "cookies").trim();
-        this.settingsTab = ["cookies", "subtitles", "members", "format"].includes(t) ? t : "cookies";
+        this.settingsTab = ["cookies", "subtitles", "members", "format", "llm"].includes(t) ? t : "cookies";
       }
     },
 
@@ -1066,7 +1091,7 @@ function RaelynApp() {
 
     setSettingsTab(tab) {
       const t = String(tab || "").trim();
-      this.settingsTab = ["cookies", "subtitles", "members", "format"].includes(t) ? t : "cookies";
+      this.settingsTab = ["cookies", "subtitles", "members", "format", "llm"].includes(t) ? t : "cookies";
       this._syncUrl({ push: false });
     },
 
@@ -1102,6 +1127,9 @@ function RaelynApp() {
           s.s3_tracked_size_bytes === null || s.s3_tracked_size_bytes === undefined ? null : Number(s.s3_tracked_size_bytes);
         this.stats.asrCalls = Number(s.asr_calls || 0);
         this.stats.llmCalls = Number(s.llm_calls || 0);
+        this.stats.llmInputTokens = Number(s.llm_input_tokens || 0);
+        this.stats.llmOutputTokens = Number(s.llm_output_tokens || 0);
+        this.stats.llmTotalTokens = Number(s.llm_total_tokens || 0);
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
       }
@@ -2363,6 +2391,7 @@ function RaelynApp() {
       await this.loadYtdlpSubtitles({ force });
       await this.loadYtdlpMembersOnly({ force });
       await this.loadYtdlpFormat({ force });
+      await this.loadLlmPolishPrompt({ force });
     },
 
     async loadYtdlpCookies({ force = false } = {}) {
@@ -2552,6 +2581,56 @@ function RaelynApp() {
       } finally {
         this.ytdlpFormatSaving = false;
       }
+    },
+
+    async loadLlmPolishPrompt({ force = false } = {}) {
+      try {
+        if (this.llmPolishPromptLoaded && !force) return;
+        this.llmPolishPromptError = "";
+        this.llmPolishPromptLoadingDefault = true;
+
+        const [payload, defaults] = await Promise.all([this.api(`/config`), this.api(`/config/defaults`)]);
+        const data = (payload && payload.data) || {};
+        const cfg = data && data.llm_transcript_polish_prompt ? data.llm_transcript_polish_prompt : null;
+        const defaultCfg = defaults && defaults.llm_transcript_polish_prompt ? defaults.llm_transcript_polish_prompt : null;
+        const rawText = cfg && typeof cfg === "object" ? cfg.text : "";
+        const defaultText = defaultCfg && typeof defaultCfg === "object" ? defaultCfg.text : "";
+
+        this.llmPolishPromptDefaultText = typeof defaultText === "string" ? defaultText : "";
+        this.llmPolishPromptText =
+          typeof rawText === "string" && rawText.trim() ? rawText : this.llmPolishPromptDefaultText;
+        this.llmPolishPromptLoaded = true;
+      } catch (e) {
+        this.llmPolishPromptError = e && e.message ? e.message : String(e);
+      } finally {
+        this.llmPolishPromptLoadingDefault = false;
+      }
+    },
+
+    async saveLlmPolishPrompt() {
+      try {
+        this.llmPolishPromptSaving = true;
+        this.llmPolishPromptError = "";
+        const text = String(this.llmPolishPromptText || "");
+        await this.api(`/config/llm_transcript_polish_prompt`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ value: { text } }),
+        });
+        this.llmPolishPromptLoaded = true;
+        this.globalStatus = "已保存 LLM 转写润色提示词";
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.llmPolishPromptError = msg;
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.llmPolishPromptSaving = false;
+      }
+    },
+
+    resetLlmPolishPromptToDefault() {
+      this.llmPolishPromptText = String(this.llmPolishPromptDefaultText || "");
+      this.llmPolishPromptError = "";
     },
 
     playlistListFiltered() {
@@ -3238,7 +3317,11 @@ function RaelynApp() {
           { signal: ctrl.signal }
         );
         if (Number(this.playlistLoadToken || 0) !== loadToken) return;
-        this.playlistDayVideos = Array.isArray(items) ? items : [];
+        this.playlistDayVideos = (Array.isArray(items) ? items.slice() : []).sort((a, b) => {
+          const diff = this.playlistVideoSortValue(a) - this.playlistVideoSortValue(b);
+          if (diff !== 0) return diff;
+          return String((a && a.id) || "").localeCompare(String((b && b.id) || ""));
+        });
         const keep = prevCurrentId ? this.playlistDayVideos.find((x) => x && String(x.id) === prevCurrentId) : null;
         if (keep) this.playlistCurrentVideo = keep;
         else this.playlistCurrentVideo = this.playlistDayVideos.length ? this.playlistDayVideos[0] : null;

@@ -31,6 +31,13 @@
                   >
                     画质
                   </button>
+                  <button
+                    class="px-3 py-1.5 rounded-md border text-sm"
+                    :class="settingsTab==='llm' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-slate-700 bg-slate-950/20 text-slate-200 hover:bg-slate-800/60'"
+                    @click="setSettingsTab('llm')"
+                  >
+                    LLM
+                  </button>
                 </div>
               </div>
 
@@ -226,6 +233,54 @@
                   <div class="text-[11px] text-slate-500">
                     提示：该配置会保存在数据库配置中（<code class="text-slate-200">/api/config</code>），并在下载时作为 yt-dlp 的
                     <code class="text-slate-200">--format</code> 使用（无需重启即可生效）。
+                  </div>
+                </div>
+                </div>
+
+                <div x-show="settingsTab==='llm'" class="h-full flex flex-col min-h-0">
+                <div class="shrink-0 px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
+                  <div>
+                    <div class="text-sm font-semibold text-slate-100">LLM 转写润色提示词</div>
+                    <div class="text-xs text-slate-400 mt-1">
+                      用于 <code class="text-slate-200">video.polish_transcript</code> 的全局提示词。保存后，对新的润色任务生效；历史任务不变。
+                    </div>
+                  </div>
+                  <div class="shrink-0 flex items-center gap-2">
+                    <button
+                      class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
+                      @click="loadLlmPolishPrompt({force:true})"
+                      :disabled="llmPolishPromptSaving"
+                    >
+                      重新加载
+                    </button>
+                    <button
+                      class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
+                      @click="resetLlmPolishPromptToDefault()"
+                      :disabled="llmPolishPromptSaving || llmPolishPromptLoadingDefault || !llmPolishPromptDefaultText"
+                    >
+                      恢复默认
+                    </button>
+                    <button
+                      class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                      @click="saveLlmPolishPrompt()"
+                      :disabled="llmPolishPromptSaving"
+                    >
+                      保存
+                    </button>
+                  </div>
+                </div>
+                <div class="flex-1 min-h-0 p-4 flex flex-col gap-3">
+                  <textarea
+                    class="w-full flex-1 min-h-0 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs font-mono text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30 whitespace-pre"
+                    placeholder="输入完整的 LLM 转写润色提示词。清空后保存将回退默认提示词。"
+                    spellcheck="false"
+                    x-model="llmPolishPromptText"
+                  ></textarea>
+                  <div class="text-xs text-rose-200" x-show="llmPolishPromptError" x-text="llmPolishPromptError"></div>
+                  <div class="text-[11px] text-slate-500">
+                    提示：该配置会保存在数据库配置中（<code class="text-slate-200">/api/config</code>）。清空并保存后将回退默认提示词；建议保留
+                    <code class="text-slate-200">{chunk}</code> 占位符，若遗漏，系统会自动把原始文本追加到末尾；<code class="text-slate-200">{index}</code> /
+                    <code class="text-slate-200">{total}</code> 可选，用于分段上下文。
                   </div>
                 </div>
                 </div>

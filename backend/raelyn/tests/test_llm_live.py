@@ -46,12 +46,13 @@ class LiveTranscriptPolishTests(unittest.TestCase):
         chunks = _split_text_for_llm(text, max_chars=12_000)
         start = time.perf_counter()
         try:
-            out = _polish_transcript_via_llm(text=text)
+            out, usage = _polish_transcript_via_llm(session=None, text=text)
             elapsed = time.perf_counter() - start
             out_s = (out or "").strip()
             print(
                 f"[live-polish] ok; {elapsed:.3f}s; in={len(text)} chars; out={len(out_s)} chars; "
-                f"chunks={len(chunks)}; timeout={timeout}s; url={url!r} model={model!r}"
+                f"chunks={len(chunks)}; input_tokens={usage.get('input_tokens', 0)}; "
+                f"output_tokens={usage.get('output_tokens', 0)}; timeout={timeout}s; url={url!r} model={model!r}"
             )
             self.assertTrue(out_s)
             if MAX_SECONDS_POLISH is not None:

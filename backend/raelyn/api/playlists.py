@@ -608,7 +608,7 @@ def list_playlist_videos_by_date(playlist_id: uuid.UUID, date: date) -> list[Pla
                 select(Video, Media)
                 .join(Media, Media.id == Video.media_id)
                 .where(Video.media_id.in_(list(media_ids)), Video.published_at.is_not(None), Video.published_at >= start, Video.published_at < end)
-                .order_by(Video.published_at.desc(), Video.created_at.desc())
+                .order_by(Video.published_at.asc(), Video.created_at.asc(), Video.id.asc())
             )
             .all()
         )
@@ -743,7 +743,7 @@ def list_playlist_videos_by_period(
                     Video.published_at >= start,
                     Video.published_at < end,
                 )
-                .order_by(Video.published_at.desc(), Video.created_at.desc())
+                .order_by(Video.published_at.asc(), Video.created_at.asc(), Video.id.asc())
                 .limit(n)
             )
             .all()

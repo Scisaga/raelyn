@@ -32,13 +32,17 @@ from raelyn.services.brief_prompt import (
 )
 from raelyn.services.ffmpeg import extract_audio_to_m4a
 from raelyn.services.http_client import httpx_client
-from raelyn.services.llm import llm_enabled, llm_generate_markdown
+from raelyn.services.llm import llm_enabled, llm_generate
 from raelyn.services.pg_lock import advisory_lock_any
 from raelyn.services.profile_fetch import fetch_media_profile
 from raelyn.services.provider import build_media_videos_url
 from raelyn.services.s3 import s3_download_file, s3_upload_file
 from raelyn.services.asr import asr_enabled, asr_transcribe
 from raelyn.services.subtitles import normalize_subtitle
+from raelyn.services.transcript_polish_prompt import (
+    load_transcript_polish_prompt_template,
+    render_transcript_polish_prompt,
+)
 from raelyn.services.video_meta import parse_published_at
 from raelyn.services.workdir import job_workdir
 from raelyn.services.ytdlp import YtdlpCookiesInvalidError, load_info_json, ytdlp_download, ytdlp_extract_info
@@ -1072,11 +1076,11 @@ def video_polish_transcript(session: Session, job: Job) -> dict | None:
             if not text:
                 return {"skipped": "plain transcript empty"}
 
-            polished = _polish_transcript_via_llm(text=text)
+            polished, usage = _polish_transcript_via_llm(session=session, text=text)
             polished = _sanitize_llm_plain_text(polished).strip()
             if not polished:
                 job_log(session, job, "llm transcript polish returned empty; keep plain transcript", level="warn")
-                return {"skipped": "empty polish result"}
+                return {"skipped": "empty polish result", "llm_usage": usage}
 
             out_path = wd / "polished.txt"
             out_path.write_text(polished, encoding="utf-8")
@@ -1095,7 +1099,7 @@ def video_polish_transcript(session: Session, job: Job) -> dict | None:
                 replace=force,
             )
             job_log(session, job, "llm transcript polish saved", level="info", data={"language": language, "source": source})
-            return {"ok": True}
+            return {"ok": True, "llm_usage": usage}
     except Exception as e:
         job_log(session, job, f"llm transcript polish failed: {e}", level="warn")
         return {"skipped": "llm failed"}
@@ -1134,7 +1138,8 @@ def video_generate_note(session: Session, job: Job) -> dict | None:
             f"{text}\n"
         )
 
-        md = llm_generate_markdown(prompt=prompt, think=True)
+        resp = llm_generate(prompt=prompt, think=True)
+        md = str(resp.get("text", ""))
         out = wd / "note.md"
         out.write_text(md, encoding="utf-8")
 
@@ -1152,7 +1157,7 @@ def video_generate_note(session: Session, job: Job) -> dict | None:
             content_type="text/markdown; charset=utf-8",
             metadata={"video_id": str(video.id)},
         )
-        return {"asset_id": str(asset.id)}
+        return {"asset_id": str(asset.id), "llm_usage": resp.get("usage")}
 
 
 
@@ -1170,6 +1175,25 @@ def _sanitize_llm_plain_text(text: str) -> str:
         s = re.sub(r"\n?```$", "", s)
     s = s.strip().strip("\ufeff")
     return s
+
+
+def _empty_llm_usage() -> dict[str, int]:
+    return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "call_count": 0}
+
+
+def _merge_llm_usage(total: dict[str, int], part: dict[str, Any] | None) -> dict[str, int]:
+    merged = dict(total or _empty_llm_usage())
+    if not isinstance(part, dict):
+        return merged
+
+    for key in ("input_tokens", "output_tokens", "total_tokens", "call_count"):
+        try:
+            value = int(part.get(key) or 0)
+        except Exception:
+            value = 0
+        if value > 0:
+            merged[key] = int(merged.get(key, 0)) + value
+    return merged
 
 
 def _split_text_for_llm(text: str, *, max_chars: int) -> list[str]:
@@ -1202,46 +1226,30 @@ def _split_text_for_llm(text: str, *, max_chars: int) -> list[str]:
     return [c for c in chunks if c]
 
 
-def _build_transcript_polish_prompt(*, chunk: str, index: int, total: int) -> str:
-    return (
-        "你是一名中文文字稿编辑兼翻译。下面是一段从视频字幕/转写得到的原始文本，可能存在：口语化、断句混乱、错别字、同音错词、"
-        "标点缺失、段落缺失，也可能原文是英文或中英混杂。\n"
-        "请在不增删事实的前提下，把文本整理成更易读的中文正文；如果原文不是中文，请准确翻译为自然、通顺的简体中文。\n"
-        "要求（必须遵守）：\n"
-        "1) 最终输出必须是简体中文正文；即使原文是英文或其他语言，也不要保留大段外文原文。\n"
-        "2) 自动分段：只在语义转折/话题切换处换段；不要逐句换段；段落宁可更长一些，避免出现大量短段。\n"
-        "3) 段落之间用**单个**空行分隔；不要出现连续多个空行；不要把每一句都写成单独一行。\n"
-        "4) 补充必要标点（保持原意）；\n"
-        "5) 修正常见错别字/同音错词；不确定就保留原样；专有名词优先使用常见中文译名，不确定时保留原文名称；\n"
-        "6) **所有阿拉伯数字（0-9）必须逐字保留**：不得新增、删除、改动任何数字字符（含小数点/负号/%）。\n"
-        "   - 不要把阿拉伯数字改写成中文数字，也不要把中文数字改写成阿拉伯数字；\n"
-        "   - 不要推断缺失单位/小数点/时间窗口；\n"
-        "7) 不要总结、不要加标题、不要加解释、不要附带翻译说明；只输出整理/翻译后的正文纯文本。\n"
-        "8) 这是整段文本的一个片段（"
-        f"{index}/{total}"
-        "），输出中不要提及片段编号。\n\n"
-        "原始文本：\n"
-        f"{chunk}\n"
-    )
+def _build_transcript_polish_prompt(*, session: Session | None = None, chunk: str, index: int, total: int) -> str:
+    template = load_transcript_polish_prompt_template(session)
+    return render_transcript_polish_prompt(template=template, chunk=chunk, index=index, total=total)
 
 
-def _polish_transcript_via_llm(*, text: str) -> str:
+def _polish_transcript_via_llm(*, session: Session | None, text: str) -> tuple[str, dict[str, int]]:
     # Keep chunks reasonably small to reduce the chance of context overflow.
     chunks = _split_text_for_llm(text, max_chars=12_000)
     if not chunks:
-        return ""
+        return "", _empty_llm_usage()
 
     outputs: list[str] = []
+    usage = _empty_llm_usage()
     total = len(chunks)
     for i, chunk in enumerate(chunks, start=1):
-        prompt = _build_transcript_polish_prompt(chunk=chunk, index=i, total=total)
+        prompt = _build_transcript_polish_prompt(session=session, chunk=chunk, index=i, total=total)
 
-        out = llm_generate_markdown(prompt=prompt, think=False)
-        out = _sanitize_llm_plain_text(out)
+        resp = llm_generate(prompt=prompt, think=False)
+        usage = _merge_llm_usage(usage, resp.get("usage"))
+        out = _sanitize_llm_plain_text(str(resp.get("text", "")))
         if out:
             outputs.append(out.strip())
 
-    return "\n\n".join(outputs).strip()
+    return "\n\n".join(outputs).strip(), usage
 
 
 def _maybe_polish_transcript(
@@ -1279,7 +1287,7 @@ def _maybe_polish_transcript(
             return
 
     try:
-        polished = _polish_transcript_via_llm(text=txt)
+        polished, _usage = _polish_transcript_via_llm(session=session, text=txt)
         polished = (polished or "").strip()
         metadata: dict[str, Any] = {"variant": "polished"}
         if not polished:
@@ -1432,7 +1440,8 @@ def _brief_generate_period_impl(
         tpl = (getattr(playlist, "brief_prompt", None) or "").strip() or DEFAULT_BRIEF_PROMPT_TEMPLATE
         prompt = compose_brief_prompt(tpl, granularity=g, period_start=period_start, period_end=period_end, blocks=blocks)
 
-        md = llm_generate_markdown(prompt=prompt, think=True)
+        resp = llm_generate(prompt=prompt, think=True)
+        md = str(resp.get("text", ""))
         md = _sanitize_brief_markdown(md)
         out = wd / "brief.md"
         out.write_text(md, encoding="utf-8")
@@ -1462,7 +1471,7 @@ def _brief_generate_period_impl(
         br.status = "ready"
         br.markdown_asset_id = asset.id
         br.error_message = None
-        return {"asset_id": str(asset.id)}
+        return {"asset_id": str(asset.id), "llm_usage": resp.get("usage")}
 
 
 @registry.register("brief.generate_period")

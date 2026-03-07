@@ -7,6 +7,10 @@ from sqlalchemy import select
 
 from raelyn.db import session_scope
 from raelyn.models import AppConfig
+from raelyn.services.transcript_polish_prompt import (
+    TRANSCRIPT_POLISH_PROMPT_CONFIG_KEY,
+    transcript_polish_prompt_defaults,
+)
 from raelyn.services.system_pause import clear_pause, get_pause
 from raelyn.timeutil import utcnow
 
@@ -30,11 +34,24 @@ def _looks_like_netscape_cookie_file(text: str) -> bool:
     return False
 
 
+def _validate_llm_transcript_polish_prompt_value(value: dict) -> None:
+    text = value.get("text") if isinstance(value, dict) else None
+    if not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="llm_transcript_polish_prompt.text must be a string.")
+    if len(text.encode("utf-8")) > 64 * 1024:
+        raise HTTPException(status_code=400, detail="llm_transcript_polish_prompt.text is too large (max 64KB).")
+
+
 @router.get("/config")
 def get_config() -> dict:
     with session_scope() as session:
         items = session.execute(select(AppConfig)).scalars().all()
         return {"data": {i.key: i.value for i in items}}
+
+
+@router.get("/config/defaults")
+def get_config_defaults() -> dict:
+    return transcript_polish_prompt_defaults()
 
 
 @router.put("/config/{key}")
@@ -51,6 +68,8 @@ def put_config(key: str, payload: ConfigUpsert) -> dict:
                         status_code=400,
                         detail="ytdlp_cookies must be Netscape cookies.txt format (tab-separated).",
                     )
+        if key == TRANSCRIPT_POLISH_PROMPT_CONFIG_KEY:
+            _validate_llm_transcript_polish_prompt_value(payload.value)
 
         existing = session.get(AppConfig, key)
         if existing:

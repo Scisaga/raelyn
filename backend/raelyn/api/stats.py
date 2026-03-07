@@ -146,6 +146,28 @@ def _brief_snippet_from_asset(asset: Asset | None) -> str:
     return ""
 
 
+def _extract_llm_usage(result: Any) -> dict[str, int]:
+    empty = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "call_count": 0}
+    if not isinstance(result, dict):
+        return empty
+
+    usage = result.get("llm_usage")
+    if not isinstance(usage, dict):
+        return empty
+
+    out = dict(empty)
+    for key in empty:
+        try:
+            value = int(usage.get(key) or 0)
+        except Exception:
+            value = 0
+        out[key] = value if value > 0 else 0
+
+    if out["total_tokens"] <= 0:
+        out["total_tokens"] = out["input_tokens"] + out["output_tokens"]
+    return out
+
+
 @router.get("/stats")
 def stats() -> dict:
     with session_scope() as session:
@@ -224,14 +246,26 @@ def stats() -> dict:
         asr_calls = session.execute(
             select(func.count()).select_from(Job).where(Job.type == "video.asr_transcribe", Job.status.in_(done_statuses))
         ).scalar_one()
-        llm_calls = session.execute(
-            select(func.count())
-            .select_from(Job)
-            .where(
-                Job.type.in_(["video.generate_note", "brief.generate_period", "brief.generate_daily"]),
+        llm_calls = 0
+        llm_input_tokens = 0
+        llm_output_tokens = 0
+        llm_total_tokens = 0
+        llm_rows = session.execute(
+            select(Job.type, Job.result).where(
+                Job.type.in_(["video.polish_transcript", "video.generate_note", "brief.generate_period", "brief.generate_daily"]),
                 Job.status.in_(done_statuses),
             )
-        ).scalar_one()
+        ).all()
+        for job_type, result in llm_rows:
+            usage = _extract_llm_usage(result)
+            llm_calls += int(usage.get("call_count", 0) or 0)
+            llm_input_tokens += int(usage.get("input_tokens", 0) or 0)
+            llm_output_tokens += int(usage.get("output_tokens", 0) or 0)
+            llm_total_tokens += int(usage.get("total_tokens", 0) or 0)
+
+            # Backward compatibility for historical jobs created before usage was recorded.
+            if usage["call_count"] <= 0 and job_type in {"video.generate_note", "brief.generate_period", "brief.generate_daily"}:
+                llm_calls += 1
 
         # Top playlists by "latest video timestamp" (coalesce published_at -> created_at), for the overview page.
         co_ts = func.coalesce(Video.published_at, Video.created_at)
@@ -374,4 +408,7 @@ def stats() -> dict:
             "s3_tracked_size_bytes": s3_tracked_size_bytes,
             "asr_calls": int(asr_calls or 0),
             "llm_calls": int(llm_calls or 0),
+            "llm_input_tokens": int(llm_input_tokens or 0),
+            "llm_output_tokens": int(llm_output_tokens or 0),
+            "llm_total_tokens": int(llm_total_tokens or 0),
         }

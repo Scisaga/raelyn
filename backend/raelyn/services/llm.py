@@ -10,6 +10,14 @@ import httpx
 from raelyn.config import settings
 
 
+def _as_int(value: Any) -> int:
+    try:
+        n = int(value)
+    except Exception:
+        return 0
+    return n if n > 0 else 0
+
+
 def llm_enabled() -> bool:
     return bool(settings.llm_url.strip())
 
@@ -112,7 +120,46 @@ def _extract_openai_completion_text(payload: Any) -> str:
     return ""
 
 
-def llm_generate_markdown(*, prompt: str, think: bool | str | None = None) -> str:
+def _extract_llm_usage(payload: Any, *, mode: str) -> dict[str, int]:
+    if not isinstance(payload, dict):
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "call_count": 1}
+
+    input_tokens = 0
+    output_tokens = 0
+    total_tokens = 0
+
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        input_tokens = _as_int(
+            usage.get("prompt_tokens")
+            or usage.get("input_tokens")
+            or usage.get("prompt_token_count")
+            or usage.get("input_token_count")
+        )
+        output_tokens = _as_int(
+            usage.get("completion_tokens")
+            or usage.get("output_tokens")
+            or usage.get("completion_token_count")
+            or usage.get("output_token_count")
+        )
+        total_tokens = _as_int(usage.get("total_tokens") or usage.get("total_token_count"))
+
+    if mode == "ollama_generate":
+        input_tokens = input_tokens or _as_int(payload.get("prompt_eval_count"))
+        output_tokens = output_tokens or _as_int(payload.get("eval_count"))
+
+    if total_tokens <= 0:
+        total_tokens = input_tokens + output_tokens
+
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "call_count": 1,
+    }
+
+
+def llm_generate(*, prompt: str, think: bool | str | None = None) -> dict[str, Any]:
     if not llm_enabled():
         raise RuntimeError("llm is not configured")
 
@@ -144,8 +191,15 @@ def llm_generate_markdown(*, prompt: str, think: bool | str | None = None) -> st
 
     if mode == "ollama_generate":
         if isinstance(data, dict):
-            return str(data.get("response", "")).strip()
-        return str(data).strip()
+            return {
+                "text": str(data.get("response", "")).strip(),
+                "usage": _extract_llm_usage(data, mode=mode),
+            }
+        return {"text": str(data).strip(), "usage": _extract_llm_usage(data, mode=mode)}
     if mode == "openai_chat":
-        return _extract_openai_chat_content(data).strip()
-    return _extract_openai_completion_text(data).strip()
+        return {"text": _extract_openai_chat_content(data).strip(), "usage": _extract_llm_usage(data, mode=mode)}
+    return {"text": _extract_openai_completion_text(data).strip(), "usage": _extract_llm_usage(data, mode=mode)}
+
+
+def llm_generate_markdown(*, prompt: str, think: bool | str | None = None) -> str:
+    return str(llm_generate(prompt=prompt, think=think).get("text", "")).strip()
