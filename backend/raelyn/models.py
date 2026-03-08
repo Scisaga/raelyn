@@ -21,7 +21,7 @@ class Media(Base):
     provider: Mapped[str] = mapped_column(String, nullable=False)
     provider_media_id: Mapped[str] = mapped_column(String, nullable=False)
     url: Mapped[str] = mapped_column(String, nullable=False)
-    monitor_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    monitor_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String, nullable=True)

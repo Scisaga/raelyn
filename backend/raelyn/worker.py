@@ -13,7 +13,7 @@ from raelyn.db import session_scope
 from raelyn.db import init_db
 from raelyn.jobs.claim import claim_next_job, requeue_expired_running_jobs, requeue_orphan_running_jobs
 from raelyn.jobs.heartbeat import touch_worker_heartbeat
-from raelyn.jobs.handlers import *  # noqa: F403  注册 handlers
+import raelyn.jobs.handlers  # noqa: F401  注册 handlers
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
 from raelyn.jobs.reschedule import JobReschedule

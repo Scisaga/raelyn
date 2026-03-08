@@ -13,10 +13,11 @@ from raelyn.api.orm import OrmModel
 from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.jobs.enqueue import enqueue_job
-from raelyn.models import Media, Video
+from raelyn.models import Job, JobEvent, Media, Video
 from raelyn.services.downloads import content_disposition_attachment
 from raelyn.services.provider import detect_provider, extract_media_identity
 from raelyn.services.s3 import s3_clear_bucket, s3_presign_get
+from raelyn.timeutil import utcnow
 
 
 router = APIRouter(tags=["media"])
@@ -63,6 +64,42 @@ def _media_out(m: Media, *, local_video_count: int | None = None) -> MediaOut:
     return out
 
 
+def _cancel_pending_download_jobs_for_media(session, *, media_id: uuid.UUID) -> int:
+    video_ids = {
+        str(v)
+        for v in session.execute(select(Video.id).where(Video.media_id == media_id)).scalars().all()
+        if v
+    }
+    if not video_ids:
+        return 0
+
+    pending_jobs = (
+        session.execute(
+            select(Job).where(
+                Job.status == "pending",
+                Job.type.in_(["video.download", "video.download.youtube", "video.download.bilibili"]),
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    now = utcnow()
+    canceled = 0
+    for job in pending_jobs:
+        params = job.params if isinstance(job.params, dict) else {}
+        video_id = str(params.get("video_id") or "").strip()
+        if not video_id or video_id not in video_ids:
+            continue
+        job.status = "canceled"
+        job.finished_at = now
+        job.lease_expires_at = None
+        job.worker_id = None
+        session.add(JobEvent(job_id=job.id, level="info", message="canceled (monitor disabled)"))
+        canceled += 1
+    return canceled
+
+
 @router.post("/media", response_model=MediaOut)
 def create_media(payload: MediaCreate) -> MediaOut:
     provider = payload.provider or detect_provider(payload.url)
@@ -81,12 +118,12 @@ def create_media(payload: MediaCreate) -> MediaOut:
             existing.url = payload.url
             media = existing
         else:
-            media = Media(provider=provider, provider_media_id=identity.provider_media_id, url=payload.url)
+            media = Media(provider=provider, provider_media_id=identity.provider_media_id, url=payload.url, monitor_enabled=False)
             session.add(media)
         session.flush()
 
         enqueue_job(session, type_="media.sync_profile", params={"media_id": str(media.id)}, priority=10)
-        enqueue_job(session, type_="media.sync_videos", params={"media_id": str(media.id)}, priority=5)
+        enqueue_job(session, type_="media.sync_videos", params={"media_id": str(media.id), "force": True}, priority=5)
 
         session.refresh(media)
         return _media_out(media, local_video_count=0)
@@ -202,7 +239,7 @@ def import_media(payload: MediaImportIn) -> dict:
                 m.url = url
                 existing.append(url)
                 continue
-            m = Media(provider=provider, provider_media_id=pid, url=url)
+            m = Media(provider=provider, provider_media_id=pid, url=url, monitor_enabled=False)
             session.add(m)
             created_medias.append(m)
             created.append(url)
@@ -211,7 +248,7 @@ def import_media(payload: MediaImportIn) -> dict:
 
         for m in created_medias:
             enqueue_job(session, type_="media.sync_profile", params={"media_id": str(m.id)}, priority=10)
-            enqueue_job(session, type_="media.sync_videos", params={"media_id": str(m.id)}, priority=5)
+            enqueue_job(session, type_="media.sync_videos", params={"media_id": str(m.id), "force": True}, priority=5)
 
     return {
         "ok": True,
@@ -240,7 +277,10 @@ def update_media(media_id: uuid.UUID, payload: MediaUpdate) -> MediaOut:
         if not media:
             raise HTTPException(status_code=404, detail="media not found")
         if payload.monitor_enabled is not None:
+            was_enabled = bool(media.monitor_enabled)
             media.monitor_enabled = payload.monitor_enabled
+            if was_enabled and (payload.monitor_enabled is False):
+                _cancel_pending_download_jobs_for_media(session, media_id=media.id)
             session.flush()
         c = session.execute(select(func.count()).select_from(Video).where(Video.media_id == media.id)).scalar_one()
         return _media_out(media, local_video_count=int(c or 0))
@@ -278,7 +318,7 @@ def delete_media(media_id: uuid.UUID) -> dict:
 @router.post("/media/sync")
 def sync_all_media(scope: str = "recent") -> dict:
     with session_scope() as session:
-        media_ids = session.execute(select(Media.id)).scalars().all()
+        media_ids = session.execute(select(Media.id).where(Media.monitor_enabled.is_(True))).scalars().all()
 
         scope_key = str(scope or "").strip().lower()
         if scope_key in {"recent", "latest"}:

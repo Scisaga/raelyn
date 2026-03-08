@@ -4766,7 +4766,7 @@ function RaelynApp() {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ monitor_enabled: next }),
         });
-        this.globalStatus = next ? "已启用监控" : "已关闭监控";
+        this.globalStatus = next ? "已启用监控" : "已关闭监控，并取消待处理下载任务";
       } catch (e) {
         if (item) item.monitor_enabled = prev;
         if (idxItem) idxItem.monitor_enabled = prev;
@@ -4787,9 +4787,8 @@ function RaelynApp() {
 
     async syncAllMediaHistory() {
       if (this.syncAllMediaSubmitting) return;
-      const total = Array.isArray(this.mediaList) ? this.mediaList.length : 0;
       const ok = confirm(
-        `确认同步全部媒体的历史视频？\n\n当前媒体数：${total}\n\n系统会为每个媒体投递全量同步任务；已采集的视频会按 provider_video_id 自动跳过。`
+        "确认同步全部已启用监控媒体的历史视频？\n\n系统只会为已启用监控的媒体投递全量同步任务；已采集的视频会按 provider_video_id 自动跳过。"
       );
       if (!ok) return;
 
@@ -4797,7 +4796,7 @@ function RaelynApp() {
         this.syncAllMediaSubmitting = true;
         const res = await this.api(`/media/sync?scope=all`, { method: "POST" });
         const count = Number(res && res.count) || 0;
-        const msg = count > 0 ? `已投递 ${count} 个媒体的历史同步任务` : "没有可同步的媒体";
+        const msg = count > 0 ? `已投递 ${count} 个已启用监控媒体的历史同步任务` : "没有已启用监控的媒体可同步";
         this.globalStatus = msg;
         this.toastSuccess(msg, { action: this.toastJobsAction() });
         await this.loadJobs();

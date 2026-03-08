@@ -36,9 +36,9 @@ def _migrate_schema(conn) -> None:
         cols = {c.get("name") for c in insp.get_columns("media")}
         if "monitor_enabled" not in cols:
             if conn.dialect.name == "postgresql":
-                conn.execute(text("alter table media add column monitor_enabled boolean not null default true"))
+                conn.execute(text("alter table media add column monitor_enabled boolean not null default false"))
             else:
-                conn.execute(text("alter table media add column monitor_enabled boolean not null default 1"))
+                conn.execute(text("alter table media add column monitor_enabled boolean not null default 0"))
         if "avatar_s3_key" not in cols:
             conn.execute(text("alter table media add column avatar_s3_key varchar"))
 
