@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from sqlalchemy import String, and_, cast, delete, or_, select
+from sqlalchemy import String, and_, cast, delete, func, or_, select
 
 from raelyn.api.orm import OrmModel
 from raelyn.config import settings
