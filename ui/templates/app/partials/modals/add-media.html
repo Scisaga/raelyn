@@ -8,6 +8,9 @@
               placeholder="YouTube/B站 URL"
               x-model="addMediaUrl"
             />
+            <div class="text-xs text-slate-400">
+              添加后默认不启用监控；如需自动同步，请在媒体列表中手动开启监控。
+            </div>
             <div class="text-xs text-rose-200" x-show="addMediaError" x-text="addMediaError"></div>
             <div class="flex items-center justify-end gap-2">
               <button
@@ -29,4 +32,3 @@
           </div>
         </div>
       </div>
-

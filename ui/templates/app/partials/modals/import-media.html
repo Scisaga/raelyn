@@ -21,6 +21,9 @@
             <div class="text-xs text-slate-300">
               选择 <span class="text-slate-200 font-medium">.txt</span> 文件，一行一个媒体链接（空行与 <span class="text-slate-200 font-medium">#</span> 注释行会被忽略）。
             </div>
+            <div class="text-xs text-slate-400">
+              新导入的媒体默认不启用监控；如需自动同步，请导入后在媒体列表中手动开启监控。
+            </div>
 
             <input type="file" accept=".txt,text/plain" class="hidden" x-ref="mediaImportFile" @change="handleMediaImportFile($event)" />
 

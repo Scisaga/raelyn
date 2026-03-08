@@ -24,6 +24,7 @@ function RaelynApp() {
     "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best";
   const YTDLP_FORMAT_PRESET_720 =
     "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/bestvideo[height<=720]+bestaudio/best[height<=720]/best";
+  const SETTINGS_TABS = ["cookies", "subtitles", "members", "format", "llm", "cleanup"];
 
   const PLAYLIST_ASSETS_CACHE_TTL_MS = 60_000;
   const PLAYLIST_TRANSCRIPT_CACHE_TTL_MS = 10 * 60_000;
@@ -150,7 +151,7 @@ function RaelynApp() {
     _jobsActiveLastFetchAt: 0,
     jobsDoneChart: null,
     jobsDoneSeries: null,
-    settingsTab: "cookies", // cookies | subtitles | members | format | llm
+    settingsTab: "cookies", // cookies | subtitles | members | format | llm | cleanup
     playlistList: [],
     playlistListQuery: "",
     selectedPlaylistId: null,
@@ -177,6 +178,12 @@ function RaelynApp() {
     llmPolishPromptSaving: false,
     llmPolishPromptLoadingDefault: false,
     llmPolishPromptError: "",
+    staleVideosCleanupCount: 0,
+    staleVideosCleanupItems: [],
+    staleVideosCleanupLoaded: false,
+    staleVideosCleanupLoading: false,
+    staleVideosCleanupDeleting: false,
+    staleVideosCleanupError: "",
     playerVideo: null,
     playerAssets: [],
     playerVideoUrl: "",
@@ -1032,7 +1039,7 @@ function RaelynApp() {
       }
       if (viewKey === "settings") {
         const t = (sp.get("tab") || this.settingsTab || "cookies").trim();
-        this.settingsTab = ["cookies", "subtitles", "members", "format", "llm"].includes(t) ? t : "cookies";
+        this.settingsTab = SETTINGS_TABS.includes(t) ? t : "cookies";
       }
     },
 
@@ -1091,7 +1098,7 @@ function RaelynApp() {
 
     setSettingsTab(tab) {
       const t = String(tab || "").trim();
-      this.settingsTab = ["cookies", "subtitles", "members", "format", "llm"].includes(t) ? t : "cookies";
+      this.settingsTab = SETTINGS_TABS.includes(t) ? t : "cookies";
       this._syncUrl({ push: false });
     },
 
@@ -2392,6 +2399,7 @@ function RaelynApp() {
       await this.loadYtdlpMembersOnly({ force });
       await this.loadYtdlpFormat({ force });
       await this.loadLlmPolishPrompt({ force });
+      await this.loadStaleVideosCleanup({ force });
     },
 
     async loadYtdlpCookies({ force = false } = {}) {
@@ -2631,6 +2639,60 @@ function RaelynApp() {
     resetLlmPolishPromptToDefault() {
       this.llmPolishPromptText = String(this.llmPolishPromptDefaultText || "");
       this.llmPolishPromptError = "";
+    },
+
+    async loadStaleVideosCleanup({ force = false } = {}) {
+      try {
+        if (this.staleVideosCleanupLoaded && !force) return;
+        this.staleVideosCleanupLoading = true;
+        this.staleVideosCleanupError = "";
+        const payload = await this.api(`/cleanup/stale-videos?limit=20`);
+        this.staleVideosCleanupCount = Number((payload && payload.count) || 0);
+        this.staleVideosCleanupItems = Array.isArray(payload && payload.items) ? payload.items : [];
+        this.staleVideosCleanupLoaded = true;
+      } catch (e) {
+        this.staleVideosCleanupError = e && e.message ? e.message : String(e);
+      } finally {
+        this.staleVideosCleanupLoading = false;
+      }
+    },
+
+    async cleanupStaleVideos() {
+      if (this.staleVideosCleanupDeleting) return;
+      if (Number(this.staleVideosCleanupCount || 0) <= 0) {
+        await this.loadStaleVideosCleanup({ force: true });
+        if (Number(this.staleVideosCleanupCount || 0) <= 0) {
+          this.globalStatus = "没有可清理的遗留视频记录";
+          return;
+        }
+      }
+
+      const count = Number(this.staleVideosCleanupCount || 0);
+      const ok = confirm(
+        `确认清理这 ${count} 条遗留视频记录？\n\n只会删除“媒体已停用监控、视频仍是 discovered、且没有有效下载任务/视频文件”的记录。`
+      );
+      if (!ok) return;
+
+      try {
+        this.staleVideosCleanupDeleting = true;
+        this.staleVideosCleanupError = "";
+        const payload = await this.api(`/cleanup/stale-videos`, { method: "POST" });
+        const deleted = Number((payload && payload.deleted) || 0);
+        await this.loadStaleVideosCleanup({ force: true });
+        await this.loadMedia();
+        this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
+        await this.loadStats();
+        const msg = deleted > 0 ? `已清理 ${deleted} 条遗留视频记录` : "没有可清理的遗留视频记录";
+        this.globalStatus = msg;
+        this.toastSuccess(msg);
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.staleVideosCleanupError = msg;
+        this.globalStatus = `error: ${msg}`;
+        this.toastError(`清理失败：${msg}`);
+      } finally {
+        this.staleVideosCleanupDeleting = false;
+      }
     },
 
     playlistListFiltered() {
@@ -4695,7 +4757,8 @@ function RaelynApp() {
         const created = Array.isArray(res.created) ? res.created.length : 0;
         const existing = Array.isArray(res.existing) ? res.existing.length : 0;
         const invalid = Array.isArray(res.invalid) ? res.invalid.length : 0;
-        this.toastSuccess(`导入完成：新增 ${created} / 已存在 ${existing} / 无效 ${invalid}`);
+        this.globalStatus = `导入完成：新增 ${created} / 已存在 ${existing} / 无效 ${invalid}；新媒体默认未启用监控`;
+        this.toastSuccess(`导入完成：新增 ${created} / 已存在 ${existing} / 无效 ${invalid}；新媒体默认未启用监控`);
         await this.loadMedia();
         this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
         await this.loadStats();
@@ -4738,6 +4801,8 @@ function RaelynApp() {
         if (this.activeView !== "media") this.switchView("media");
         await this.loadMedia();
         this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
+        this.globalStatus = "已添加媒体，默认未启用监控";
+        this.toastSuccess("已添加媒体，默认未启用监控");
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
         this.addMediaError = msg;
@@ -4766,7 +4831,10 @@ function RaelynApp() {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ monitor_enabled: next }),
         });
-        this.globalStatus = next ? "已启用监控" : "已关闭监控，并取消待处理下载任务";
+        this.globalStatus = next ? "已启用监控" : "已关闭监控，并删除待处理下载任务";
+        if (!next && this.activeView === "settings" && this.settingsTab === "cleanup") {
+          await this.loadStaleVideosCleanup({ force: true });
+        }
       } catch (e) {
         if (item) item.monitor_enabled = prev;
         if (idxItem) idxItem.monitor_enabled = prev;

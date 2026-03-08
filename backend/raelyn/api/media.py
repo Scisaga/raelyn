@@ -13,14 +13,14 @@ from raelyn.api.orm import OrmModel
 from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.jobs.enqueue import enqueue_job
-from raelyn.models import Job, JobEvent, Media, Video
+from raelyn.models import Asset, Job, Media, Video
 from raelyn.services.downloads import content_disposition_attachment
 from raelyn.services.provider import detect_provider, extract_media_identity
 from raelyn.services.s3 import s3_clear_bucket, s3_presign_get
-from raelyn.timeutil import utcnow
 
 
 router = APIRouter(tags=["media"])
+_DOWNLOAD_JOB_TYPES = ("video.download", "video.download.youtube", "video.download.bilibili")
 
 
 class MediaCreate(BaseModel):
@@ -51,6 +51,17 @@ class MediaImportIn(BaseModel):
     text: str
 
 
+class CleanupVideoOut(BaseModel):
+    id: uuid.UUID
+    media_id: uuid.UUID
+    provider: str
+    provider_video_id: str
+    status: str
+    title: str | None = None
+    media_name: str | None = None
+    created_at: Any | None = None
+
+
 def _media_out(m: Media, *, local_video_count: int | None = None) -> MediaOut:
     out = MediaOut.model_validate(m)
     if local_video_count is not None:
@@ -64,40 +75,90 @@ def _media_out(m: Media, *, local_video_count: int | None = None) -> MediaOut:
     return out
 
 
-def _cancel_pending_download_jobs_for_media(session, *, media_id: uuid.UUID) -> int:
+def _pending_download_job_ids_for_media(session, *, media_id: uuid.UUID) -> list[uuid.UUID]:
     video_ids = {
         str(v)
         for v in session.execute(select(Video.id).where(Video.media_id == media_id)).scalars().all()
         if v
     }
     if not video_ids:
-        return 0
+        return []
 
     pending_jobs = (
         session.execute(
             select(Job).where(
                 Job.status == "pending",
-                Job.type.in_(["video.download", "video.download.youtube", "video.download.bilibili"]),
+                Job.type.in_(_DOWNLOAD_JOB_TYPES),
             )
         )
         .scalars()
         .all()
     )
 
-    now = utcnow()
-    canceled = 0
+    job_ids: list[uuid.UUID] = []
     for job in pending_jobs:
         params = job.params if isinstance(job.params, dict) else {}
         video_id = str(params.get("video_id") or "").strip()
         if not video_id or video_id not in video_ids:
             continue
-        job.status = "canceled"
-        job.finished_at = now
-        job.lease_expires_at = None
-        job.worker_id = None
-        session.add(JobEvent(job_id=job.id, level="info", message="canceled (monitor disabled)"))
-        canceled += 1
-    return canceled
+        job_ids.append(job.id)
+    return job_ids
+
+
+def _list_cleanup_videos(session) -> list[tuple[Video, Media]]:
+    rows = (
+        session.execute(
+            select(Video, Media)
+            .join(Media, Media.id == Video.media_id)
+            .where(Media.monitor_enabled.is_(False))
+            .where(Video.status == "discovered")
+            .order_by(Video.created_at.desc(), Video.id.desc())
+        )
+        .all()
+    )
+    if not rows:
+        return []
+
+    video_ids = [video.id for video, _media in rows if video and getattr(video, "id", None)]
+    if not video_ids:
+        return []
+
+    asset_video_ids = {
+        video_id
+        for video_id in session.execute(select(Asset.video_id).where(Asset.type == "video", Asset.video_id.in_(video_ids)))
+        .scalars()
+        .all()
+        if video_id
+    }
+    active_download_video_ids = {
+        video_id
+        for job in session.execute(
+            select(Job).where(Job.status.in_(["pending", "running"]), Job.type.in_(_DOWNLOAD_JOB_TYPES))
+        )
+        .scalars()
+        .all()
+        for video_id in [str((job.params if isinstance(job.params, dict) else {}).get("video_id") or "").strip()]
+        if video_id
+    }
+
+    return [
+        (video, media)
+        for video, media in rows
+        if video.id not in asset_video_ids and str(video.id) not in active_download_video_ids
+    ]
+
+
+def _cleanup_video_out(video: Video, media: Media) -> CleanupVideoOut:
+    return CleanupVideoOut(
+        id=video.id,
+        media_id=video.media_id,
+        provider=video.provider,
+        provider_video_id=video.provider_video_id,
+        status=video.status,
+        title=video.title,
+        media_name=media.name,
+        created_at=video.created_at,
+    )
 
 
 @router.post("/media", response_model=MediaOut)
@@ -123,7 +184,6 @@ def create_media(payload: MediaCreate) -> MediaOut:
         session.flush()
 
         enqueue_job(session, type_="media.sync_profile", params={"media_id": str(media.id)}, priority=10)
-        enqueue_job(session, type_="media.sync_videos", params={"media_id": str(media.id), "force": True}, priority=5)
 
         session.refresh(media)
         return _media_out(media, local_video_count=0)
@@ -248,7 +308,6 @@ def import_media(payload: MediaImportIn) -> dict:
 
         for m in created_medias:
             enqueue_job(session, type_="media.sync_profile", params={"media_id": str(m.id)}, priority=10)
-            enqueue_job(session, type_="media.sync_videos", params={"media_id": str(m.id), "force": True}, priority=5)
 
     return {
         "ok": True,
@@ -280,7 +339,10 @@ def update_media(media_id: uuid.UUID, payload: MediaUpdate) -> MediaOut:
             was_enabled = bool(media.monitor_enabled)
             media.monitor_enabled = payload.monitor_enabled
             if was_enabled and (payload.monitor_enabled is False):
-                _cancel_pending_download_jobs_for_media(session, media_id=media.id)
+                for job_id in _pending_download_job_ids_for_media(session, media_id=media.id):
+                    job = session.get(Job, job_id)
+                    if job:
+                        session.delete(job)
             session.flush()
         c = session.execute(select(func.count()).select_from(Video).where(Video.media_id == media.id)).scalar_one()
         return _media_out(media, local_video_count=int(c or 0))
@@ -363,3 +425,25 @@ def sync_media(media_id: uuid.UUID, scope: str = "recent") -> dict:
             priority=5,
         )
     return {"ok": True}
+
+
+@router.get("/cleanup/stale-videos")
+def get_stale_videos_cleanup(limit: int = 20) -> dict:
+    lim = max(1, min(int(limit or 20), 100))
+    with session_scope() as session:
+        candidates = _list_cleanup_videos(session)
+        return {
+            "count": len(candidates),
+            "items": [_cleanup_video_out(video, media).model_dump(mode="json") for video, media in candidates[:lim]],
+        }
+
+
+@router.post("/cleanup/stale-videos")
+def cleanup_stale_videos() -> dict:
+    with session_scope() as session:
+        candidates = _list_cleanup_videos(session)
+        deleted = 0
+        for video, _media in candidates:
+            session.delete(video)
+            deleted += 1
+        return {"ok": True, "deleted": deleted}
