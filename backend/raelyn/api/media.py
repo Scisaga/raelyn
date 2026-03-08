@@ -7,7 +7,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, delete, exists, func, select
+from sqlalchemy.orm import aliased
 
 from raelyn.api.orm import OrmModel
 from raelyn.config import settings
@@ -75,18 +76,18 @@ def _media_out(m: Media, *, local_video_count: int | None = None) -> MediaOut:
     return out
 
 
-def _pending_download_job_ids_for_media(session, *, media_id: uuid.UUID) -> list[uuid.UUID]:
-    video_ids = {
-        str(v)
-        for v in session.execute(select(Video.id).where(Video.media_id == media_id)).scalars().all()
-        if v
-    }
-    if not video_ids:
-        return []
+def _job_video_id_expr():
+    return Job.params["video_id"].astext
 
-    pending_jobs = (
+
+def _pending_download_job_ids_for_media(session, *, media_id: uuid.UUID) -> list[uuid.UUID]:
+    return (
         session.execute(
-            select(Job).where(
+            select(Job.id)
+            .select_from(Job)
+            .join(Video, _job_video_id_expr() == cast(Video.id, String))
+            .where(
+                Video.media_id == media_id,
                 Job.status == "pending",
                 Job.type.in_(_DOWNLOAD_JOB_TYPES),
             )
@@ -95,57 +96,63 @@ def _pending_download_job_ids_for_media(session, *, media_id: uuid.UUID) -> list
         .all()
     )
 
-    job_ids: list[uuid.UUID] = []
-    for job in pending_jobs:
-        params = job.params if isinstance(job.params, dict) else {}
-        video_id = str(params.get("video_id") or "").strip()
-        if not video_id or video_id not in video_ids:
-            continue
-        job_ids.append(job.id)
-    return job_ids
-
-
-def _list_cleanup_videos(session) -> list[tuple[Video, Media]]:
-    rows = (
-        session.execute(
-            select(Video, Media)
-            .join(Media, Media.id == Video.media_id)
-            .where(Media.monitor_enabled.is_(False))
-            .where(Video.status == "discovered")
-            .order_by(Video.created_at.desc(), Video.id.desc())
+def _stale_video_predicates(video_model=Video, media_model=Media):
+    has_video_asset = exists(
+        select(1)
+        .select_from(Asset)
+        .where(
+            Asset.video_id == video_model.id,
+            Asset.type == "video",
         )
-        .all()
     )
-    if not rows:
-        return []
-
-    video_ids = [video.id for video, _media in rows if video and getattr(video, "id", None)]
-    if not video_ids:
-        return []
-
-    asset_video_ids = {
-        video_id
-        for video_id in session.execute(select(Asset.video_id).where(Asset.type == "video", Asset.video_id.in_(video_ids)))
-        .scalars()
-        .all()
-        if video_id
-    }
-    active_download_video_ids = {
-        video_id
-        for job in session.execute(
-            select(Job).where(Job.status.in_(["pending", "running"]), Job.type.in_(_DOWNLOAD_JOB_TYPES))
+    has_active_download_job = exists(
+        select(1)
+        .select_from(Job)
+        .where(
+            Job.status.in_(["pending", "running"]),
+            Job.type.in_(_DOWNLOAD_JOB_TYPES),
+            _job_video_id_expr() == cast(video_model.id, String),
         )
-        .scalars()
-        .all()
-        for video_id in [str((job.params if isinstance(job.params, dict) else {}).get("video_id") or "").strip()]
-        if video_id
-    }
+    )
+    return (
+        media_model.monitor_enabled.is_(False),
+        video_model.status == "discovered",
+        ~has_video_asset,
+        ~has_active_download_job,
+    )
 
-    return [
-        (video, media)
-        for video, media in rows
-        if video.id not in asset_video_ids and str(video.id) not in active_download_video_ids
-    ]
+
+def _stale_video_rows_stmt(*, limit: int | None = None):
+    stmt = (
+        select(Video, Media)
+        .join(Media, Media.id == Video.media_id)
+        .where(*_stale_video_predicates(Video, Media))
+        .order_by(Video.created_at.desc(), Video.id.desc())
+    )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return stmt
+
+
+def _stale_video_count_stmt():
+    return select(func.count(Video.id)).select_from(Video).join(Media, Media.id == Video.media_id).where(
+        *_stale_video_predicates(Video, Media)
+    )
+
+
+def _stale_video_delete_stmt():
+    stale_video = aliased(Video)
+    stale_media = aliased(Media)
+    stale_ids = (
+        select(stale_video.id)
+        .join(stale_media, stale_media.id == stale_video.media_id)
+        .where(*_stale_video_predicates(stale_video, stale_media))
+    )
+    return delete(Video).where(Video.id.in_(stale_ids)).returning(Video.id)
+
+
+def _list_cleanup_videos(session, *, limit: int | None = None) -> list[tuple[Video, Media]]:
+    return session.execute(_stale_video_rows_stmt(limit=limit)).all()
 
 
 def _cleanup_video_out(video: Video, media: Media) -> CleanupVideoOut:
@@ -431,19 +438,16 @@ def sync_media(media_id: uuid.UUID, scope: str = "recent") -> dict:
 def get_stale_videos_cleanup(limit: int = 20) -> dict:
     lim = max(1, min(int(limit or 20), 100))
     with session_scope() as session:
-        candidates = _list_cleanup_videos(session)
+        count = int(session.execute(_stale_video_count_stmt()).scalar_one() or 0)
+        candidates = _list_cleanup_videos(session, limit=lim)
         return {
-            "count": len(candidates),
-            "items": [_cleanup_video_out(video, media).model_dump(mode="json") for video, media in candidates[:lim]],
+            "count": count,
+            "items": [_cleanup_video_out(video, media).model_dump(mode="json") for video, media in candidates],
         }
 
 
 @router.post("/cleanup/stale-videos")
 def cleanup_stale_videos() -> dict:
     with session_scope() as session:
-        candidates = _list_cleanup_videos(session)
-        deleted = 0
-        for video, _media in candidates:
-            session.delete(video)
-            deleted += 1
+        deleted = len(session.execute(_stale_video_delete_stmt()).scalars().all())
         return {"ok": True, "deleted": deleted}
