@@ -7,6 +7,10 @@ from sqlalchemy import select
 
 from raelyn.db import session_scope
 from raelyn.models import AppConfig
+from raelyn.services.brief_schedule import (
+    brief_generation_policy_defaults,
+    normalize_brief_generation_policy,
+)
 from raelyn.services.transcript_polish_prompt import (
     TRANSCRIPT_POLISH_PROMPT_CONFIG_KEY,
     transcript_polish_prompt_defaults,
@@ -42,6 +46,13 @@ def _validate_llm_transcript_polish_prompt_value(value: dict) -> None:
         raise HTTPException(status_code=400, detail="llm_transcript_polish_prompt.text is too large (max 64KB).")
 
 
+def _validate_brief_generation_policy_value(value: dict) -> None:
+    try:
+        normalize_brief_generation_policy(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/config")
 def get_config() -> dict:
     with session_scope() as session:
@@ -51,15 +62,18 @@ def get_config() -> dict:
 
 @router.get("/config/defaults")
 def get_config_defaults() -> dict:
-    return transcript_polish_prompt_defaults()
+    defaults = transcript_polish_prompt_defaults()
+    defaults.update(brief_generation_policy_defaults())
+    return defaults
 
 
 @router.put("/config/{key}")
 def put_config(key: str, payload: ConfigUpsert) -> dict:
     with session_scope() as session:
+        value = payload.value
         if key == "ytdlp_cookies":
             try:
-                text = payload.value.get("text") if isinstance(payload.value, dict) else ""
+                text = value.get("text") if isinstance(value, dict) else ""
             except Exception:
                 text = ""
             if isinstance(text, str) and text.strip():
@@ -69,14 +83,17 @@ def put_config(key: str, payload: ConfigUpsert) -> dict:
                         detail="ytdlp_cookies must be Netscape cookies.txt format (tab-separated).",
                     )
         if key == TRANSCRIPT_POLISH_PROMPT_CONFIG_KEY:
-            _validate_llm_transcript_polish_prompt_value(payload.value)
+            _validate_llm_transcript_polish_prompt_value(value)
+        if key == "brief_generation_policy":
+            _validate_brief_generation_policy_value(value)
+            value = normalize_brief_generation_policy(value)
 
         existing = session.get(AppConfig, key)
         if existing:
-            existing.value = payload.value
+            existing.value = value
             existing.updated_at = utcnow()
         else:
-            session.add(AppConfig(key=key, value=payload.value))
+            session.add(AppConfig(key=key, value=value))
 
         # If the system was paused due to invalid/expired cookies, resume automatically after cookies update.
         if key == "ytdlp_cookies":

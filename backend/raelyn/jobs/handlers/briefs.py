@@ -4,16 +4,14 @@ import re
 import uuid
 from datetime import date
 
-from dateutil import tz
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from raelyn.config import settings
-from raelyn.jobs.enqueue import enqueue_in
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
 from raelyn.models import Brief, Job, Playlist, PlaylistMedia, Video
 from raelyn.services.assets import ensure_asset
+from raelyn.services.brief_schedule import schedule_brief_refresh_for_video
 from raelyn.services.brief_prompt import (
     DEFAULT_BRIEF_PROMPT_TEMPLATE,
     brief_period_bounds_utc,
@@ -27,43 +25,7 @@ from raelyn.services.workdir import job_workdir
 
 
 def _enqueue_brief_for_video_playlists(session: Session, *, video: Video, delay_seconds: int = 90) -> int:
-    if not llm_enabled():
-        return 0
-
-    ts = video.published_at or video.created_at
-    if not ts:
-        return 0
-
-    tzinfo = tz.gettz(settings.timezone) or tz.tzlocal()
-    try:
-        day = ts.astimezone(tzinfo).date()
-    except Exception:
-        return 0
-
-    playlist_ids = (
-        session.execute(select(PlaylistMedia.playlist_id).where(PlaylistMedia.media_id == video.media_id).distinct())
-        .scalars()
-        .all()
-    )
-    if not playlist_ids:
-        return 0
-
-    rows = session.execute(select(Playlist.id, Playlist.brief_granularity).where(Playlist.id.in_(list(playlist_ids)))).all()
-    count = 0
-    for playlist_id, granularity in rows:
-        value = (granularity or "day").strip().lower()
-        if value not in {"day", "week", "month"}:
-            value = "day"
-        period = brief_period_start(day, value)
-        enqueue_in(
-            session,
-            seconds=delay_seconds,
-            type_="brief.generate_period",
-            params={"playlist_id": str(playlist_id), "granularity": value, "period_start": period.isoformat()},
-            priority=2,
-        )
-        count += 1
-    return count
+    return schedule_brief_refresh_for_video(session, video=video, reason="transcript_ready")
 
 
 def _brief_generate_period_impl(

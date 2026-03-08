@@ -10,8 +10,8 @@ from sqlalchemy import select
 
 from raelyn.api.orm import OrmModel
 from raelyn.db import session_scope
-from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Asset, Brief, DailyBrief
+from raelyn.services.brief_schedule import schedule_brief_refresh
 from raelyn.services.brief_prompt import build_brief_prompt_for_period
 from raelyn.services.s3 import s3_presign_get
 
@@ -75,11 +75,13 @@ def generate_brief(payload: BriefGenerate) -> dict:
         raise HTTPException(status_code=400, detail="invalid granularity (day/week/month)")
     pstart = _period_start(payload.date, g)
     with session_scope() as session:
-        enqueue_job(
+        schedule_brief_refresh(
             session,
-            type_="brief.generate_period",
-            params={"playlist_id": str(payload.playlist_id), "granularity": g, "period_start": pstart.isoformat()},
-            priority=5,
+            playlist_id=payload.playlist_id,
+            granularity=g,
+            period_start=pstart,
+            trigger_mode="manual",
+            reason="manual_generate",
         )
     return {"ok": True}
 
@@ -104,11 +106,13 @@ def generate_brief_range(payload: BriefGenerateRange) -> dict:
         n = 0
         d = start
         while d <= end:
-            enqueue_job(
+            schedule_brief_refresh(
                 session,
-                type_="brief.generate_period",
-                params={"playlist_id": str(payload.playlist_id), "granularity": g, "period_start": d.isoformat()},
-                priority=3,
+                playlist_id=payload.playlist_id,
+                granularity=g,
+                period_start=d,
+                trigger_mode="manual",
+                reason="manual_generate_range",
             )
             n += 1
             if g == "day":

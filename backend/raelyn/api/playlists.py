@@ -14,8 +14,8 @@ from sqlalchemy import Date, cast, func, select
 from raelyn.api.orm import OrmModel
 from raelyn.config import settings
 from raelyn.db import session_scope
-from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Media, Playlist, PlaylistMedia, Video
+from raelyn.services.brief_schedule import schedule_brief_refresh_for_media_change
 from raelyn.services.s3 import s3_presign_get, s3_upload_file
 
 
@@ -201,52 +201,6 @@ def _period_bounds_utc(period_start: date, granularity: str) -> tuple[datetime, 
     raise HTTPException(status_code=400, detail="invalid granularity (day/week/month)")
 
 
-def _enqueue_brief_full_range(session, *, playlist_id: uuid.UUID, priority: int = 3) -> int:
-    media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == playlist_id)).scalars().all()
-    if not media_ids:
-        return 0
-
-    min_ts = session.execute(
-        select(func.min(Video.published_at)).where(Video.media_id.in_(list(media_ids)), Video.published_at.is_not(None))
-    ).scalar_one_or_none()
-    if not min_ts:
-        min_ts = session.execute(select(func.min(Video.created_at)).where(Video.media_id.in_(list(media_ids)))).scalar_one_or_none()
-    start_date = _local_date(min_ts)
-    if not start_date:
-        return 0
-
-    tzinfo = tz.gettz(settings.timezone) or tz.tzlocal()
-    today = datetime.now(tzinfo).date()
-    if today < start_date:
-        return 0
-
-    playlist = session.get(Playlist, playlist_id)
-    granularity = (getattr(playlist, "brief_granularity", None) or "day").strip().lower() if playlist else "day"
-    if granularity not in {"day", "week", "month"}:
-        granularity = "day"
-
-    start_date = _period_start(start_date, granularity)
-    end_date = _period_start(today, granularity)
-
-    n = 0
-    d = start_date
-    while d <= end_date:
-        enqueue_job(
-            session,
-            type_="brief.generate_period",
-            params={"playlist_id": str(playlist_id), "granularity": granularity, "period_start": d.isoformat()},
-            priority=priority,
-        )
-        n += 1
-        if granularity == "day":
-            d = d + timedelta(days=1)
-        elif granularity == "week":
-            d = d + timedelta(days=7)
-        else:
-            d = _month_add_one(d)
-    return n
-
-
 @router.post("/playlists", response_model=PlaylistOut)
 def create_playlist(payload: PlaylistCreate) -> PlaylistOut:
     with session_scope() as session:
@@ -263,8 +217,12 @@ def create_playlist(payload: PlaylistCreate) -> PlaylistOut:
             for mid in media_ids:
                 session.add(PlaylistMedia(playlist_id=playlist.id, media_id=mid))
 
-        # Full-range briefs (earliest -> today) as requested; can be slow but runs async in worker.
-        _enqueue_brief_full_range(session, playlist_id=playlist.id, priority=1)
+        schedule_brief_refresh_for_media_change(
+            session,
+            playlist_id=playlist.id,
+            changed_media_ids=media_ids,
+            change_type="media_added",
+        )
         session.refresh(playlist)
         return _playlist_out(session, playlist)
 
@@ -477,7 +435,12 @@ def add_playlist_media(playlist_id: uuid.UUID, payload: PlaylistMediaAdd) -> dic
         existing = session.get(PlaylistMedia, {"playlist_id": playlist_id, "media_id": payload.media_id})
         if not existing:
             session.add(PlaylistMedia(playlist_id=playlist_id, media_id=payload.media_id))
-            _enqueue_brief_full_range(session, playlist_id=playlist_id, priority=1)
+            schedule_brief_refresh_for_media_change(
+                session,
+                playlist_id=playlist_id,
+                changed_media_ids=[payload.media_id],
+                change_type="media_added",
+            )
     return {"ok": True}
 
 
@@ -487,7 +450,12 @@ def remove_playlist_media(playlist_id: uuid.UUID, media_id: uuid.UUID) -> dict:
         existing = session.get(PlaylistMedia, {"playlist_id": playlist_id, "media_id": media_id})
         if existing:
             session.delete(existing)
-            _enqueue_brief_full_range(session, playlist_id=playlist_id, priority=1)
+            schedule_brief_refresh_for_media_change(
+                session,
+                playlist_id=playlist_id,
+                changed_media_ids=[media_id],
+                change_type="media_removed",
+            )
     return {"ok": True}
 
 
@@ -507,6 +475,7 @@ def replace_playlist_media(playlist_id: uuid.UUID, payload: PlaylistMediaReplace
         existing = session.execute(select(PlaylistMedia).where(PlaylistMedia.playlist_id == playlist_id)).scalars().all()
         existing_set = {pm.media_id for pm in existing}
         desired_set = set(ids)
+        changed_ids = list(existing_set.symmetric_difference(desired_set))
 
         for pm in existing:
             if pm.media_id not in desired_set:
@@ -515,7 +484,13 @@ def replace_playlist_media(playlist_id: uuid.UUID, payload: PlaylistMediaReplace
             if mid not in existing_set:
                 session.add(PlaylistMedia(playlist_id=playlist_id, media_id=mid))
 
-        _enqueue_brief_full_range(session, playlist_id=playlist_id, priority=1)
+        if changed_ids:
+            schedule_brief_refresh_for_media_change(
+                session,
+                playlist_id=playlist_id,
+                changed_media_ids=changed_ids,
+                change_type="media_replaced",
+            )
     return {"ok": True}
 
 

@@ -30,7 +30,7 @@ class TranscriptPolishPromptTests(unittest.TestCase):
 
     def test_custom_template_uses_chunk_and_indices(self) -> None:
         prompt = render_transcript_polish_prompt(template="片段 {index}/{total}\n内容:\n{chunk}\n", chunk="abc", index=2, total=5)
-        self.assertEqual(prompt, "片段 2/5\n内容:\nabc\n")
+        self.assertEqual(prompt, "片段 2/5\n内容:\nabc")
 
     def test_custom_template_without_chunk_appends_original_text(self) -> None:
         prompt = render_transcript_polish_prompt(template="请润色以下内容", chunk="abc", index=1, total=1)

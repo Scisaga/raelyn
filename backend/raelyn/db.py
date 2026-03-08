@@ -131,17 +131,21 @@ where job.type = 'video.download'
             except Exception:
                 pass
 
-    # Brief job dedupe: ensure a per-(playlist_id, date) key exists and is unique among active jobs.
+    # Brief job dedupe: keep at most one pending job per normalized brief key.
     if "job" in tables:
         cols = {c.get("name") for c in insp.get_columns("job")}
         if "dedupe_key" not in cols:
             conn.execute(text("alter table job add column dedupe_key varchar"))
         try:
+            conn.execute(text("drop index if exists job_brief_dedupe_active_ux"))
+        except Exception:
+            pass
+        try:
             conn.execute(
                 text(
-                    "create unique index if not exists job_brief_dedupe_active_ux "
+                    "create unique index if not exists job_brief_dedupe_pending_ux "
                     "on job(dedupe_key) "
-                    "where dedupe_key is not null and status in ('pending','running')"
+                    "where dedupe_key is not null and status = 'pending'"
                 )
             )
         except Exception:

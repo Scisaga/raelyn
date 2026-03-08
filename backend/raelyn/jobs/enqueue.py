@@ -117,7 +117,7 @@ def enqueue_job(
             except Exception:
                 pass
             existing_id = session.execute(
-                select(Job.id).where(Job.dedupe_key == dedupe_key, Job.status.in_(["pending", "running"])).limit(1)
+                select(Job.id).where(Job.dedupe_key == dedupe_key, Job.status == "pending").limit(1)
             ).scalar_one_or_none()
             if existing_id:
                 return existing_id
