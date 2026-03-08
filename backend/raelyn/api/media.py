@@ -7,8 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from sqlalchemy import String, cast, delete, exists, func, select
-from sqlalchemy.orm import aliased
+from sqlalchemy import String, and_, cast, delete, or_, select
 
 from raelyn.api.orm import OrmModel
 from raelyn.config import settings
@@ -22,6 +21,8 @@ from raelyn.services.s3 import s3_clear_bucket, s3_presign_get
 
 router = APIRouter(tags=["media"])
 _DOWNLOAD_JOB_TYPES = ("video.download", "video.download.youtube", "video.download.bilibili")
+_CLEANUP_SCAN_BATCH_SIZE = 500
+_CLEANUP_DELETE_BATCH_SIZE = 500
 
 
 class MediaCreate(BaseModel):
@@ -96,63 +97,119 @@ def _pending_download_job_ids_for_media(session, *, media_id: uuid.UUID) -> list
         .all()
     )
 
-def _stale_video_predicates(video_model=Video, media_model=Media):
-    has_video_asset = exists(
-        select(1)
-        .select_from(Asset)
-        .where(
-            Asset.video_id == video_model.id,
-            Asset.type == "video",
-        )
-    )
-    has_active_download_job = exists(
-        select(1)
-        .select_from(Job)
-        .where(
-            Job.status.in_(["pending", "running"]),
-            Job.type.in_(_DOWNLOAD_JOB_TYPES),
-            _job_video_id_expr() == cast(video_model.id, String),
-        )
-    )
-    return (
-        media_model.monitor_enabled.is_(False),
-        video_model.status == "discovered",
-        ~has_video_asset,
-        ~has_active_download_job,
-    )
-
-
-def _stale_video_rows_stmt(*, limit: int | None = None):
+def _cleanup_scan_rows_stmt(
+    *,
+    limit: int,
+    before_created_at: Any | None = None,
+    before_id: uuid.UUID | None = None,
+):
     stmt = (
         select(Video, Media)
         .join(Media, Media.id == Video.media_id)
-        .where(*_stale_video_predicates(Video, Media))
+        .where(Media.monitor_enabled.is_(False), Video.status == "discovered")
         .order_by(Video.created_at.desc(), Video.id.desc())
     )
-    if limit is not None:
-        stmt = stmt.limit(limit)
-    return stmt
+    if before_created_at is not None and before_id is not None:
+        stmt = stmt.where(
+            or_(
+                Video.created_at < before_created_at,
+                and_(Video.created_at == before_created_at, Video.id < before_id),
+            )
+        )
+    return stmt.limit(limit)
 
 
-def _stale_video_count_stmt():
-    return select(func.count(Video.id)).select_from(Video).join(Media, Media.id == Video.media_id).where(
-        *_stale_video_predicates(Video, Media)
+def _filter_cleanup_candidates(session, rows: list[tuple[Video, Media]]) -> list[tuple[Video, Media]]:
+    if not rows:
+        return []
+
+    video_ids = [video.id for video, _media in rows]
+    video_id_texts = [str(video_id) for video_id in video_ids]
+
+    asset_video_ids = {
+        video_id
+        for video_id in session.execute(
+            select(Asset.video_id).where(Asset.type == "video", Asset.video_id.in_(video_ids))
+        )
+        .scalars()
+        .all()
+        if video_id
+    }
+    active_job_video_ids = set(
+        session.execute(
+            select(_job_video_id_expr()).where(
+                Job.status.in_(["pending", "running"]),
+                Job.type.in_(_DOWNLOAD_JOB_TYPES),
+                _job_video_id_expr().in_(video_id_texts),
+            )
+        )
+        .scalars()
+        .all()
     )
 
-
-def _stale_video_delete_stmt():
-    stale_video = aliased(Video)
-    stale_media = aliased(Media)
-    stale_ids = (
-        select(stale_video.id)
-        .join(stale_media, stale_media.id == stale_video.media_id)
-        .where(*_stale_video_predicates(stale_video, stale_media))
-    )
-    return delete(Video).where(Video.id.in_(stale_ids)).returning(Video.id)
+    return [
+        (video, media)
+        for video, media in rows
+        if video.id not in asset_video_ids and str(video.id) not in active_job_video_ids
+    ]
 
 
-def _list_cleanup_videos(session, *, limit: int | None = None) -> list[tuple[Video, Media]]:
-    return session.execute(_stale_video_rows_stmt(limit=limit)).all()
+def _scan_cleanup_candidates(
+    session,
+    *,
+    limit: int,
+    stop_after_found: int | None = None,
+    batch_size: int = _CLEANUP_SCAN_BATCH_SIZE,
+) -> tuple[list[tuple[Video, Media]], bool]:
+    found: list[tuple[Video, Media]] = []
+    before_created_at = None
+    before_id = None
+    target = max(1, int(stop_after_found or limit))
+
+    while True:
+        rows = session.execute(
+            _cleanup_scan_rows_stmt(limit=batch_size, before_created_at=before_created_at, before_id=before_id)
+        ).all()
+        if not rows:
+            return found[:limit], False
+
+        candidates = _filter_cleanup_candidates(session, rows)
+        found.extend(candidates)
+        if len(found) >= target:
+            return found[:limit], True
+
+        last_video, _last_media = rows[-1]
+        before_created_at = last_video.created_at
+        before_id = last_video.id
+
+
+def _list_cleanup_videos(session, *, limit: int | None = None) -> tuple[list[tuple[Video, Media]], bool]:
+    lim = max(1, int(limit or 20))
+    return _scan_cleanup_candidates(session, limit=lim, stop_after_found=lim + 1)
+
+
+def _delete_cleanup_videos(session, *, batch_size: int = _CLEANUP_DELETE_BATCH_SIZE) -> int:
+    deleted = 0
+    before_created_at = None
+    before_id = None
+
+    while True:
+        rows = session.execute(
+            _cleanup_scan_rows_stmt(limit=batch_size, before_created_at=before_created_at, before_id=before_id)
+        ).all()
+        if not rows:
+            return deleted
+
+        candidates = _filter_cleanup_candidates(session, rows)
+        if candidates:
+            candidate_ids = [video.id for video, _media in candidates]
+            deleted += int(
+                session.execute(delete(Video).where(Video.id.in_(candidate_ids))).rowcount or 0
+            )
+
+        last_video, _last_media = rows[-1]
+        before_created_at = last_video.created_at
+        before_id = last_video.id
 
 
 def _cleanup_video_out(video: Video, media: Media) -> CleanupVideoOut:
@@ -438,10 +495,10 @@ def sync_media(media_id: uuid.UUID, scope: str = "recent") -> dict:
 def get_stale_videos_cleanup(limit: int = 20) -> dict:
     lim = max(1, min(int(limit or 20), 100))
     with session_scope() as session:
-        count = int(session.execute(_stale_video_count_stmt()).scalar_one() or 0)
-        candidates = _list_cleanup_videos(session, limit=lim)
+        candidates, has_more = _list_cleanup_videos(session, limit=lim)
         return {
-            "count": count,
+            "count": len(candidates),
+            "has_more": has_more,
             "items": [_cleanup_video_out(video, media).model_dump(mode="json") for video, media in candidates],
         }
 
@@ -449,5 +506,5 @@ def get_stale_videos_cleanup(limit: int = 20) -> dict:
 @router.post("/cleanup/stale-videos")
 def cleanup_stale_videos() -> dict:
     with session_scope() as session:
-        deleted = len(session.execute(_stale_video_delete_stmt()).scalars().all())
+        deleted = _delete_cleanup_videos(session)
         return {"ok": True, "deleted": deleted}

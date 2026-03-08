@@ -180,6 +180,7 @@ function RaelynApp() {
     llmPolishPromptError: "",
     staleVideosCleanupCount: 0,
     staleVideosCleanupItems: [],
+    staleVideosCleanupHasMore: false,
     staleVideosCleanupLoaded: false,
     staleVideosCleanupLoading: false,
     staleVideosCleanupDeleting: false,
@@ -2648,6 +2649,7 @@ function RaelynApp() {
         this.staleVideosCleanupError = "";
         const payload = await this.api(`/cleanup/stale-videos?limit=20`);
         this.staleVideosCleanupCount = Number((payload && payload.count) || 0);
+        this.staleVideosCleanupHasMore = !!(payload && payload.has_more);
         this.staleVideosCleanupItems = Array.isArray(payload && payload.items) ? payload.items : [];
         this.staleVideosCleanupLoaded = true;
       } catch (e) {
@@ -2659,17 +2661,20 @@ function RaelynApp() {
 
     async cleanupStaleVideos() {
       if (this.staleVideosCleanupDeleting) return;
-      if (Number(this.staleVideosCleanupCount || 0) <= 0) {
+      const currentCount = Math.max(Number(this.staleVideosCleanupCount || 0), this.staleVideosCleanupItems.length);
+      if (currentCount <= 0) {
         await this.loadStaleVideosCleanup({ force: true });
-        if (Number(this.staleVideosCleanupCount || 0) <= 0) {
+        const refreshedCount = Math.max(Number(this.staleVideosCleanupCount || 0), this.staleVideosCleanupItems.length);
+        if (refreshedCount <= 0) {
           this.globalStatus = "没有可清理的遗留视频记录";
           return;
         }
       }
 
-      const count = Number(this.staleVideosCleanupCount || 0);
+      const count = Math.max(Number(this.staleVideosCleanupCount || 0), this.staleVideosCleanupItems.length);
+      const countLabel = this.staleVideosCleanupHasMore ? `${count}+` : String(count);
       const ok = confirm(
-        `确认清理这 ${count} 条遗留视频记录？\n\n只会删除“媒体已停用监控、视频仍是 discovered、且没有有效下载任务/视频文件”的记录。`
+        `确认清理这 ${countLabel} 条遗留视频记录？\n\n只会删除“媒体已停用监控、视频仍是 discovered、且没有有效下载任务/视频文件”的记录。`
       );
       if (!ok) return;
 
@@ -2693,6 +2698,12 @@ function RaelynApp() {
       } finally {
         this.staleVideosCleanupDeleting = false;
       }
+    },
+
+    staleVideosCleanupCountLabel() {
+      const count = Math.max(Number(this.staleVideosCleanupCount || 0), this.staleVideosCleanupItems.length);
+      if (this.staleVideosCleanupHasMore && count > 0) return `${count}+`;
+      return String(count);
     },
 
     playlistListFiltered() {

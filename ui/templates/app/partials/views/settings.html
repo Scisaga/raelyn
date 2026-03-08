@@ -322,11 +322,11 @@
                   <div class="rounded-lg border border-slate-800 bg-slate-950/20 p-4">
                     <div class="text-[11px] uppercase tracking-[0.22em] text-slate-500">Candidates</div>
                     <div class="mt-2 flex items-end gap-3">
-                      <div class="text-3xl font-semibold text-slate-100 tabular-nums" x-text="staleVideosCleanupCount"></div>
+                      <div class="text-3xl font-semibold text-slate-100 tabular-nums" x-text="staleVideosCleanupCountLabel()"></div>
                       <div class="pb-1 text-xs text-slate-400">条可清理视频记录</div>
                     </div>
                     <div class="mt-2 text-xs text-slate-500">
-                      只展示前 20 条样本；真正执行时会清理全部符合条件的记录。
+                      只展示前 20 条样本；显示 `20+` 表示至少还有更多。真正执行时会清理全部符合条件的记录。
                     </div>
                   </div>
 

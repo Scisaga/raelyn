@@ -4,19 +4,18 @@ import sys
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
-
-from sqlalchemy.dialects import postgresql
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn.api.media import (
+    _delete_cleanup_videos,
+    _filter_cleanup_candidates,
     _list_cleanup_videos,
     _pending_download_job_ids_for_media,
-    _stale_video_delete_stmt,
-    _stale_video_rows_stmt,
 )
 
 
@@ -42,39 +41,63 @@ class MediaApiCleanupTests(unittest.TestCase):
         session.execute.assert_called_once()
 
     def test_list_cleanup_videos_uses_single_db_query(self) -> None:
-        rows = [("video-a", "media-a")]
+        rows = [(SimpleNamespace(id=uuid.uuid4(), created_at=1), SimpleNamespace(id=uuid.uuid4()))]
         session = Mock()
-        session.execute.return_value = Mock(all=Mock(return_value=rows))
+        session.execute.side_effect = [
+            Mock(all=Mock(return_value=rows)),
+            _ScalarResult([]),
+            _ScalarResult([]),
+            Mock(all=Mock(return_value=[])),
+        ]
 
-        result = _list_cleanup_videos(session)
+        result, has_more = _list_cleanup_videos(session)
 
         self.assertEqual(result, rows)
-        session.execute.assert_called_once()
+        self.assertFalse(has_more)
 
-    def test_stale_video_rows_stmt_uses_exists_not_large_in_list(self) -> None:
-        sql = str(
-            _stale_video_rows_stmt(limit=20).compile(
-                dialect=postgresql.dialect(),
-                compile_kwargs={"literal_binds": False},
-            )
-        )
+    def test_filter_cleanup_candidates_excludes_assets_and_active_jobs(self) -> None:
+        keep_video_id = uuid.uuid4()
+        asset_video_id = uuid.uuid4()
+        job_video_id = uuid.uuid4()
+        media = SimpleNamespace(id=uuid.uuid4(), name="media-a")
+        rows = [
+            (SimpleNamespace(id=keep_video_id), media),
+            (SimpleNamespace(id=asset_video_id), media),
+            (SimpleNamespace(id=job_video_id), media),
+        ]
 
-        self.assertIn("EXISTS", sql)
-        self.assertNotIn("asset.video_id IN", sql)
-        self.assertNotIn("video_id_1_1", sql)
-        self.assertIn("job.params", sql)
+        session = Mock()
+        session.execute.side_effect = [
+            _ScalarResult([asset_video_id]),
+            _ScalarResult([str(job_video_id)]),
+        ]
 
-    def test_stale_video_delete_stmt_uses_subquery(self) -> None:
-        sql = str(
-            _stale_video_delete_stmt().compile(
-                dialect=postgresql.dialect(),
-                compile_kwargs={"literal_binds": False},
-            )
-        )
+        result = _filter_cleanup_candidates(session, rows)
 
-        self.assertIn("DELETE FROM video", sql)
-        self.assertIn("SELECT video_1.id", sql)
-        self.assertIn("EXISTS", sql)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][0].id, keep_video_id)
+
+    def test_delete_cleanup_videos_deletes_in_batches(self) -> None:
+        first_video = SimpleNamespace(id=uuid.uuid4(), created_at=2)
+        second_video = SimpleNamespace(id=uuid.uuid4(), created_at=1)
+        media = SimpleNamespace(id=uuid.uuid4())
+        delete_result = SimpleNamespace(rowcount=1)
+        session = Mock()
+        session.execute.side_effect = [
+            Mock(all=Mock(return_value=[(first_video, media)])),
+            _ScalarResult([]),
+            _ScalarResult([]),
+            delete_result,
+            Mock(all=Mock(return_value=[(second_video, media)])),
+            _ScalarResult([]),
+            _ScalarResult([]),
+            delete_result,
+            Mock(all=Mock(return_value=[])),
+        ]
+
+        deleted = _delete_cleanup_videos(session, batch_size=1)
+
+        self.assertEqual(deleted, 2)
 
 
 if __name__ == "__main__":
