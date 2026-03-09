@@ -2,7 +2,13 @@
 
 一个基于 `yt-dlp + ffmpeg` 的单用户媒体订阅与视频采集系统：支持 YouTube / B站媒体同步、增量发现新视频、下载视频/字幕、分离音频、字幕标准化文本（可选 ASR）、按播放列表按天生成 Markdown 简报（LLM：Ollama 或 OpenAI-compatible 在线推理）。
 
-详细技术方案见：`01.md`。
+## 文档
+
+- [文档导航](docs/README.md)
+- [项目愿景与范围](docs/vision.md)
+- [架构总览](docs/architecture/overview.md)
+- [REST API 设计](docs/api/rest.md)
+- [配置项说明](docs/reference/configuration.md)
 
 ---
 
