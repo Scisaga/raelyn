@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildIndexHtml, templatesSignature } from "./html.mjs";
+import { buildAppBundle, jsSourceSignature } from "./js-bundle.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const uiDir = resolve(here, "..");
@@ -22,6 +23,7 @@ copyFileSync(
 );
 
 buildIndexHtml({ uiDir, root });
+await buildAppBundle({ uiDir, root, minify: false });
 
 const tailwindCli = resolve(uiDir, "node_modules/.bin/tailwindcss");
 const args = ["-i", resolve(uiDir, "input.css"), "-o", cssOut, "--minify", "--watch"];
@@ -31,6 +33,13 @@ child.on("exit", (code) => process.exit(code ?? 0));
 let lastSig = "";
 try {
   lastSig = templatesSignature(uiDir);
+} catch {
+  // ignore
+}
+
+let lastJsSig = "";
+try {
+  lastJsSig = jsSourceSignature(uiDir);
 } catch {
   // ignore
 }
@@ -49,6 +58,22 @@ setInterval(() => {
       buildIndexHtml({ uiDir, root });
     } catch (err) {
       console.error("[ui] html build failed:", err);
+    }
+  }
+
+  let jsSig = "";
+  try {
+    jsSig = jsSourceSignature(uiDir);
+  } catch (err) {
+    console.error("[ui] js source scan failed:", err);
+    return;
+  }
+  if (jsSig && jsSig !== lastJsSig) {
+    lastJsSig = jsSig;
+    try {
+      await buildAppBundle({ uiDir, root, minify: false });
+    } catch (err) {
+      console.error("[ui] js build failed:", err);
     }
   }
 }, 750);

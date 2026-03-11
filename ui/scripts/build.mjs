@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildIndexHtml } from "./html.mjs";
+import { buildAppBundle } from "./js-bundle.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const uiDir = resolve(here, "..");
@@ -34,3 +35,4 @@ copyFileSync(
 console.log("[ui] built:", cssOut);
 
 buildIndexHtml({ uiDir, root });
+await buildAppBundle({ uiDir, root, minify: true });

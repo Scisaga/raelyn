@@ -1,0 +1,58 @@
+import { SETTINGS_TABS, YTDLP_FORMAT_PRESET_1080, YTDLP_FORMAT_PRESET_720 } from "./constants.js";
+import { createAppInitMethods } from "./init-model.js";
+import { createApiMethods } from "../services/api.js";
+import { createUrlStateMethods } from "../services/url-state.js";
+import { createCommonViewMethods } from "../shared/view-helpers.js";
+import { createOverviewViewMethods } from "../views/overview-model.js";
+import { createMediaViewMethods } from "../views/media-model.js";
+import { createVideosViewMethods } from "../views/videos-model.js";
+import { createJobsViewMethods } from "../views/jobs-model.js";
+import { createSettingsViewMethods } from "../views/settings-model.js";
+import { createPlaylistsViewMethods } from "../views/playlists-model.js";
+import { createPlaylistViewMethods } from "../views/playlist-model.js";
+import { mergeModelSegments } from "./model-segments.js";
+import { createShellModule } from "./modules/shell.js";
+import { createToastModule } from "./modules/toast.js";
+import { createMediaVideosModule } from "./modules/media-videos.js";
+import { createJobsModule } from "./modules/jobs.js";
+import { createSettingsModule } from "./modules/settings.js";
+import { createPlayerModule } from "./modules/player.js";
+import { createPlaylistsModule } from "./modules/playlists.js";
+
+const SIDEBAR_COLLAPSED_KEY = "raelyn.ui.sidebarCollapsed";
+const SIDEBAR_HIDDEN_KEY = "raelyn.ui.sidebarHidden";
+
+export function createAppModel() {
+  return mergeModelSegments(
+    {
+      name: "shell",
+      value: createShellModule({
+        sidebarCollapsedKey: SIDEBAR_COLLAPSED_KEY,
+        sidebarHiddenKey: SIDEBAR_HIDDEN_KEY,
+      }),
+    },
+    { name: "toast", value: createToastModule() },
+    { name: "mediaVideos", value: createMediaVideosModule() },
+    { name: "jobs", value: createJobsModule() },
+    { name: "settings", value: createSettingsModule() },
+    { name: "player", value: createPlayerModule() },
+    { name: "playlists", value: createPlaylistsModule() },
+    { name: "api", value: createApiMethods() },
+    { name: "shared", value: createCommonViewMethods() },
+    { name: "urlState", value: createUrlStateMethods({ settingsTabs: SETTINGS_TABS }) },
+    { name: "overviewView", value: createOverviewViewMethods() },
+    { name: "mediaView", value: createMediaViewMethods() },
+    { name: "videosView", value: createVideosViewMethods() },
+    { name: "jobsView", value: createJobsViewMethods() },
+    {
+      name: "settingsView",
+      value: createSettingsViewMethods({
+        ytdlpFormatPreset1080: YTDLP_FORMAT_PRESET_1080,
+        ytdlpFormatPreset720: YTDLP_FORMAT_PRESET_720,
+      }),
+    },
+    { name: "playlistsView", value: createPlaylistsViewMethods() },
+    { name: "playlistView", value: createPlaylistViewMethods() },
+    { name: "init", value: createAppInitMethods() }
+  );
+}

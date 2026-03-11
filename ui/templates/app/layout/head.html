@@ -70,6 +70,28 @@
         background: rgba(148, 163, 184, 0.4);
       }
 
+      .raelyn-multiline-input {
+        background-color: rgba(15, 23, 42, 0.78);
+        border-color: rgba(51, 65, 85, 0.9);
+        color: rgb(157, 176, 195);
+        caret-color: rgb(241 245 249);
+        transition:
+          background-color 160ms ease,
+          border-color 160ms ease,
+          box-shadow 160ms ease;
+      }
+
+      .raelyn-multiline-input::placeholder {
+        color: rgba(148, 163, 184, 0.78);
+      }
+
+      .raelyn-multiline-input:focus {
+        border-color: rgba(16, 185, 129, 0.3);
+        box-shadow:
+          0 0 0 1px rgba(16, 185, 129, 0.18),
+          0 0 0 4px rgba(16, 185, 129, 0.12);
+      }
+
       /* Sidebar: keep scrollable but hide native scrollbar so collapsed icons don't look "broken". */
       .raelyn-sidebar-nav {
         scrollbar-width: none; /* Firefox */

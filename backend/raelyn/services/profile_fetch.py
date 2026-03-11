@@ -12,6 +12,11 @@ from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.models import AppConfig
 from raelyn.services.http_client import httpx_client
+from raelyn.services.provider_pause import (
+    BILIBILI_PROVIDER_PAUSE_REASON,
+    ProviderPauseRequestError,
+    bilibili_provider_pause_message,
+)
 
 
 _META_TAG_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
@@ -70,6 +75,12 @@ def fetch_open_graph(url: str, *, timeout_seconds: float = 10.0) -> dict[str, An
         use_proxy = ""
     with httpx_client(proxy=use_proxy, timeout=timeout, follow_redirects=True) as client:
         r = client.get(url, headers=headers)
+        if "bilibili.com" in (url or "").lower() and r.status_code in {412, 429}:
+            raise ProviderPauseRequestError(
+                provider="bilibili",
+                reason=BILIBILI_PROVIDER_PAUSE_REASON,
+                message=bilibili_provider_pause_message(),
+            )
         if r.status_code < 200 or r.status_code >= 300:
             return None
         text = r.text or ""
@@ -96,6 +107,8 @@ def _extract_bilibili_mid(url: str) -> str | None:
             return None
         mid = m.group("mid")
         return mid if mid.isdigit() else None
+    except ProviderPauseRequestError:
+        raise
     except Exception:
         return None
 
@@ -207,6 +220,12 @@ def _fetch_bilibili_space_profile(*, mid: str) -> dict[str, Any] | None:
     try:
         with httpx_client(proxy="", timeout=timeout, follow_redirects=True, headers=headers) as client:
             r = client.get(url)
+            if r.status_code in {412, 429}:
+                raise ProviderPauseRequestError(
+                    provider="bilibili",
+                    reason=BILIBILI_PROVIDER_PAUSE_REASON,
+                    message=bilibili_provider_pause_message(),
+                )
             if r.status_code < 200 or r.status_code >= 300:
                 return None
             payload = r.json()
@@ -215,6 +234,13 @@ def _fetch_bilibili_space_profile(*, mid: str) -> dict[str, Any] | None:
 
     if not isinstance(payload, dict):
         return None
+    code = payload.get("code")
+    if code in {-799, -412, 412}:
+        raise ProviderPauseRequestError(
+            provider="bilibili",
+            reason=BILIBILI_PROVIDER_PAUSE_REASON,
+            message=bilibili_provider_pause_message(),
+        )
     data = payload.get("data")
     if not isinstance(data, dict):
         return None

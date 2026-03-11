@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from raelyn.models import Job, JobEvent, WorkerHeartbeat
+from raelyn.services.provider_pause import is_provider_paused, job_provider
 from raelyn.services.system_pause import is_paused
 from raelyn.timeutil import utcnow
 
@@ -95,17 +96,30 @@ def claim_next_job(
         return None
     now = utcnow()
     rank = case(*[(Job.type == t, r) for t, r in _JOB_TYPE_RANK.items()], else_=10)
-    stmt = select(Job).where(Job.status == "pending", Job.scheduled_for <= now)
+    base_stmt = select(Job).where(Job.status == "pending", Job.scheduled_for <= now)
     if type_in:
-        stmt = stmt.where(Job.type.in_(list(type_in)))
-    stmt = (
-        stmt.order_by(Job.priority.desc(), rank.asc(), Job.scheduled_for.asc(), Job.created_at.asc())
-        .with_for_update(skip_locked=True)
-        .limit(1)
-    )
-    job = session.execute(stmt).scalar_one_or_none()
-    if not job:
-        return None
+        base_stmt = base_stmt.where(Job.type.in_(list(type_in)))
+    ordered = base_stmt.order_by(Job.priority.desc(), rank.asc(), Job.scheduled_for.asc(), Job.created_at.asc())
+
+    job = None
+    batch_size = 50
+    offset = 0
+    while True:
+        stmt = ordered.with_for_update(skip_locked=True).offset(offset).limit(batch_size)
+        rows = session.execute(stmt).scalars().all()
+        if not rows:
+            return None
+        for candidate in rows:
+            provider = job_provider(session, candidate)
+            if provider and is_provider_paused(session, provider):
+                continue
+            job = candidate
+            break
+        if job is not None:
+            break
+        if len(rows) < batch_size:
+            return None
+        offset += batch_size
 
     job.status = "running"
     job.worker_id = worker_id

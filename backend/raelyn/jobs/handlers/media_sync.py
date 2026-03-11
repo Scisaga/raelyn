@@ -11,6 +11,7 @@ from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
 from raelyn.models import Asset, Job, Media, Video
 from raelyn.services.pg_lock import advisory_lock_any
+from raelyn.services.provider_pause import ProviderPauseRequestError
 from raelyn.services.profile_fetch import fetch_media_profile
 from raelyn.services.provider import build_media_videos_url
 from raelyn.services.video_meta import parse_published_at
@@ -24,6 +25,7 @@ from .common import (
     _looks_like_bilibili_face_url,
     _normalize_bilibili_video_url,
     _pause_all_jobs_for_cookies,
+    _pause_provider_jobs,
     _pick_latest_entries,
     _provider_guard_names,
     _ytdlp_members_only_download_enabled,
@@ -51,6 +53,10 @@ def media_sync_profile(session: Session, job: Job) -> dict | None:
         profile = None
         try:
             profile = fetch_media_profile(provider=media.provider, url=media.url)
+        except ProviderPauseRequestError as e:
+            _pause_provider_jobs(session, job=job, err=e)
+            media.last_profile_sync_at = utcnow()
+            raise
         except Exception as e:
             job_log(session, job, f"profile scrape failed: {e}", level="warn")
 
@@ -79,6 +85,10 @@ def media_sync_profile(session: Session, job: Job) -> dict | None:
             info = ytdlp_extract_info(media.url, flat=True, max_entries=1)
         except YtdlpCookiesInvalidError as e:
             _pause_all_jobs_for_cookies(session, job=job, err=e)
+            raise
+        except ProviderPauseRequestError as e:
+            _pause_provider_jobs(session, job=job, err=e)
+            media.last_profile_sync_at = utcnow()
             raise
         except Exception as e:
             msg = str(e)
@@ -145,6 +155,10 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
             info = ytdlp_extract_info(sync_url, flat=True, max_entries=playlist_limit if raw_max is not None else process_limit)
         except YtdlpCookiesInvalidError as e:
             _pause_all_jobs_for_cookies(session, job=job, err=e)
+            media.last_video_sync_at = utcnow()
+            raise
+        except ProviderPauseRequestError as e:
+            _pause_provider_jobs(session, job=job, err=e)
             media.last_video_sync_at = utcnow()
             raise
         except Exception as e:

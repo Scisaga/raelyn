@@ -52,6 +52,16 @@
 
           <div class="flex items-center gap-2">
             <button
+              class="inline-flex items-center gap-2 rounded-md border border-sky-900/60 bg-sky-950/20 px-3 py-1.5 text-sm text-sky-200 hover:bg-sky-900/30"
+              x-show="hasProviderPause('bilibili')"
+              x-transition.opacity.duration.150ms
+              :title="providerPause('bilibili').message || 'B站任务已暂停'"
+              @click="gotoCookiesSettings('bilibili')"
+            >
+              <span class="hidden sm:inline" x-text="providerPauseLabel('bilibili')"></span>
+              <span class="text-xs truncate max-w-[220px] hidden md:inline" x-text="providerPauseHint('bilibili')"></span>
+            </button>
+            <button
               class="inline-flex items-center gap-2 rounded-md border border-rose-900/60 bg-rose-950/20 px-3 py-1.5 text-sm text-rose-200 hover:bg-rose-900/30"
               x-show="pause && pause.paused"
               x-transition.opacity.duration.150ms
@@ -103,18 +113,18 @@
           :class="['overview','settings','playlist','playlists','videos','media','jobs'].includes(activeView) ? 'p-0 sm:p-0 space-y-0 overflow-hidden' : 'p-4 sm:p-5 space-y-4'"
           :style="['overview','settings','playlist','playlists','videos','media','jobs'].includes(activeView) ? 'height: calc(100vh - 3.5rem);' : ''"
         >
-<!-- @include views/overview.html -->
+<!-- @include ../views/overview.html -->
 
-<!-- @include views/media.html -->
+<!-- @include ../views/media.html -->
 
-<!-- @include views/videos.html -->
+<!-- @include ../views/videos.html -->
 
-<!-- @include views/jobs.html -->
+<!-- @include ../views/jobs.html -->
 
-<!-- @include views/playlists.html -->
+<!-- @include ../views/playlists.html -->
 
-<!-- @include views/playlist.html -->
+<!-- @include ../views/playlist.html -->
 
-<!-- @include views/settings.html -->
+<!-- @include ../views/settings.html -->
         </section>
       </main>

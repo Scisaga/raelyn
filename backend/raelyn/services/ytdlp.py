@@ -14,6 +14,11 @@ from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.jobs.reschedule import JobReschedule
 from raelyn.models import AppConfig
+from raelyn.services.provider_pause import (
+    BILIBILI_PROVIDER_PAUSE_REASON,
+    ProviderPauseRequestError,
+    bilibili_provider_pause_message,
+)
 from raelyn.services.ytdlp_errors import is_ffmpeg_segfault, parse_upcoming_live_delay_seconds
 
 
@@ -77,6 +82,19 @@ def _raise_if_cookie_invalid_messages(msgs: list[str]) -> None:
                 "YTDLP_COOKIES 已失效：YouTube 登录态 cookies 过期。请在 UI -> 设置 更新 cookies.txt。",
             )
         raise YtdlpCookiesInvalidError(reason, "YTDLP_COOKIES 无效，请在 UI -> 设置 更新 cookies.txt。")
+
+
+def _raise_if_provider_pause_messages(msgs: list[str]) -> None:
+    combined = "\n".join([str(msg or "") for msg in msgs if str(msg or "").strip()]).strip()
+    if not combined:
+        return
+    err = RuntimeError(combined)
+    if _is_bilibili_risk_control_error(err) or _is_bilibili_precondition_failed_error(err):
+        raise ProviderPauseRequestError(
+            provider="bilibili",
+            reason=BILIBILI_PROVIDER_PAUSE_REASON,
+            message=bilibili_provider_pause_message(),
+        )
 
 
 def _js_runtimes() -> dict[str, dict[str, str | None]] | None:
@@ -293,14 +311,7 @@ def _youtube_bot_check_hint() -> str:
 
 
 def _bilibili_risk_control_hint() -> str:
-    return (
-        "B 站请求被风控拒绝（常见：352 / HTTP 412）。常见原因：未登录/登录态 cookies 缺失或过期（SESSDATA 等）、"
-        "IP/代理出口被风控、或请求频率触发限制。\n"
-        "解决建议：\n"
-        "1) 在 UI -> 设置 配置 `YTDLP_COOKIES（cookies.txt）`（登录 bilibili 后导出 Netscape cookies.txt 粘贴保存）；\n"
-        "2) 必要时设置 `YTDLP_PROXY`（例如住宅/国内出口）并降低并发/放慢同步频率；\n"
-        "3) 若仍失败，尝试更换网络后重试。"
-    )
+    return bilibili_provider_pause_message()
 
 
 def _apply_common_ytdlp_opts(opts: dict[str, Any], *, url: str | None = None) -> None:
@@ -422,6 +433,7 @@ def ytdlp_extract_info(
             info = ydl.extract_info(url, download=False)
         except (DownloadError, ExtractorError) as e:
             _raise_if_cookie_invalid_messages(logger.warnings + logger.errors + [str(e)])
+            _raise_if_provider_pause_messages(logger.warnings + logger.errors + [str(e)])
             if _is_youtube_bot_check_error(e):
                 raise RuntimeError(_youtube_bot_check_hint()) from e
             if _is_youtube_js_challenge_failed_messages(logger.warnings + logger.errors + [str(e)]):
@@ -436,10 +448,12 @@ def ytdlp_extract_info(
         if info is None:
             last = logger.errors[-1] if logger.errors else "yt-dlp extraction returned no result"
             _raise_if_cookie_invalid_messages(logger.warnings + logger.errors + [last])
+            _raise_if_provider_pause_messages(logger.warnings + logger.errors + [last])
             if _is_bilibili_risk_control_error(RuntimeError(last)) or _is_bilibili_precondition_failed_error(RuntimeError(last)):
                 raise RuntimeError(_bilibili_risk_control_hint())
             raise RuntimeError(last)
         _raise_if_cookie_invalid_messages(logger.warnings + logger.errors)
+        _raise_if_provider_pause_messages(logger.warnings + logger.errors)
         return info
 
 
@@ -561,11 +575,13 @@ def ytdlp_download(
                 info = ydl.extract_info(url, download=True)
                 if cookie_invalid_line:
                     _raise_if_cookie_invalid_messages([cookie_invalid_line])
+                    _raise_if_provider_pause_messages([cookie_invalid_line])
                 return info
         except (DownloadError, ExtractorError) as e:
             last_error = e
             joined = "\n".join([cookie_invalid_line or "", *captured_warnings[-12:], *captured_errors[-12:], str(e)]).strip()
             _raise_if_cookie_invalid_messages([joined])
+            _raise_if_provider_pause_messages([joined])
             if _is_youtube_bot_check_error(e):
                 raise RuntimeError(_youtube_bot_check_hint()) from e
             if _is_youtube_js_challenge_failed_messages(captured_warnings + captured_errors + [str(e)]):
@@ -597,6 +613,7 @@ def ytdlp_download(
                         info = ydl.extract_info(url, download=True)
                         if cookie_invalid_line:
                             _raise_if_cookie_invalid_messages([cookie_invalid_line])
+                            _raise_if_provider_pause_messages([cookie_invalid_line])
                         return info
                 except (DownloadError, ExtractorError) as e2:
                     last_error = e2
@@ -604,6 +621,7 @@ def ytdlp_download(
                         [cookie_invalid_line or "", *captured_warnings[-12:], *captured_errors[-12:], str(e2)]
                     ).strip()
                     _raise_if_cookie_invalid_messages([joined2])
+                    _raise_if_provider_pause_messages([joined2])
                     # Fall through to raise a readable error below.
                     joined = joined2 or joined
                     e = e2

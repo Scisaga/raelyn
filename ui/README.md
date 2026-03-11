@@ -5,11 +5,21 @@
 构建产物输出到根目录 `static/`：
 - `static/css/tailwind.min.css`
 - `static/vendor/alpine.min.js`
+- `static/app.js`（由 `ui/src/**` 打包生成）
 - `static/index.html`（由 `ui/templates/app/**` 组装生成）
 
 HTML 源码位置：
 - 入口：`ui/templates/app/index.html`
-- 组件拆分：`ui/templates/app/partials/**`
+- 布局：`ui/templates/app/layout/**`
+- 组件：`ui/templates/app/components/**`
+- 视图：`ui/templates/app/views/**`
+
+JS 源码位置：
+- 入口：`ui/src/app/index.js`
+- stores：`ui/src/stores/**`
+- services：`ui/src/services/**`
+- views：`ui/src/views/**`
+- components：`ui/src/components/**`
 
 ## 安装与构建
 
@@ -32,5 +42,7 @@ npm run ui:watch
 
 ```html
 <link rel="stylesheet" href="/static/css/tailwind.min.css" />
+<script src="/static/vendor/lightweight-charts.min.js"></script>
+<script defer src="/static/app.js"></script>
 <script defer src="/static/vendor/alpine.min.js"></script>
 ```

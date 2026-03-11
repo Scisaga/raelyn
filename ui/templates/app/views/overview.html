@@ -81,7 +81,7 @@
 	                          <div class="mt-3 min-h-0 flex-1 flex flex-col justify-end">
 	                            <div class="text-[11px] text-slate-300 truncate">
 	                              <span
-                                x-text="(p && p.latest_period_start) ? ((p.latest_period_end && String(p.latest_period_end)!==String(p.latest_period_start)) ? (_mdLabel(p.latest_period_start) + ' ~ ' + _mdLabel(p.latest_period_end)) : _mdLabel(p.latest_period_start)) : '-'"
+                                x-text="(p && p.latest_period_start) ? ((p.latest_period_end && String(p.latest_period_end)!==String(p.latest_period_start)) ? (mdLabel(p.latest_period_start) + ' ~ ' + mdLabel(p.latest_period_end)) : mdLabel(p.latest_period_start)) : '-'"
                               ></span>
                             </div>
 

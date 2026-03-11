@@ -1,0 +1,210 @@
+import { getCachedValue, setCachedValue } from "../services/cache.js";
+import { formatBytes, formatDateTime, formatDateTimeShort, formatDuration, formatInteger } from "./format.js";
+import {
+  addUniqueMediaId,
+  filterUnselectedMediaOptions,
+  mediaAvatarText,
+  removeMediaId,
+  resolveMediaItemsByIds,
+} from "./media-tags.js";
+import { mdLabel } from "./playlist-periods.js";
+
+export function createCommonViewMethods() {
+  return {
+    mediaDisplayName(media) {
+      return (media && (media.name || media.provider_media_id || media.url)) || "";
+    },
+
+    mediaAvatarLabel(media) {
+      return mediaAvatarText(media && (media.name || media.provider_media_id || ""));
+    },
+
+    mediaAvatarClasses(media) {
+      const provider = (media && media.provider) || "";
+      if (provider === "youtube") return "bg-rose-500/15 text-rose-200 ring-rose-400/20";
+      if (provider === "bilibili") return "bg-sky-500/15 text-sky-200 ring-sky-400/20";
+      return "bg-slate-800 text-slate-200 ring-slate-700/60";
+    },
+
+    videoMediaDisplayName(video) {
+      return (video && (video.media_name || video.media_id)) || "";
+    },
+
+    videoMediaAvatarLabel(video) {
+      return mediaAvatarText(video && video.media_name);
+    },
+
+    videoSelectedMedia() {
+      return resolveMediaItemsByIds(this.mediaIndex, this.videoMediaIds);
+    },
+
+    videoFilteredMediaOptions() {
+      return filterUnselectedMediaOptions({
+        index: this.mediaIndex,
+        selectedIds: this.videoMediaIds,
+        query: this.videoMediaTagQuery,
+        displayName: (media) => this.mediaDisplayName(media),
+      });
+    },
+
+    videoAddMediaTag(mediaId) {
+      this.videoMediaIds = addUniqueMediaId(this.videoMediaIds, mediaId);
+      this.videoMediaTagQuery = "";
+      this.videoMediaTagOpen = false;
+      this.loadVideos();
+    },
+
+    videoAddFirstFilteredMediaTag() {
+      const items = this.videoFilteredMediaOptions();
+      if (items.length) this.videoAddMediaTag(items[0].id);
+    },
+
+    videoRemoveMediaTag(mediaId) {
+      this.videoMediaIds = removeMediaId(this.videoMediaIds, mediaId);
+      this.loadVideos();
+    },
+
+    videoClearMediaTags() {
+      this.videoMediaIds = [];
+      this.videoMediaTagQuery = "";
+      this.videoMediaTagOpen = false;
+      this.loadVideos();
+    },
+
+    openMediaVideos(mediaId) {
+      const id = String(mediaId || "").trim();
+      if (!id) return;
+
+      this.videoMediaIds = [id];
+      this.videoStatus = "";
+      this.videoQuery = "";
+      this.videoMediaTagQuery = "";
+      this.videoMediaTagOpen = false;
+
+      const now = new Date();
+      const since = new Date(now.getTime() - 90 * 24 * 3600 * 1000);
+      this.videoFrom = this._toLocalInputValue(since);
+      this.videoTo = this._toLocalInputValue(now);
+
+      this.switchView("videos");
+    },
+
+    createPlaylistSelectedMedia() {
+      return resolveMediaItemsByIds(this.mediaIndex, this.createPlaylistMediaIds);
+    },
+
+    createPlaylistFilteredMediaOptions() {
+      return filterUnselectedMediaOptions({
+        index: this.mediaIndex,
+        selectedIds: this.createPlaylistMediaIds,
+        query: this.createPlaylistMediaTagQuery,
+        displayName: (media) => this.mediaDisplayName(media),
+      });
+    },
+
+    createPlaylistAddMediaTag(mediaId) {
+      this.createPlaylistMediaIds = addUniqueMediaId(this.createPlaylistMediaIds, mediaId);
+      this.createPlaylistMediaTagQuery = "";
+      this.createPlaylistMediaTagOpen = false;
+    },
+
+    createPlaylistAddFirstFilteredMediaTag() {
+      const items = this.createPlaylistFilteredMediaOptions();
+      if (items.length) this.createPlaylistAddMediaTag(items[0].id);
+    },
+
+    createPlaylistRemoveMediaTag(mediaId) {
+      this.createPlaylistMediaIds = removeMediaId(this.createPlaylistMediaIds, mediaId);
+    },
+
+    formatDuration(sec) {
+      return formatDuration(sec);
+    },
+
+    formatDateTime(ts) {
+      return formatDateTime(ts);
+    },
+
+    formatDateTimeShort(ts) {
+      return formatDateTimeShort(ts);
+    },
+
+    formatBytes(n) {
+      return formatBytes(n);
+    },
+
+    formatInteger(n) {
+      return formatInteger(n);
+    },
+
+    mdLabel(iso) {
+      return mdLabel(iso);
+    },
+
+    playlistVideoSortValue(video) {
+      if (!video || !video.published_at) return 0;
+      try {
+        const ts = new Date(video.published_at).getTime();
+        return Number.isFinite(ts) ? ts : 0;
+      } catch {
+        return 0;
+      }
+    },
+
+    servicePillClass(ok) {
+      return ok
+        ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-200"
+        : "border-rose-500/20 bg-rose-500/10 text-rose-200";
+    },
+
+    serviceText(service) {
+      if (!service) return "unknown";
+      if (service.configured === false) return "未配置";
+      return service.ok ? "OK" : "Error";
+    },
+
+    _cacheGet(cache, key) {
+      return getCachedValue(cache, key);
+    },
+
+    _cacheSet(cache, key, value, ttlMs) {
+      setCachedValue(cache, key, value, ttlMs);
+    },
+
+    _toLocalInputValue(date) {
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(
+        date.getMinutes()
+      )}`;
+    },
+
+    formatTs(value) {
+      if (!value) return "-";
+      try {
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return String(value);
+        return date.toLocaleString();
+      } catch {
+        return String(value);
+      }
+    },
+
+    formatTsShort(value) {
+      if (!value) return "-";
+      try {
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return String(value);
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+      } catch {
+        return String(value);
+      }
+    },
+
+    _shortId(value, n = 8) {
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+      return raw.length <= n ? raw : raw.slice(0, n);
+    },
+  };
+}

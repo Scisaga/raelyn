@@ -10,6 +10,7 @@ from raelyn.db import init_db, session_scope
 from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Media
 from raelyn.services.log_timestamps import install_if_needed
+from raelyn.services.provider_pause import is_provider_paused
 from raelyn.services.s3 import s3_ensure_bucket
 from raelyn.services.system_pause import is_paused
 from raelyn.timeutil import utcnow
@@ -44,6 +45,8 @@ def tick() -> int:
         medias = session.execute(stmt).scalars().all()
         enqueued = 0
         for m in medias:
+            if is_provider_paused(session, m.provider):
+                continue
             if _has_pending_sync_job(session, m.id):
                 continue
             enqueue_job(session, type_="media.sync_videos", params={"media_id": str(m.id)}, priority=1)

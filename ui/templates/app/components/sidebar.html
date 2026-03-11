@@ -68,14 +68,33 @@
         </nav>
 
         <div class="p-3 border-t border-slate-800">
-          <div class="flex items-center gap-2">
-            <span class="h-2 w-2 rounded-full" :class="healthOk ? 'bg-emerald-400' : 'bg-rose-400'"></span>
-            <div
-              class="text-xs text-slate-400 truncate"
-              x-show="!sidebarCollapsed"
-              x-transition.opacity.duration.150ms
-              x-text="healthOk ? 'Health OK' : 'Offline'"
-            ></div>
+          <div
+            class="flex items-center"
+            :class="sidebarCollapsed ? 'justify-center gap-1.5' : 'justify-between gap-2'"
+          >
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="h-2 w-2 rounded-full shrink-0" :class="healthOk ? 'bg-emerald-400' : 'bg-rose-400'"></span>
+              <div
+                class="text-xs text-slate-400 truncate"
+                x-show="!sidebarCollapsed"
+                x-transition.opacity.duration.150ms
+                x-text="healthOk ? 'Health OK' : 'Offline'"
+              ></div>
+            </div>
+            <div class="flex items-center gap-1 shrink-0">
+              <template x-for="item in apiDocLinks" :key="item.key">
+                <a
+                  class="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-800/50 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+                  :href="item.href"
+                  :target="item.target || '_blank'"
+                  :rel="item.rel || 'noopener noreferrer'"
+                  :title="item.label"
+                  :aria-label="item.label"
+                >
+                  <span class="shrink-0" x-html="item.icon"></span>
+                </a>
+              </template>
+            </div>
           </div>
         </div>
       </aside>

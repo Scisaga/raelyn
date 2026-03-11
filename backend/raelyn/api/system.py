@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from raelyn.db import session_scope
+from raelyn.services.provider_pause import get_provider_pauses
 from raelyn.services.system_pause import clear_pause, get_pause, set_paused
 
 
@@ -13,7 +14,7 @@ router = APIRouter(tags=["system"])
 @router.get("/system")
 def system_status() -> dict:
     with session_scope() as session:
-        return {"pause": get_pause(session)}
+        return {"pause": get_pause(session), "provider_pauses": get_provider_pauses(session)}
 
 
 class PauseRequest(BaseModel):
@@ -43,4 +44,3 @@ def require_running() -> dict:
         if p.get("paused"):
             raise HTTPException(status_code=409, detail=p.get("message") or "system paused")
         return {"ok": True}
-

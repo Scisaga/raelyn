@@ -14,6 +14,7 @@ from raelyn.config import settings
 from raelyn.jobs.log import job_log
 from raelyn.models import AppConfig, Asset, Job, Media
 from raelyn.services.http_client import httpx_client
+from raelyn.services.provider_pause import ProviderPauseRequestError, set_provider_paused
 from raelyn.services.s3 import s3_upload_file
 from raelyn.services.system_pause import set_paused
 from raelyn.services.workdir import job_workdir
@@ -26,6 +27,14 @@ def _pause_all_jobs_for_cookies(session: Session, *, job: Job, err: YtdlpCookies
     pause_msg = f"已暂停全部任务：{msg}（请在 UI -> 设置 更新 YTDLP_COOKIES）"
     set_paused(session, reason=str(reason), message=pause_msg)
     job_log(session, job, pause_msg, level="error")
+
+
+def _pause_provider_jobs(session: Session, *, job: Job, err: ProviderPauseRequestError) -> None:
+    provider = getattr(err, "provider", "") or "provider"
+    reason = getattr(err, "reason", "") or "provider_pause_requested"
+    msg = str(err) or f"{provider} paused"
+    pause = set_provider_paused(session, provider=provider, reason=str(reason), message=msg)
+    job_log(session, job, pause.get("message") or msg, level="error")
 
 
 def _ytdlp_members_only_download_enabled(session: Session) -> bool:

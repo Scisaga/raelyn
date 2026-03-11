@@ -12,6 +12,7 @@
     "@tailwindcss/postcss": "4.1.18",
     "alpinejs": "3.15.3",
     "autoprefixer": "10.4.23",
+    "esbuild": "^0.25.2",
     "lightweight-charts": "^5.1.0",
     "postcss": "8.5.6",
     "tailwindcss": "4.1.18"

@@ -16,6 +16,7 @@ from raelyn.jobs.registry import registry
 from raelyn.models import Job, Video
 from raelyn.services.assets import ensure_asset
 from raelyn.services.pg_lock import advisory_lock_any
+from raelyn.services.provider_pause import ProviderPauseRequestError
 from raelyn.services.video_meta import parse_published_at
 from raelyn.services.workdir import job_workdir
 from raelyn.services.ytdlp import YtdlpCookiesInvalidError, load_info_json, ytdlp_download
@@ -23,6 +24,7 @@ from raelyn.services.ytdlp import YtdlpCookiesInvalidError, load_info_json, ytdl
 from .common import (
     _normalize_bilibili_video_url,
     _pause_all_jobs_for_cookies,
+    _pause_provider_jobs,
     _provider_guard_names,
 )
 
@@ -111,6 +113,9 @@ def video_download(session: Session, job: Job) -> dict | None:
                 set_job_progress(job_id=job.id, current=10000, total=10000)
             except YtdlpCookiesInvalidError as e:
                 _pause_all_jobs_for_cookies(session, job=job, err=e)
+                raise
+            except ProviderPauseRequestError as e:
+                _pause_provider_jobs(session, job=job, err=e)
                 raise
             except Exception as e:
                 msg = str(e)

@@ -689,14 +689,18 @@
                           </button>
                         </div>
                       </div>
-                      <div class="p-4 space-y-3">
-                        <div class="text-xs text-rose-200" x-show="playlistSettingsPromptError" x-text="playlistSettingsPromptError"></div>
-                        <textarea
-                          class="w-full h-64 m-0 p-0 border-0 rounded-none bg-transparent text-xs text-slate-100 font-mono leading-5 placeholder-slate-500 focus:outline-none focus:ring-0 focus:border-transparent resize-none raelyn-scrollbar disabled:opacity-60 disabled:cursor-not-allowed"
-                          placeholder="请输入简报提示词…"
-                          x-model="playlistSettingsPromptDraft"
-                          :disabled="!playlistDetail || playlistSettingsPromptSaving"
-                        ></textarea>
+                      <div>
+	                        <div
+                            class="px-4 py-3 text-xs text-rose-200 border-b border-rose-900/60"
+                            x-show="playlistSettingsPromptError"
+                            x-text="playlistSettingsPromptError"
+                          ></div>
+	                        <textarea
+	                          class="block w-full h-64 rounded-none border-0 px-4 py-3 text-xs font-mono leading-5 focus:outline-none resize-none raelyn-scrollbar disabled:opacity-60 disabled:cursor-not-allowed raelyn-multiline-input"
+	                          placeholder="请输入简报提示词…"
+	                          x-model="playlistSettingsPromptDraft"
+	                          :disabled="!playlistDetail || playlistSettingsPromptSaving"
+	                        ></textarea>
                       </div>
                     </div>
 

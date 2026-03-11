@@ -1,0 +1,28 @@
+export function createMediaVideosModule() {
+  return {
+    mediaIndex: [],
+    mediaList: [],
+    mediaQuery: "",
+    videoList: [],
+    videoStatus: "",
+    videoMediaIds: [],
+    videoMediaTagQuery: "",
+    videoMediaTagOpen: false,
+    videoQuery: "",
+    videoFrom: "",
+    videoTo: "",
+    videoLimit: 20,
+    videoOffset: 0,
+    videoHasMore: true,
+    videoLoadingList: false,
+    videoLoadingMore: false,
+    videoIo: null,
+    addMediaUrl: "",
+    addMediaSubmitting: false,
+    addMediaError: "",
+    syncAllMediaSubmitting: false,
+    mediaImportSubmitting: false,
+    mediaImportError: "",
+    mediaImportResult: null,
+  };
+}

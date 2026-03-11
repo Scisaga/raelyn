@@ -11,6 +11,7 @@ from raelyn.services.brief_schedule import (
     brief_generation_policy_defaults,
     normalize_brief_generation_policy,
 )
+from raelyn.services.provider_pause import clear_provider_pauses
 from raelyn.services.transcript_polish_prompt import (
     TRANSCRIPT_POLISH_PROMPT_CONFIG_KEY,
     transcript_polish_prompt_defaults,
@@ -101,4 +102,5 @@ def put_config(key: str, payload: ConfigUpsert) -> dict:
             reason = str(p.get("reason") or "")
             if p.get("paused") and reason.startswith("ytdlp_cookies_"):
                 clear_pause(session)
+            clear_provider_pauses(session, providers=["bilibili", "youtube"])
     return {"ok": True}
