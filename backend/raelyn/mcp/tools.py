@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+from typing import Any
+from datetime import date
+import uuid
+
+from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
+
+from raelyn.mcp import actions, queries
+
+
+def _raise_tool_error(exc: Exception) -> None:
+    if isinstance(exc, LookupError):
+        raise ToolError(f"not_found: {exc}") from exc
+    if isinstance(exc, ValueError):
+        raise ToolError(f"invalid_argument: {exc}") from exc
+    if isinstance(exc, RuntimeError):
+        raise ToolError(f"conflict: {exc}") from exc
+    raise ToolError(str(exc)) from exc
+
+
+def register_tools(mcp: FastMCP) -> None:
+    @mcp.tool(name="list_media", structured_output=True)
+    def list_media(provider: str | None = None, q: str | None = None, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+        try:
+            return queries.list_media(provider=provider, q=q, limit=limit, offset=offset)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_media", structured_output=True)
+    def get_media(media_id: str) -> dict[str, Any]:
+        try:
+            return queries.get_media(media_id)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="list_videos", structured_output=True)
+    def list_videos(
+        provider: str | None = None,
+        media_id: str | None = None,
+        playlist_id: str | None = None,
+        status: str | None = None,
+        q: str | None = None,
+        published_since: str | None = None,
+        published_until: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        try:
+            return queries.list_videos(
+                provider=provider,
+                media_id=media_id,
+                playlist_id=playlist_id,
+                status=status,
+                q=q,
+                published_since=published_since,
+                published_until=published_until,
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_video", structured_output=True)
+    def get_video(video_id: str) -> dict[str, Any]:
+        try:
+            return queries.get_video(video_id)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_video_transcript", structured_output=True)
+    def get_video_transcript(video_id: str, chunk_index: int = 0, chunk_size: int = 12000) -> dict[str, Any]:
+        try:
+            return queries.get_video_transcript(video_id, chunk_index=chunk_index, chunk_size=chunk_size)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="list_video_assets", structured_output=True)
+    def list_video_assets(
+        video_id: str,
+        type: str | None = None,
+        language: str | None = None,
+        variant: str | None = None,
+    ) -> list[dict[str, Any]]:
+        try:
+            return queries.list_video_assets(video_id, type=type, language=language, variant=variant)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="list_playlists", structured_output=True)
+    def list_playlists(limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+        try:
+            return queries.list_playlists(limit=limit, offset=offset)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_playlist", structured_output=True)
+    def get_playlist(playlist_id: str) -> dict[str, Any]:
+        try:
+            return queries.get_playlist(playlist_id)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_playlist_videos", structured_output=True)
+    def get_playlist_videos(playlist_id: str, date_in_period: str, granularity: str = "day", limit: int = 50) -> list[dict[str, Any]]:
+        try:
+            return queries.get_playlist_videos(playlist_id, granularity=granularity, date_in_period=date_in_period, limit=limit)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="list_briefs", structured_output=True)
+    def list_briefs(
+        playlist_id: str | None = None,
+        granularity: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        try:
+            return queries.list_briefs(playlist_id=playlist_id, granularity=granularity, limit=limit, offset=offset)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_brief", structured_output=True)
+    def get_brief(playlist_id: str, granularity: str, date_in_period: str) -> dict[str, Any]:
+        try:
+            return queries.get_brief(playlist_id, granularity=granularity, date_in_period=date_in_period)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="list_jobs", structured_output=True)
+    def list_jobs(
+        status: str | None = None,
+        status_in: str | None = None,
+        type: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        try:
+            return queries.list_jobs(status=status, status_in=status_in, type=type, limit=limit, offset=offset)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_job", structured_output=True)
+    def get_job(job_id: str) -> dict[str, Any]:
+        try:
+            return queries.get_job(job_id)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_video_context", structured_output=True)
+    def get_video_context(video_id: str) -> dict[str, Any]:
+        try:
+            return queries.get_video_context(video_id)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_playlist_context", structured_output=True)
+    def get_playlist_context(
+        playlist_id: str,
+        date_in_period: str,
+        granularity: str = "day",
+        include_transcript: bool = False,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        try:
+            return queries.get_playlist_context(
+                playlist_id,
+                granularity=granularity,
+                date_in_period=date_in_period,
+                include_transcript=include_transcript,
+                limit=limit,
+            )
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="sync_media", structured_output=True)
+    def sync_media(media_id: str, scope: str = "recent") -> dict[str, Any]:
+        try:
+            return actions.sync_media(uuid.UUID(media_id), scope=scope)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="download_video", structured_output=True)
+    def download_video(video_id: str) -> dict[str, Any]:
+        try:
+            return actions.download_video(uuid.UUID(video_id))
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="retranscribe_video", structured_output=True)
+    def retranscribe_video(video_id: str) -> dict[str, Any]:
+        try:
+            return actions.retranscribe_video(uuid.UUID(video_id))
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="generate_brief", structured_output=True)
+    def generate_brief(playlist_id: str, granularity: str, date_in_period: str) -> dict[str, Any]:
+        try:
+            return actions.generate_brief(uuid.UUID(playlist_id), granularity=granularity, date_in_period=date.fromisoformat(date_in_period))
+        except Exception as exc:
+            _raise_tool_error(exc)

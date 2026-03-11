@@ -1,0 +1,228 @@
+# MCP 集成设计
+
+## 当前实现
+
+项目已经实现独立的 MCP HTTP 服务：
+
+- 启动入口：`python -m raelyn.mcp_server`
+- 运行应用：[backend/raelyn/mcp_main.py](/home/scisaga/projects/video-sync/backend/raelyn/mcp_main.py)
+- MCP 注册层：[backend/raelyn/mcp/](/home/scisaga/projects/video-sync/backend/raelyn/mcp/)
+- 默认监听：`0.0.0.0:8001`
+- 默认入口：`/mcp`
+- 健康检查：`GET /health`
+- Transport：官方 Python `mcp` SDK 的 `FastMCP` + `Streamable HTTP`
+
+MCP 不挂进现有 API 进程，而是独立进程运行；但它直接复用现有 DB / model / service / job enqueue 能力，不通过 `/api/*` 再走一层 HTTP。
+
+## 安全边界
+
+- `MCP_BEARER_TOKEN` 是强制项；为空时 MCP 服务直接启动失败。
+- `/health` 允许匿名访问。
+- `/mcp` 下的所有请求都要求 `Authorization: Bearer <token>`。
+- 默认监听 `0.0.0.0` 是为了局域网内设备访问，不按公网暴露方案设计。
+- 远程使用时仍应配合主机防火墙、受控网段或反向代理。
+
+## 能力范围
+
+首版范围固定为 `Tools + Resources`：
+
+- 只读查询
+- 长文本 transcript 分块读取
+- 安全的异步任务触发
+
+首版不实现：
+
+- OAuth
+- Prompts
+- 全文检索 / 向量检索
+- 播放列表写操作
+- 媒体删除
+- 配置写入
+
+## 共享业务逻辑
+
+MCP 没有复制 API 路由逻辑，而是复用了抽出的共享 helper：
+
+- [backend/raelyn/services/periods.py](/home/scisaga/projects/video-sync/backend/raelyn/services/periods.py)：`day/week/month` 周期计算
+- [backend/raelyn/services/transcripts.py](/home/scisaga/projects/video-sync/backend/raelyn/services/transcripts.py)：transcript 选择与文本读取
+- [backend/raelyn/services/media_actions.py](/home/scisaga/projects/video-sync/backend/raelyn/services/media_actions.py)：媒体同步任务投递
+- [backend/raelyn/services/video_actions.py](/home/scisaga/projects/video-sync/backend/raelyn/services/video_actions.py)：下载与重转写任务投递
+- [backend/raelyn/services/brief_actions.py](/home/scisaga/projects/video-sync/backend/raelyn/services/brief_actions.py)：简报生成任务投递
+
+现有 REST API 也改为复用这些 helper，避免规则分叉。
+
+## Tools
+
+当前已注册的 MCP tools：
+
+- `list_media`
+- `get_media`
+- `list_videos`
+- `get_video`
+- `get_video_transcript`
+- `list_video_assets`
+- `list_playlists`
+- `get_playlist`
+- `get_playlist_videos`
+- `list_briefs`
+- `get_brief`
+- `list_jobs`
+- `get_job`
+- `get_video_context`
+- `get_playlist_context`
+- `sync_media`
+- `download_video`
+- `retranscribe_video`
+- `generate_brief`
+
+约定：
+
+- 所有返回值都是 JSON 可序列化对象
+- `UUID/date/datetime` 统一序列化为字符串
+- 任务型 tools 只返回 `accepted + job_id/job_ids`，不阻塞等待执行完成
+
+## Resources
+
+当前已注册的 resources：
+
+- `raelyn://media/{media_id}`
+- `raelyn://video/{video_id}`
+- `raelyn://video/{video_id}/transcript`
+- `raelyn://video/{video_id}/transcript/chunks/{chunk_index}`
+- `raelyn://video/{video_id}/assets`
+- `raelyn://playlist/{playlist_id}`
+- `raelyn://brief/{playlist_id}/{granularity}/{date_in_period}`
+- `raelyn://job/{job_id}`
+
+设计约束：
+
+- resources 只负责稳定对象读取
+- 列表与复杂筛选统一走 tools
+- 大文件资产默认返回元信息和短时 presigned URL，不把二进制直接塞进模型上下文
+
+## Transcript 规则
+
+transcript 选择顺序统一为：
+
+1. `subtitle + zh`
+2. `qwen3-asr + zh`
+3. `speaches + zh`
+4. 以上都没有时，回退到最新的 transcript asset
+
+MCP transcript 输出字段固定包含：
+
+- `ok`
+- `status`
+- `video_id`
+- `asset_id`
+- `language`
+- `source`
+- `variant`
+- `polish_method`
+- `total_chars`
+- `chunk_index`
+- `chunk_count`
+- `has_more`
+- `next_chunk_index`
+- `next_uri`
+- `text`
+
+分块规则：
+
+- 默认 `chunk_size=12000`
+- 最大 `50000`
+- 优先在 chunk 末尾附近按最后一个换行切分
+- 越界块返回 `ok=false, status=not_found, reason=chunk_out_of_range`
+
+## 聚合能力
+
+首版除了基础对象读取，还补了两个面向 LLM 的高层 tool：
+
+### `get_video_context`
+
+返回：
+
+- `video`
+- `media`
+- `assets`
+- transcript 首块
+- note 摘要状态
+
+适合“这个视频是否已经可分析”“先拿上下文再决定是否继续深入读取”。
+
+### `get_playlist_context`
+
+返回：
+
+- 播放列表概要
+- 周期边界
+- 周期内视频列表
+- 每个视频的 transcript / note 就绪状态
+- 可选 transcript 首块
+- 对应 brief 状态
+
+适合“总结这个播放列表某一天/周/月内容”。
+
+## 与现有 REST 的关系
+
+MCP 与 REST 的关系不是一比一镜像，而是：
+
+- 基础实体读取能力尽量复用现有模型与 service 语义
+- 与 LLM 使用体验强相关的聚合能力放在 MCP 层
+- 异步操作仍然落到现有 Job 体系
+
+典型映射包括：
+
+- `download_video` <-> `POST /api/videos/{video_id}/download`
+- `retranscribe_video` <-> `POST /api/videos/{video_id}/transcript/retranscribe`
+- `generate_brief` <-> `POST /api/briefs/generate`
+
+但 MCP 不直接调用 FastAPI route handler。
+
+## 返回与错误语义
+
+当前约定：
+
+- 对象不存在：抛 `not_found`
+- 参数非法：抛 `invalid_argument`
+- 当前状态不允许操作：抛 `conflict`
+- 产物还没就绪：返回 `ok=false, status=not_ready`
+
+这意味着“还没转写好”“简报尚未生成”不会被伪装成 404。
+
+## 运行与开发
+
+本地开发脚本：
+
+- [scripts/dev/run-mcp.sh](/home/scisaga/projects/video-sync/scripts/dev/run-mcp.sh)
+- [scripts/dev/devctl.sh](/home/scisaga/projects/video-sync/scripts/dev/devctl.sh)
+
+`devctl.sh start` 的行为：
+
+- 如果 `MCP_BEARER_TOKEN` 非空，则启动 MCP
+- 如果为空，则明确打印 skip
+
+这保证默认开发环境不会在局域网里无鉴权暴露 MCP 入口。
+
+## 测试覆盖
+
+当前已补的回归测试覆盖了以下高风险部分：
+
+- 周期计算 helper
+- transcript 选择顺序与 chunking
+- 下载 / 重转写任务投递分支
+- `get_brief` / `get_video_context` / `get_playlist_context`
+- `/health` 和 Bearer 鉴权
+- `Streamable HTTP` 协议最小链路：`list_tools`、`call_tool`、`read_resource`
+
+## 后续扩展
+
+当前未做、但后续仍值得评估的方向：
+
+- `search_content`
+- transcript 基于时间戳的切片读取
+- Prompts
+- 远程认证方案（如果以后不再局限于受信任局域网）
+- 更强的检索能力（全文 / 混合 / 向量）
+
+这些取舍如果以后变成明确架构决策，再进入 `docs/adr/`。

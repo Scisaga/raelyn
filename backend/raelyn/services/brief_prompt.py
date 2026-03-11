@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
-from dateutil import tz
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from raelyn.config import settings
-from raelyn.models import Asset, Playlist, PlaylistMedia, Video
+from raelyn.models import Playlist, PlaylistMedia, Video
+from raelyn.services.periods import month_add_one, period_bounds_utc, period_end_inclusive, period_start
 from raelyn.services.s3 import s3_get_bytes
+from raelyn.services.transcripts import pick_transcript_asset
 
 
 DEFAULT_BRIEF_PROMPT_TEMPLATE = "\n".join(
@@ -95,85 +95,25 @@ DEFAULT_BRIEF_PROMPT_TEMPLATE = "\n".join(
 
 
 def brief_period_start(d: date, granularity: str) -> date:
-    g = (granularity or "day").strip().lower()
-    if g == "day":
-        return d
-    if g == "week":
-        return d - timedelta(days=d.weekday())  # Monday
-    if g == "month":
-        return date(d.year, d.month, 1)
-    return d
+    return period_start(d, granularity)
 
 
 def _brief_month_add_one(d: date) -> date:
-    y = int(d.year)
-    m = int(d.month)
-    if m >= 12:
-        return date(y + 1, 1, 1)
-    return date(y, m + 1, 1)
+    return month_add_one(d)
 
 
 def brief_period_end_inclusive(period_start: date, granularity: str) -> date:
-    g = (granularity or "day").strip().lower()
-    if g == "day":
-        return period_start
-    if g == "week":
-        return period_start + timedelta(days=6)
-    if g == "month":
-        return _brief_month_add_one(period_start) - timedelta(days=1)
-    return period_start
+    return period_end_inclusive(period_start, granularity)
 
 
 def brief_period_bounds_utc(period_start: date, granularity: str) -> tuple[datetime, datetime]:
-    tzinfo = tz.gettz(settings.timezone) or tz.tzlocal()
-    start = datetime.combine(period_start, datetime.min.time()).replace(tzinfo=tzinfo).astimezone(tz.tzutc())
-    g = (granularity or "day").strip().lower()
-    if g == "day":
-        return start, start + timedelta(days=1)
-    if g == "week":
-        return start, start + timedelta(days=7)
-    if g == "month":
-        end_date = _brief_month_add_one(period_start)
-        end = datetime.combine(end_date, datetime.min.time()).replace(tzinfo=tzinfo).astimezone(tz.tzutc())
-        return start, end
-    return start, start + timedelta(days=1)
+    return period_bounds_utc(period_start, granularity)
 
 
 def load_plain_transcript_asset(session: Session, video_id: uuid.UUID) -> tuple[str | None, str | None]:
-    variants = ["polished", "plain"]
-    order = [
-        ("subtitle", "zh"),
-        ("qwen3-asr", "zh"),
-        ("speaches", "zh"),
-    ]
-    for variant in variants:
-        for source, lang in order:
-            a = session.execute(
-                select(Asset).where(
-                    Asset.video_id == video_id,
-                    Asset.type == "transcript",
-                    Asset.format == "txt",
-                    Asset.variant == variant,
-                    Asset.source == source,
-                    Asset.language == lang,
-                )
-            ).scalar_one_or_none()
-            if a:
-                return a.s3_bucket, a.s3_key
-
-    for variant in variants:
-        a = session.execute(
-            select(Asset)
-            .where(
-                Asset.video_id == video_id,
-                Asset.type == "transcript",
-                Asset.format == "txt",
-                Asset.variant == variant,
-            )
-            .order_by(Asset.created_at.desc())
-        ).scalar_one_or_none()
-        if a:
-            return a.s3_bucket, a.s3_key
+    asset = pick_transcript_asset(session, video_id)
+    if asset:
+        return asset.s3_bucket, asset.s3_key
     return None, None
 
 
@@ -274,4 +214,3 @@ def build_brief_prompt_for_period(
         prompt=prompt,
         video_urls=video_urls,
     )
-

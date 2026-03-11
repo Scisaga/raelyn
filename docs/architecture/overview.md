@@ -110,6 +110,7 @@ MVP 中，播放列表仅是“媒体集合”：
 - [任务系统](job-system.md)
 - [数据模型与存储布局](data-model.md)
 - [后端模块](backend-modules.md)
+- [MCP 集成设计](mcp.md)
 - [REST API 设计](../api/rest.md)
 - [UI 设计总览](../ui/overview.md)
 - [MVP 路线图](../roadmap/mvp.md)

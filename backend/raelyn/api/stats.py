@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta
+from datetime import date
 from typing import Any
 
 from fastapi import APIRouter
@@ -10,90 +10,19 @@ from sqlalchemy import func, select
 from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.models import Asset, Brief, Job, Media, Playlist, PlaylistMedia, Video
+from raelyn.services.periods import (
+    local_date as period_local_date,
+    period_bounds_utc as compute_period_bounds_utc,
+    period_end_inclusive as compute_period_end_inclusive,
+    period_start as compute_period_start,
+)
 from raelyn.services.s3 import s3_get_bytes, s3_presign_get
-
-try:
-    from dateutil import tz
-except Exception:  # pragma: no cover
-    tz = None
 
 
 router = APIRouter(tags=["stats"])
 
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _MD_IMG_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
-
-
-def _local_date(ts: datetime | None) -> date | None:
-    if not ts:
-        return None
-    try:
-        if tz is None:
-            return ts.date()
-        tzinfo = tz.gettz(settings.timezone) or tz.tzlocal()
-        return ts.astimezone(tzinfo).date()
-    except Exception:
-        return None
-
-
-def _month_add_one(d: date) -> date:
-    y = int(d.year)
-    m = int(d.month)
-    if m >= 12:
-        return date(y + 1, 1, 1)
-    return date(y, m + 1, 1)
-
-
-def _period_start(d: date, granularity: str) -> date:
-    g = (granularity or "day").strip().lower()
-    if g == "day":
-        return d
-    if g == "week":
-        return d - timedelta(days=d.weekday())  # Monday
-    if g == "month":
-        return date(d.year, d.month, 1)
-    return d
-
-
-def _period_bounds_utc(period_start: date, granularity: str) -> tuple[datetime, datetime]:
-    if tz is None:
-        start = datetime.combine(period_start, datetime.min.time())
-        g = (granularity or "day").strip().lower()
-        if g == "day":
-            return start, start + timedelta(days=1)
-        if g == "week":
-            return start, start + timedelta(days=7)
-        if g == "month":
-            end_date = _month_add_one(period_start)
-            end = datetime.combine(end_date, datetime.min.time())
-            return start, end
-        return start, start + timedelta(days=1)
-
-    tzinfo = tz.gettz(settings.timezone) or tz.tzlocal()
-    start = datetime.combine(period_start, datetime.min.time()).replace(tzinfo=tzinfo).astimezone(tz.tzutc())
-    g = (granularity or "day").strip().lower()
-    if g == "day":
-        return start, start + timedelta(days=1)
-    if g == "week":
-        return start, start + timedelta(days=7)
-    if g == "month":
-        end_date = _month_add_one(period_start)
-        end = datetime.combine(end_date, datetime.min.time()).replace(tzinfo=tzinfo).astimezone(tz.tzutc())
-        return start, end
-    return start, start + timedelta(days=1)
-
-
-def _period_end_inclusive(period_start: date, granularity: str) -> date:
-    g = (granularity or "day").strip().lower()
-    if g == "day":
-        return period_start
-    if g == "week":
-        return period_start + timedelta(days=6)
-    if g == "month":
-        return _month_add_one(period_start) - timedelta(days=1)
-    return period_start
-
-
 def _strip_markdown_line(s: str) -> str:
     t = (s or "").strip()
     if not t:
@@ -342,11 +271,11 @@ def stats() -> dict:
                 latest_period_video_title = ""
                 latest_brief_snippet = ""
 
-                local_d = _local_date(latest_video_at)
+                local_d = period_local_date(latest_video_at)
                 if local_d:
-                    period_start = _period_start(local_d, g)
-                    period_end = _period_end_inclusive(period_start, g)
-                    start_utc, end_utc = _period_bounds_utc(period_start, g)
+                    period_start = compute_period_start(local_d, g)
+                    period_end = compute_period_end_inclusive(period_start, g)
+                    start_utc, end_utc = compute_period_bounds_utc(period_start, g)
 
                     # Latest videos in this period.
                     vrows = session.execute(

@@ -11,6 +11,7 @@
 - 任务系统的通用设计原则由项目内 skill [../skills/job-system-design/SKILL.md](../skills/job-system-design/SKILL.md) 维护；架构文档只保留 `raelyn` 的项目化说明。
 - [数据模型与存储布局](architecture/data-model.md)
 - [后端模块](architecture/backend-modules.md)
+- [MCP 集成设计](architecture/mcp.md)
 - [风险与处理](architecture/risks.md)
 
 ## 接口与界面

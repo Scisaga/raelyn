@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import tempfile
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Any
 
-from dateutil import tz
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import Date, cast, func, select
@@ -16,6 +15,7 @@ from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.models import Media, Playlist, PlaylistMedia, Video
 from raelyn.services.brief_schedule import schedule_brief_refresh_for_media_change
+from raelyn.services.periods import day_bounds_utc, local_date, normalize_granularity, period_bounds_utc, period_start
 from raelyn.services.s3 import s3_presign_get, s3_upload_file
 
 
@@ -73,17 +73,6 @@ class PlaylistMediaAdd(BaseModel):
 
 class PlaylistMediaReplace(BaseModel):
     media_ids: list[uuid.UUID]
-
-
-def _local_date(ts: Any | None) -> date | None:
-    if not ts:
-        return None
-    try:
-        tzinfo = tz.gettz(settings.timezone) or tz.tzlocal()
-        return ts.astimezone(tzinfo).date()
-    except Exception:
-        return None
-
 
 def _media_avatar_url(m: Any) -> str | None:
     avatar_url = getattr(m, "avatar_url", None)
@@ -151,54 +140,14 @@ def _playlist_out(session, p: Playlist, *, preview: list[PlaylistMediaOut] | Non
                 select(func.min(Video.created_at), func.max(Video.created_at)).where(Video.media_id.in_(list(media_ids)))
             ).one()
         out.latest_video_at = max_ts
-        out.earliest_date = _local_date(min_ts)
-        out.latest_date = _local_date(max_ts)
+        out.earliest_date = local_date(min_ts)
+        out.latest_date = local_date(max_ts)
     else:
         out.video_count = 0
         out.latest_video_at = None
         out.earliest_date = None
         out.latest_date = None
     return out
-
-
-def _day_bounds_utc(d: date) -> tuple[datetime, datetime]:
-    tzinfo = tz.gettz(settings.timezone) or tz.tzlocal()
-    day_start = datetime.combine(d, datetime.min.time()).replace(tzinfo=tzinfo).astimezone(tz.tzutc())
-    return day_start, day_start + timedelta(days=1)
-
-
-def _period_start(d: date, granularity: str) -> date:
-    g = (granularity or "day").strip().lower()
-    if g == "day":
-        return d
-    if g == "week":
-        return d - timedelta(days=d.weekday())  # Monday
-    if g == "month":
-        return date(d.year, d.month, 1)
-    raise HTTPException(status_code=400, detail="invalid granularity (day/week/month)")
-
-
-def _month_add_one(d: date) -> date:
-    y = int(d.year)
-    m = int(d.month)
-    if m >= 12:
-        return date(y + 1, 1, 1)
-    return date(y, m + 1, 1)
-
-
-def _period_bounds_utc(period_start: date, granularity: str) -> tuple[datetime, datetime]:
-    tzinfo = tz.gettz(settings.timezone) or tz.tzlocal()
-    start = datetime.combine(period_start, datetime.min.time()).replace(tzinfo=tzinfo).astimezone(tz.tzutc())
-    g = (granularity or "day").strip().lower()
-    if g == "day":
-        return start, start + timedelta(days=1)
-    if g == "week":
-        return start, start + timedelta(days=7)
-    if g == "month":
-        end_date = _month_add_one(period_start)
-        end = datetime.combine(end_date, datetime.min.time()).replace(tzinfo=tzinfo).astimezone(tz.tzutc())
-        return start, end
-    raise HTTPException(status_code=400, detail="invalid granularity (day/week/month)")
 
 
 @router.post("/playlists", response_model=PlaylistOut)
@@ -330,8 +279,8 @@ def list_playlists(limit: int = 100, offset: int = 0) -> list[PlaylistOut]:
             min_ts = stats.get("min_ts")
             out.video_count = int(stats.get("video_count") or 0)
             out.latest_video_at = max_ts
-            out.earliest_date = _local_date(min_ts)
-            out.latest_date = _local_date(max_ts)
+            out.earliest_date = local_date(min_ts)
+            out.latest_date = local_date(max_ts)
             out_items.append(out)
         return out_items
 
@@ -577,7 +526,7 @@ def list_playlist_videos_by_date(playlist_id: uuid.UUID, date: date) -> list[Pla
         media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == playlist_id)).scalars().all()
         if not media_ids:
             return []
-        start, end = _day_bounds_utc(date)
+        start, end = day_bounds_utc(date)
         rows = (
             session.execute(
                 select(Video, Media)
@@ -633,12 +582,12 @@ def list_playlist_video_counts_by_period(
     start: date = ...,
     end: date = ...,
 ) -> list[PlaylistPeriodCountOut]:
-    g = (granularity or "day").strip().lower()
-    if g not in {"day", "week", "month"}:
-        raise HTTPException(status_code=400, detail="invalid granularity (day/week/month)")
-
-    pstart = _period_start(start, g)
-    pend = _period_start(end, g)
+    try:
+        g = normalize_granularity(granularity)
+        pstart = period_start(start, g)
+        pend = period_start(end, g)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if pend < pstart:
         return []
 
@@ -697,11 +646,12 @@ def list_playlist_videos_by_period(
     date: date = ...,
     limit: int = 200,
 ) -> list[PlaylistVideoOut]:
-    g = (granularity or "day").strip().lower()
-    if g not in {"day", "week", "month"}:
-        raise HTTPException(status_code=400, detail="invalid granularity (day/week/month)")
-    pstart = _period_start(date, g)
-    start, end = _period_bounds_utc(pstart, g)
+    try:
+        g = normalize_granularity(granularity)
+        pstart = period_start(date, g)
+        start, end = period_bounds_utc(pstart, g)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     n = max(1, min(int(limit or 200), 500))
     with session_scope() as session:

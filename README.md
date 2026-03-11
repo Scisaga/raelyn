@@ -7,6 +7,7 @@
 - [文档导航](docs/README.md)
 - [项目愿景与范围](docs/vision.md)
 - [架构总览](docs/architecture/overview.md)
+- [MCP 集成设计](docs/architecture/mcp.md)
 - [REST API 设计](docs/api/rest.md)
 - [配置项说明](docs/reference/configuration.md)
 
@@ -17,6 +18,7 @@
 - `api`：FastAPI（提供 `/api/*` 与 `/` UI）
 - `worker`：执行 Job（建议按队列拆分：download / process / sync / ai）
 - `scheduler`：分钟级投递 `media.sync_videos`
+- `mcp`：独立 MCP HTTP 服务（可选，默认 `0.0.0.0:8001/mcp`）
 
 最少启动 3 个进程（或用 docker compose 一次拉起）。推荐在本地把 worker 拆分为多个角色，避免不同类型任务互相“饿死”。
 
@@ -139,6 +141,8 @@ source ./scripts/dev/load-env.sh
 ./scripts/dev/run-worker-sync.sh
 ./scripts/dev/run-worker-ai.sh
 ./scripts/dev/run-scheduler.sh
+# Optional: MCP HTTP server for LLM/agent access (requires MCP_BEARER_TOKEN)
+./scripts/dev/run-mcp.sh
 ```
 
 打开 UI：`http://127.0.0.1:8000/`
@@ -153,7 +157,9 @@ source ./scripts/dev/load-env.sh
 ./scripts/dev/devctl.sh stop
 ```
 
-说明：`devctl.sh start/restart` 会先执行一次 UI 构建（等价于 `./scripts/dev/build-ui.sh`）。如需跳过可设置 `SKIP_UI_BUILD=1`。
+说明：
+- `devctl.sh start/restart` 会先执行一次 UI 构建（等价于 `./scripts/dev/build-ui.sh`）。如需跳过可设置 `SKIP_UI_BUILD=1`。
+- 只有在 `.env` 里配置了 `MCP_BEARER_TOKEN` 时，`devctl.sh start` 才会启动 MCP；否则会明确打印 skip。
 
 ---
 
@@ -206,6 +212,8 @@ WSL 提示：如果你的 `npm` 指向 Windows 安装路径（如 `/mnt/c/Progra
 
 - API 健康检查：`GET /api/health`
 - UI 首页：`GET /`
+- MCP 健康检查：`GET http://127.0.0.1:8001/health`
+- MCP endpoint：`http://127.0.0.1:8001/mcp`（需要 `Authorization: Bearer <MCP_BEARER_TOKEN>`）
 
 ---
 

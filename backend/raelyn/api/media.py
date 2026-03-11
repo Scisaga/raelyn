@@ -15,6 +15,7 @@ from raelyn.db import session_scope
 from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Asset, Job, Media, Video
 from raelyn.services.downloads import content_disposition_attachment
+from raelyn.services.media_actions import schedule_all_media_sync, schedule_media_sync
 from raelyn.services.provider import detect_provider, extract_media_identity
 from raelyn.services.s3 import s3_clear_bucket, s3_presign_get
 
@@ -444,51 +445,21 @@ def delete_media(media_id: uuid.UUID) -> dict:
 @router.post("/media/sync")
 def sync_all_media(scope: str = "recent") -> dict:
     with session_scope() as session:
-        media_ids = session.execute(select(Media.id).where(Media.monitor_enabled.is_(True))).scalars().all()
-
-        scope_key = str(scope or "").strip().lower()
-        if scope_key in {"recent", "latest"}:
-            max_entries = int(settings.sync_max_entries)
-        elif scope_key in {"all", "full"}:
-            max_entries = 0
-        else:
-            raise HTTPException(status_code=400, detail=f"invalid scope: {scope!r} (expected: recent|all)")
-
-        for media_id in media_ids:
-            enqueue_job(session, type_="media.sync_profile", params={"media_id": str(media_id)}, priority=10)
-            enqueue_job(
-                session,
-                type_="media.sync_videos",
-                params={"media_id": str(media_id), "force": True, "max_entries": max_entries},
-                priority=5,
-            )
-
-    return {"ok": True, "count": len(media_ids)}
+        try:
+            return schedule_all_media_sync(session, scope=scope)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/media/{media_id}/sync")
 def sync_media(media_id: uuid.UUID, scope: str = "recent") -> dict:
     with session_scope() as session:
-        media = session.get(Media, media_id)
-        if not media:
-            raise HTTPException(status_code=404, detail="media not found")
-        enqueue_job(session, type_="media.sync_profile", params={"media_id": str(media.id)}, priority=10)
-
-        scope_key = str(scope or "").strip().lower()
-        if scope_key in {"recent", "latest"}:
-            max_entries = int(settings.sync_max_entries)
-        elif scope_key in {"all", "full"}:
-            max_entries = 0
-        else:
-            raise HTTPException(status_code=400, detail=f"invalid scope: {scope!r} (expected: recent|all)")
-
-        enqueue_job(
-            session,
-            type_="media.sync_videos",
-            params={"media_id": str(media.id), "force": True, "max_entries": max_entries},
-            priority=5,
-        )
-    return {"ok": True}
+        try:
+            return schedule_media_sync(session, media_id, scope=scope)
+        except LookupError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/cleanup/stale-videos")
