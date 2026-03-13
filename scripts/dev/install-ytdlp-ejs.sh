@@ -9,18 +9,44 @@ if [[ -x .venv/bin/python ]]; then PY=".venv/bin/python"; fi
 echo "[install] python: $($PY --version)"
 echo "[install] pip: $($PY -m pip --version)"
 
-pkg="${YTDLP_EJS_PKG:-yt-dlp-ejs}"
-ver="${YTDLP_EJS_VERSION:-}"
+ytdlp_pkg="${YTDLP_PKG:-yt-dlp[default]}"
+ytdlp_ver="${YTDLP_VERSION:-}"
+ejs_pkg="${YTDLP_EJS_PKG:-yt-dlp-ejs}"
+ejs_ver="${YTDLP_EJS_VERSION:-}"
 
-if [[ -n "${ver}" ]]; then
-  echo "[install] ${pkg}==${ver}"
-  $PY -m pip install -U "${pkg}==${ver}"
+packages=()
+
+if [[ -n "${ytdlp_ver}" ]]; then
+  echo "[install] ${ytdlp_pkg}==${ytdlp_ver}"
+  packages+=("${ytdlp_pkg}==${ytdlp_ver}")
 else
-  echo "[install] ${pkg} (unpinned; set YTDLP_EJS_VERSION to pin)"
-  $PY -m pip install -U "${pkg}"
+  echo "[install] ${ytdlp_pkg} (unpinned; set YTDLP_VERSION to pin)"
+  packages+=("${ytdlp_pkg}")
 fi
 
-$PY -c "import importlib; m=importlib.import_module('yt_dlp_ejs'); print('[install] ok: yt_dlp_ejs', getattr(m,'__version__',None))" || true
+if [[ -n "${ejs_ver}" ]]; then
+  echo "[install] ${ejs_pkg}==${ejs_ver}"
+  packages+=("${ejs_pkg}==${ejs_ver}")
+else
+  echo "[install] ${ejs_pkg} (unpinned; set YTDLP_EJS_VERSION to pin)"
+  packages+=("${ejs_pkg}")
+fi
+
+$PY -m pip install -U "${packages[@]}"
+
+$PY - <<'PY'
+import importlib
+import importlib.metadata
+import yt_dlp
+
+print('[install] ok: yt_dlp', yt_dlp.version.__version__)
+try:
+    m = importlib.import_module('yt_dlp_ejs')
+    ver = getattr(m, '__version__', None) or importlib.metadata.version('yt-dlp-ejs')
+    print('[install] ok: yt_dlp_ejs', ver)
+except Exception as exc:
+    print('[install] warn: failed to import yt_dlp_ejs:', exc)
+PY
 
 echo "[install] pip show: yt-dlp / yt-dlp-ejs"
 $PY -m pip show yt-dlp yt-dlp-ejs || true

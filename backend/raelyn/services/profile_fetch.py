@@ -9,9 +9,8 @@ import time
 import httpx
 
 from raelyn.config import settings
-from raelyn.db import session_scope
-from raelyn.models import AppConfig
 from raelyn.services.http_client import httpx_client
+from raelyn.services.provider_cookies import load_provider_cookie_text
 from raelyn.services.provider_pause import (
     BILIBILI_PROVIDER_PAUSE_REASON,
     ProviderPauseRequestError,
@@ -113,23 +112,6 @@ def _extract_bilibili_mid(url: str) -> str | None:
         return None
 
 
-def _load_ytdlp_cookies_text() -> str:
-    # Persisted via /api/config (AppConfig key: "ytdlp_cookies").
-    try:
-        with session_scope() as session:
-            item = session.get(AppConfig, "ytdlp_cookies")
-            value = item.value if item else None
-    except Exception:
-        return ""
-
-    if not isinstance(value, dict):
-        return ""
-    text = value.get("text")
-    if not isinstance(text, str):
-        return ""
-    return text
-
-
 def _parse_netscape_cookies_for_host(text: str, host: str) -> dict[str, str]:
     out: dict[str, str] = {}
     h = (host or "").strip().lower()
@@ -165,7 +147,7 @@ def _load_cookie_header_for_url(url: str) -> str:
         host = ""
     if not host:
         return ""
-    text = _load_ytdlp_cookies_text()
+    text = load_provider_cookie_text("bilibili")
     if not (text or "").strip():
         return ""
     cookies = _parse_netscape_cookies_for_host(text, host)

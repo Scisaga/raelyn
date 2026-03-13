@@ -58,13 +58,13 @@ Notes:
   - Uses pidfiles under tmp/pids/ and logs under tmp/logs/
   - Uses existing run scripts:
       scripts/dev/run-api.sh
-      scripts/dev/run-worker-download-youtube.sh
-      scripts/dev/run-worker-download-bilibili.sh
-      scripts/dev/run-worker-audio.sh
-      scripts/dev/run-worker-process.sh
-      scripts/dev/run-worker-asr.sh
-      scripts/dev/run-worker-sync.sh
-      scripts/dev/run-worker-ai.sh
+      scripts/dev/run-worker.sh download_youtube
+      scripts/dev/run-worker.sh download_bilibili
+      scripts/dev/run-worker.sh audio
+      scripts/dev/run-worker.sh process
+      scripts/dev/run-worker.sh asr
+      scripts/dev/run-worker.sh sync
+      scripts/dev/run-worker.sh ai
       scripts/dev/run-scheduler.sh
       scripts/dev/run-mcp.sh
   - Reset uses:
@@ -114,6 +114,40 @@ start_one() {
   local pid="$!"
   write_pid "$pid_file" "$pid"
   echo "[start] ${name}: pid=${pid} log=${log_file}"
+}
+
+wait_for_http_ok() {
+  local name="$1"
+  local url="$2"
+  local pid_file="$3"
+  local log_file="$4"
+  local timeout_seconds="${5:-20}"
+  local pid
+  pid="$(read_pid "$pid_file")"
+
+  local i
+  for ((i=0; i<timeout_seconds * 2; i++)); do
+    if ! is_running "$pid"; then
+      echo "[start] ${name}: process exited during startup; inspect ${log_file}" >&2
+      return 1
+    fi
+    if curl -fsS --max-time 2 "$url" >/dev/null 2>&1; then
+      echo "[start] ${name}: ready ${url}"
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  echo "[start] ${name}: not ready after ${timeout_seconds}s; inspect ${log_file}" >&2
+  return 1
+}
+
+start_worker_role() {
+  local name="$1"
+  local pid_file="$2"
+  local log_file="$3"
+  local role="$4"
+  start_one "$name" "$pid_file" "$log_file" bash scripts/dev/run-worker.sh "$role"
 }
 
 stop_one() {
@@ -263,16 +297,24 @@ case "$cmd" in
   start)
     ensure_ui_built
     start_one "api" "$API_PID_FILE" "$API_LOG" bash scripts/dev/run-api.sh
-    start_one "worker-download-youtube" "$WORKER_YT_DL_PID_FILE" "$WORKER_YT_DL_LOG" bash scripts/dev/run-worker-download-youtube.sh
-    start_one "worker-download-bilibili" "$WORKER_BILI_DL_PID_FILE" "$WORKER_BILI_DL_LOG" bash scripts/dev/run-worker-download-bilibili.sh
-    start_one "worker-audio" "$WORKER_AUDIO_PID_FILE" "$WORKER_AUDIO_LOG" bash scripts/dev/run-worker-audio.sh
-    start_one "worker-process" "$WORKER_PROCESS_PID_FILE" "$WORKER_PROCESS_LOG" bash scripts/dev/run-worker-process.sh
-    start_one "worker-asr" "$WORKER_ASR_PID_FILE" "$WORKER_ASR_LOG" bash scripts/dev/run-worker-asr.sh
-    start_one "worker-sync" "$WORKER_SYNC_PID_FILE" "$WORKER_SYNC_LOG" bash scripts/dev/run-worker-sync.sh
-    start_one "worker-ai" "$WORKER_AI_PID_FILE" "$WORKER_AI_LOG" bash scripts/dev/run-worker-ai.sh
+    if ! wait_for_http_ok "api" "http://127.0.0.1:8000/api/health" "$API_PID_FILE" "$API_LOG" 30; then
+      do_status
+      exit 1
+    fi
+    start_worker_role "worker-download-youtube" "$WORKER_YT_DL_PID_FILE" "$WORKER_YT_DL_LOG" "download_youtube"
+    start_worker_role "worker-download-bilibili" "$WORKER_BILI_DL_PID_FILE" "$WORKER_BILI_DL_LOG" "download_bilibili"
+    start_worker_role "worker-audio" "$WORKER_AUDIO_PID_FILE" "$WORKER_AUDIO_LOG" "audio"
+    start_worker_role "worker-process" "$WORKER_PROCESS_PID_FILE" "$WORKER_PROCESS_LOG" "process"
+    start_worker_role "worker-asr" "$WORKER_ASR_PID_FILE" "$WORKER_ASR_LOG" "asr"
+    start_worker_role "worker-sync" "$WORKER_SYNC_PID_FILE" "$WORKER_SYNC_LOG" "sync"
+    start_worker_role "worker-ai" "$WORKER_AI_PID_FILE" "$WORKER_AI_LOG" "ai"
     start_one "scheduler" "$SCHED_PID_FILE" "$SCHED_LOG" bash scripts/dev/run-scheduler.sh
     if [[ -n "${MCP_BEARER_TOKEN:-}" ]]; then
       start_one "mcp" "$MCP_PID_FILE" "$MCP_LOG" bash scripts/dev/run-mcp.sh
+      if ! wait_for_http_ok "mcp" "http://127.0.0.1:8001/health" "$MCP_PID_FILE" "$MCP_LOG" 20; then
+        do_status
+        exit 1
+      fi
     else
       echo "[start] mcp: skip (MCP_BEARER_TOKEN is empty)"
     fi

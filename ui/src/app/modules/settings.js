@@ -1,10 +1,14 @@
 export function createSettingsModule() {
   return {
     settingsTab: "cookies",
-    ytdlpCookiesText: "",
+    settingsCookiesTab: "youtube",
+    ytdlpCookiesYoutubeText: "",
+    ytdlpCookiesYoutubeSaving: false,
+    ytdlpCookiesYoutubeError: "",
+    ytdlpCookiesBilibiliText: "",
+    ytdlpCookiesBilibiliSaving: false,
+    ytdlpCookiesBilibiliError: "",
     ytdlpCookiesLoaded: false,
-    ytdlpCookiesSaving: false,
-    ytdlpCookiesError: "",
     ytdlpSubtitlesEnabled: false,
     ytdlpSubtitlesLoaded: false,
     ytdlpSubtitlesSaving: false,

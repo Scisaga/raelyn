@@ -110,8 +110,8 @@
 
         <section
           class="min-h-0"
-          :class="['overview','settings','playlist','playlists','videos','media','jobs'].includes(activeView) ? 'p-0 sm:p-0 space-y-0 overflow-hidden' : 'p-4 sm:p-5 space-y-4'"
-          :style="['overview','settings','playlist','playlists','videos','media','jobs'].includes(activeView) ? 'height: calc(100vh - 3.5rem);' : ''"
+          :class="['overview','settings','playlist','playlists','videos','media','jobs','mcp-guide'].includes(activeView) ? 'p-0 sm:p-0 space-y-0 overflow-hidden' : 'p-4 sm:p-5 space-y-4'"
+          :style="['overview','settings','playlist','playlists','videos','media','jobs','mcp-guide'].includes(activeView) ? 'height: calc(100vh - 3.5rem);' : ''"
         >
 <!-- @include ../views/overview.html -->
 
@@ -126,5 +126,7 @@
 <!-- @include ../views/playlist.html -->
 
 <!-- @include ../views/settings.html -->
+
+<!-- @include ../views/mcp-guide.html -->
         </section>
       </main>

@@ -173,14 +173,16 @@ export function createShellModule({ sidebarCollapsedKey, sidebarHiddenKey }) {
       if (typeof this.setSettingsTab === "function") this.setSettingsTab("cookies");
       const key = String(provider || "").trim().toLowerCase();
       if (key === "bilibili") {
-        this.globalStatus = "B站任务已暂停：请更新 YTDLP_COOKIES 后重试";
+        if (typeof this.setSettingsCookiesTab === "function") this.setSettingsCookiesTab("bilibili");
+        this.globalStatus = "B站任务已暂停：请更新 YTDLP_COOKIES_BILIBILI 后重试";
         return;
       }
       if (key === "youtube") {
-        this.globalStatus = "YouTube任务已暂停：请更新 YTDLP_COOKIES 后重试";
+        if (typeof this.setSettingsCookiesTab === "function") this.setSettingsCookiesTab("youtube");
+        this.globalStatus = "YouTube任务已暂停：请更新 YTDLP_COOKIES_YOUTUBE 后重试";
         return;
       }
-      this.globalStatus = "系统已暂停：请更新 YTDLP_COOKIES 后自动恢复";
+      this.globalStatus = "系统已暂停：请检查对应平台 Cookies 配置";
     },
   };
 }

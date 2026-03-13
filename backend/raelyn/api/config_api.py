@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from raelyn.db import session_scope
 from raelyn.models import AppConfig
+from raelyn.services.provider_cookies import cookie_config_key, looks_like_netscape_cookie_file
 from raelyn.services.brief_schedule import (
     brief_generation_policy_defaults,
     normalize_brief_generation_policy,
@@ -25,19 +26,6 @@ router = APIRouter(tags=["config"])
 
 class ConfigUpsert(BaseModel):
     value: dict
-
-
-def _looks_like_netscape_cookie_file(text: str) -> bool:
-    # Netscape cookies.txt lines are tab-separated with 7 fields:
-    # domain \t flag \t path \t secure \t expiration \t name \t value
-    for raw in (text or "").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.count("\t") >= 6:
-            return True
-    return False
-
 
 def _validate_llm_transcript_polish_prompt_value(value: dict) -> None:
     text = value.get("text") if isinstance(value, dict) else None
@@ -72,16 +60,20 @@ def get_config_defaults() -> dict:
 def put_config(key: str, payload: ConfigUpsert) -> dict:
     with session_scope() as session:
         value = payload.value
-        if key == "ytdlp_cookies":
+        cookie_keys = {
+            cookie_config_key("youtube"),
+            cookie_config_key("bilibili"),
+        }
+        if key in cookie_keys:
             try:
                 text = value.get("text") if isinstance(value, dict) else ""
             except Exception:
                 text = ""
             if isinstance(text, str) and text.strip():
-                if not _looks_like_netscape_cookie_file(text):
+                if not looks_like_netscape_cookie_file(text):
                     raise HTTPException(
                         status_code=400,
-                        detail="ytdlp_cookies must be Netscape cookies.txt format (tab-separated).",
+                        detail=f"{key} must be Netscape cookies.txt format (tab-separated).",
                     )
         if key == TRANSCRIPT_POLISH_PROMPT_CONFIG_KEY:
             _validate_llm_transcript_polish_prompt_value(value)
@@ -97,10 +89,13 @@ def put_config(key: str, payload: ConfigUpsert) -> dict:
             session.add(AppConfig(key=key, value=value))
 
         # If the system was paused due to invalid/expired cookies, resume automatically after cookies update.
-        if key == "ytdlp_cookies":
+        if key in cookie_keys:
             p = get_pause(session)
             reason = str(p.get("reason") or "")
             if p.get("paused") and reason.startswith("ytdlp_cookies_"):
                 clear_pause(session)
-            clear_provider_pauses(session, providers=["bilibili", "youtube"])
+            if key == cookie_config_key("youtube"):
+                clear_provider_pauses(session, providers=["youtube"])
+            elif key == cookie_config_key("bilibili"):
+                clear_provider_pauses(session, providers=["bilibili"])
     return {"ok": True}

@@ -13,5 +13,5 @@ set -a
 source .env
 set +a
 
-# Prefer project-local binaries if present (bin/ffmpeg, bin/yt-dlp, bin/node, ...).
+# Prefer project-local external binaries if present (bin/ffmpeg, bin/node, ...).
 export PATH="$(pwd)/bin:${PATH:-}"

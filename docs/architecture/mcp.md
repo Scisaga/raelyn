@@ -104,10 +104,11 @@ MCP 没有复制 API 路由逻辑，而是复用了抽出的共享 helper：
 
 transcript 选择顺序统一为：
 
-1. `subtitle + zh`
-2. `qwen3-asr + zh`
-3. `speaches + zh`
-4. 以上都没有时，回退到最新的 transcript asset
+1. 先按 variant 选择：`polished` 优先于 `plain`
+2. 同一 variant 内优先 `subtitle + zh`
+3. 然后是 `qwen3-asr + zh`
+4. 然后是历史遗留 source：`speaches + zh`
+5. 以上都没有时，回退到最新的 transcript asset
 
 MCP transcript 输出字段固定包含：
 

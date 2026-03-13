@@ -61,6 +61,10 @@ export function createUrlStateMethods({ settingsTabs }) {
       if (viewKey === "settings") {
         const tab = (searchParams.get("tab") || this.settingsTab || "cookies").trim();
         this.settingsTab = settingsTabs.includes(tab) ? tab : "cookies";
+        if (this.settingsTab === "cookies") {
+          const cookieTab = (searchParams.get("cookie_tab") || this.settingsCookiesTab || "youtube").trim().toLowerCase();
+          this.settingsCookiesTab = cookieTab === "bilibili" ? "bilibili" : "youtube";
+        }
       }
     },
 
@@ -93,6 +97,9 @@ export function createUrlStateMethods({ settingsTabs }) {
       }
       if (viewKey === "settings") {
         searchParams.set("tab", this.settingsTab || "cookies");
+        if ((this.settingsTab || "cookies") === "cookies") {
+          searchParams.set("cookie_tab", this.settingsCookiesTab || "youtube");
+        }
       }
       const search = searchParams.toString();
       return search ? `?${search}` : "";
@@ -120,6 +127,13 @@ export function createUrlStateMethods({ settingsTabs }) {
     setSettingsTab(tab) {
       const next = String(tab || "").trim();
       this.settingsTab = settingsTabs.includes(next) ? next : "cookies";
+      if (this.settingsTab !== "cookies") this.settingsCookiesTab = "youtube";
+      this._syncUrl({ push: false });
+    },
+
+    setSettingsCookiesTab(tab) {
+      const next = String(tab || "").trim().toLowerCase();
+      this.settingsCookiesTab = next === "bilibili" ? "bilibili" : "youtube";
       this._syncUrl({ push: false });
     },
 

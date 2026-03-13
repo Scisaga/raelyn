@@ -81,42 +81,74 @@ export function createSettingsViewMethods({ ytdlpFormatPreset1080, ytdlpFormatPr
     async loadYtdlpCookies({ force = false } = {}) {
       try {
         if (this.ytdlpCookiesLoaded && !force) return;
-        this.ytdlpCookiesError = "";
+        this.ytdlpCookiesYoutubeError = "";
+        this.ytdlpCookiesBilibiliError = "";
         const payload = await this.api(`/config`);
         const data = (payload && payload.data) || {};
-        const cfg = data && data.ytdlp_cookies ? data.ytdlp_cookies : null;
-        const text = cfg && typeof cfg === "object" ? cfg.text : "";
-        this.ytdlpCookiesText = typeof text === "string" ? text : "";
+        const ytCfg = data && data.ytdlp_cookies_youtube ? data.ytdlp_cookies_youtube : null;
+        const ytText = ytCfg && typeof ytCfg === "object" ? ytCfg.text : "";
+        this.ytdlpCookiesYoutubeText = typeof ytText === "string" ? ytText : "";
+        const biliCfg = data && data.ytdlp_cookies_bilibili ? data.ytdlp_cookies_bilibili : null;
+        const biliText = biliCfg && typeof biliCfg === "object" ? biliCfg.text : "";
+        this.ytdlpCookiesBilibiliText = typeof biliText === "string" ? biliText : "";
         this.ytdlpCookiesLoaded = true;
       } catch (e) {
-        this.ytdlpCookiesError = e && e.message ? e.message : String(e);
+        const msg = e && e.message ? e.message : String(e);
+        this.ytdlpCookiesYoutubeError = msg;
+        this.ytdlpCookiesBilibiliError = msg;
       }
     },
 
-    async saveYtdlpCookies() {
+    async saveYtdlpCookiesYoutube() {
       try {
-        this.ytdlpCookiesSaving = true;
-        this.ytdlpCookiesError = "";
-        await this.api(`/config/ytdlp_cookies`, {
+        this.ytdlpCookiesYoutubeSaving = true;
+        this.ytdlpCookiesYoutubeError = "";
+        await this.api(`/config/ytdlp_cookies_youtube`, {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ value: { text: String(this.ytdlpCookiesText || "") } }),
+          body: JSON.stringify({ value: { text: String(this.ytdlpCookiesYoutubeText || "") } }),
         });
         this.ytdlpCookiesLoaded = true;
-        this.globalStatus = "已保存 yt-dlp Cookies";
+        this.globalStatus = "已保存 YouTube Cookies";
         await this.loadSystemStatus({ silent: true });
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
-        this.ytdlpCookiesError = msg;
+        this.ytdlpCookiesYoutubeError = msg;
         this.globalStatus = `error: ${msg}`;
       } finally {
-        this.ytdlpCookiesSaving = false;
+        this.ytdlpCookiesYoutubeSaving = false;
       }
     },
 
-    async clearYtdlpCookies() {
-      this.ytdlpCookiesText = "";
-      await this.saveYtdlpCookies();
+    async clearYtdlpCookiesYoutube() {
+      this.ytdlpCookiesYoutubeText = "";
+      await this.saveYtdlpCookiesYoutube();
+    },
+
+    async saveYtdlpCookiesBilibili() {
+      try {
+        this.ytdlpCookiesBilibiliSaving = true;
+        this.ytdlpCookiesBilibiliError = "";
+        await this.api(`/config/ytdlp_cookies_bilibili`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ value: { text: String(this.ytdlpCookiesBilibiliText || "") } }),
+        });
+        this.ytdlpCookiesLoaded = true;
+        this.globalStatus = "已保存 B站 Cookies";
+        await this.loadSystemStatus({ silent: true });
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.ytdlpCookiesBilibiliError = msg;
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.ytdlpCookiesBilibiliSaving = false;
+      }
+    },
+
+    async clearYtdlpCookiesBilibili() {
+      this.ytdlpCookiesBilibiliText = "";
+      await this.saveYtdlpCookiesBilibili();
     },
 
     async loadYtdlpSubtitles({ force = false } = {}) {

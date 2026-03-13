@@ -82,7 +82,7 @@ def media_sync_profile(session: Session, job: Job) -> dict | None:
             return {"ok": True, "source": profile.get("source")}
 
         try:
-            info = ytdlp_extract_info(media.url, flat=True, max_entries=1)
+            info = ytdlp_extract_info(media.url, provider=media.provider, flat=True, max_entries=1)
         except YtdlpCookiesInvalidError as e:
             _pause_all_jobs_for_cookies(session, job=job, err=e)
             raise
@@ -152,7 +152,12 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
             level="info",
         )
         try:
-            info = ytdlp_extract_info(sync_url, flat=True, max_entries=playlist_limit if raw_max is not None else process_limit)
+            info = ytdlp_extract_info(
+                sync_url,
+                provider=media.provider,
+                flat=True,
+                max_entries=playlist_limit if raw_max is not None else process_limit,
+            )
         except YtdlpCookiesInvalidError as e:
             _pause_all_jobs_for_cookies(session, job=job, err=e)
             media.last_video_sync_at = utcnow()

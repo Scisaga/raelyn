@@ -48,55 +48,132 @@
                 </div>
               </div>
 
-	              <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar">
+	              <div class="flex-1 min-h-0">
 	                <div x-show="settingsTab==='cookies'" class="h-full flex flex-col min-h-0">
-	                  <div class="shrink-0 px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
-	                  <div>
-	                    <div class="text-sm font-semibold text-slate-100">YTDLP_COOKIES（cookies.txt）</div>
-	                    <div class="text-xs text-slate-400 mt-1">
-	                      用于 yt-dlp 登录态（Netscape cookies.txt 格式）。在此编辑并保存后，下载任务会自动使用该 Cookie。
+                    <div class="shrink-0 px-4 py-3 border-b border-slate-800 bg-slate-950/10">
+                      <div class="inline-flex flex-wrap items-center gap-1 rounded-xl border border-slate-800 bg-slate-950/70 p-1 shadow-[inset_0_1px_0_rgba(148,163,184,0.08)]">
+                        <button
+                          class="inline-flex items-center gap-3 px-3 py-1.5 rounded-lg border text-sm font-semibold transition-all"
+                          :class="settingsCookiesTab==='youtube' ? 'border-rose-400/60 bg-rose-950/70 text-white shadow-[0_0_0_1px_rgba(251,113,133,0.24),0_10px_30px_rgba(190,24,93,0.18)]' : 'border-transparent text-slate-300 hover:border-slate-700 hover:bg-slate-800/70 hover:text-slate-100'"
+                          @click="setSettingsCookiesTab('youtube')"
+                        >
+                          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                            <path fill="#FF0033" d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.5 31.5 0 0 0 0 12a31.5 31.5 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.5 31.5 0 0 0 24 12a31.5 31.5 0 0 0-.5-5.8Z"/>
+                            <path fill="#FFFFFF" d="M9.6 8.3v7.4L16 12z"/>
+                          </svg>
+                          YouTube
+                        </button>
+                        <button
+                          class="inline-flex items-center gap-3 px-3 py-1.5 rounded-lg border text-sm font-semibold transition-all"
+                          :class="settingsCookiesTab==='bilibili' ? 'border-sky-400/60 bg-sky-950/70 text-white shadow-[0_0_0_1px_rgba(56,189,248,0.24),0_10px_30px_rgba(2,132,199,0.18)]' : 'border-transparent text-slate-300 hover:border-slate-700 hover:bg-slate-800/70 hover:text-slate-100'"
+                          @click="setSettingsCookiesTab('bilibili')"
+                        >
+                          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                            <path fill="#00A1D6" d="M8.95 4.85 6.95 2.85a.82.82 0 1 1 1.16-1.16l2.66 2.66h2.46l2.66-2.66a.82.82 0 1 1 1.16 1.16l-2 2h1.7A4.25 4.25 0 0 1 21 9.1v6.65A4.25 4.25 0 0 1 16.75 20H15.9v.25a1.2 1.2 0 1 1-2.4 0V20h-3v.25a1.2 1.2 0 1 1-2.4 0V20h-.85A4.25 4.25 0 0 1 3 15.75V9.1a4.25 4.25 0 0 1 4.25-4.25h1.7Zm-1.7 2.4A1.85 1.85 0 0 0 5.4 9.1v6.65c0 1.02.83 1.85 1.85 1.85h9.5c1.02 0 1.85-.83 1.85-1.85V9.1a1.85 1.85 0 0 0-1.85-1.85h-9.5Z"/>
+                            <path fill="#00A1D6" d="m7.35 10.35 3.1-.62.42 2.05-3.1.62zm9.3 0-.42 2.05-3.1-.62.42-2.05z"/>
+                            <path d="M9.15 14.65c.32.8.78 1.2 1.32 1.2.52 0 .8-.29.95-.84.15.55.43.84.95.84.54 0 1-.4 1.32-1.2" fill="none" stroke="#00A1D6" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+                          </svg>
+                          B站
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                  <div class="shrink-0 flex items-center gap-2">
-                    <button
-                      class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
-                      @click="loadYtdlpCookies({force:true})"
-                      :disabled="ytdlpCookiesSaving"
-                    >
-                      重新加载
-                    </button>
-                    <button
-                      class="px-3 py-1.5 rounded-md border border-rose-900/60 bg-rose-950/20 text-xs text-rose-200 hover:bg-rose-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
-                      @click="clearYtdlpCookies()"
-                      :disabled="ytdlpCookiesSaving"
-                    >
-                      清空并保存
-                    </button>
-                    <button
-                      class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
-                      @click="saveYtdlpCookies()"
-                      :disabled="ytdlpCookiesSaving"
-                    >
-	                      保存
-	                    </button>
-	                  </div>
-	                </div>
-	                <div class="flex-1 min-h-0 p-4 flex flex-col gap-3">
-	                  <textarea
-	                    class="w-full flex-1 min-h-0 rounded-lg border px-3 py-2 text-xs font-mono focus:outline-none whitespace-pre raelyn-multiline-input"
-	                    placeholder="# Netscape HTTP Cookie File\n# 从浏览器导出后粘贴到这里…"
-	                    spellcheck="false"
-	                    x-model="ytdlpCookiesText"
-	                  ></textarea>
-                  <div class="text-xs text-rose-200" x-show="ytdlpCookiesError" x-text="ytdlpCookiesError"></div>
-                  <div class="text-[11px] text-slate-500">
-                    提示：该 Cookie 会保存在数据库配置中（<code class="text-slate-200">/api/config</code>），并在运行时写入本地
-                    <code class="text-slate-200">tmp/ytdlp_cookies.txt</code> 供 yt-dlp 使用。
-                  </div>
-                </div>
-                </div>
 
-                <div x-show="settingsTab==='subtitles'">
+                    <div x-show="settingsCookiesTab==='youtube'" class="flex-1 min-h-0 px-4 py-3 flex flex-col">
+                      <div class="shrink-0 flex items-start justify-between gap-3">
+                        <div>
+                          <div class="text-sm font-semibold text-slate-100">YTDLP_COOKIES_YOUTUBE（cookies.txt）</div>
+                          <div class="text-xs text-slate-400 mt-1">
+                            仅用于 YouTube 的 yt-dlp 登录态（Netscape cookies.txt 格式）。
+                          </div>
+                        </div>
+                        <div class="shrink-0 flex items-center gap-2">
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="loadYtdlpCookies({force:true})"
+                            :disabled="ytdlpCookiesYoutubeSaving"
+                          >
+                            重新加载
+                          </button>
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-rose-900/60 bg-rose-950/20 text-xs text-rose-200 hover:bg-rose-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="clearYtdlpCookiesYoutube()"
+                            :disabled="ytdlpCookiesYoutubeSaving"
+                          >
+                            清空并保存
+                          </button>
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="saveYtdlpCookiesYoutube()"
+                            :disabled="ytdlpCookiesYoutubeSaving"
+                          >
+                            保存
+                          </button>
+                        </div>
+                      </div>
+                      <div class="flex-1 min-h-0 pt-3 flex flex-col gap-3">
+                        <textarea
+                          class="w-full flex-1 min-h-0 rounded-lg border px-3 py-2 text-xs font-mono focus:outline-none whitespace-pre resize-none raelyn-multiline-input"
+                          placeholder="# Netscape HTTP Cookie File\n# 粘贴 YouTube cookies.txt …"
+                          spellcheck="false"
+                          x-model="ytdlpCookiesYoutubeText"
+                        ></textarea>
+                        <div class="text-xs text-rose-200" x-show="ytdlpCookiesYoutubeError" x-text="ytdlpCookiesYoutubeError"></div>
+                        <div class="text-[11px] text-slate-500">
+                          提示：保存后会写入数据库配置 <code class="text-slate-200">/api/config/ytdlp_cookies_youtube</code>，并在运行时写入本地
+                          <code class="text-slate-200">tmp/ytdlp_cookies_youtube.txt</code> 供 yt-dlp 使用。
+                        </div>
+                      </div>
+                    </div>
+
+                    <div x-show="settingsCookiesTab==='bilibili'" class="flex-1 min-h-0 px-4 py-3 flex flex-col">
+                      <div class="shrink-0 flex items-start justify-between gap-3">
+                        <div>
+                          <div class="text-sm font-semibold text-slate-100">YTDLP_COOKIES_BILIBILI（cookies.txt）</div>
+                          <div class="text-xs text-slate-400 mt-1">
+                            仅用于 B站 的 yt-dlp / profile fetch 登录态（Netscape cookies.txt 格式）。
+                          </div>
+                        </div>
+                        <div class="shrink-0 flex items-center gap-2">
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="loadYtdlpCookies({force:true})"
+                            :disabled="ytdlpCookiesBilibiliSaving"
+                          >
+                            重新加载
+                          </button>
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-rose-900/60 bg-rose-950/20 text-xs text-rose-200 hover:bg-rose-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="clearYtdlpCookiesBilibili()"
+                            :disabled="ytdlpCookiesBilibiliSaving"
+                          >
+                            清空并保存
+                          </button>
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="saveYtdlpCookiesBilibili()"
+                            :disabled="ytdlpCookiesBilibiliSaving"
+                          >
+                            保存
+                          </button>
+                        </div>
+                      </div>
+                      <div class="flex-1 min-h-0 pt-3 flex flex-col gap-3">
+                        <textarea
+                          class="w-full flex-1 min-h-0 rounded-lg border px-3 py-2 text-xs font-mono focus:outline-none whitespace-pre resize-none raelyn-multiline-input"
+                          placeholder="# Netscape HTTP Cookie File\n# 粘贴 bilibili cookies.txt …"
+                          spellcheck="false"
+                          x-model="ytdlpCookiesBilibiliText"
+                        ></textarea>
+                        <div class="text-xs text-rose-200" x-show="ytdlpCookiesBilibiliError" x-text="ytdlpCookiesBilibiliError"></div>
+                        <div class="text-[11px] text-slate-500">
+                          提示：保存后会写入数据库配置 <code class="text-slate-200">/api/config/ytdlp_cookies_bilibili</code>，并在运行时写入本地
+                          <code class="text-slate-200">tmp/ytdlp_cookies_bilibili.txt</code> 供 yt-dlp / profile fetch 使用。
+                        </div>
+                      </div>
+                    </div>
+	                </div>
+
+                <div x-show="settingsTab==='subtitles'" class="h-full overflow-auto raelyn-scrollbar">
                 <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
                   <div>
                     <div class="text-sm font-semibold text-slate-100">下载字幕（Subtitles）</div>
@@ -133,12 +210,12 @@
                   </label>
                   <div class="text-xs text-rose-200" x-show="ytdlpSubtitlesError" x-text="ytdlpSubtitlesError"></div>
                   <div class="text-[11px] text-slate-500">
-                    提示：开启字幕下载后，建议同时在上方配置 <code class="text-slate-200">YTDLP_COOKIES</code>，否则更容易失败/被风控。
+                    提示：开启字幕下载后，建议同时在上方配置 <code class="text-slate-200">YTDLP_COOKIES_YOUTUBE</code>，否则更容易失败/被风控。
                   </div>
                 </div>
                 </div>
 
-                <div x-show="settingsTab==='members'">
+                <div x-show="settingsTab==='members'" class="h-full overflow-auto raelyn-scrollbar">
                 <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
                   <div>
                     <div class="text-sm font-semibold text-slate-100">会员视频（Members-only）</div>
@@ -180,7 +257,7 @@
                 </div>
                 </div>
 
-                <div x-show="settingsTab==='format'">
+                <div x-show="settingsTab==='format'" class="h-full overflow-auto raelyn-scrollbar">
                 <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
                   <div>
                     <div class="text-sm font-semibold text-slate-100">YTDLP_FORMAT（下载画质）</div>
@@ -244,7 +321,7 @@
                 </div>
                 </div>
 
-                <div x-show="settingsTab==='llm'" class="h-full flex flex-col min-h-0">
+                <div x-show="settingsTab==='llm'" class="h-full flex flex-col min-h-0 overflow-auto raelyn-scrollbar">
                 <div class="shrink-0 px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
                   <div>
                     <div class="text-sm font-semibold text-slate-100">LLM 转写润色提示词</div>
@@ -292,7 +369,7 @@
                 </div>
                 </div>
 
-                <div x-show="settingsTab==='cleanup'">
+                <div x-show="settingsTab==='cleanup'" class="h-full overflow-auto raelyn-scrollbar">
                 <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
                   <div>
                     <div class="text-sm font-semibold text-slate-100">遗留视频记录清理</div>

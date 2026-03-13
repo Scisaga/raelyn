@@ -11,6 +11,7 @@ from raelyn.services.s3 import s3_get_bytes
 
 
 TRANSCRIPT_VARIANTS = ("polished", "plain")
+# Keep the legacy "speaches" source name for backward compatibility with old assets.
 TRANSCRIPT_SOURCE_LANGUAGE_ORDER = (
     ("subtitle", "zh"),
     ("qwen3-asr", "zh"),

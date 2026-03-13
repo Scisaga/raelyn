@@ -13,8 +13,9 @@ from sqlalchemy.orm import Session
 from raelyn.config import settings
 from raelyn.jobs.log import job_log
 from raelyn.models import AppConfig, Asset, Job, Media
+from raelyn.services.provider_cookies import cookie_config_name, cookie_provider_label, normalize_cookie_provider
 from raelyn.services.http_client import httpx_client
-from raelyn.services.provider_pause import ProviderPauseRequestError, set_provider_paused
+from raelyn.services.provider_pause import ProviderPauseRequestError, job_provider, set_provider_paused
 from raelyn.services.s3 import s3_upload_file
 from raelyn.services.system_pause import set_paused
 from raelyn.services.workdir import job_workdir
@@ -22,9 +23,18 @@ from raelyn.services.ytdlp import YtdlpCookiesInvalidError
 
 
 def _pause_all_jobs_for_cookies(session: Session, *, job: Job, err: YtdlpCookiesInvalidError) -> None:
+    provider = normalize_cookie_provider(getattr(err, "provider", None)) or normalize_cookie_provider(job_provider(session, job))
     reason = getattr(err, "reason", "") or "ytdlp_cookies_invalid"
-    msg = str(err) or "YTDLP_COOKIES invalid"
-    pause_msg = f"已暂停全部任务：{msg}（请在 UI -> 设置 更新 YTDLP_COOKIES）"
+    msg = str(err) or "cookies invalid"
+    if provider:
+        pause_msg = (
+            f"{cookie_provider_label(provider)}任务已暂停：{msg}"
+            f"（请在 UI -> 设置 更新 {cookie_config_name(provider)}）"
+        )
+        pause = set_provider_paused(session, provider=provider, reason=str(reason), message=pause_msg)
+        job_log(session, job, pause.get("message") or pause_msg, level="error")
+        return
+    pause_msg = f"已暂停全部任务：{msg}（请在 UI -> 设置 更新 Cookies）"
     set_paused(session, reason=str(reason), message=pause_msg)
     job_log(session, job, pause_msg, level="error")
 

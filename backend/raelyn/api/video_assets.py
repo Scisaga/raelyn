@@ -42,7 +42,13 @@ def _maybe_localize_youtube_title(video: Video, *, socket_timeout_seconds: int |
     if vid:
         _LOCALIZE_TITLE_ATTEMPTED.add(vid)
     try:
-        info = ytdlp_extract_info(url, flat=False, max_entries=1, socket_timeout=socket_timeout_seconds)
+        info = ytdlp_extract_info(
+            url,
+            provider=video.provider,
+            flat=False,
+            max_entries=1,
+            socket_timeout=socket_timeout_seconds,
+        )
     except (YtdlpCookiesInvalidError, Exception):
         return
     title = str(info.get("title") or "").strip()

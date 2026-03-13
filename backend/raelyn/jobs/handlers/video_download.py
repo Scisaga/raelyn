@@ -109,7 +109,7 @@ def video_download(session: Session, job: Job) -> dict | None:
                 download_target = video.url or video.provider_video_id
                 if video.provider == "bilibili":
                     download_target = _normalize_bilibili_video_url(download_target)
-                info = ytdlp_download(url=download_target, out_dir=wd, progress_hook=_hook)
+                info = ytdlp_download(url=download_target, provider=video.provider, out_dir=wd, progress_hook=_hook)
                 set_job_progress(job_id=job.id, current=10000, total=10000)
             except YtdlpCookiesInvalidError as e:
                 _pause_all_jobs_for_cookies(session, job=job, err=e)
@@ -157,6 +157,7 @@ def video_download(session: Session, job: Job) -> dict | None:
                     download_target = _normalize_bilibili_video_url(download_target)
                 info = ytdlp_download(
                     url=download_target,
+                    provider=video.provider,
                     out_dir=wd,
                     write_subtitles=False,
                     write_auto_subtitles=False,
