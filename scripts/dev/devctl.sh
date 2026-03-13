@@ -3,6 +3,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+if [[ -f .env ]]; then
+  # shellcheck disable=SC1091
+  source scripts/dev/load-env.sh
+fi
+
 PID_DIR="tmp/pids"
 LOG_DIR="tmp/logs"
 
