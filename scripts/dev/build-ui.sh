@@ -22,9 +22,28 @@ if [[ "$NPM_PATH" == /mnt/c/* ]]; then
   exit 1
 fi
 
-if [[ "${FORCE_UI_NPM_CI:-}" == "1" || ! -d ui/node_modules ]]; then
+needs_npm_ci() {
+  if [[ "${FORCE_UI_NPM_CI:-}" == "1" ]]; then
+    return 0
+  fi
+
+  if [[ ! -d ui/node_modules ]]; then
+    return 0
+  fi
+
+  # `ui/node_modules` may exist but be incomplete after a partial copy or
+  # production-only install. Verify a required build dependency is installed.
+  if ! npm -C ui ls esbuild --depth=0 >/dev/null 2>&1; then
+    return 0
+  fi
+
+  return 1
+}
+
+if needs_npm_ci; then
+  echo "[ui] installing dependencies with npm ci"
   npm -C ui ci
 else
-  echo "[ui] deps ok (ui/node_modules exists); skip npm ci"
+  echo "[ui] deps ok (required build deps installed); skip npm ci"
 fi
 npm -C ui run ui:build
