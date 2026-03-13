@@ -26,10 +26,9 @@
 
 ## 2) 推荐：Docker 一键启动（含 Postgres + MinIO）
 
-说明：本项目的 `Dockerfile` 会直接 **COPY 开发环境已下载的 `./bin/*` 工具二进制**（避免在镜像构建时重新下载）。因此请确保你在 **Linux/WSL** 环境下先准备好这些文件：
+说明：本项目的 `Dockerfile` 会直接 **COPY 开发环境已下载的 `./bin/*` 外部工具二进制**（避免在镜像构建时重新下载）。`yt-dlp` 本身通过 `backend/requirements.txt` 安装到 Python 环境中；这里需要你先准备的是 `ffmpeg` / `ffprobe` / `node`：
 
 ```bash
-./scripts/dev/download-ytdlp.sh
 ./scripts/dev/download-ffmpeg.sh
 ./scripts/dev/download-node.sh
 ```
@@ -65,20 +64,19 @@ docker compose up --build
 
 说明：
 - `bootstrap-python.sh` 负责创建或修复 `.venv`，并安装 `backend/requirements.txt`
-- `bootstrap-ubuntu.sh` 只负责补齐 Python 启动所需的系统包；它不会替你安装项目运行所需的 `ffmpeg` / `yt-dlp`
+- `bootstrap-ubuntu.sh` 只负责补齐 Python 启动所需的系统包；它不会替你安装项目运行所需的 `ffmpeg`
 
 ### 3.2 工具准备（开发必需）
-本项目在本地开发/运行（无 Docker）时，推荐把依赖工具统一放到 `./bin/`。`scripts/dev/load-env.sh` 会将 `./bin` 加到 `PATH` 最前，后端也会优先使用项目内二进制；只有在 `./bin/...` 不存在时才回退到系统 `PATH`。
+本项目在本地开发/运行（无 Docker）时，推荐把外部工具统一放到 `./bin/`。`scripts/dev/load-env.sh` 会将 `./bin` 加到 `PATH` 最前；当前项目里主要是 `ffmpeg` / `ffprobe` / `node` 走这条路径，`yt-dlp` 则通过 `.venv` 内的 Python 包提供。
 
-#### 3.2.1 `yt-dlp` + `ffmpeg`（必需）
+#### 3.2.1 `ffmpeg`（必需）
 推荐直接下载到项目目录：
 
 ```bash
-./scripts/dev/download-ytdlp.sh
 ./scripts/dev/download-ffmpeg.sh
 ```
 
-如果你已经在系统里安装了 `yt-dlp` / `ffmpeg`，也可以不下载到 `./bin/`；但这只是 fallback 路径，不是推荐开发方式。
+如果你已经在系统里安装了 `ffmpeg`，也可以不下载到 `./bin/`；但这只是 fallback 路径，不是推荐开发方式。
 
 #### 3.2.2 Node.js + npm（必需，用于 UI 构建）
 推荐在 WSL 里安装 Node（避免使用 `/mnt/c/...` 的 Windows npm 导致构建失败）：
@@ -94,17 +92,24 @@ docker compose up --build
 ```
 > 注意：该脚本只提供 `node`，不包含 `npm`；UI 首次安装依赖仍需要可用的 `npm`。
 
-#### 3.2.3 `yt-dlp-ejs`（必需，Python 包）
-说明：项目通过 `backend/requirements.txt` 使用 `yt-dlp[default]`，会自动安装 `yt-dlp-ejs`（用于 YouTube 的 EJS/JS challenge）。
+#### 3.2.3 `yt-dlp` / `yt-dlp-ejs`（必需，Python 包）
+说明：项目通过 `backend/requirements.txt` 使用 `yt-dlp[default]`，会自动安装 `yt-dlp` 与 `yt-dlp-ejs`（用于 YouTube 的 EJS/JS challenge）。
+默认配置还会向 yt-dlp Python API 传入 `YTDLP_REMOTE_COMPONENTS=ejs:github`，对应 CLI 里的 `--remote-components ejs:github`。
 
 如果日志出现类似：
 - `n challenge solving failed`
 - `Only images are available for download`
 
-通常意味着 EJS 解析失败（版本过旧或环境缺依赖）。可直接执行脚本进行升级/自检：
+通常意味着 EJS 解析失败（版本过旧或环境缺依赖）。可直接执行脚本升级 `.venv` 里的 `yt-dlp[default]` 与 `yt-dlp-ejs`，并做基础自检：
 
 ```bash
 ./scripts/dev/install-ytdlp-ejs.sh
+```
+
+若你从旧版项目升级，建议确认 `.env` 里保留：
+
+```bash
+YTDLP_REMOTE_COMPONENTS=ejs:github
 ```
 
 ### 3.3 配置
@@ -115,31 +120,34 @@ cp .env.example .env
 
 `run-*.sh`、`run-scheduler.sh`、`devctl.sh` 检测到 `.env` 时会自动加载环境变量并把 `./bin` 放到 `PATH` 最前，因此正常启动服务时不需要手动执行 `source ./scripts/dev/load-env.sh`。
 
-如果你要在当前 shell 里直接运行零散命令（例如手动执行 `python` / `yt-dlp` / `ffmpeg`），再手动加载：
+如果你要在当前 shell 里直接运行零散命令（例如手动执行 `python` / `ffmpeg` / `node`），再手动加载：
 
 ```bash
 source ./scripts/dev/load-env.sh
 ```
-说明：`load-env.sh` 会导出 `.env` 里的变量，并将 `./bin` 放到 `PATH` 最前（优先使用下载到 `./bin/` 的 `ffmpeg/yt-dlp/node` 等）。
+说明：`load-env.sh` 会导出 `.env` 里的变量，并将 `./bin` 放到 `PATH` 最前（优先使用下载到 `./bin/` 的 `ffmpeg/node` 等）。
 
 #### 可选：配置平台 Cookies（YouTube / bilibili，推荐）
 很多 429/风控/年龄验证/登录态相关的问题，用 cookies 可以显著改善（B 站常见报错：352 风控拦截）。
 
 1) 在浏览器里登录对应平台（YouTube / bilibili，建议用单独账号）
 2) 导出 **Netscape 格式** `cookies.txt`（Chrome/Firefox 常用扩展：`Get cookies.txt`）
-3) 打开 UI -> **设置** -> `YTDLP_COOKIES（cookies.txt）`，把内容粘贴进去并保存（不会写入 `.env`）。
+3) 打开 UI -> **设置**：
+   - `YTDLP_COOKIES_YOUTUBE（cookies.txt）`：粘贴 YouTube cookies
+   - `YTDLP_COOKIES_BILIBILI（cookies.txt）`：粘贴 B站 cookies
+   两者都不会写入 `.env`，而是保存在数据库配置中。
 
 ### 3.4 启动（多个终端）
 
 ```bash
 ./scripts/dev/run-api.sh
-./scripts/dev/run-worker-download-youtube.sh
-./scripts/dev/run-worker-download-bilibili.sh
-./scripts/dev/run-worker-audio.sh
-./scripts/dev/run-worker-process.sh
-./scripts/dev/run-worker-asr.sh
-./scripts/dev/run-worker-sync.sh
-./scripts/dev/run-worker-ai.sh
+./scripts/dev/run-worker.sh download_youtube
+./scripts/dev/run-worker.sh download_bilibili
+./scripts/dev/run-worker.sh audio
+./scripts/dev/run-worker.sh process
+./scripts/dev/run-worker.sh asr
+./scripts/dev/run-worker.sh sync
+./scripts/dev/run-worker.sh ai
 ./scripts/dev/run-scheduler.sh
 # Optional: MCP HTTP server for LLM/agent access (requires MCP_BEARER_TOKEN)
 ./scripts/dev/run-mcp.sh

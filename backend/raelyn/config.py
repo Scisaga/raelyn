@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     s3_bucket: str = "raelyn"
     s3_use_ssl: bool = False
 
-    ytdlp_bin: str = "./bin/yt-dlp"
     ffmpeg_bin: str = "./bin/ffmpeg"
 
     # --- Audio extraction (ffmpeg) ---
@@ -35,6 +34,9 @@ class Settings(BaseSettings):
     audio_sample_rate_hz: int | None = Field(default=16000, validation_alias=AliasChoices("AUDIO_SAMPLE_RATE_HZ"))
     audio_channels: int | None = Field(default=1, validation_alias=AliasChoices("AUDIO_CHANNELS"))
     ytdlp_proxy: str = ""
+    # Allow yt-dlp to fetch trusted remote components required by YouTube's EJS/JS challenge solver.
+    # Default: enable GitHub-hosted ejs component; set empty to disable.
+    ytdlp_remote_components: str = Field(default="ejs:github", validation_alias=AliasChoices("YTDLP_REMOTE_COMPONENTS"))
     # yt-dlp format selector for downloads (see: https://github.com/yt-dlp/yt-dlp#format-selection)
     # Default: cap at 1080p, prefer MP4+M4A, then fall back to best available.
     ytdlp_format: str = Field(

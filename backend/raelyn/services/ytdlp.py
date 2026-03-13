@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,14 @@ from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.jobs.reschedule import JobReschedule
 from raelyn.models import AppConfig
+from raelyn.services.provider_cookies import (
+    cookie_config_name,
+    cookie_provider_for_target,
+    cookie_provider_label,
+    load_provider_cookie_text,
+    looks_like_netscape_cookie_file,
+    normalize_cookie_provider,
+)
 from raelyn.services.provider_pause import (
     BILIBILI_PROVIDER_PAUSE_REASON,
     ProviderPauseRequestError,
@@ -23,7 +32,8 @@ from raelyn.services.ytdlp_errors import is_ffmpeg_segfault, parse_upcoming_live
 
 
 class YtdlpCookiesInvalidError(RuntimeError):
-    def __init__(self, reason: str, message: str) -> None:
+    def __init__(self, reason: str, message: str, *, provider: str | None = None) -> None:
+        self.provider = normalize_cookie_provider(provider)
         self.reason = str(reason or "").strip() or "ytdlp_cookies_invalid"
         super().__init__(str(message or "").strip() or "yt-dlp cookies invalid")
 
@@ -66,7 +76,10 @@ def _cookie_invalid_reason_from_message(msg: str) -> str | None:
     return None
 
 
-def _raise_if_cookie_invalid_messages(msgs: list[str]) -> None:
+def _raise_if_cookie_invalid_messages(msgs: list[str], *, provider: str | None = None) -> None:
+    p = normalize_cookie_provider(provider)
+    cfg_name = cookie_config_name(p)
+    label = cookie_provider_label(p)
     for s in msgs:
         reason = _cookie_invalid_reason_from_message(s)
         if not reason:
@@ -74,14 +87,16 @@ def _raise_if_cookie_invalid_messages(msgs: list[str]) -> None:
         if reason == "ytdlp_cookies_format_invalid":
             raise YtdlpCookiesInvalidError(
                 reason,
-                "YTDLP_COOKIES 无效：不是 Netscape cookies.txt 格式。请在 UI -> 设置 更新 cookies.txt（tab 分隔）。",
+                f"{cfg_name} 无效：不是 Netscape cookies.txt 格式。请在 UI -> 设置 更新 {label} cookies.txt（tab 分隔）。",
+                provider=p,
             )
         if reason == "ytdlp_cookies_expired":
             raise YtdlpCookiesInvalidError(
                 reason,
-                "YTDLP_COOKIES 已失效：YouTube 登录态 cookies 过期。请在 UI -> 设置 更新 cookies.txt。",
+                f"{cfg_name} 已失效：{label} 登录态 cookies 过期。请在 UI -> 设置 更新 {label} cookies.txt。",
+                provider=p,
             )
-        raise YtdlpCookiesInvalidError(reason, "YTDLP_COOKIES 无效，请在 UI -> 设置 更新 cookies.txt。")
+        raise YtdlpCookiesInvalidError(reason, f"{cfg_name} 无效，请在 UI -> 设置 更新 {label} cookies.txt。", provider=p)
 
 
 def _raise_if_provider_pause_messages(msgs: list[str]) -> None:
@@ -107,21 +122,19 @@ def _js_runtimes() -> dict[str, dict[str, str | None]] | None:
     return None
 
 
-def _load_ytdlp_cookies_text() -> str:
-    # Persisted via /api/config (AppConfig key: "ytdlp_cookies").
-    try:
-        with session_scope() as session:
-            item = session.get(AppConfig, "ytdlp_cookies")
-            value = item.value if item else None
-    except Exception:
-        return ""
-
-    if not isinstance(value, dict):
-        return ""
-    text = value.get("text")
-    if not isinstance(text, str):
-        return ""
-    return text
+def _remote_components() -> list[str] | None:
+    raw = str(settings.ytdlp_remote_components or "").strip()
+    if not raw:
+        return None
+    items: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"[\s,]+", raw):
+        item = str(part or "").strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        items.append(item)
+    return items or None
 
 
 def _load_ytdlp_format_text() -> str:
@@ -207,24 +220,28 @@ def _normalize_youtube_lang(lang: str) -> str:
     return "-".join(out)
 
 
-def _ensure_ytdlp_cookies_file(text: str) -> Path | None:
+def _ensure_ytdlp_cookies_file(text: str, *, provider: str | None = None) -> Path | None:
     if not (text or "").strip():
         return None
     # Fail fast for obviously invalid formats to avoid confusing yt-dlp errors.
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip() and not ln.strip().startswith("#")]
-    looks_like_netscape = any(ln.count("\t") >= 6 for ln in lines)
-    if not looks_like_netscape:
+    p = normalize_cookie_provider(provider)
+    if not looks_like_netscape_cookie_file(text):
         raise YtdlpCookiesInvalidError(
             "ytdlp_cookies_format_invalid",
-            "YTDLP_COOKIES 无效：不是 Netscape cookies.txt 格式。请在 UI -> 设置 更新 cookies.txt（tab 分隔）。",
+            (
+                f"{cookie_config_name(p)} 无效：不是 Netscape cookies.txt 格式。"
+                f"请在 UI -> 设置 更新 {cookie_provider_label(p)} cookies.txt（tab 分隔）。"
+            ),
+            provider=p,
         )
 
     root = Path(__file__).resolve().parents[3]
     out_dir = root / "tmp"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    target = out_dir / "ytdlp_cookies.txt"
-    tmp = out_dir / ".ytdlp_cookies.txt.tmp"
+    suffix = p or "shared"
+    target = out_dir / f"ytdlp_cookies_{suffix}.txt"
+    tmp = out_dir / f".ytdlp_cookies_{suffix}.txt.tmp"
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(target)
     try:
@@ -272,13 +289,16 @@ def _youtube_js_challenge_hint() -> str:
         node_path = None
 
     node_desc = f"node={node_path}" if isinstance(node_path, str) and node_path else "node=not_found"
+    remote_components = _remote_components() or []
+    remote_desc = ",".join(remote_components) if remote_components else "not_set"
     return (
         "YouTube JS challenge 解析失败（EJS / n challenge），导致视频/音频格式不可用（可能只剩缩略图等图片格式）。\n"
-        f"环境信息：{node_desc}\n"
+        f"环境信息：{node_desc}; remote_components={remote_desc}\n"
         "解决建议：\n"
         "1) 升级 Python 依赖：`.venv/bin/python -m pip install -U yt-dlp[default]`；\n"
         "2) 或直接运行：`./scripts/dev/install-ytdlp-ejs.sh`（会升级 yt-dlp-ejs 并做基础自检）；\n"
-        "3) 若仍失败：配置 cookies（UI -> 设置 -> YTDLP_COOKIES）或代理（YTDLP_PROXY），并重试。"
+        "3) 确认已启用 `YTDLP_REMOTE_COMPONENTS=ejs:github`，并且 `node` 可用；\n"
+        "4) 若仍失败：配置 YouTube cookies（UI -> 设置 -> YTDLP_COOKIES_YOUTUBE）或代理（YTDLP_PROXY），并重试。"
     )
 
 
@@ -304,8 +324,8 @@ def _is_requested_format_unavailable(err: Exception) -> bool:
 def _youtube_bot_check_hint() -> str:
     return (
         "YouTube 拒绝访问（需要登录/人机验证）。解决方法：在 UI 的 Settings 页面配置 "
-        "YTDLP_COOKIES（Netscape cookies.txt 格式，登录 YouTube 后从浏览器导出并粘贴保存），"
-        "或通过 API `PUT /api/config/ytdlp_cookies` 写入。若已配置仍失败，通常是 IP 被风控，"
+        "YTDLP_COOKIES_YOUTUBE（Netscape cookies.txt 格式，登录 YouTube 后从浏览器导出并粘贴保存），"
+        "或通过 API `PUT /api/config/ytdlp_cookies_youtube` 写入。若已配置仍失败，通常是 IP 被风控，"
         "需要更换网络或配置代理（YTDLP_PROXY）。"
     )
 
@@ -314,7 +334,7 @@ def _bilibili_risk_control_hint() -> str:
     return bilibili_provider_pause_message()
 
 
-def _apply_common_ytdlp_opts(opts: dict[str, Any], *, url: str | None = None) -> None:
+def _apply_common_ytdlp_opts(opts: dict[str, Any], *, url: str | None = None, provider: str | None = None) -> None:
     # Force project-local ffmpeg when available so post-processing is consistent across hosts.
     try:
         p = Path(settings.ffmpeg_bin)
@@ -322,19 +342,22 @@ def _apply_common_ytdlp_opts(opts: dict[str, Any], *, url: str | None = None) ->
             opts["ffmpeg_location"] = str(p.resolve())
     except Exception:
         pass
+    if remote_components := _remote_components():
+        opts["remote_components"] = remote_components
 
-    persisted = _load_ytdlp_cookies_text()
+    cookie_provider = cookie_provider_for_target(url, provider)
+    persisted = load_provider_cookie_text(cookie_provider)
     if (persisted or "").strip():
-        p = _ensure_ytdlp_cookies_file(persisted)
-        if p and p.exists() and p.is_file():
-            opts["cookiefile"] = str(p)
+        cookie_path = _ensure_ytdlp_cookies_file(persisted, provider=cookie_provider)
+        if cookie_path and cookie_path.exists() and cookie_path.is_file():
+            opts["cookiefile"] = str(cookie_path)
 
     # Some providers are sensitive to UA / referer; set conservative defaults.
     # Keep it minimal to avoid interfering with providers that don't require these headers.
     u = (url or "").strip()
     lower_u = u.lower()
     # url can be a real URL (https://www.bilibili.com/...) or an id-like string (BV... / av...).
-    is_bili = ("bilibili.com" in lower_u) or lower_u.startswith("bv") or lower_u.startswith("av")
+    is_bili = cookie_provider == "bilibili"
     if is_bili:
         headers = dict(opts.get("http_headers") or {})
         headers.setdefault(
@@ -361,7 +384,7 @@ def _apply_common_ytdlp_opts(opts: dict[str, Any], *, url: str | None = None) ->
             except Exception:
                 pass
 
-    is_yt = ("youtube.com" in lower_u) or ("youtu.be" in lower_u)
+    is_yt = cookie_provider == "youtube"
     if is_yt:
         lang = _normalize_youtube_lang(_load_ytdlp_youtube_lang())
         if lang:
@@ -376,11 +399,13 @@ def _apply_common_ytdlp_opts(opts: dict[str, Any], *, url: str | None = None) ->
 def ytdlp_extract_info(
     url: str,
     *,
+    provider: str | None = None,
     flat: bool = False,
     max_entries: int | None = None,
     socket_timeout: int | None = None,
 ) -> dict[str, Any]:
     logger = _YtdlpCaptureLogger()
+    cookie_provider = cookie_provider_for_target(url, provider)
     sock = None
     if socket_timeout is not None:
         try:
@@ -411,7 +436,7 @@ def ytdlp_extract_info(
     js = _js_runtimes()
     if js:
         opts["js_runtimes"] = js
-    _apply_common_ytdlp_opts(opts, url=url)
+    _apply_common_ytdlp_opts(opts, url=url, provider=cookie_provider)
     lim = None
     if max_entries is not None:
         try:
@@ -432,7 +457,7 @@ def ytdlp_extract_info(
         try:
             info = ydl.extract_info(url, download=False)
         except (DownloadError, ExtractorError) as e:
-            _raise_if_cookie_invalid_messages(logger.warnings + logger.errors + [str(e)])
+            _raise_if_cookie_invalid_messages(logger.warnings + logger.errors + [str(e)], provider=cookie_provider)
             _raise_if_provider_pause_messages(logger.warnings + logger.errors + [str(e)])
             if _is_youtube_bot_check_error(e):
                 raise RuntimeError(_youtube_bot_check_hint()) from e
@@ -447,12 +472,12 @@ def ytdlp_extract_info(
         # With ignoreerrors=True, yt-dlp may return None (and report via logger.error). Treat as failure.
         if info is None:
             last = logger.errors[-1] if logger.errors else "yt-dlp extraction returned no result"
-            _raise_if_cookie_invalid_messages(logger.warnings + logger.errors + [last])
+            _raise_if_cookie_invalid_messages(logger.warnings + logger.errors + [last], provider=cookie_provider)
             _raise_if_provider_pause_messages(logger.warnings + logger.errors + [last])
             if _is_bilibili_risk_control_error(RuntimeError(last)) or _is_bilibili_precondition_failed_error(RuntimeError(last)):
                 raise RuntimeError(_bilibili_risk_control_hint())
             raise RuntimeError(last)
-        _raise_if_cookie_invalid_messages(logger.warnings + logger.errors)
+        _raise_if_cookie_invalid_messages(logger.warnings + logger.errors, provider=cookie_provider)
         _raise_if_provider_pause_messages(logger.warnings + logger.errors)
         return info
 
@@ -461,6 +486,7 @@ def ytdlp_download(
     *,
     url: str,
     out_dir: Path,
+    provider: str | None = None,
     write_subtitles: bool = True,
     write_auto_subtitles: bool = True,
     subtitles_langs: list[str] | None = None,
@@ -468,6 +494,7 @@ def ytdlp_download(
 ) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     outtmpl = str(out_dir / "%(id)s.%(ext)s")
+    cookie_provider = cookie_provider_for_target(url, provider)
     cookie_invalid_line: str | None = None
     captured_warnings: list[str] = []
     captured_errors: list[str] = []
@@ -561,7 +588,7 @@ def ytdlp_download(
     tried_progressive_mp4 = False
     for idx, (label, fmt, merge) in enumerate(format_attempts, start=1):
         opts = dict(base_opts)
-        _apply_common_ytdlp_opts(opts, url=url)
+        _apply_common_ytdlp_opts(opts, url=url, provider=cookie_provider)
         opts["format"] = fmt
         if merge:
             opts["merge_output_format"] = merge
@@ -574,13 +601,13 @@ def ytdlp_download(
             with YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if cookie_invalid_line:
-                    _raise_if_cookie_invalid_messages([cookie_invalid_line])
+                    _raise_if_cookie_invalid_messages([cookie_invalid_line], provider=cookie_provider)
                     _raise_if_provider_pause_messages([cookie_invalid_line])
                 return info
         except (DownloadError, ExtractorError) as e:
             last_error = e
             joined = "\n".join([cookie_invalid_line or "", *captured_warnings[-12:], *captured_errors[-12:], str(e)]).strip()
-            _raise_if_cookie_invalid_messages([joined])
+            _raise_if_cookie_invalid_messages([joined], provider=cookie_provider)
             _raise_if_provider_pause_messages([joined])
             if _is_youtube_bot_check_error(e):
                 raise RuntimeError(_youtube_bot_check_hint()) from e
@@ -604,7 +631,7 @@ def ytdlp_download(
             if (not tried_progressive_mp4) and is_ffmpeg_segfault(joined):
                 tried_progressive_mp4 = True
                 prog_opts = dict(base_opts)
-                _apply_common_ytdlp_opts(prog_opts, url=url)
+                _apply_common_ytdlp_opts(prog_opts, url=url, provider=cookie_provider)
                 prog_opts["format"] = "best[ext=mp4][height<=720]/best[ext=mp4]/b"
                 prog_opts.pop("merge_output_format", None)
                 print("[ytdlp] ffmpeg crash detected; retrying with progressive mp4 (<=720p) to avoid merge", flush=True)
@@ -612,7 +639,7 @@ def ytdlp_download(
                     with YoutubeDL(prog_opts) as ydl:
                         info = ydl.extract_info(url, download=True)
                         if cookie_invalid_line:
-                            _raise_if_cookie_invalid_messages([cookie_invalid_line])
+                            _raise_if_cookie_invalid_messages([cookie_invalid_line], provider=cookie_provider)
                             _raise_if_provider_pause_messages([cookie_invalid_line])
                         return info
                 except (DownloadError, ExtractorError) as e2:
@@ -620,7 +647,7 @@ def ytdlp_download(
                     joined2 = "\n".join(
                         [cookie_invalid_line or "", *captured_warnings[-12:], *captured_errors[-12:], str(e2)]
                     ).strip()
-                    _raise_if_cookie_invalid_messages([joined2])
+                    _raise_if_cookie_invalid_messages([joined2], provider=cookie_provider)
                     _raise_if_provider_pause_messages([joined2])
                     # Fall through to raise a readable error below.
                     joined = joined2 or joined

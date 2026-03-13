@@ -17,13 +17,13 @@
 
 ## 工具与处理链路
 
-- `YTDLP_BIN`
 - `FFMPEG_BIN`
 - `AUDIO_CODEC`
 - `AUDIO_BITRATE`
 - `AUDIO_SAMPLE_RATE_HZ`
 - `AUDIO_CHANNELS`
 - `YTDLP_PROXY`
+- `YTDLP_REMOTE_COMPONENTS`：默认 `ejs:github`；用于允许 yt-dlp 在 YouTube EJS/JS challenge 场景下拉取远程组件。可留空禁用，多个值可用逗号或空格分隔。
 - `YTDLP_FORMAT`
 
 ## 同步与并发
