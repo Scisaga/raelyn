@@ -22,6 +22,7 @@ def system_status() -> dict:
             "asset_delivery": {
                 "strategy": "startup_probe",
                 "direct_probe_url": probe_url,
+                "direct_probe_timeout_ms": max(0, int(settings.asset_direct_probe_timeout_ms or 0)),
                 "proxy_base_path": (settings.asset_proxy_base_path or "/api/assets").rstrip("/"),
                 "presign_enabled": bool(settings.asset_presign_enabled),
             },

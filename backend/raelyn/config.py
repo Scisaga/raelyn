@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     s3_bucket: str = "raelyn"
     s3_use_ssl: bool = False
     asset_direct_probe_url: str = ""
+    asset_direct_probe_timeout_ms: int = 1000
     asset_proxy_base_path: str = "/api/assets"
     asset_presign_enabled: bool = True
 

@@ -5,6 +5,7 @@ import sys
 import unittest
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -18,7 +19,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from raelyn import config
 from raelyn.api.assets import _stream_asset
 from raelyn.api.system import system_status
-from raelyn.services.s3 import ObjectStreamResult
+from raelyn.services.s3 import ObjectStreamResult, _format_http_last_modified
 
 
 @contextmanager
@@ -30,6 +31,7 @@ class AssetDeliveryTests(unittest.TestCase):
     def test_system_status_exposes_startup_probe_asset_delivery(self) -> None:
         with (
             patch.object(config.settings, "asset_direct_probe_url", ""),
+            patch.object(config.settings, "asset_direct_probe_timeout_ms", 1000),
             patch.object(config.settings, "asset_proxy_base_path", "/api/assets"),
             patch.object(config.settings, "asset_presign_enabled", True),
             patch.object(config.settings, "s3_endpoint", "http://minio:9000"),
@@ -41,6 +43,7 @@ class AssetDeliveryTests(unittest.TestCase):
 
         self.assertEqual(payload["asset_delivery"]["strategy"], "startup_probe")
         self.assertEqual(payload["asset_delivery"]["direct_probe_url"], "http://minio:9000/")
+        self.assertEqual(payload["asset_delivery"]["direct_probe_timeout_ms"], 1000)
         self.assertEqual(payload["asset_delivery"]["proxy_base_path"], "/api/assets")
         self.assertTrue(payload["asset_delivery"]["presign_enabled"])
 
@@ -73,6 +76,10 @@ class AssetDeliveryTests(unittest.TestCase):
                 _stream_asset(asset, byte_range="bytes=10-20", as_attachment=False)
 
         self.assertEqual(getattr(ctx.exception, "status_code", None), 416)
+
+    def test_format_http_last_modified_normalizes_non_utc_timezone(self) -> None:
+        value = datetime(2024, 1, 1, 8, 0, 0, tzinfo=timezone(timedelta(hours=8)))
+        self.assertEqual(_format_http_last_modified(value), "Mon, 01 Jan 2024 00:00:00 GMT")
 
 
 if __name__ == "__main__":

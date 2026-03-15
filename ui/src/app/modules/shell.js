@@ -22,6 +22,7 @@ export function createShellModule({ sidebarCollapsedKey, sidebarHiddenKey }) {
     assetDelivery: {
       strategy: "startup_probe",
       directProbeUrl: "",
+      directProbeTimeoutMs: 1000,
       proxyBasePath: "/api/assets",
       presignEnabled: true,
       mode: "proxy",
@@ -135,6 +136,7 @@ export function createShellModule({ sidebarCollapsedKey, sidebarHiddenKey }) {
           this.assetDelivery = {
             strategy: String(assetDelivery.strategy || "startup_probe"),
             directProbeUrl: String(assetDelivery.direct_probe_url || ""),
+            directProbeTimeoutMs: Math.max(0, Number(assetDelivery.direct_probe_timeout_ms || 1000) || 1000),
             proxyBasePath: String(assetDelivery.proxy_base_path || "/api/assets").replace(/\/+$/, ""),
             presignEnabled: assetDelivery.presign_enabled !== false,
             mode: this.assetDelivery && this.assetDelivery.mode ? this.assetDelivery.mode : "proxy",
@@ -154,12 +156,22 @@ export function createShellModule({ sidebarCollapsedKey, sidebarHiddenKey }) {
         this.assetDelivery = { ...current, mode: "proxy", probed: true, probeError: "" };
         return;
       }
+      const timeoutMs = Math.max(0, Number(current.directProbeTimeoutMs || 1000) || 1000);
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      const timeoutId = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
       try {
-        await fetch(directProbeUrl, { method: "GET", mode: "no-cors", cache: "no-store" });
+        await fetch(directProbeUrl, {
+          method: "GET",
+          mode: "no-cors",
+          cache: "no-store",
+          signal: controller ? controller.signal : undefined,
+        });
         this.assetDelivery = { ...current, mode: "direct", probed: true, probeError: "" };
       } catch (e) {
         const message = e && e.message ? e.message : String(e);
         this.assetDelivery = { ...current, mode: "proxy", probed: true, probeError: message };
+      } finally {
+        if (timeoutId) window.clearTimeout(timeoutId);
       }
     },
 

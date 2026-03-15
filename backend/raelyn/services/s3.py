@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import timezone
 from email.utils import format_datetime
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,19 @@ class ObjectStreamResult:
     content_range: str | None
     etag: str | None
     last_modified: str | None
+
+
+def _format_http_last_modified(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        if getattr(value, "tzinfo", None) is None:
+            value = value.replace(tzinfo=timezone.utc)
+        else:
+            value = value.astimezone(timezone.utc)
+        return format_datetime(value, usegmt=True)
+    except Exception:
+        return None
 
 
 def s3_ensure_bucket(*, bucket: str | None = None) -> dict[str, Any]:
@@ -154,7 +168,7 @@ def s3_get_object_stream(*, bucket: str, key: str, byte_range: str | None = None
         content_type=(obj.get("ContentType") or "").strip() or None,
         content_range=(obj.get("ContentRange") or "").strip() or None,
         etag=(obj.get("ETag") or "").strip() or None,
-        last_modified=format_datetime(last_modified, usegmt=True) if last_modified else None,
+        last_modified=_format_http_last_modified(last_modified),
     )
 
 
