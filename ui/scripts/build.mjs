@@ -53,20 +53,28 @@ function resolveFfmpegBinary() {
 
 function buildPwaAssets() {
   const ffmpegBin = resolveFfmpegBinary();
-  const logoPng = resolve(root, "static/brand/logo.png");
+  const pwaSourcePng = resolve(uiDir, "pwa/icon-source.png");
   const icon192 = resolve(pwaDir, "icon-192.png");
   const icon512 = resolve(pwaDir, "icon-512.png");
   const iconMaskable512 = resolve(pwaDir, "icon-maskable-512.png");
   const appleTouch = resolve(pwaDir, "apple-touch-icon.png");
 
-  if (!existsSync(logoPng)) {
-    throw new Error(`[ui] missing logo asset for PWA icons: ${logoPng}`);
+  if (!existsSync(pwaSourcePng)) {
+    throw new Error(`[ui] missing PWA icon source asset: ${pwaSourcePng}`);
   }
 
-  copyFileSync(logoPng, icon512);
-  copyFileSync(logoPng, iconMaskable512);
-  execFileSync(ffmpegBin, ["-y", "-i", logoPng, "-vf", "scale=192:192:flags=lanczos", icon192], { stdio: "inherit" });
-  execFileSync(ffmpegBin, ["-y", "-i", logoPng, "-vf", "scale=180:180:flags=lanczos", appleTouch], { stdio: "inherit" });
+  const renderPng = (outputPath, size) => {
+    execFileSync(
+      ffmpegBin,
+      ["-y", "-i", pwaSourcePng, "-vf", `scale=${size}:${size}:flags=lanczos`, "-frames:v", "1", "-update", "1", outputPath],
+      { stdio: "inherit" }
+    );
+  };
+
+  renderPng(icon192, 192);
+  renderPng(icon512, 512);
+  renderPng(iconMaskable512, 512);
+  renderPng(appleTouch, 180);
 
   copyFileSync(resolve(uiDir, "pwa/manifest.webmanifest"), resolve(root, "static/manifest.webmanifest"));
   copyFileSync(resolve(uiDir, "pwa/sw.js"), resolve(root, "static/sw.js"));
