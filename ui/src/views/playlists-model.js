@@ -31,10 +31,11 @@ export function createPlaylistsViewMethods() {
 
       const formData = new FormData();
       formData.set("file", file, file.name || "image");
-      const resp = await fetch(`/api/playlists/${encodeURIComponent(pid)}/${encodeURIComponent(uploadKind)}`, {
+      const resp = await this.fetchWithApiAuth(`/api/playlists/${encodeURIComponent(pid)}/${encodeURIComponent(uploadKind)}`, {
         method: "POST",
         body: formData,
       });
+      if (resp.status === 401) this.handleApiUnauthorized({});
       if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text()}`);
       return resp.json();
     },

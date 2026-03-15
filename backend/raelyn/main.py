@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from raelyn.api.auth import OptionalBearerTokenAuthMiddleware
 from raelyn.api.assets import router as assets_router
 from raelyn.api.briefs import router as briefs_router
 from raelyn.api.config_api import router as config_router
@@ -21,6 +22,7 @@ from raelyn.api.workers import router as workers_router
 from raelyn.api.videos import router as videos_router
 from raelyn.api.video_assets import router as video_assets_router
 from raelyn.api.ws import router as ws_router
+from raelyn.config import settings
 from raelyn.db import init_db
 from raelyn.services.s3 import s3_ensure_bucket
 from raelyn.services.system_pause import SystemPausedError
@@ -37,6 +39,7 @@ except Exception:
     pass
 
 app = FastAPI(title="raelyn", version="0.1.0")
+app.add_middleware(OptionalBearerTokenAuthMiddleware, token=settings.api_bearer_token, protected_prefix="/api")
 
 
 @app.exception_handler(SystemPausedError)

@@ -76,12 +76,19 @@ export function createJobsViewMethods() {
       } catch {
         // ignore
       }
+      try {
+        if (this._jobStatsWsRetryTimer) clearTimeout(this._jobStatsWsRetryTimer);
+      } catch {
+        // ignore
+      }
+      this._jobStatsWsRetryTimer = null;
       this.jobStatsWs = null;
       this.jobStatsWsConnected = false;
     },
 
     _connectJobStatsWs() {
       if (this.jobStatsWs) return;
+      if (this.startupGateVisible && this.apiAuthPromptVisible) return;
       try {
         if (this._jobStatsWsRetryTimer) clearTimeout(this._jobStatsWsRetryTimer);
       } catch {
@@ -92,7 +99,7 @@ export function createJobsViewMethods() {
       const qs = new URLSearchParams();
       qs.set("interval_seconds", "1");
       qs.set("window_hours", "24");
-      const url = wsUrl(`/api/ws/job_stats?${qs.toString()}`);
+      const url = wsUrl(`/api/ws/job_stats?${qs.toString()}`, this.apiAuthTokenValue());
 
       const ws = new WebSocket(url);
       this.jobStatsWs = ws;
@@ -101,14 +108,20 @@ export function createJobsViewMethods() {
       ws.onopen = () => {
         this.jobStatsWsConnected = true;
       };
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
         this.jobStatsWsConnected = false;
         this.jobStatsWs = null;
+        const code = Number(ev && ev.code);
+        if (code === 4401) {
+          this.handleApiUnauthorized({});
+          return;
+        }
         try {
           if (this._jobStatsWsRetryTimer) clearTimeout(this._jobStatsWsRetryTimer);
         } catch {
           // ignore
         }
+        if (this.startupGateVisible && this.apiAuthPromptVisible) return;
         this._jobStatsWsRetryTimer = setTimeout(() => this._connectJobStatsWs(), 1500);
       };
       ws.onerror = () => {
@@ -172,28 +185,47 @@ export function createJobsViewMethods() {
       } catch {
         // ignore
       }
+      try {
+        if (this._jobsWsRetryTimer) clearTimeout(this._jobsWsRetryTimer);
+      } catch {
+        // ignore
+      }
+      this._jobsWsRetryTimer = null;
       this.jobsWs = null;
       this.jobsWsConnected = false;
     },
 
     _connectJobsWs() {
       if (this.jobsWs) return;
+      if (this.startupGateVisible && this.apiAuthPromptVisible) return;
+      try {
+        if (this._jobsWsRetryTimer) clearTimeout(this._jobsWsRetryTimer);
+      } catch {
+        // ignore
+      }
+      this._jobsWsRetryTimer = null;
       const qs = new URLSearchParams();
       qs.set("status_in", "pending,running");
       qs.set("limit", "200");
       qs.set("interval_seconds", "1");
       if (this.jobsTypeFilter) qs.set("type", this.jobsTypeFilter);
-      const ws = new WebSocket(wsUrl(`/api/ws/jobs?${qs.toString()}`));
+      const ws = new WebSocket(wsUrl(`/api/ws/jobs?${qs.toString()}`, this.apiAuthTokenValue()));
       this.jobsWs = ws;
       this.jobsWsError = "";
 
       ws.onopen = () => {
         this.jobsWsConnected = true;
       };
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
         this.jobsWsConnected = false;
         this.jobsWs = null;
-        if (this.activeView === "jobs") setTimeout(() => this._connectJobsWs(), 800);
+        if (Number(ev && ev.code) === 4401) {
+          this.handleApiUnauthorized({});
+          return;
+        }
+        if (this.activeView === "jobs" && !(this.startupGateVisible && this.apiAuthPromptVisible)) {
+          this._jobsWsRetryTimer = setTimeout(() => this._connectJobsWs(), 800);
+        }
       };
       ws.onerror = () => {
         this.jobsWsError = "WebSocket error";

@@ -1415,7 +1415,8 @@ export function createPlaylistViewMethods() {
         const mdCtrl = new AbortController();
         this._playlistBriefMdAbortCtrl = mdCtrl;
         const markdownUrl = this.assetContentUrl(brief.markdown_asset);
-        const resp = await fetch(markdownUrl, { signal: mdCtrl.signal });
+        const resp = await this.fetchWithApiAuth(markdownUrl, { signal: mdCtrl.signal });
+        if (resp.status === 401) this.handleApiUnauthorized({});
         if (!resp.ok) throw new Error(`${resp.status}: brief markdown fetch failed`);
 	        const md = await resp.text();
 	        if (Number(this.playlistLoadToken || 0) !== token) return;

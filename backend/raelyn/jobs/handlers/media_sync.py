@@ -21,6 +21,7 @@ from raelyn.timeutil import utcnow
 from .briefs import _enqueue_brief_for_video_playlists
 from .common import (
     _cache_media_avatar,
+    _entry_timestamp,
     _is_members_only_entry,
     _looks_like_bilibili_face_url,
     _normalize_bilibili_video_url,
@@ -30,6 +31,15 @@ from .common import (
     _provider_guard_names,
     _ytdlp_members_only_download_enabled,
 )
+
+_AUTO_DISCOVERED_DOWNLOAD_PRIORITY = 7
+
+
+def _job_download_priority(job: Job) -> int:
+    try:
+        return int(job.params.get("download_priority", _AUTO_DISCOVERED_DOWNLOAD_PRIORITY))
+    except Exception:
+        return _AUTO_DISCOVERED_DOWNLOAD_PRIORITY
 
 
 @registry.register("media.sync_profile")
@@ -179,9 +189,11 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
             entries = [entry for entry in items if isinstance(entry, dict)]
         else:
             entries = _pick_latest_entries(info, process_limit)
+        entries = sorted(entries, key=_entry_timestamp, reverse=True)
 
         created = 0
         enqueued_downloads = 0
+        download_priority = _job_download_priority(job)
         allow_members_only_download = _ytdlp_members_only_download_enabled(session)
         for entry in entries:
             provider_video_id = entry.get("id")
@@ -242,7 +254,12 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                     if media.provider == "youtube"
                     else ("video.download.bilibili" if media.provider == "bilibili" else "video.download")
                 )
-                enqueue_job(session, type_=download_type, params={"video_id": str(video.id)}, priority=5)
+                enqueue_job(
+                    session,
+                    type_=download_type,
+                    params={"video_id": str(video.id)},
+                    priority=download_priority,
+                )
                 enqueued_downloads += 1
 
         media.last_video_sync_at = utcnow()

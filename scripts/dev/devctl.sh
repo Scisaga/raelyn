@@ -127,6 +127,7 @@ wait_for_http_ok() {
   local pid_file="$3"
   local log_file="$4"
   local timeout_seconds="${5:-20}"
+  shift 5
   local pid
   pid="$(read_pid "$pid_file")"
 
@@ -136,7 +137,11 @@ wait_for_http_ok() {
       echo "[start] ${name}: process exited during startup; inspect ${log_file}" >&2
       return 1
     fi
-    if curl -fsS --max-time 2 "$url" >/dev/null 2>&1; then
+    local curl_args=(-fsS --max-time 2)
+    if [[ "$#" -gt 0 ]]; then
+      curl_args+=( "$@" )
+    fi
+    if curl "${curl_args[@]}" "$url" >/dev/null 2>&1; then
       echo "[start] ${name}: ready ${url}"
       return 0
     fi
@@ -302,7 +307,11 @@ case "$cmd" in
   start)
     ensure_ui_built
     start_one "api" "$API_PID_FILE" "$API_LOG" bash scripts/dev/run-api.sh
-    if ! wait_for_http_ok "api" "http://127.0.0.1:8000/api/health" "$API_PID_FILE" "$API_LOG" 30; then
+    api_wait_args=()
+    if [[ -n "${API_BEARER_TOKEN:-}" ]]; then
+      api_wait_args=(-H "Authorization: Bearer ${API_BEARER_TOKEN}")
+    fi
+    if ! wait_for_http_ok "api" "http://127.0.0.1:8000/api/health" "$API_PID_FILE" "$API_LOG" 30 "${api_wait_args[@]}"; then
       do_status
       exit 1
     fi

@@ -130,35 +130,36 @@ def _normalize_bilibili_video_url(url_or_id: str) -> str:
     return f"https://www.bilibili.com/video/{s}"
 
 
+def _entry_timestamp(entry: dict[str, Any]) -> int:
+    for key in ("timestamp", "release_timestamp"):
+        value = entry.get(key)
+        try:
+            if value is None:
+                continue
+            return int(value)
+        except Exception:
+            continue
+
+    upload_date = entry.get("upload_date") or entry.get("release_date")
+    if isinstance(upload_date, str) and len(upload_date) == 8 and upload_date.isdigit():
+        try:
+            dt = datetime.strptime(upload_date, "%Y%m%d").replace(tzinfo=tz.tzutc())
+            return int(dt.timestamp())
+        except Exception:
+            pass
+
+    return 0
+
+
 def _pick_latest_entries(info: dict[str, Any], max_entries: int) -> list[dict[str, Any]]:
     entries = info.get("entries") or []
     if not isinstance(entries, list):
         return []
     items = [entry for entry in entries if isinstance(entry, dict)]
 
-    def _ts(entry: dict[str, Any]) -> int:
-        for key in ("timestamp", "release_timestamp"):
-            value = entry.get(key)
-            try:
-                if value is None:
-                    continue
-                return int(value)
-            except Exception:
-                continue
-
-        upload_date = entry.get("upload_date") or entry.get("release_date")
-        if isinstance(upload_date, str) and len(upload_date) == 8 and upload_date.isdigit():
-            try:
-                dt = datetime.strptime(upload_date, "%Y%m%d").replace(tzinfo=tz.tzutc())
-                return int(dt.timestamp())
-            except Exception:
-                pass
-
-        return 0
-
     import heapq
 
-    return heapq.nlargest(max_entries, items, key=_ts)
+    return heapq.nlargest(max_entries, items, key=_entry_timestamp)
 
 
 def _guess_image_ext(*, content_type: str | None, url: str) -> str:

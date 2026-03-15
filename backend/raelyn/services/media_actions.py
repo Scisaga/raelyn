@@ -10,6 +10,8 @@ from raelyn.config import settings
 from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Media
 
+_RECENT_SYNC_DOWNLOAD_PRIORITY = 8
+
 
 def normalize_sync_scope(scope: str | None) -> tuple[str, int]:
     scope_key = str(scope or "").strip().lower() or "recent"
@@ -26,11 +28,14 @@ def schedule_media_sync(session: Session, media_id: uuid.UUID, *, scope: str = "
         raise LookupError("media not found")
 
     scope_key, max_entries = normalize_sync_scope(scope)
+    video_job_params: dict[str, Any] = {"media_id": str(media.id), "force": True, "max_entries": max_entries}
+    if scope_key == "recent":
+        video_job_params["download_priority"] = _RECENT_SYNC_DOWNLOAD_PRIORITY
     profile_job_id = enqueue_job(session, type_="media.sync_profile", params={"media_id": str(media.id)}, priority=10)
     videos_job_id = enqueue_job(
         session,
         type_="media.sync_videos",
-        params={"media_id": str(media.id), "force": True, "max_entries": max_entries},
+        params=video_job_params,
         priority=5,
     )
     return {
@@ -50,11 +55,14 @@ def schedule_all_media_sync(session: Session, *, scope: str = "recent") -> dict[
     scope_key, max_entries = normalize_sync_scope(scope)
     media_ids = session.execute(select(Media.id).where(Media.monitor_enabled.is_(True))).scalars().all()
     for media_id in media_ids:
+        video_job_params: dict[str, Any] = {"media_id": str(media_id), "force": True, "max_entries": max_entries}
+        if scope_key == "recent":
+            video_job_params["download_priority"] = _RECENT_SYNC_DOWNLOAD_PRIORITY
         enqueue_job(session, type_="media.sync_profile", params={"media_id": str(media_id)}, priority=10)
         enqueue_job(
             session,
             type_="media.sync_videos",
-            params={"media_id": str(media_id), "force": True, "max_entries": max_entries},
+            params=video_job_params,
             priority=5,
         )
     return {"ok": True, "status": "accepted", "scope": scope_key, "count": len(media_ids)}

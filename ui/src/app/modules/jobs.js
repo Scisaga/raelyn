@@ -25,6 +25,7 @@ export function createJobsModule() {
     jobsWs: null,
     jobsWsConnected: false,
     jobsWsError: "",
+    _jobsWsRetryTimer: null,
     workersRoles: [],
     workersLoading: false,
     workersError: "",

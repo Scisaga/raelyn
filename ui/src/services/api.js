@@ -1,5 +1,14 @@
-export async function apiRequest(path, options) {
-  const resp = await fetch(`/api${path}`, options || {});
+export async function apiRequest(path, options, context = null) {
+  const url = `/api${path}`;
+  const resp =
+    context && typeof context.fetchWithApiAuth === "function"
+      ? await context.fetchWithApiAuth(url, options || {})
+      : await fetch(url, options || {});
+
+  if (resp.status === 401 && context && typeof context.handleApiUnauthorized === "function") {
+    context.handleApiUnauthorized({});
+  }
+
   if (!resp.ok) {
     const ct = resp.headers.get("content-type") || "";
     if (ct.includes("application/json")) {
@@ -52,7 +61,7 @@ export function abortCtrl(target, name) {
 export function createApiMethods() {
   return {
     api(path, options) {
-      return apiRequest(path, options);
+      return apiRequest(path, options, this);
     },
 
     _isAbortError(error) {

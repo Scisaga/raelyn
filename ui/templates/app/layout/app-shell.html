@@ -1,4 +1,5 @@
-    <div x-data="appShell()" x-init="init()" x-cloak class="min-h-screen flex">
+    <div x-data="appShell()" x-init="init()" x-cloak class="relative min-h-screen bg-slate-950" :class="startupGateVisible ? 'overflow-hidden' : ''">
+      <div class="raelyn-startup-shell min-h-screen flex" :class="startupGateVisible ? 'opacity-0 pointer-events-none select-none' : 'opacity-100'" :aria-hidden="startupGateVisible ? 'true' : 'false'">
 <!-- @include ../components/sidebar.html -->
 
 <!-- @include main.html -->
@@ -12,4 +13,65 @@
 <!-- @include ../components/modals/create-playlist.html -->
 
 <!-- @include ../components/modals/video-player.html -->
+      </div>
+
+      <div
+        class="fixed inset-0 z-50 overflow-hidden raelyn-startup-screen"
+        x-show="startupGateVisible"
+        x-transition.opacity.duration.300ms
+        :role="apiAuthPromptVisible ? 'dialog' : 'status'"
+        aria-live="polite"
+        :aria-label="apiAuthPromptVisible ? '请输入访问令牌' : '正在检测资源通道'"
+      >
+        <div class="absolute inset-0 raelyn-startup-mesh"></div>
+        <div class="absolute raelyn-startup-glow raelyn-startup-glow-a"></div>
+        <div class="absolute raelyn-startup-glow raelyn-startup-glow-b"></div>
+        <div class="absolute raelyn-startup-glow raelyn-startup-glow-c"></div>
+
+        <div class="relative flex min-h-screen items-center justify-center px-6">
+          <div class="w-full max-w-sm rounded-[1rem] border border-slate-800/80 bg-slate-950/35 px-8 pt-8 pb-6 shadow-[0_30px_120px_rgba(0,0,0,0.55)] backdrop-blur-xl">
+            <div class="relative mx-auto h-44 w-44" aria-hidden="true">
+              <div class="raelyn-startup-ring raelyn-startup-ring-outer"></div>
+              <div class="raelyn-startup-ring raelyn-startup-ring-middle"></div>
+              <div class="raelyn-startup-ring raelyn-startup-ring-inner"></div>
+              <div class="raelyn-startup-core"></div>
+              <div class="raelyn-startup-logo">
+                <img src="/static/brand/logo.png" alt="" class="raelyn-startup-logo-image" loading="eager" decoding="async" />
+              </div>
+              <div class="raelyn-startup-bars">
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+            </div>
+
+            <div class="mt-8 text-center text-[11px] font-semibold uppercase tracking-[0.42em] text-emerald-300/80">RAELYN</div>
+            <div class="mt-3 text-center text-xl font-semibold text-slate-100" x-text="startupGateTitle()"></div>
+            <div class="mt-2 text-center text-sm leading-6 text-slate-400" x-text="startupGateHint()"></div>
+
+            <div class="mt-6" x-show="apiAuthPromptVisible" x-transition.opacity.duration.200ms>
+              <input
+                x-ref="startupTokenInput"
+                type="password"
+                class="w-full rounded-md border border-slate-700/80 bg-slate-950/60 px-4 py-3 text-sm text-slate-100 placeholder-slate-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/40"
+                placeholder="输入 token 后回车"
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+                x-model="apiAuthTokenDraft"
+                :disabled="apiAuthSubmitting"
+                @keydown.enter.prevent="submitStartupToken()"
+              />
+              <div
+                class="mt-3 text-center text-xs leading-5"
+                :class="apiAuthError ? 'text-rose-300' : 'text-slate-400'"
+                x-text="startupGateAuthMessage()"
+              ></div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>

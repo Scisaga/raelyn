@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     app_env: str = "dev"
     base_url: str = "http://127.0.0.1:8000"
     timezone: str = "Asia/Shanghai"
+    api_bearer_token: str = ""
     mcp_host: str = "0.0.0.0"
     mcp_port: int = 8001
     mcp_base_path: str = "/mcp"

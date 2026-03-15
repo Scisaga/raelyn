@@ -23,12 +23,14 @@ import { createPwaModule } from "./modules/pwa.js";
 const SIDEBAR_COLLAPSED_KEY = "raelyn.ui.sidebarCollapsed";
 const SIDEBAR_HIDDEN_KEY = "raelyn.ui.sidebarHidden";
 const PWA_INSTALL_HINT_DISMISSED_KEY = "raelyn.ui.pwaInstallHintDismissed";
+const API_TOKEN_COOKIE_KEY = "raelyn_api_token";
 
 export function createAppModel() {
   return mergeModelSegments(
     {
       name: "shell",
       value: createShellModule({
+        apiTokenCookieKey: API_TOKEN_COOKIE_KEY,
         sidebarCollapsedKey: SIDEBAR_COLLAPSED_KEY,
         sidebarHiddenKey: SIDEBAR_HIDDEN_KEY,
       }),

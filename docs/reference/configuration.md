@@ -7,6 +7,7 @@
 - `APP_ENV`
 - `BASE_URL`
 - `TIMEZONE`
+- `API_BEARER_TOKEN`：主站 API 鉴权开关；为空时不启用鉴权，非空时 `/api/*` 要求 `Authorization: Bearer <token>`（同源浏览器资源请求兼容 `raelyn_api_token` cookie），`/api/ws/*` 要求 query `token=<token>`
 - `DATABASE_URL`
 - `S3_ENDPOINT`
 - `S3_ACCESS_KEY`

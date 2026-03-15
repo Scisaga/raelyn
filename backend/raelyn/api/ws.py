@@ -10,6 +10,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import case, func, select
 
+from raelyn.api.auth import api_ws_authorized, close_api_ws_unauthorized
+from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.models import Job, Media
 from raelyn.timeutil import utcnow
@@ -126,6 +128,9 @@ async def ws_jobs(
     finished_since: datetime | None = None,
     finished_until: datetime | None = None,
 ) -> None:
+    if not api_ws_authorized(ws, token=settings.api_bearer_token):
+        await close_api_ws_unauthorized(ws)
+        return
     await ws.accept()
     try:
         while True:
@@ -179,6 +184,9 @@ async def ws_job_stats(
     interval_seconds: float = 1.0,
     window_hours: int = 24,
 ) -> None:
+    if not api_ws_authorized(ws, token=settings.api_bearer_token):
+        await close_api_ws_unauthorized(ws)
+        return
     await ws.accept()
     try:
         while True:

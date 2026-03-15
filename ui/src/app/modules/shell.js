@@ -8,7 +8,32 @@ function readStoredBool(key) {
   }
 }
 
-export function createShellModule({ sidebarCollapsedKey, sidebarHiddenKey }) {
+function readCookieValue(key) {
+  try {
+    const prefix = `${encodeURIComponent(String(key || "").trim())}=`;
+    const parts = String(document.cookie || "").split(/;\s*/);
+    for (const part of parts) {
+      if (!part || !part.startsWith(prefix)) continue;
+      return decodeURIComponent(part.slice(prefix.length));
+    }
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
+function writeCookieValue(key, value, { maxAgeSeconds = 31536000 } = {}) {
+  const encodedKey = encodeURIComponent(String(key || "").trim());
+  const encodedValue = encodeURIComponent(String(value || "").trim());
+  document.cookie = `${encodedKey}=${encodedValue}; Path=/; Max-Age=${Math.max(0, Number(maxAgeSeconds || 0))}; SameSite=Lax`;
+}
+
+function clearCookieValue(key) {
+  const encodedKey = encodeURIComponent(String(key || "").trim());
+  document.cookie = `${encodedKey}=; Path=/; Max-Age=0; SameSite=Lax`;
+}
+
+export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, sidebarHiddenKey }) {
   return {
     sidebarCollapsed: readStoredBool(sidebarCollapsedKey),
     sidebarHidden: readStoredBool(sidebarHiddenKey),
@@ -17,6 +42,15 @@ export function createShellModule({ sidebarCollapsedKey, sidebarHiddenKey }) {
     pageTitle: "概览",
     healthOk: false,
     globalStatus: "",
+    apiAuthToken: readCookieValue(apiTokenCookieKey),
+    apiAuthTokenDraft: "",
+    apiAuthRequired: false,
+    apiAuthPromptVisible: false,
+    apiAuthSubmitting: false,
+    apiAuthError: "",
+    _startupSequenceRunning: false,
+    _startupSequenceComplete: false,
+    startupGateVisible: true,
     pause: { paused: false, reason: null, message: null, set_at: null },
     providerPauses: {},
     assetDelivery: {
@@ -101,7 +135,149 @@ export function createShellModule({ sidebarCollapsedKey, sidebarHiddenKey }) {
       }
     },
 
-    async loadSystemStatus({ silent = true } = {}) {
+    apiAuthTokenValue() {
+      return String(this.apiAuthToken || "").trim();
+    },
+
+    _syncApiAuthTokenFromCookie() {
+      this.apiAuthToken = readCookieValue(apiTokenCookieKey);
+      return this.apiAuthTokenValue();
+    },
+
+    _storeApiAuthToken(token) {
+      const value = String(token || "").trim();
+      if (!value) {
+        this._clearApiAuthToken();
+        return "";
+      }
+      writeCookieValue(apiTokenCookieKey, value);
+      this.apiAuthToken = value;
+      return value;
+    },
+
+    _clearApiAuthToken() {
+      clearCookieValue(apiTokenCookieKey);
+      this.apiAuthToken = "";
+    },
+
+    _shouldAttachApiAuth(url) {
+      try {
+        const resolved = new URL(String(url || ""), window.location.origin);
+        return resolved.origin === window.location.origin && resolved.pathname.startsWith("/api/");
+      } catch {
+        return String(url || "").startsWith("/api/");
+      }
+    },
+
+    buildApiAuthRequestOptions(url, options = {}) {
+      const init = options && typeof options === "object" ? { ...options } : {};
+      const headers = new Headers((options && options.headers) || undefined);
+      const token = this.apiAuthTokenValue();
+      if (token && this._shouldAttachApiAuth(url)) headers.set("Authorization", `Bearer ${token}`);
+      if ([...headers.keys()].length) init.headers = headers;
+      else delete init.headers;
+      return init;
+    },
+
+    async fetchWithApiAuth(url, options = {}) {
+      const init = this.buildApiAuthRequestOptions(url, options);
+      return fetch(url, init);
+    },
+
+    _clearTimer(name) {
+      try {
+        if (this[name]) clearTimeout(this[name]);
+      } catch {
+        // ignore
+      }
+      this[name] = null;
+    },
+
+    _clearIntervalSafe(name) {
+      try {
+        if (this[name]) clearInterval(this[name]);
+      } catch {
+        // ignore
+      }
+      this[name] = null;
+    },
+
+    _suspendApiAuthProtectedRealtime() {
+      try {
+        if (typeof this._disconnectJobStatsWs === "function") this._disconnectJobStatsWs();
+      } catch {
+        // ignore
+      }
+      try {
+        if (typeof this._disconnectJobsWs === "function") this._disconnectJobsWs();
+      } catch {
+        // ignore
+      }
+      this._clearTimer("_jobStatsWsRetryTimer");
+      this._clearTimer("_jobsWsRetryTimer");
+      this._clearIntervalSafe("_pausePollId");
+      this._clearIntervalSafe("_workersPollId");
+    },
+
+    focusStartupTokenInput() {
+      try {
+        const el = this.$refs && this.$refs.startupTokenInput;
+        if (!el || typeof el.focus !== "function") return;
+        el.focus();
+        if (typeof el.select === "function") el.select();
+      } catch {
+        // ignore
+      }
+    },
+
+    _openApiAuthGate({ message = "", preserveDraft = false } = {}) {
+      this._clearApiAuthToken();
+      this.apiAuthRequired = true;
+      this.apiAuthPromptVisible = true;
+      this.apiAuthSubmitting = false;
+      this.startupGateVisible = true;
+      this.apiAuthError = String(message || "").trim();
+      if (!preserveDraft) this.apiAuthTokenDraft = "";
+      this._suspendApiAuthProtectedRealtime();
+      try {
+        if (this.$nextTick) this.$nextTick(() => this.focusStartupTokenInput());
+      } catch {
+        setTimeout(() => this.focusStartupTokenInput(), 0);
+      }
+    },
+
+    handleApiUnauthorized({ message = "访问 token 无效，请重新输入。", preserveDraft = null } = {}) {
+      const keepDraft =
+        preserveDraft == null ? !!(this.apiAuthSubmitting && String(this.apiAuthTokenDraft || "").trim()) : !!preserveDraft;
+      this._openApiAuthGate({ message, preserveDraft: keepDraft });
+    },
+
+    startupGateTitle() {
+      if (this.apiAuthPromptVisible) return "请输入访问令牌";
+      return this.assetDelivery && this.assetDelivery.probed ? "正在载入控制台…" : "正在检测资源通道…";
+    },
+
+    startupGateHint() {
+      if (this.apiAuthPromptVisible) return "主站 API 已启用 token 保护，输入后按回车继续。";
+      if (this.assetDelivery && this.assetDelivery.probed) return "探针已完成，正在准备页面…";
+      return "启动探针完成后显示控制台";
+    },
+
+    async waitForStartupGatePaint() {
+      await new Promise((resolve) => {
+        if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+          setTimeout(resolve, 0);
+          return;
+        }
+        window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
+      });
+    },
+
+    startupGateAuthMessage() {
+      return String(this.apiAuthError || "").trim() || "主站 API 已启用 token 保护，输入后按回车继续。";
+    },
+
+    async loadSystemStatus({ silent = true, throwOnError = false } = {}) {
       try {
         const payload = await this.api(`/system`);
         const pause = payload && payload.pause ? payload.pause : null;
@@ -146,6 +322,7 @@ export function createShellModule({ sidebarCollapsedKey, sidebarHiddenKey }) {
         }
       } catch (e) {
         if (!silent) this.globalStatus = `error: ${e.message}`;
+        if (throwOnError) throw e;
       }
     },
 
