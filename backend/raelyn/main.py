@@ -47,10 +47,27 @@ static_dir = Path(__file__).resolve().parents[2] / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
+def _static_root_file(filename: str, *, media_type: str) -> FileResponse:
+    path = static_dir / filename
+    if not path.exists():
+        raise HTTPException(status_code=404)
+    return FileResponse(str(path), media_type=media_type, headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/")
 def index() -> FileResponse:
     index_path = static_dir / "index.html"
     return FileResponse(str(index_path))
+
+
+@app.get("/manifest.webmanifest")
+def web_manifest() -> FileResponse:
+    return _static_root_file("manifest.webmanifest", media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def service_worker() -> FileResponse:
+    return _static_root_file("sw.js", media_type="application/javascript")
 
 
 app.include_router(health_router, prefix="/api")

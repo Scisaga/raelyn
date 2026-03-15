@@ -129,4 +129,101 @@
 
 <!-- @include ../views/mcp-guide.html -->
         </section>
+
+        <div
+          class="fixed inset-x-3 bottom-3 z-30 md:hidden"
+          x-show="pwaShouldShowHint()"
+          x-transition.opacity.duration.150ms
+          x-cloak
+        >
+          <div class="rounded-2xl border border-emerald-500/20 bg-slate-950/95 shadow-[0_14px_34px_rgba(0,0,0,0.45)] backdrop-blur">
+            <div class="flex items-start gap-3 px-4 py-3">
+              <div class="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-400"></div>
+              <div class="min-w-0 flex-1">
+                <div class="text-sm font-semibold text-slate-100" x-text="pwaCardTitle()"></div>
+                <div class="mt-1 text-xs leading-5 text-slate-300" x-text="pwaHintText()"></div>
+              </div>
+              <button
+                type="button"
+                class="shrink-0 rounded-md px-2 py-1 text-slate-400 hover:bg-slate-800/70 hover:text-slate-100"
+                @click="dismissPwaHint()"
+                title="关闭提示"
+                aria-label="关闭提示"
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M18 6 6 18"></path>
+                  <path d="M6 6l12 12"></path>
+                </svg>
+              </button>
+            </div>
+            <div class="flex items-center justify-end gap-2 border-t border-slate-800 px-4 py-3">
+              <button
+                type="button"
+                class="rounded-md border border-slate-700 bg-slate-950/30 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800/60"
+                @click="dismissPwaHint()"
+              >
+                稍后
+              </button>
+              <button
+                type="button"
+                class="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20"
+                @click="openPwaInstall()"
+              >
+                <span x-text="pwaActionLabel()"></span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div
+          class="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/75 px-4"
+          x-show="pwaGuideOpen"
+          x-transition.opacity.duration.150ms
+          x-cloak
+        >
+          <div class="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
+            <div class="flex items-start justify-between gap-3 border-b border-slate-800 px-5 py-4">
+              <div>
+                <div class="text-sm font-semibold text-slate-100" x-text="pwaCardTitle()"></div>
+                <div class="mt-1 text-xs text-slate-400">
+                  <span x-show="pwaGuideMode==='ios'">使用 Safari 的系统能力完成添加。</span>
+                  <span x-show="pwaGuideMode==='ios-browser'">当前浏览器不支持 iOS 主屏幕添加。</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                class="rounded-md p-1.5 text-slate-400 hover:bg-slate-800/60 hover:text-slate-100"
+                @click="closePwaGuide()"
+                title="关闭"
+                aria-label="关闭"
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M18 6 6 18"></path>
+                  <path d="M6 6l12 12"></path>
+                </svg>
+              </button>
+            </div>
+            <div class="space-y-3 px-5 py-4 text-sm leading-6 text-slate-300">
+              <div x-show="pwaGuideMode==='ios'">
+                <div>1. 使用 Safari 打开当前页面。</div>
+                <div>2. 点击底部或顶部的“分享”按钮。</div>
+                <div>3. 选择“添加到主屏幕”。</div>
+                <div>4. 确认名称后点击“添加”。</div>
+              </div>
+              <div x-show="pwaGuideMode==='ios-browser'">
+                <div>iPhone / iPad 只有 Safari 支持“添加到主屏幕”。</div>
+                <div>请复制当前链接，用 Safari 打开后再执行“分享 -> 添加到主屏幕”。</div>
+              </div>
+            </div>
+            <div class="flex justify-end border-t border-slate-800 px-5 py-4">
+              <button
+                type="button"
+                class="rounded-md border border-slate-700 bg-slate-950/30 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60"
+                @click="closePwaGuide()"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
       </main>

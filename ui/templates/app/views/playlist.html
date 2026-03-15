@@ -728,10 +728,10 @@
                 <!-- Row 3: Calendar (fixed height) -->
 		                <div class="h-16 bg-slate-950/10 overflow-hidden relative z-10 border-t-[2px] border-slate-700/90 shadow-[0_-12px_18px_-10px_rgba(0,0,0,0.55)]" x-show="playlistSubview==='main'" x-transition.opacity>
 		                  <div class="pointer-events-none absolute inset-x-0 top-[2px] h-2 bg-gradient-to-b from-black/35 to-transparent"></div>
-		                  <div class="h-16 flex items-stretch divide-x divide-slate-800 bg-slate-950/15">
+		                  <div class="h-16 flex sm:grid items-stretch divide-x divide-slate-800 bg-slate-950/15" :style="playlistCalendarLayoutStyle()">
                     <button
                       type="button"
-                      class="h-16 w-12 sm:w-14 text-slate-200 hover:bg-slate-800/40 inline-flex items-center justify-center"
+                      class="h-16 w-8 sm:w-auto shrink-0 text-slate-200 hover:bg-slate-800/40 inline-flex items-center justify-center"
                       @click="playlistJump(playlistJumpDelta('back_big'))"
                       :title="playlistJumpTitle('back_big')"
                       :aria-label="playlistJumpTitle('back_big')"
@@ -743,7 +743,7 @@
                     </button>
                     <button
                       type="button"
-                      class="h-16 w-12 sm:w-14 text-slate-200 hover:bg-slate-800/40 inline-flex items-center justify-center"
+                      class="h-16 w-8 sm:w-auto shrink-0 text-slate-200 hover:bg-slate-800/40 inline-flex items-center justify-center"
                       @click="playlistJump(playlistJumpDelta('back'))"
                       :title="playlistJumpTitle('back')"
                       :aria-label="playlistJumpTitle('back')"
@@ -753,7 +753,7 @@
                       </svg>
                     </button>
 
-                    <div x-ref="playlistCalendarStrip" class="flex-1 min-w-0 grid grid-flow-col auto-cols-fr divide-x divide-slate-800 overflow-hidden">
+                    <div x-ref="playlistCalendarStrip" class="flex-1 min-w-0 grid grid-flow-col auto-cols-fr divide-x divide-slate-800 overflow-hidden" :style="playlistCalendarStripStyle()">
                       <template x-for="d in playlistCalendarItems()" :key="d.date">
                         <button
                           type="button"
@@ -776,7 +776,7 @@
 
                     <button
                       type="button"
-                      class="h-16 w-12 sm:w-14 text-slate-200 hover:bg-slate-800/40 inline-flex items-center justify-center"
+                      class="h-16 w-8 sm:w-auto shrink-0 text-slate-200 hover:bg-slate-800/40 inline-flex items-center justify-center"
                       @click="playlistJump(playlistJumpDelta('forward'))"
                       :title="playlistJumpTitle('forward')"
                       :aria-label="playlistJumpTitle('forward')"
@@ -787,7 +787,7 @@
                     </button>
                     <button
                       type="button"
-                      class="h-16 w-12 sm:w-14 text-slate-200 hover:bg-slate-800/40 inline-flex items-center justify-center"
+                      class="h-16 w-8 sm:w-auto shrink-0 text-slate-200 hover:bg-slate-800/40 inline-flex items-center justify-center"
                       @click="playlistJump(playlistJumpDelta('forward_big'))"
                       :title="playlistJumpTitle('forward_big')"
                       :aria-label="playlistJumpTitle('forward_big')"

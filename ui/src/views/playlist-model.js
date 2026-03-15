@@ -127,6 +127,16 @@ export function createPlaylistViewMethods() {
       }
     },
 
+    playlistCalendarLayoutStyle() {
+      const count = Math.max(5, Number(this.playlistCalendarCount || 14));
+      return `grid-template-columns:repeat(${count + 4}, minmax(0,1fr));`;
+    },
+
+    playlistCalendarStripStyle() {
+      const count = Math.max(5, Number(this.playlistCalendarCount || 14));
+      return `grid-column:span ${count} / span ${count};`;
+    },
+
     playlistGranularity() {
       try {
         const detailGranularity = this.playlistDetail && this.playlistDetail.brief_granularity ? String(this.playlistDetail.brief_granularity) : "";
@@ -196,6 +206,13 @@ export function createPlaylistViewMethods() {
     playlistToggleSubview() {
       if (!this.playlistDetail) return;
       this.playlistSubview = this.playlistSubview === "settings" ? "main" : "settings";
+      if (this.playlistSubview === "main") {
+        try {
+          if (this.$nextTick) this.$nextTick(() => this.playlistCalendarUpdateCount());
+        } catch {
+          // ignore
+        }
+      }
       this._syncUrl({ push: false });
     },
 

@@ -27,6 +27,7 @@ export function createAppInitMethods() {
         this.pageTitle = item ? item.label : initialView;
         this._applyQueryFromLocation(initialView);
         this._syncUrl({ push: false });
+        await this.initPwa();
 
         const health = await this.api(`/health`);
         this.healthOk = !!health.ok;

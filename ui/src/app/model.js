@@ -18,9 +18,11 @@ import { createJobsModule } from "./modules/jobs.js";
 import { createSettingsModule } from "./modules/settings.js";
 import { createPlayerModule } from "./modules/player.js";
 import { createPlaylistsModule } from "./modules/playlists.js";
+import { createPwaModule } from "./modules/pwa.js";
 
 const SIDEBAR_COLLAPSED_KEY = "raelyn.ui.sidebarCollapsed";
 const SIDEBAR_HIDDEN_KEY = "raelyn.ui.sidebarHidden";
+const PWA_INSTALL_HINT_DISMISSED_KEY = "raelyn.ui.pwaInstallHintDismissed";
 
 export function createAppModel() {
   return mergeModelSegments(
@@ -37,6 +39,7 @@ export function createAppModel() {
     { name: "settings", value: createSettingsModule() },
     { name: "player", value: createPlayerModule() },
     { name: "playlists", value: createPlaylistsModule() },
+    { name: "pwa", value: createPwaModule({ installHintDismissedKey: PWA_INSTALL_HINT_DISMISSED_KEY }) },
     { name: "api", value: createApiMethods() },
     { name: "shared", value: createCommonViewMethods() },
     { name: "urlState", value: createUrlStateMethods({ settingsTabs: SETTINGS_TABS }) },
