@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from urllib.parse import unquote
 
 from fastapi import WebSocket
 from fastapi.responses import JSONResponse
@@ -34,6 +35,16 @@ def _provided_bearer_token(authorization_header: str | None) -> str:
     return provided.strip()
 
 
+def _provided_cookie_token(cookie_value: str | None) -> str:
+    raw = str(cookie_value or "").strip()
+    if not raw:
+        return ""
+    try:
+        return unquote(raw).strip()
+    except Exception:
+        return raw
+
+
 def is_valid_bearer_token(provided: str | None, expected: str | None) -> bool:
     required = normalize_bearer_token(expected)
     if not required:
@@ -60,7 +71,7 @@ class OptionalBearerTokenAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         provided = _provided_bearer_token(request.headers.get("authorization"))
-        cookie_token = str(request.cookies.get(API_AUTH_COOKIE_NAME, "") or "").strip()
+        cookie_token = _provided_cookie_token(request.cookies.get(API_AUTH_COOKIE_NAME, ""))
         if not is_valid_bearer_token(provided, self._token) and not is_valid_bearer_token(cookie_token, self._token):
             return JSONResponse(
                 status_code=401,

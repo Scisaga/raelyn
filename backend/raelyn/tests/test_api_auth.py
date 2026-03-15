@@ -74,6 +74,18 @@ class ApiAuthHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(authorized_system.status_code, 200)
         self.assertEqual(cookie_system.status_code, 200)
 
+    async def test_cookie_token_with_special_characters_is_url_decoded(self) -> None:
+        with ExitStack() as stack:
+            app = _load_app(stack, token="raelyn@2o26%")
+            stack.enter_context(patch("raelyn.api.health.session_scope", _fake_health_session_scope))
+            stack.enter_context(patch("raelyn.api.health.s3_check_bucket", return_value={"ok": True, "bucket": "test", "error": None}))
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+                client.cookies.set("raelyn_api_token", "raelyn%402o26%25")
+                cookie_system = await client.get("/api/system")
+
+        self.assertEqual(cookie_system.status_code, 200)
+
 
 class ApiAuthWebSocketTests(unittest.TestCase):
     def test_ws_is_public_when_token_disabled(self) -> None:
