@@ -11,6 +11,7 @@ export function createUrlStateMethods({ settingsTabs }) {
       const path = (window.location.pathname || "/").replace(/\/+$/, "") || "/";
       if (path === "/" || path === "") return "overview";
       const key = decodeURIComponent(path.slice(1));
+      if (key === "install") return "settings";
       const exists = this.navItems.some((item) => item.key === key);
       return exists ? key : "overview";
     },
@@ -59,7 +60,8 @@ export function createUrlStateMethods({ settingsTabs }) {
         this.playlistSubview = ["main", "settings"].includes(subview) ? subview : "main";
       }
       if (viewKey === "settings") {
-        const tab = (searchParams.get("tab") || this.settingsTab || "cookies").trim();
+        const legacyInstallPath = ((window.location.pathname || "").replace(/\/+$/, "") || "/") === "/install";
+        const tab = (legacyInstallPath ? "install" : (searchParams.get("tab") || this.settingsTab || "cookies")).trim();
         this.settingsTab = settingsTabs.includes(tab) ? tab : "cookies";
         if (this.settingsTab === "cookies") {
           const cookieTab = (searchParams.get("cookie_tab") || this.settingsCookiesTab || "youtube").trim().toLowerCase();
