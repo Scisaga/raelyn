@@ -505,6 +505,7 @@ class PlaylistVideoOut(BaseModel):
     description: str | None = None
     thumbnail_url: str | None = None
     published_at: Any | None = None
+    timeline_at: Any | None = None
     duration_sec: int | None = None
     status: str
     error_message: str | None = None
@@ -517,6 +518,58 @@ class PlaylistPeriodCountOut(BaseModel):
     count: int
 
 
+def _playlist_video_ts_expr():
+    return func.coalesce(Video.published_at, Video.created_at)
+
+
+def _playlist_video_description(video: Video) -> str | None:
+    desc = video.description
+    if (not desc) and video.raw_info and isinstance(video.raw_info, dict) and video.raw_info.get("description"):
+        try:
+            desc = str(video.raw_info.get("description") or "")
+        except Exception:
+            desc = None
+    if desc:
+        desc = desc.strip().replace("\n", " ")
+        if len(desc) > 140:
+            desc = desc[:140].rstrip() + "…"
+    return desc
+
+
+def _playlist_video_out(session, video: Video, media: Media, *, timeline_at: Any | None = None) -> PlaylistVideoOut:
+    return PlaylistVideoOut(
+        id=video.id,
+        media_id=video.media_id,
+        url=video.url,
+        title=video.title,
+        description=_playlist_video_description(video),
+        thumbnail_url=video.thumbnail_url,
+        published_at=video.published_at,
+        timeline_at=timeline_at or video.published_at or video.created_at,
+        duration_sec=video.duration_sec,
+        status=video.status,
+        error_message=video.error_message,
+        media_name=media.name,
+        media_avatar_asset=_media_avatar_asset(session, media),
+    )
+
+
+def _playlist_period_counts_from_timestamps(
+    timestamps: list[Any],
+    *,
+    granularity: str,
+    timezone_name: str | None = None,
+) -> list[PlaylistPeriodCountOut]:
+    counts: dict[date, int] = {}
+    for ts in timestamps:
+        local_day = local_date(ts, timezone_name=timezone_name)
+        if not local_day:
+            continue
+        ps = period_start(local_day, granularity)
+        counts[ps] = int(counts.get(ps, 0) or 0) + 1
+    return [PlaylistPeriodCountOut(period_start=ps, count=counts[ps]) for ps in sorted(counts)]
+
+
 @router.get("/playlists/{playlist_id}/videos_by_date", response_model=list[PlaylistVideoOut])
 def list_playlist_videos_by_date(playlist_id: uuid.UUID, date: date) -> list[PlaylistVideoOut]:
     with session_scope() as session:
@@ -524,44 +577,20 @@ def list_playlist_videos_by_date(playlist_id: uuid.UUID, date: date) -> list[Pla
         if not media_ids:
             return []
         start, end = day_bounds_utc(date)
+        ts_expr = _playlist_video_ts_expr()
         rows = (
             session.execute(
-                select(Video, Media)
+                select(Video, Media, ts_expr.label("timeline_at"))
                 .join(Media, Media.id == Video.media_id)
-                .where(Video.media_id.in_(list(media_ids)), Video.published_at.is_not(None), Video.published_at >= start, Video.published_at < end)
-                .order_by(Video.published_at.asc(), Video.created_at.asc(), Video.id.asc())
+                .where(Video.media_id.in_(list(media_ids)), ts_expr >= start, ts_expr < end)
+                .order_by(ts_expr.asc(), Video.created_at.asc(), Video.id.asc())
             )
             .all()
         )
 
         out: list[PlaylistVideoOut] = []
-        for v, m in rows:
-            desc = v.description
-            if (not desc) and v.raw_info and isinstance(v.raw_info, dict) and v.raw_info.get("description"):
-                try:
-                    desc = str(v.raw_info.get("description") or "")
-                except Exception:
-                    desc = None
-            if desc:
-                desc = desc.strip().replace("\n", " ")
-                if len(desc) > 140:
-                    desc = desc[:140].rstrip() + "…"
-            out.append(
-                PlaylistVideoOut(
-                    id=v.id,
-                    media_id=v.media_id,
-                    url=v.url,
-                    title=v.title,
-                    description=desc,
-                    thumbnail_url=v.thumbnail_url,
-                    published_at=v.published_at,
-                    duration_sec=v.duration_sec,
-                    status=v.status,
-                    error_message=v.error_message,
-                    media_name=m.name,
-                    media_avatar_asset=_media_avatar_asset(session, m),
-                )
-            )
+        for v, m, timeline_at in rows:
+            out.append(_playlist_video_out(session, v, m, timeline_at=timeline_at))
         return out
 
 
@@ -590,43 +619,67 @@ def list_playlist_video_counts_by_period(
     if periods > 400:
         raise HTTPException(status_code=400, detail="range too large (max 400 periods)")
 
-    start_utc, _ = _period_bounds_utc(pstart, g)
-    _, end_utc = _period_bounds_utc(pend, g)
+    start_utc, _ = period_bounds_utc(pstart, g)
+    _, end_utc = period_bounds_utc(pend, g)
 
     tzname = (getattr(settings, "timezone", None) or "UTC").strip() or "UTC"
     unit = "day" if g == "day" else ("week" if g == "week" else "month")
 
     with session_scope() as session:
-        local_ts = func.timezone(tzname, Video.published_at)
-        bucket = func.date_trunc(unit, local_ts)
-        period_start_expr = cast(bucket, Date)
+        ts_expr = _playlist_video_ts_expr()
+        dialect_name = ""
+        try:
+            dialect_name = str(session.bind.dialect.name or "").strip().lower()
+        except Exception:
+            dialect_name = ""
+
+        if dialect_name == "postgresql":
+            local_ts = func.timezone(tzname, ts_expr)
+            bucket = func.date_trunc(unit, local_ts)
+            period_start_expr = cast(bucket, Date)
+            rows = (
+                session.execute(
+                    select(
+                        period_start_expr.label("period_start"),
+                        func.count(Video.id).label("count"),
+                    )
+                    .select_from(Video)
+                    .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
+                    .where(
+                        PlaylistMedia.playlist_id == playlist_id,
+                        ts_expr >= start_utc,
+                        ts_expr < end_utc,
+                    )
+                    .group_by(period_start_expr)
+                    .order_by(period_start_expr.asc())
+                )
+                .all()
+            )
+
+            out: list[PlaylistPeriodCountOut] = []
+            for ps, cnt in rows:
+                try:
+                    out.append(PlaylistPeriodCountOut(period_start=ps, count=int(cnt or 0)))
+                except Exception:
+                    continue
+            return out
+
         rows = (
             session.execute(
-                select(
-                    period_start_expr.label("period_start"),
-                    func.count(Video.id).label("count"),
-                )
+                select(ts_expr.label("timeline_at"))
                 .select_from(Video)
                 .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
                 .where(
                     PlaylistMedia.playlist_id == playlist_id,
-                    Video.published_at.is_not(None),
-                    Video.published_at >= start_utc,
-                    Video.published_at < end_utc,
+                    ts_expr >= start_utc,
+                    ts_expr < end_utc,
                 )
-                .group_by(period_start_expr)
-                .order_by(period_start_expr.asc())
+                .order_by(ts_expr.asc(), Video.id.asc())
             )
             .all()
         )
-
-        out: list[PlaylistPeriodCountOut] = []
-        for ps, cnt in rows:
-            try:
-                out.append(PlaylistPeriodCountOut(period_start=ps, count=int(cnt or 0)))
-            except Exception:
-                continue
-        return out
+        timestamps = [timeline_at for (timeline_at,) in rows if timeline_at]
+        return _playlist_period_counts_from_timestamps(timestamps, granularity=g, timezone_name=tzname)
 
 
 @router.get("/playlists/{playlist_id}/videos_by_period", response_model=list[PlaylistVideoOut])
@@ -648,48 +701,23 @@ def list_playlist_videos_by_period(
         media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == playlist_id)).scalars().all()
         if not media_ids:
             return []
+        ts_expr = _playlist_video_ts_expr()
         rows = (
             session.execute(
-                select(Video, Media)
+                select(Video, Media, ts_expr.label("timeline_at"))
                 .join(Media, Media.id == Video.media_id)
                 .where(
                     Video.media_id.in_(list(media_ids)),
-                    Video.published_at.is_not(None),
-                    Video.published_at >= start,
-                    Video.published_at < end,
+                    ts_expr >= start,
+                    ts_expr < end,
                 )
-                .order_by(Video.published_at.asc(), Video.created_at.asc(), Video.id.asc())
+                .order_by(ts_expr.asc(), Video.created_at.asc(), Video.id.asc())
                 .limit(n)
             )
             .all()
         )
 
         out: list[PlaylistVideoOut] = []
-        for v, m in rows:
-            desc = v.description
-            if (not desc) and v.raw_info and isinstance(v.raw_info, dict) and v.raw_info.get("description"):
-                try:
-                    desc = str(v.raw_info.get("description") or "")
-                except Exception:
-                    desc = None
-            if desc:
-                desc = desc.strip().replace("\n", " ")
-                if len(desc) > 140:
-                    desc = desc[:140].rstrip() + "…"
-            out.append(
-                PlaylistVideoOut(
-                    id=v.id,
-                    media_id=v.media_id,
-                    url=v.url,
-                    title=v.title,
-                    description=desc,
-                    thumbnail_url=v.thumbnail_url,
-                    published_at=v.published_at,
-                    duration_sec=v.duration_sec,
-                    status=v.status,
-                    error_message=v.error_message,
-                    media_name=m.name,
-                    media_avatar_asset=_media_avatar_asset(session, m),
-                )
-            )
+        for v, m, timeline_at in rows:
+            out.append(_playlist_video_out(session, v, m, timeline_at=timeline_at))
         return out

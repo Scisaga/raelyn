@@ -141,10 +141,16 @@ export function createCommonViewMethods() {
       return mdLabel(iso);
     },
 
+    playlistVideoTimelineAt(video) {
+      if (!video) return "";
+      return video.timeline_at || video.published_at || "";
+    },
+
     playlistVideoSortValue(video) {
-      if (!video || !video.published_at) return 0;
+      const raw = this.playlistVideoTimelineAt(video);
+      if (!raw) return 0;
       try {
-        const ts = new Date(video.published_at).getTime();
+        const ts = new Date(raw).getTime();
         return Number.isFinite(ts) ? ts : 0;
       } catch {
         return 0;

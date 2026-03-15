@@ -489,7 +489,7 @@
                             @click="playlistSelectVideo(v)"
                           >
                             <div class="min-w-0">
-                              <div class="text-xs text-teal-500" x-text="formatDateTimeShort(v.published_at) || '-'"></div>
+                              <div class="text-xs text-teal-500" x-text="formatDateTimeShort(playlistVideoTimelineAt(v)) || '-'"></div>
                               <div class="mt-1 text-sm text-slate-100 truncate" x-text="v.title || v.url"></div>
                               <div class="mt-1 flex items-center gap-3 text-xs text-slate-400 min-w-0">
                                 <span class="truncate shrink-0 max-w-[40%]" x-text="v.media_name || v.media_id"></span>
