@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.services.provider_pause import get_provider_pauses
 from raelyn.services.system_pause import clear_pause, get_pause, set_paused
@@ -14,7 +15,17 @@ router = APIRouter(tags=["system"])
 @router.get("/system")
 def system_status() -> dict:
     with session_scope() as session:
-        return {"pause": get_pause(session), "provider_pauses": get_provider_pauses(session)}
+        probe_url = (settings.asset_direct_probe_url or "").strip() or (settings.s3_endpoint.rstrip("/") + "/")
+        return {
+            "pause": get_pause(session),
+            "provider_pauses": get_provider_pauses(session),
+            "asset_delivery": {
+                "strategy": "startup_probe",
+                "direct_probe_url": probe_url,
+                "proxy_base_path": (settings.asset_proxy_base_path or "/api/assets").rstrip("/"),
+                "presign_enabled": bool(settings.asset_presign_enabled),
+            },
+        }
 
 
 class PauseRequest(BaseModel):

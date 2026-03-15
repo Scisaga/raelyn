@@ -36,6 +36,7 @@ export function createAppInitMethods() {
         this.services.llm = health.llm || this.services.llm;
         this.globalStatus = health.deps_ok ? "" : "部分依赖不可用";
         await this.loadSystemStatus({ silent: true });
+        await this.initAssetDelivery();
         this._connectJobStatsWs();
         try {
           if (!this._pausePollId) this._pausePollId = setInterval(() => this.loadSystemStatus({ silent: true }), 15000);

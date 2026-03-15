@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter
 from sqlalchemy import func, select
 
+from raelyn.api.asset_refs import build_asset_ref
 from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.models import Asset, Brief, Job, Media, Playlist, PlaylistMedia, Video
@@ -16,7 +17,7 @@ from raelyn.services.periods import (
     period_end_inclusive as compute_period_end_inclusive,
     period_start as compute_period_start,
 )
-from raelyn.services.s3 import s3_get_bytes, s3_presign_get
+from raelyn.services.s3 import s3_get_bytes
 
 
 router = APIRouter(tags=["stats"])
@@ -48,15 +49,9 @@ def _snippet_20(s: str) -> str:
     return t[:19] + "…"
 
 
-def _media_avatar_url(m: Any) -> str | None:
-    avatar_url = getattr(m, "avatar_url", None)
-    key = (getattr(m, "avatar_s3_key", None) or "").strip()
-    if key:
-        try:
-            return s3_presign_get(settings.s3_bucket, key)
-        except Exception:
-            return avatar_url
-    return avatar_url
+def _media_avatar_asset(session, m: Any):
+    asset_id = getattr(m, "avatar_asset_id", None)
+    return build_asset_ref(session.get(Asset, asset_id)) if asset_id else None
 
 
 def _brief_snippet_from_asset(asset: Asset | None) -> str:
@@ -120,14 +115,6 @@ def stats() -> dict:
                     local_video_count_by_media_id[str(mid)] = int(n or 0)
         recent_media: list[dict] = []
         for m in recent_media_rows:
-            avatar_url = (getattr(m, "avatar_url", None) or "").strip() or None
-            key = (getattr(m, "avatar_s3_key", None) or "").strip()
-            if key:
-                try:
-                    avatar_url = s3_presign_get(settings.s3_bucket, key)
-                except Exception:
-                    avatar_url = avatar_url
-
             recent_media.append(
                 {
                     "id": str(m.id),
@@ -135,7 +122,7 @@ def stats() -> dict:
                     "provider_media_id": m.provider_media_id,
                     "url": m.url,
                     "name": m.name,
-                    "avatar_url": avatar_url,
+                    "avatar_asset": _media_avatar_asset(session, m),
                     "monitor_enabled": bool(m.monitor_enabled),
                     "video_count": int(local_video_count_by_media_id.get(str(m.id), 0)),
                     "created_at": m.created_at,
@@ -246,7 +233,7 @@ def stats() -> dict:
                         "provider": m.provider,
                         "url": m.url,
                         "name": m.name,
-                        "avatar_url": _media_avatar_url(m),
+                        "avatar_asset": _media_avatar_asset(session, m),
                     }
                 )
 
@@ -256,14 +243,6 @@ def stats() -> dict:
                 p = by_id.get(pid)
                 if not p:
                     continue
-
-                avatar_url = None
-                avatar_key = (getattr(p, "avatar_s3_key", None) or "").strip()
-                if avatar_key:
-                    try:
-                        avatar_url = s3_presign_get(settings.s3_bucket, avatar_key)
-                    except Exception:
-                        avatar_url = None
 
                 latest_video_at = top_latest_ts.get(pid)
                 g = (getattr(p, "brief_granularity", None) or "day").strip().lower() or "day"
@@ -314,7 +293,9 @@ def stats() -> dict:
                     {
                         "id": pid,
                         "name": p.name,
-                        "avatar_url": avatar_url,
+                        "avatar_asset": build_asset_ref(session.get(Asset, getattr(p, "avatar_asset_id", None)))
+                        if getattr(p, "avatar_asset_id", None)
+                        else None,
                         "media_count": int(media_count_by_playlist_id.get(pid, 0)),
                         "media_preview": preview_map.get(pid) or [],
                         "latest_video_at": latest_video_at,

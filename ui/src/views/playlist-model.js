@@ -567,12 +567,12 @@ export function createPlaylistViewMethods() {
       const applyAssets = (assets) => {
         if (isStale()) return;
         const list = Array.isArray(assets) ? assets : [];
-        const videos = list.filter((a) => a && a.type === "video" && a.presigned_url);
-        const audios = list.filter((a) => a && a.type === "audio" && a.presigned_url);
+        const videos = list.filter((a) => a && a.type === "video");
+        const audios = list.filter((a) => a && a.type === "audio");
         const mp4 = videos.find((a) => String(a.format || "").toLowerCase() === "mp4") || videos[0] || null;
         const m4a = audios.find((a) => String(a.format || "").toLowerCase() === "m4a") || audios[0] || null;
-        this.playlistPlayerVideoUrl = (mp4 && mp4.presigned_url) || "";
-        this.playlistPlayerAudioUrl = (m4a && m4a.presigned_url) || "";
+        this.playlistPlayerVideoUrl = (mp4 && this.assetContentUrl(mp4)) || "";
+        this.playlistPlayerAudioUrl = (m4a && this.assetContentUrl(m4a)) || "";
         this.$nextTick(() => {
           if (isStale()) return;
           try {
@@ -1376,7 +1376,7 @@ export function createPlaylistViewMethods() {
           { signal: ctrl.signal }
         );
         if (Number(this.playlistLoadToken || 0) !== token) return;
-        if (!brief || brief.status !== "ready" || !brief.markdown_url) {
+        if (!brief || brief.status !== "ready" || !brief.markdown_asset) {
           const s = brief && brief.status ? String(brief.status) : "pending";
           if (s === "failed") {
             const em = brief && brief.error_message ? String(brief.error_message) : "";
@@ -1397,7 +1397,8 @@ export function createPlaylistViewMethods() {
         }
         const mdCtrl = new AbortController();
         this._playlistBriefMdAbortCtrl = mdCtrl;
-        const resp = await fetch(brief.markdown_url, { signal: mdCtrl.signal });
+        const markdownUrl = this.assetContentUrl(brief.markdown_asset);
+        const resp = await fetch(markdownUrl, { signal: mdCtrl.signal });
         if (!resp.ok) throw new Error(`${resp.status}: brief markdown fetch failed`);
 	        const md = await resp.text();
 	        if (Number(this.playlistLoadToken || 0) !== token) return;
@@ -1480,7 +1481,7 @@ export function createPlaylistViewMethods() {
         if (!pid || !f) return;
         if (f.size > 2 * 1024 * 1024) throw new Error("头像超过 2MB");
         const updated = await this._uploadPlaylistImage(pid, "avatar", f);
-        if (this.playlistDetail) this.playlistDetail.avatar_url = updated.avatar_url || this.playlistDetail.avatar_url;
+        if (this.playlistDetail) this.playlistDetail.avatar_asset = updated.avatar_asset || this.playlistDetail.avatar_asset;
         await this.loadPlaylists();
         this.globalStatus = "已更新头像";
       } catch (e) {
@@ -1499,7 +1500,7 @@ export function createPlaylistViewMethods() {
         if (!pid || !f) return;
         if (f.size > 2 * 1024 * 1024) throw new Error("背景超过 2MB");
         const updated = await this._uploadPlaylistImage(pid, "background", f);
-        if (this.playlistDetail) this.playlistDetail.background_url = updated.background_url || this.playlistDetail.background_url;
+        if (this.playlistDetail) this.playlistDetail.background_asset = updated.background_asset || this.playlistDetail.background_asset;
         await this.loadPlaylists();
         this.globalStatus = "已更新背景";
       } catch (e) {
@@ -1516,7 +1517,7 @@ export function createPlaylistViewMethods() {
       if (!pid || !this.playlistDetail) return;
       try {
         const updated = await this.api(`/playlists/${encodeURIComponent(pid)}/background`, { method: "DELETE" });
-        if (this.playlistDetail) this.playlistDetail.background_url = (updated && updated.background_url) || null;
+        if (this.playlistDetail) this.playlistDetail.background_asset = (updated && updated.background_asset) || null;
         await this.loadPlaylists();
         this.globalStatus = "已清除背景";
       } catch (e) {

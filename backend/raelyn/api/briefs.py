@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from raelyn.api.asset_refs import AssetRef, build_asset_ref
 from raelyn.api.orm import OrmModel
 from raelyn.db import session_scope
 from raelyn.models import Asset, Brief, DailyBrief
@@ -15,7 +16,6 @@ from raelyn.services.brief_actions import schedule_brief_generation, schedule_br
 from raelyn.services.brief_schedule import schedule_brief_refresh
 from raelyn.services.brief_prompt import build_brief_prompt_for_period
 from raelyn.services.periods import normalize_granularity, period_end_inclusive, period_start
-from raelyn.services.s3 import s3_presign_get
 
 
 router = APIRouter(tags=["briefs"])
@@ -31,8 +31,7 @@ class DailyBriefOut(OrmModel):
     playlist_id: uuid.UUID
     brief_date: date
     status: str
-    markdown_asset_id: uuid.UUID | None = None
-    markdown_url: str | None = None
+    markdown_asset: AssetRef | None = None
     error_message: str | None = None
     created_at: Any
     updated_at: Any
@@ -90,19 +89,11 @@ def get_brief_by_date(playlist_id: uuid.UUID, date: date) -> DailyBriefOut:
                 playlist_id=row.playlist_id,
                 brief_date=row.period_start,
                 status=row.status,
-                markdown_asset_id=row.markdown_asset_id,
+                markdown_asset=build_asset_ref(session.get(Asset, row.markdown_asset_id)) if row.markdown_asset_id else None,
                 error_message=row.error_message,
                 created_at=row.created_at,
                 updated_at=row.updated_at,
-                markdown_url=None,
             )
-            if out.markdown_asset_id:
-                asset = session.get(Asset, out.markdown_asset_id)
-                if asset:
-                    try:
-                        out.markdown_url = s3_presign_get(asset.s3_bucket, asset.s3_key)
-                    except Exception:
-                        out.markdown_url = None
             return out
 
         brief = session.execute(
@@ -111,13 +102,7 @@ def get_brief_by_date(playlist_id: uuid.UUID, date: date) -> DailyBriefOut:
         if not brief:
             raise HTTPException(status_code=404, detail="brief not found")
         out2 = DailyBriefOut.model_validate(brief)
-        if out2.markdown_asset_id:
-            asset2 = session.get(Asset, out2.markdown_asset_id)
-            if asset2:
-                try:
-                    out2.markdown_url = s3_presign_get(asset2.s3_bucket, asset2.s3_key)
-                except Exception:
-                    out2.markdown_url = None
+        out2.markdown_asset = build_asset_ref(session.get(Asset, brief.markdown_asset_id)) if brief.markdown_asset_id else None
         return out2
 
 
@@ -128,8 +113,7 @@ class BriefOut(OrmModel):
     period_start: date
     period_end: date | None = None
     status: str
-    markdown_asset_id: uuid.UUID | None = None
-    markdown_url: str | None = None
+    markdown_asset: AssetRef | None = None
     error_message: str | None = None
     created_at: Any
     updated_at: Any
@@ -150,13 +134,7 @@ def get_brief_by_period(playlist_id: uuid.UUID, granularity: str, date: date) ->
             raise HTTPException(status_code=404, detail="brief not found")
         out = BriefOut.model_validate(brief)
         out.period_end = period_end_inclusive(pstart, g)
-        if out.markdown_asset_id:
-            asset = session.get(Asset, out.markdown_asset_id)
-            if asset:
-                try:
-                    out.markdown_url = s3_presign_get(asset.s3_bucket, asset.s3_key)
-                except Exception:
-                    out.markdown_url = None
+        out.markdown_asset = build_asset_ref(session.get(Asset, brief.markdown_asset_id)) if brief.markdown_asset_id else None
         return out
 
 
@@ -183,13 +161,7 @@ def list_briefs(
         for b in items:
             row = BriefOut.model_validate(b)
             row.period_end = period_end_inclusive(row.period_start, row.granularity)
-            if row.markdown_asset_id:
-                asset = session.get(Asset, row.markdown_asset_id)
-                if asset:
-                    try:
-                        row.markdown_url = s3_presign_get(asset.s3_bucket, asset.s3_key)
-                    except Exception:
-                        row.markdown_url = None
+            row.markdown_asset = build_asset_ref(session.get(Asset, b.markdown_asset_id)) if b.markdown_asset_id else None
             out.append(row)
         return out
 
@@ -246,11 +218,5 @@ def get_brief(brief_id: uuid.UUID) -> BriefOut:
             raise HTTPException(status_code=404, detail="brief not found")
         out = BriefOut.model_validate(brief)
         out.period_end = period_end_inclusive(out.period_start, out.granularity)
-        if out.markdown_asset_id:
-            asset = session.get(Asset, out.markdown_asset_id)
-            if asset:
-                try:
-                    out.markdown_url = s3_presign_get(asset.s3_bucket, asset.s3_key)
-                except Exception:
-                    out.markdown_url = None
+        out.markdown_asset = build_asset_ref(session.get(Asset, brief.markdown_asset_id)) if brief.markdown_asset_id else None
         return out

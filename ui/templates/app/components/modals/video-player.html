@@ -4,16 +4,16 @@
           <div class="relative shrink-0 px-4 py-3">
             <div class="flex items-start gap-3 min-w-0 pr-16">
               <div class="w-10 h-10 rounded-md ring-1 ring-inset shrink-0" :class="mediaAvatarClasses(playerVideo)">
-                <template x-if="playerVideo && playerVideo.media_avatar_url">
+                <template x-if="playerVideo && playerVideo.media_avatar_asset">
                   <img
                     class="w-10 h-10 rounded-md object-cover"
-                    :src="playerVideo.media_avatar_url"
+                    :src="assetContentUrl(playerVideo.media_avatar_asset)"
                     alt=""
                     loading="lazy"
-                    @error="playerVideo.media_avatar_url=null"
+                    @error="clearAssetRef(playerVideo, 'media_avatar_asset')"
                   />
                 </template>
-                <template x-if="!playerVideo || !playerVideo.media_avatar_url">
+                <template x-if="!playerVideo || !playerVideo.media_avatar_asset">
                   <div class="w-10 h-10 flex items-center justify-center">
                     <span class="text-[11px] font-semibold" x-text="videoMediaAvatarLabel(playerVideo)"></span>
                   </div>

@@ -103,16 +103,16 @@
                         class="w-10 h-10 rounded-lg ring-1 flex items-center justify-center overflow-hidden shrink-0"
                         :class="mediaAvatarClasses(m)"
                       >
-                        <template x-if="m.avatar_url">
+                        <template x-if="m.avatar_asset">
                           <img
                             class="w-10 h-10 object-cover"
-                            :src="m.avatar_url"
+                            :src="assetContentUrl(m.avatar_asset)"
                             alt=""
                             loading="lazy"
-                            @error="m.avatar_url=null"
+                            @error="clearAssetRef(m, 'avatar_asset')"
                           />
                         </template>
-                        <template x-if="!m.avatar_url">
+                        <template x-if="!m.avatar_asset">
                           <span class="text-xs font-semibold" x-text="mediaAvatarLabel(m)"></span>
                         </template>
 	                      </div>

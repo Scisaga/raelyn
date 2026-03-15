@@ -13,10 +13,10 @@ from sqlalchemy.orm import Session
 from raelyn.config import settings
 from raelyn.jobs.log import job_log
 from raelyn.models import AppConfig, Asset, Job, Media
+from raelyn.services.assets import replace_standalone_asset
 from raelyn.services.provider_cookies import cookie_config_name, cookie_provider_label, normalize_cookie_provider
 from raelyn.services.http_client import httpx_client
 from raelyn.services.provider_pause import ProviderPauseRequestError, job_provider, set_provider_paused
-from raelyn.services.s3 import s3_upload_file
 from raelyn.services.system_pause import set_paused
 from raelyn.services.workdir import job_workdir
 from raelyn.services.ytdlp import YtdlpCookiesInvalidError
@@ -221,12 +221,19 @@ def _cache_media_avatar(session: Session, *, job: Job, media: Media, avatar_url:
             local_path = wd / f"media-avatar.{ext}"
             local_path.write_bytes(data)
             s3_key = f"media/{media.id}/avatar.{ext}"
-            s3_upload_file(
+            asset = replace_standalone_asset(
+                session,
+                asset_id=media.avatar_asset_id,
+                type_="image",
+                format_=ext,
+                source="media",
+                variant="avatar",
                 local_path=local_path,
-                bucket=settings.s3_bucket,
-                key=s3_key,
+                s3_key=s3_key,
+                metadata={"media_id": str(media.id), "kind": "avatar"},
                 content_type=content_type,
             )
+            media.avatar_asset_id = asset.id
             media.avatar_s3_key = s3_key
             return True
     except Exception as e:

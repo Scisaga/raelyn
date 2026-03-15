@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+from pathlib import Path
+import uuid
 
 from sqlalchemy import create_engine, text
 from sqlalchemy import inspect
@@ -14,6 +16,72 @@ engine = create_engine(settings.database_url, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, class_=Session)
 
 _CREATE_ALL_LOCK_KEY = "raelyn.schema.create_all"
+
+
+def _uuid_column_sql(dialect_name: str) -> str:
+    return "uuid" if dialect_name == "postgresql" else "varchar(36)"
+
+
+def _guess_asset_format_from_key(key: str) -> str:
+    ext = Path(str(key or "").strip()).suffix.lower().lstrip(".")
+    if ext == "jpeg":
+        ext = "jpg"
+    return ext or "bin"
+
+
+def _timestamp_sql(dialect_name: str) -> str:
+    return "now()" if dialect_name == "postgresql" else "CURRENT_TIMESTAMP"
+
+
+def _backfill_owned_image_assets(conn, *, owner_table: str, owner_id_col: str, asset_id_col: str, key_col: str, variant: str) -> None:
+    try:
+        rows = conn.execute(
+            text(
+                f"""
+select {owner_id_col} as owner_id, {key_col} as s3_key
+from {owner_table}
+where {asset_id_col} is null
+  and {key_col} is not null
+  and trim({key_col}) <> ''
+"""
+            )
+        ).mappings().all()
+    except Exception:
+        rows = []
+    if not rows:
+        return
+
+    ts_sql = _timestamp_sql(conn.dialect.name)
+    insert_sql = text(
+        f"""
+insert into asset (
+    id, video_id, type, format, language, source, variant,
+    s3_bucket, s3_key, size_bytes, checksum_sha256, metadata, created_at, updated_at
+) values (
+    :id, null, 'image', :format, null, :source, :variant,
+    :bucket, :key, null, null, null, {ts_sql}, {ts_sql}
+)
+"""
+    )
+    update_sql = text(f"update {owner_table} set {asset_id_col} = :asset_id where {owner_id_col} = :owner_id")
+    for row in rows:
+        s3_key = str(row.get("s3_key") or "").strip()
+        owner_id = row.get("owner_id")
+        if not owner_id or not s3_key:
+            continue
+        asset_id = str(uuid.uuid4())
+        conn.execute(
+            insert_sql,
+            {
+                "id": asset_id,
+                "format": _guess_asset_format_from_key(s3_key),
+                "source": owner_table,
+                "variant": variant,
+                "bucket": settings.s3_bucket,
+                "key": s3_key,
+            },
+        )
+        conn.execute(update_sql, {"asset_id": asset_id, "owner_id": owner_id})
 
 
 def _migrate_schema(conn) -> None:
@@ -41,6 +109,8 @@ def _migrate_schema(conn) -> None:
                 conn.execute(text("alter table media add column monitor_enabled boolean not null default 0"))
         if "avatar_s3_key" not in cols:
             conn.execute(text("alter table media add column avatar_s3_key varchar"))
+        if "avatar_asset_id" not in cols:
+            conn.execute(text(f"alter table media add column avatar_asset_id {_uuid_column_sql(conn.dialect.name)}"))
 
     if "playlist" in tables:
         cols = {c.get("name") for c in insp.get_columns("playlist")}
@@ -48,6 +118,10 @@ def _migrate_schema(conn) -> None:
             conn.execute(text("alter table playlist add column avatar_s3_key varchar"))
         if "background_s3_key" not in cols:
             conn.execute(text("alter table playlist add column background_s3_key varchar"))
+        if "avatar_asset_id" not in cols:
+            conn.execute(text(f"alter table playlist add column avatar_asset_id {_uuid_column_sql(conn.dialect.name)}"))
+        if "background_asset_id" not in cols:
+            conn.execute(text(f"alter table playlist add column background_asset_id {_uuid_column_sql(conn.dialect.name)}"))
         if "brief_granularity" not in cols:
             if conn.dialect.name == "postgresql":
                 conn.execute(text("alter table playlist add column brief_granularity varchar not null default 'day'"))
@@ -182,6 +256,33 @@ where job.type = 'video.download'
             conn.execute(text("create index if not exists asset_video_created_at_idx on asset(video_id, created_at desc)"))
         except Exception:
             pass
+
+    if "asset" in tables and "media" in tables:
+        _backfill_owned_image_assets(
+            conn,
+            owner_table="media",
+            owner_id_col="id",
+            asset_id_col="avatar_asset_id",
+            key_col="avatar_s3_key",
+            variant="avatar",
+        )
+    if "asset" in tables and "playlist" in tables:
+        _backfill_owned_image_assets(
+            conn,
+            owner_table="playlist",
+            owner_id_col="id",
+            asset_id_col="avatar_asset_id",
+            key_col="avatar_s3_key",
+            variant="avatar",
+        )
+        _backfill_owned_image_assets(
+            conn,
+            owner_table="playlist",
+            owner_id_col="id",
+            asset_id_col="background_asset_id",
+            key_col="background_s3_key",
+            variant="background",
+        )
         try:
             if conn.dialect.name == "postgresql":
                 conn.execute(

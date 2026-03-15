@@ -63,15 +63,15 @@ export function createPlayerModule() {
         const detailDesc = detail && typeof detail === "object" ? detail.description || "" : "";
         this.playerDescription = detailDesc || "";
 
-        const videos = this.playerAssets.filter((asset) => asset.type === "video" && asset.presigned_url);
+        const videos = this.playerAssets.filter((asset) => asset && asset.type === "video");
         const mp4 = videos.find((asset) => String(asset.format || "").toLowerCase() === "mp4") || videos[0] || null;
-        this.playerVideoUrl = (mp4 && mp4.presigned_url) || "";
-        this.playerVideoDownloadUrl = (mp4 && (mp4.download_url || mp4.presigned_url)) || "";
+        this.playerVideoUrl = (mp4 && this.assetContentUrl(mp4)) || "";
+        this.playerVideoDownloadUrl = (mp4 && this.assetDownloadUrl(mp4)) || "";
         this.playerVideoDownloadName = (mp4 && mp4.filename) || "";
 
-        const audios = this.playerAssets.filter((asset) => asset.type === "audio" && (asset.download_url || asset.presigned_url));
+        const audios = this.playerAssets.filter((asset) => asset && asset.type === "audio");
         const m4a = audios.find((asset) => String(asset.format || "").toLowerCase() === "m4a") || audios[0] || null;
-        this.playerAudioDownloadUrl = (m4a && (m4a.download_url || m4a.presigned_url)) || "";
+        this.playerAudioDownloadUrl = (m4a && this.assetDownloadUrl(m4a)) || "";
         this.playerAudioDownloadName = (m4a && m4a.filename) || "";
 
         this.playerTranscriptText = transcript && transcript.ok ? transcript.text || "" : "";

@@ -10,13 +10,14 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import Date, cast, func, select
 
+from raelyn.api.asset_refs import AssetRef, build_asset_ref
 from raelyn.api.orm import OrmModel
 from raelyn.config import settings
 from raelyn.db import session_scope
-from raelyn.models import Media, Playlist, PlaylistMedia, Video
+from raelyn.models import Asset, Media, Playlist, PlaylistMedia, Video
 from raelyn.services.brief_schedule import schedule_brief_refresh_for_media_change
 from raelyn.services.periods import day_bounds_utc, local_date, normalize_granularity, period_bounds_utc, period_start
-from raelyn.services.s3 import s3_presign_get, s3_upload_file
+from raelyn.services.assets import replace_standalone_asset
 
 
 router = APIRouter(tags=["playlists"])
@@ -42,15 +43,15 @@ class PlaylistMediaOut(BaseModel):
     provider: str
     url: str
     name: str | None = None
-    avatar_url: str | None = None
+    avatar_asset: AssetRef | None = None
 
 
 class PlaylistOut(OrmModel):
     id: uuid.UUID
     name: str
     description: str | None = None
-    avatar_url: str | None = None
-    background_url: str | None = None
+    avatar_asset: AssetRef | None = None
+    background_asset: AssetRef | None = None
     brief_granularity: str = "day"
     media_count: int | None = None
     media_preview: list[PlaylistMediaOut] = Field(default_factory=list)
@@ -74,34 +75,19 @@ class PlaylistMediaAdd(BaseModel):
 class PlaylistMediaReplace(BaseModel):
     media_ids: list[uuid.UUID]
 
-def _media_avatar_url(m: Any) -> str | None:
-    avatar_url = getattr(m, "avatar_url", None)
-    key = (getattr(m, "avatar_s3_key", None) or "").strip()
-    if key:
-        try:
-            return s3_presign_get(settings.s3_bucket, key)
-        except Exception:
-            return avatar_url
-    return avatar_url
+
+def _media_avatar_asset(session, m: Any) -> AssetRef | None:
+    asset_id = getattr(m, "avatar_asset_id", None)
+    return build_asset_ref(session.get(Asset, asset_id)) if asset_id else None
 
 
 def _playlist_out(session, p: Playlist, *, preview: list[PlaylistMediaOut] | None = None) -> PlaylistOut:
     out = PlaylistOut.model_validate(p)
     out.brief_granularity = (getattr(p, "brief_granularity", None) or "day").strip() or "day"
-
-    avatar_key = (getattr(p, "avatar_s3_key", None) or "").strip()
-    if avatar_key:
-        try:
-            out.avatar_url = s3_presign_get(settings.s3_bucket, avatar_key)
-        except Exception:
-            pass
-
-    bg_key = (getattr(p, "background_s3_key", None) or "").strip()
-    if bg_key:
-        try:
-            out.background_url = s3_presign_get(settings.s3_bucket, bg_key)
-        except Exception:
-            pass
+    out.avatar_asset = build_asset_ref(session.get(Asset, getattr(p, "avatar_asset_id", None))) if getattr(p, "avatar_asset_id", None) else None
+    out.background_asset = (
+        build_asset_ref(session.get(Asset, getattr(p, "background_asset_id", None))) if getattr(p, "background_asset_id", None) else None
+    )
 
     media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == p.id)).scalars().all()
     out.media_count = len(media_ids)
@@ -126,7 +112,7 @@ def _playlist_out(session, p: Playlist, *, preview: list[PlaylistMediaOut] | Non
                 provider=m.provider,
                 url=m.url,
                 name=m.name,
-                avatar_url=_media_avatar_url(m),
+                avatar_asset=_media_avatar_asset(session, m),
             )
             for m in rows
         ]
@@ -219,8 +205,7 @@ def list_playlists(limit: int = 100, offset: int = 0) -> list[PlaylistOut]:
                         Media.provider.label("provider"),
                         Media.url.label("url"),
                         Media.name.label("name"),
-                        Media.avatar_url.label("avatar_url"),
-                        Media.avatar_s3_key.label("avatar_s3_key"),
+                        Media.avatar_asset_id.label("avatar_asset_id"),
                     )
                     .join(Media, Media.id == PlaylistMedia.media_id)
                     .where(PlaylistMedia.playlist_id.in_(playlist_ids))
@@ -237,40 +222,19 @@ def list_playlists(limit: int = 100, offset: int = 0) -> list[PlaylistOut]:
                     preview_map[pid] = cur
                 if len(cur) >= 5:
                     continue
-                avatar_url = r["avatar_url"]
-                key = (r["avatar_s3_key"] or "").strip()
-                if key:
-                    try:
-                        avatar_url = s3_presign_get(settings.s3_bucket, key)
-                    except Exception:
-                        avatar_url = r["avatar_url"]
                 cur.append(
                     PlaylistMediaOut(
                         id=r["media_id"],
                         provider=r["provider"],
                         url=r["url"],
                         name=r["name"],
-                        avatar_url=avatar_url,
+                        avatar_asset=build_asset_ref(session.get(Asset, r["avatar_asset_id"])) if r["avatar_asset_id"] else None,
                     )
                 )
 
         out_items: list[PlaylistOut] = []
         for p in items:
-            out = PlaylistOut.model_validate(p)
-            out.brief_granularity = (getattr(p, "brief_granularity", None) or "day").strip() or "day"
-            avatar_key = (getattr(p, "avatar_s3_key", None) or "").strip()
-            if avatar_key:
-                try:
-                    out.avatar_url = s3_presign_get(settings.s3_bucket, avatar_key)
-                except Exception:
-                    pass
-            bg_key = (getattr(p, "background_s3_key", None) or "").strip()
-            if bg_key:
-                try:
-                    out.background_url = s3_presign_get(settings.s3_bucket, bg_key)
-                except Exception:
-                    pass
-
+            out = PlaylistOut.model_validate(_playlist_out(session, p).model_dump())
             out.media_preview = preview_map.get(p.id) or []
             out.media_count = int(media_count_map.get(p.id) or 0)
 
@@ -321,7 +285,7 @@ def get_playlist_detail(playlist_id: uuid.UUID) -> PlaylistDetailOut:
                     provider=m.provider,
                     url=m.url,
                     name=m.name,
-                    avatar_url=_media_avatar_url(m),
+                    avatar_asset=_media_avatar_asset(session, m),
                 )
             )
         out.media = media_out
@@ -356,6 +320,7 @@ def clear_playlist_background(playlist_id: uuid.UUID) -> PlaylistOut:
         playlist = session.get(Playlist, playlist_id)
         if not playlist:
             raise HTTPException(status_code=404, detail="playlist not found")
+        playlist.background_asset_id = None
         playlist.background_s3_key = None
         session.flush()
         return _playlist_out(session, playlist)
@@ -443,12 +408,13 @@ def replace_playlist_media(playlist_id: uuid.UUID, payload: PlaylistMediaReplace
     return {"ok": True}
 
 
-def _save_playlist_image(*, file: UploadFile, key_base: str) -> str:
+def _save_playlist_image(*, file: UploadFile, key_base: str) -> tuple[Path, str, str, str]:
     ct = (file.content_type or "").lower().strip()
     if ct not in {"image/jpeg", "image/png", "image/webp"}:
         raise HTTPException(status_code=400, detail="unsupported image type (jpg/png/webp only)")
 
-    suffix = ".jpg" if ct == "image/jpeg" else ".png" if ct == "image/png" else ".webp"
+    fmt = "jpg" if ct == "image/jpeg" else "png" if ct == "image/png" else "webp"
+    suffix = f".{fmt}"
     key = f"{key_base}{suffix}"
     with tempfile.NamedTemporaryFile(prefix="raelyn-playlist-", suffix=suffix, delete=False) as tmp:
         tmp_path = Path(tmp.name)
@@ -466,14 +432,7 @@ def _save_playlist_image(*, file: UploadFile, key_base: str) -> str:
                 raise HTTPException(status_code=400, detail="image too large (max 2MB)")
             tmp.write(chunk)
 
-    try:
-        s3_upload_file(local_path=tmp_path, bucket=settings.s3_bucket, key=key, content_type=ct)
-    finally:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-    return key
+    return tmp_path, ct, key, fmt
 
 
 @router.post("/playlists/{playlist_id}/avatar", response_model=PlaylistOut)
@@ -482,10 +441,29 @@ def upload_playlist_avatar(playlist_id: uuid.UUID, file: UploadFile = File(...))
         playlist = session.get(Playlist, playlist_id)
         if not playlist:
             raise HTTPException(status_code=404, detail="playlist not found")
-        stored = _save_playlist_image(file=file, key_base=f"playlist/{playlist_id}/avatar")
-        playlist.avatar_s3_key = stored
-        session.flush()
-        return _playlist_out(session, playlist)
+        tmp_path, ct, key, fmt = _save_playlist_image(file=file, key_base=f"playlist/{playlist_id}/avatar")
+        try:
+            asset = replace_standalone_asset(
+                session,
+                asset_id=playlist.avatar_asset_id,
+                type_="image",
+                format_=fmt,
+                source="playlist",
+                variant="avatar",
+                local_path=tmp_path,
+                s3_key=key,
+                metadata={"playlist_id": str(playlist_id), "kind": "avatar"},
+                content_type=ct,
+            )
+            playlist.avatar_asset_id = asset.id
+            playlist.avatar_s3_key = key
+            session.flush()
+            return _playlist_out(session, playlist)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 @router.post("/playlists/{playlist_id}/background", response_model=PlaylistOut)
@@ -494,10 +472,29 @@ def upload_playlist_background(playlist_id: uuid.UUID, file: UploadFile = File(.
         playlist = session.get(Playlist, playlist_id)
         if not playlist:
             raise HTTPException(status_code=404, detail="playlist not found")
-        stored = _save_playlist_image(file=file, key_base=f"playlist/{playlist_id}/background")
-        playlist.background_s3_key = stored
-        session.flush()
-        return _playlist_out(session, playlist)
+        tmp_path, ct, key, fmt = _save_playlist_image(file=file, key_base=f"playlist/{playlist_id}/background")
+        try:
+            asset = replace_standalone_asset(
+                session,
+                asset_id=playlist.background_asset_id,
+                type_="image",
+                format_=fmt,
+                source="playlist",
+                variant="background",
+                local_path=tmp_path,
+                s3_key=key,
+                metadata={"playlist_id": str(playlist_id), "kind": "background"},
+                content_type=ct,
+            )
+            playlist.background_asset_id = asset.id
+            playlist.background_s3_key = key
+            session.flush()
+            return _playlist_out(session, playlist)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 class PlaylistVideoOut(BaseModel):
@@ -512,7 +509,7 @@ class PlaylistVideoOut(BaseModel):
     status: str
     error_message: str | None = None
     media_name: str | None = None
-    media_avatar_url: str | None = None
+    media_avatar_asset: AssetRef | None = None
 
 
 class PlaylistPeriodCountOut(BaseModel):
@@ -549,13 +546,6 @@ def list_playlist_videos_by_date(playlist_id: uuid.UUID, date: date) -> list[Pla
                 desc = desc.strip().replace("\n", " ")
                 if len(desc) > 140:
                     desc = desc[:140].rstrip() + "…"
-            avatar_url = m.avatar_url
-            key = (getattr(m, "avatar_s3_key", None) or "").strip()
-            if key:
-                try:
-                    avatar_url = s3_presign_get(settings.s3_bucket, key)
-                except Exception:
-                    pass
             out.append(
                 PlaylistVideoOut(
                     id=v.id,
@@ -569,7 +559,7 @@ def list_playlist_videos_by_date(playlist_id: uuid.UUID, date: date) -> list[Pla
                     status=v.status,
                     error_message=v.error_message,
                     media_name=m.name,
-                    media_avatar_url=avatar_url,
+                    media_avatar_asset=_media_avatar_asset(session, m),
                 )
             )
         return out
@@ -686,13 +676,6 @@ def list_playlist_videos_by_period(
                 desc = desc.strip().replace("\n", " ")
                 if len(desc) > 140:
                     desc = desc[:140].rstrip() + "…"
-            avatar_url = m.avatar_url
-            key = (getattr(m, "avatar_s3_key", None) or "").strip()
-            if key:
-                try:
-                    avatar_url = s3_presign_get(settings.s3_bucket, key)
-                except Exception:
-                    pass
             out.append(
                 PlaylistVideoOut(
                     id=v.id,
@@ -706,7 +689,7 @@ def list_playlist_videos_by_period(
                     status=v.status,
                     error_message=v.error_message,
                     media_name=m.name,
-                    media_avatar_url=avatar_url,
+                    media_avatar_asset=_media_avatar_asset(session, m),
                 )
             )
         return out

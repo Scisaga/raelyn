@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
+from email.utils import format_datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,16 @@ class UploadResult:
     bucket: str
     key: str
     size_bytes: int | None
+
+
+@dataclass
+class ObjectStreamResult:
+    body: Any
+    content_length: int | None
+    content_type: str | None
+    content_range: str | None
+    etag: str | None
+    last_modified: str | None
 
 
 def s3_ensure_bucket(*, bucket: str | None = None) -> dict[str, Any]:
@@ -127,6 +139,37 @@ def s3_get_bytes(*, bucket: str, key: str, max_bytes: int | None = None) -> byte
     except Exception:
         pass
     return data or b""
+
+
+def s3_get_object_stream(*, bucket: str, key: str, byte_range: str | None = None) -> ObjectStreamResult:
+    client = _client()
+    extra: dict[str, Any] = {}
+    if byte_range:
+        extra["Range"] = byte_range
+    obj = client.get_object(Bucket=bucket, Key=key, **extra)
+    last_modified = obj.get("LastModified")
+    return ObjectStreamResult(
+        body=obj.get("Body"),
+        content_length=int(obj.get("ContentLength") or 0) or None,
+        content_type=(obj.get("ContentType") or "").strip() or None,
+        content_range=(obj.get("ContentRange") or "").strip() or None,
+        etag=(obj.get("ETag") or "").strip() or None,
+        last_modified=format_datetime(last_modified, usegmt=True) if last_modified else None,
+    )
+
+
+def iter_s3_body(body: Any, *, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
+    try:
+        while True:
+            chunk = body.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        try:
+            body.close()
+        except Exception:
+            pass
 
 
 def s3_clear_bucket(*, bucket: str | None = None, prefix: str = "") -> dict[str, Any]:

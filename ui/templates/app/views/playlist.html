@@ -2,15 +2,15 @@
           <div x-show="activeView==='playlist'" x-transition.opacity class="h-full">
 	            <div
 	              class="relative rounded-none rounded-tr-none overflow-hidden h-full flex flex-col"
-	              :class="playlistDetail && playlistDetail.background_url ? '' : 'bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950'"
+	              :class="playlistDetail && playlistDetail.background_asset ? '' : 'bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950'"
 	            >
-              <div class="absolute inset-0" x-show="playlistDetail && playlistDetail.background_url">
+              <div class="absolute inset-0" x-show="playlistDetail && playlistDetail.background_asset">
                 <img
                   class="w-full h-full object-cover"
-                  :src="playlistDetail ? playlistDetail.background_url : ''"
+                  :src="playlistDetail && playlistDetail.background_asset ? assetContentUrl(playlistDetail.background_asset) : ''"
                   alt=""
                   loading="lazy"
-                  @error="if(playlistDetail) playlistDetail.background_url=null"
+                  @error="if(playlistDetail) clearAssetRef(playlistDetail, 'background_asset')"
                 />
               </div>
               <div class="absolute inset-0 bg-slate-950/70"></div>
@@ -46,16 +46,16 @@
 	                    <button
 	                      type="button"
 	                      class="w-14 h-14 rounded-xl ring-1 ring-inset shrink-0 overflow-hidden focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
-	                      :class="(playlistDetail && playlistDetail.avatar_url ? 'ring-slate-800/70 bg-slate-800/30' : 'ring-slate-700/60 bg-slate-800 text-slate-200') + (playlistDetail ? ' cursor-pointer' : ' opacity-60 cursor-not-allowed')"
+	                      :class="(playlistDetail && playlistDetail.avatar_asset ? 'ring-slate-800/70 bg-slate-800/30' : 'ring-slate-700/60 bg-slate-800 text-slate-200') + (playlistDetail ? ' cursor-pointer' : ' opacity-60 cursor-not-allowed')"
                       @click="$refs && $refs.playlistAvatarInput && $refs.playlistAvatarInput.click()"
                       :disabled="!playlistDetail"
                       title="修改头像"
                       aria-label="修改头像"
                     >
-                      <template x-if="playlistDetail && playlistDetail.avatar_url">
-                        <img class="w-14 h-14 rounded-sm object-cover" :src="playlistDetail.avatar_url" alt="" loading="lazy" @error="playlistDetail.avatar_url=null" />
+                      <template x-if="playlistDetail && playlistDetail.avatar_asset">
+                        <img class="w-14 h-14 rounded-sm object-cover" :src="assetContentUrl(playlistDetail.avatar_asset)" alt="" loading="lazy" @error="clearAssetRef(playlistDetail, 'avatar_asset')" />
                       </template>
-                      <template x-if="!playlistDetail || !playlistDetail.avatar_url">
+                      <template x-if="!playlistDetail || !playlistDetail.avatar_asset">
                         <div class="w-14 h-14 flex items-center justify-center">
                           <span class="text-sm font-semibold" x-text="playlistDetail ? (String(playlistDetail.name||'?').trim().slice(0,2) || '?') : '?'"></span>
                         </div>
@@ -104,10 +104,10 @@
                                 <div class="flex items-center -space-x-2">
                                   <template x-for="m in (((playlistDetail && Array.isArray(playlistDetail.media)) ? playlistDetail.media : [])).slice(0,5)" :key="m.id">
                                     <div class="w-6 h-6 rounded-full ring-2 ring-slate-900/80 bg-slate-800 overflow-hidden">
-                                      <template x-if="m.avatar_url">
-                                        <img class="w-6 h-6 object-cover" :src="m.avatar_url" alt="" loading="lazy" @error="m.avatar_url=null" />
+                                      <template x-if="m.avatar_asset">
+                                        <img class="w-6 h-6 object-cover" :src="assetContentUrl(m.avatar_asset)" alt="" loading="lazy" @error="clearAssetRef(m, 'avatar_asset')" />
                                       </template>
-                                      <template x-if="!m.avatar_url">
+                                      <template x-if="!m.avatar_asset">
                                         <div class="w-6 h-6 flex items-center justify-center text-[10px] font-semibold text-slate-200">
                                           <span x-text="mediaAvatarLabel(m)"></span>
                                         </div>
@@ -610,8 +610,8 @@
                           <button
                             class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-800/60 text-xs text-slate-200 hover:bg-slate-700/70 disabled:opacity-60 disabled:cursor-not-allowed"
                             @click="playlistClearBackground()"
-                            :disabled="!playlistDetail || !playlistDetail.background_url"
-                            :class="(!playlistDetail || !playlistDetail.background_url) ? 'opacity-60 cursor-not-allowed' : ''"
+                            :disabled="!playlistDetail || !playlistDetail.background_asset"
+                            :class="(!playlistDetail || !playlistDetail.background_asset) ? 'opacity-60 cursor-not-allowed' : ''"
                           >
                             清除背景
                           </button>

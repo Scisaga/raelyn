@@ -9,14 +9,14 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy import or_
 
+from raelyn.api.asset_refs import AssetRef, build_asset_ref
 from raelyn.api.orm import OrmModel
-from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Asset, Media, Video
 from raelyn.services.downloads import build_download_filename, content_disposition_attachment
 from raelyn.services.llm import llm_enabled
-from raelyn.services.s3 import s3_get_bytes, s3_presign_get
+from raelyn.services.s3 import s3_get_bytes
 from raelyn.services.transcripts import build_transcript_payload
 from raelyn.services.video_actions import schedule_video_download, schedule_video_retranscribe
 from raelyn.services.video_meta import parse_published_at
@@ -50,10 +50,10 @@ class VideoListOut(BaseModel):
     url: str
     title: str | None = None
     thumbnail_url: str | None = None
-    cover_url: str | None = None
+    cover_asset: AssetRef | None = None
     media_name: str | None = None
-    media_avatar_url: str | None = None
-    video_download_url: str | None = None
+    media_avatar_asset: AssetRef | None = None
+    video_asset: AssetRef | None = None
     published_at: Any | None = None
     duration_sec: int | None = None
     status: str
@@ -148,12 +148,11 @@ def list_videos(
             thumb = session.execute(
                 select(Asset).where(Asset.video_id == v.id, Asset.type == "thumbnail").order_by(Asset.created_at.desc()).limit(1)
             ).scalar_one_or_none()
-            cover_url = s3_presign_get(thumb.s3_bucket, thumb.s3_key) if thumb else v.thumbnail_url
 
             video_asset = session.execute(
                 select(Asset).where(Asset.video_id == v.id, Asset.type == "video").order_by(Asset.created_at.desc()).limit(1)
             ).scalar_one_or_none()
-            video_download_url = None
+            video_asset_ref = None
             if video_asset:
                 filename = build_download_filename(
                     media_name=m.name,
@@ -161,19 +160,12 @@ def list_videos(
                     fallback_id=v.provider_video_id,
                     ext=video_asset.format,
                 )
-                video_download_url = s3_presign_get(
-                    video_asset.s3_bucket,
-                    video_asset.s3_key,
+                video_asset_ref = build_asset_ref(
+                    video_asset,
+                    filename=filename,
                     response_content_disposition=content_disposition_attachment(filename),
                 )
-
-            media_avatar_url = m.avatar_url
-            key = (getattr(m, "avatar_s3_key", None) or "").strip()
-            if key:
-                try:
-                    media_avatar_url = s3_presign_get(settings.s3_bucket, key)
-                except Exception:
-                    media_avatar_url = m.avatar_url
+            media_avatar_asset = session.get(Asset, getattr(m, "avatar_asset_id", None)) if getattr(m, "avatar_asset_id", None) else None
             out.append(
                 VideoListOut(
                     id=v.id,
@@ -183,10 +175,10 @@ def list_videos(
                     url=v.url,
                     title=v.title,
                     thumbnail_url=v.thumbnail_url,
-                    cover_url=cover_url,
+                    cover_asset=build_asset_ref(thumb),
                     media_name=m.name,
-                    media_avatar_url=media_avatar_url,
-                    video_download_url=video_download_url,
+                    media_avatar_asset=build_asset_ref(media_avatar_asset),
+                    video_asset=video_asset_ref,
                     published_at=v.published_at,
                     duration_sec=v.duration_sec,
                     status=v.status,

@@ -7,12 +7,13 @@ from typing import Any
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
+from raelyn.api.asset_refs import build_asset_ref
 from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.models import Asset, Brief, Job, Media, Playlist, PlaylistMedia, Video
 from raelyn.services.downloads import build_download_filename, content_disposition_attachment
 from raelyn.services.periods import local_date, normalize_granularity, period_bounds_utc, period_end_inclusive, period_start
-from raelyn.services.s3 import s3_get_bytes, s3_presign_get
+from raelyn.services.s3 import s3_get_bytes
 from raelyn.services.transcripts import pick_transcript_asset, read_text_asset, transcript_polish_method
 from raelyn.services.video_meta import parse_published_at
 
@@ -84,32 +85,12 @@ def _clamp_offset(value: int | None) -> int:
     return parsed
 
 
-def _media_avatar_url(media: Any) -> str | None:
-    avatar_url = getattr(media, "avatar_url", None)
-    key = (getattr(media, "avatar_s3_key", None) or "").strip()
-    if key:
-        try:
-            return s3_presign_get(settings.s3_bucket, key, expires_seconds=_PRESIGNED_EXPIRES_SECONDS)
-        except Exception:
-            return avatar_url
-    return avatar_url
-
-
-def _playlist_asset_url(key: str | None) -> str | None:
-    value = (key or "").strip()
-    if not value:
+def _media_avatar_asset(session: Session, media: Any) -> dict[str, Any] | None:
+    asset_id = getattr(media, "avatar_asset_id", None)
+    if not asset_id:
         return None
-    try:
-        return s3_presign_get(settings.s3_bucket, value, expires_seconds=_PRESIGNED_EXPIRES_SECONDS)
-    except Exception:
-        return None
-
-
-def _safe_presign(bucket: str, key: str) -> str | None:
-    try:
-        return s3_presign_get(bucket, key, expires_seconds=_PRESIGNED_EXPIRES_SECONDS)
-    except Exception:
-        return None
+    asset = session.get(Asset, asset_id)
+    return serialize_for_mcp(build_asset_ref(asset, expires_seconds=_PRESIGNED_EXPIRES_SECONDS).model_dump()) if asset else None
 
 
 def _video_description(video: Video) -> str | None:
@@ -122,7 +103,7 @@ def _video_description(video: Video) -> str | None:
     return desc
 
 
-def _media_payload(media: Media, *, local_video_count: int | None = None) -> dict[str, Any]:
+def _media_payload(session: Session, media: Media, *, local_video_count: int | None = None) -> dict[str, Any]:
     return {
         "id": str(media.id),
         "provider": media.provider,
@@ -130,7 +111,7 @@ def _media_payload(media: Media, *, local_video_count: int | None = None) -> dic
         "url": media.url,
         "monitor_enabled": bool(media.monitor_enabled),
         "name": media.name,
-        "avatar_url": _media_avatar_url(media),
+        "avatar_asset": _media_avatar_asset(session, media),
         "description": media.description,
         "subscriber_count": media.subscriber_count,
         "video_count": int(local_video_count if local_video_count is not None else (media.video_count or 0)),
@@ -144,6 +125,7 @@ def _media_payload(media: Media, *, local_video_count: int | None = None) -> dic
 def _asset_payload(asset: Asset, *, media: Media | None = None, video: Video | None = None) -> dict[str, Any]:
     filename = None
     download_url = None
+    ref = None
     if media is not None and video is not None:
         filename = build_download_filename(
             media_name=media.name,
@@ -152,14 +134,18 @@ def _asset_payload(asset: Asset, *, media: Media | None = None, video: Video | N
             ext=asset.format,
         )
         try:
-            download_url = s3_presign_get(
-                asset.s3_bucket,
-                asset.s3_key,
-                expires_seconds=_PRESIGNED_EXPIRES_SECONDS,
+            ref = build_asset_ref(
+                asset,
+                filename=filename,
                 response_content_disposition=content_disposition_attachment(filename),
+                expires_seconds=_PRESIGNED_EXPIRES_SECONDS,
             )
+            download_url = ref.download_presigned_url
         except Exception:
             download_url = None
+            ref = build_asset_ref(asset, expires_seconds=_PRESIGNED_EXPIRES_SECONDS)
+    else:
+        ref = build_asset_ref(asset, expires_seconds=_PRESIGNED_EXPIRES_SECONDS)
     return {
         "id": str(asset.id),
         "video_id": str(asset.video_id) if asset.video_id else None,
@@ -171,8 +157,8 @@ def _asset_payload(asset: Asset, *, media: Media | None = None, video: Video | N
         "size_bytes": asset.size_bytes,
         "checksum_sha256": asset.checksum_sha256,
         "meta": serialize_for_mcp(asset.meta),
-        "presigned_url": _safe_presign(asset.s3_bucket, asset.s3_key),
-        "download_url": download_url,
+        "presigned_url": ref.presigned_url if ref else None,
+        "download_presigned_url": download_url,
         "filename": filename,
         "expires_in_seconds": _PRESIGNED_EXPIRES_SECONDS,
         "temporary_url": True,
@@ -183,11 +169,10 @@ def _video_payload(session: Session, video: Video, media: Media | None) -> dict[
     thumb = session.execute(
         select(Asset).where(Asset.video_id == video.id, Asset.type == "thumbnail").order_by(Asset.created_at.desc()).limit(1)
     ).scalar_one_or_none()
-    cover_url = _safe_presign(thumb.s3_bucket, thumb.s3_key) if thumb else video.thumbnail_url
     video_asset = session.execute(
         select(Asset).where(Asset.video_id == video.id, Asset.type == "video").order_by(Asset.created_at.desc()).limit(1)
     ).scalar_one_or_none()
-    video_download_url = None
+    video_asset_ref = None
     if video_asset and media is not None:
         filename = build_download_filename(
             media_name=media.name,
@@ -195,27 +180,26 @@ def _video_payload(session: Session, video: Video, media: Media | None) -> dict[
             fallback_id=video.provider_video_id,
             ext=video_asset.format,
         )
-        try:
-            video_download_url = s3_presign_get(
-                video_asset.s3_bucket,
-                video_asset.s3_key,
-                expires_seconds=_PRESIGNED_EXPIRES_SECONDS,
+        video_asset_ref = serialize_for_mcp(
+            build_asset_ref(
+                video_asset,
+                filename=filename,
                 response_content_disposition=content_disposition_attachment(filename),
-            )
-        except Exception:
-            video_download_url = None
+                expires_seconds=_PRESIGNED_EXPIRES_SECONDS,
+            ).model_dump()
+        )
     return {
         "id": str(video.id),
         "provider": video.provider,
         "provider_video_id": video.provider_video_id,
         "media_id": str(video.media_id),
         "media_name": media.name if media else None,
-        "media_avatar_url": _media_avatar_url(media) if media else None,
+        "media_avatar_asset": _media_avatar_asset(session, media) if media else None,
         "url": video.url,
         "title": video.title,
         "description": _video_description(video),
         "thumbnail_url": video.thumbnail_url,
-        "cover_url": cover_url,
+        "cover_asset": serialize_for_mcp(build_asset_ref(thumb, expires_seconds=_PRESIGNED_EXPIRES_SECONDS).model_dump()) if thumb else None,
         "published_at": video.published_at,
         "duration_sec": video.duration_sec,
         "status": video.status,
@@ -224,7 +208,7 @@ def _video_payload(session: Session, video: Video, media: Media | None) -> dict[
         "like_count": video.like_count,
         "comment_count": video.comment_count,
         "tags": video.tags or [],
-        "video_download_url": video_download_url,
+        "video_asset": video_asset_ref,
         "created_at": video.created_at,
         "updated_at": video.updated_at,
     }
@@ -266,7 +250,7 @@ def _playlist_summary_payload(session: Session, playlist: Playlist, *, preview: 
                 "provider": media.provider,
                 "url": media.url,
                 "name": media.name,
-                "avatar_url": _media_avatar_url(media),
+                "avatar_asset": _media_avatar_asset(session, media),
             }
             for media in rows
         ]
@@ -274,8 +258,12 @@ def _playlist_summary_payload(session: Session, playlist: Playlist, *, preview: 
         "id": str(playlist.id),
         "name": playlist.name,
         "description": playlist.description,
-        "avatar_url": _playlist_asset_url(getattr(playlist, "avatar_s3_key", None)),
-        "background_url": _playlist_asset_url(getattr(playlist, "background_s3_key", None)),
+        "avatar_asset": serialize_for_mcp(build_asset_ref(session.get(Asset, getattr(playlist, "avatar_asset_id", None))).model_dump())
+        if getattr(playlist, "avatar_asset_id", None)
+        else None,
+        "background_asset": serialize_for_mcp(build_asset_ref(session.get(Asset, getattr(playlist, "background_asset_id", None))).model_dump())
+        if getattr(playlist, "background_asset_id", None)
+        else None,
         "brief_granularity": (getattr(playlist, "brief_granularity", None) or "day").strip() or "day",
         "media_count": len(media_ids),
         "media_preview": preview,
@@ -407,8 +395,7 @@ def _brief_payload(session: Session, playlist_id: uuid.UUID, *, granularity: str
             "period_start": period_start_value,
             "period_end": period_end_value,
             "brief_id": None,
-            "markdown_asset_id": None,
-            "markdown_url": None,
+            "markdown_asset": None,
             "markdown": "",
         }
 
@@ -420,8 +407,7 @@ def _brief_payload(session: Session, playlist_id: uuid.UUID, *, granularity: str
         "granularity": g,
         "period_start": period_start_value,
         "period_end": period_end_value,
-        "markdown_asset_id": str(brief.markdown_asset_id) if brief.markdown_asset_id else None,
-        "markdown_url": None,
+        "markdown_asset": None,
         "markdown": "",
         "error_message": brief.error_message,
         "created_at": brief.created_at,
@@ -430,7 +416,7 @@ def _brief_payload(session: Session, playlist_id: uuid.UUID, *, granularity: str
     if brief.markdown_asset_id:
         asset = session.get(Asset, brief.markdown_asset_id)
         if asset:
-            payload["markdown_url"] = _safe_presign(asset.s3_bucket, asset.s3_key)
+            payload["markdown_asset"] = serialize_for_mcp(build_asset_ref(asset, expires_seconds=_PRESIGNED_EXPIRES_SECONDS).model_dump())
             payload["expires_in_seconds"] = _PRESIGNED_EXPIRES_SECONDS
             payload["temporary_url"] = True
             if include_markdown:
@@ -530,7 +516,7 @@ def list_media(*, provider: str | None = None, q: str | None = None, limit: int 
             stmt = stmt.where((Media.name.ilike(like)) | (Media.description.ilike(like)))
         stmt = stmt.order_by(Media.created_at.desc(), Media.id.desc()).limit(limit_value).offset(offset_value)
         rows = session.execute(stmt).all()
-        return serialize_for_mcp([_media_payload(media, local_video_count=int(count or 0)) for media, count in rows])
+        return serialize_for_mcp([_media_payload(session, media, local_video_count=int(count or 0)) for media, count in rows])
 
 
 def get_media(media_id: str | uuid.UUID) -> dict[str, Any]:
@@ -540,7 +526,7 @@ def get_media(media_id: str | uuid.UUID) -> dict[str, Any]:
         if not media:
             raise LookupError("media not found")
         count = session.execute(select(func.count()).select_from(Video).where(Video.media_id == media.id)).scalar_one()
-        return serialize_for_mcp(_media_payload(media, local_video_count=int(count or 0)))
+        return serialize_for_mcp(_media_payload(session, media, local_video_count=int(count or 0)))
 
 
 def list_videos(
@@ -647,8 +633,7 @@ def list_playlists(*, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
                         Media.provider.label("provider"),
                         Media.url.label("url"),
                         Media.name.label("name"),
-                        Media.avatar_url.label("avatar_url"),
-                        Media.avatar_s3_key.label("avatar_s3_key"),
+                        Media.avatar_asset_id.label("avatar_asset_id"),
                     )
                     .join(Media, Media.id == PlaylistMedia.media_id)
                     .where(PlaylistMedia.playlist_id.in_(playlist_ids))
@@ -661,20 +646,17 @@ def list_playlists(*, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
                 current = preview_map.setdefault(row["playlist_id"], [])
                 if len(current) >= 5:
                     continue
-                avatar_url = row["avatar_url"]
-                key = (row["avatar_s3_key"] or "").strip()
-                if key:
-                    try:
-                        avatar_url = s3_presign_get(settings.s3_bucket, key, expires_seconds=_PRESIGNED_EXPIRES_SECONDS)
-                    except Exception:
-                        avatar_url = row["avatar_url"]
                 current.append(
                     {
                         "id": str(row["media_id"]),
                         "provider": row["provider"],
                         "url": row["url"],
                         "name": row["name"],
-                        "avatar_url": avatar_url,
+                        "avatar_asset": serialize_for_mcp(
+                            build_asset_ref(session.get(Asset, row["avatar_asset_id"]), expires_seconds=_PRESIGNED_EXPIRES_SECONDS).model_dump()
+                        )
+                        if row["avatar_asset_id"]
+                        else None,
                     }
                 )
         return serialize_for_mcp([_playlist_summary_payload(session, playlist, preview=preview_map.get(playlist.id) or []) for playlist in items])
@@ -704,7 +686,7 @@ def get_playlist(playlist_id: str | uuid.UUID) -> dict[str, Any]:
                 "provider": media.provider,
                 "url": media.url,
                 "name": media.name,
-                "avatar_url": _media_avatar_url(media),
+                "avatar_asset": _media_avatar_asset(session, media),
             }
             for media in rows
         ]
@@ -788,7 +770,7 @@ def list_briefs(
                 "granularity": brief.granularity,
                 "period_start": brief.period_start,
                 "period_end": period_end_inclusive(brief.period_start, brief.granularity),
-                "markdown_asset_id": str(brief.markdown_asset_id) if brief.markdown_asset_id else None,
+                "markdown_asset": None,
                 "error_message": brief.error_message,
                 "created_at": brief.created_at,
                 "updated_at": brief.updated_at,
@@ -796,7 +778,9 @@ def list_briefs(
             if brief.markdown_asset_id:
                 asset = session.get(Asset, brief.markdown_asset_id)
                 if asset:
-                    payload["markdown_url"] = _safe_presign(asset.s3_bucket, asset.s3_key)
+                    payload["markdown_asset"] = serialize_for_mcp(
+                        build_asset_ref(asset, expires_seconds=_PRESIGNED_EXPIRES_SECONDS).model_dump()
+                    )
                     payload["expires_in_seconds"] = _PRESIGNED_EXPIRES_SECONDS
                     payload["temporary_url"] = True
             items.append(payload)
@@ -872,7 +856,7 @@ def get_video_context(video_id: str | uuid.UUID) -> dict[str, Any]:
         return serialize_for_mcp(
             {
                 "video": _video_payload(session, video, media),
-                "media": _media_payload(media),
+                "media": _media_payload(session, media),
                 "assets": [_asset_payload(asset, media=media, video=video) for asset in assets],
                 "transcript": transcript,
                 "note": note,

@@ -9,15 +9,15 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy import String, and_, cast, delete, func, or_, select
 
+from raelyn.api.asset_refs import AssetRef, build_asset_ref
 from raelyn.api.orm import OrmModel
-from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Asset, Job, Media, Video
 from raelyn.services.downloads import content_disposition_attachment
 from raelyn.services.media_actions import schedule_all_media_sync, schedule_media_sync
 from raelyn.services.provider import detect_provider, extract_media_identity
-from raelyn.services.s3 import s3_clear_bucket, s3_presign_get
+from raelyn.services.s3 import s3_clear_bucket
 
 
 router = APIRouter(tags=["media"])
@@ -38,7 +38,7 @@ class MediaOut(OrmModel):
     url: str
     monitor_enabled: bool
     name: str | None = None
-    avatar_url: str | None = None
+    avatar_asset: AssetRef | None = None
     description: str | None = None
     subscriber_count: int | None = None
     video_count: int | None = None
@@ -65,16 +65,11 @@ class CleanupVideoOut(BaseModel):
     created_at: Any | None = None
 
 
-def _media_out(m: Media, *, local_video_count: int | None = None) -> MediaOut:
+def _media_out(session, m: Media, *, local_video_count: int | None = None) -> MediaOut:
     out = MediaOut.model_validate(m)
     if local_video_count is not None:
         out.video_count = int(local_video_count)
-    key = (getattr(m, "avatar_s3_key", None) or "").strip()
-    if key:
-        try:
-            out.avatar_url = s3_presign_get(settings.s3_bucket, key)
-        except Exception:
-            pass
+    out.avatar_asset = build_asset_ref(session.get(Asset, m.avatar_asset_id)) if getattr(m, "avatar_asset_id", None) else None
     return out
 
 
@@ -251,7 +246,7 @@ def create_media(payload: MediaCreate) -> MediaOut:
         enqueue_job(session, type_="media.sync_profile", params={"media_id": str(media.id)}, priority=10)
 
         session.refresh(media)
-        return _media_out(media, local_video_count=0)
+        return _media_out(session, media, local_video_count=0)
 
 
 @router.get("/media", response_model=list[MediaOut])
@@ -270,7 +265,7 @@ def list_media(provider: str | None = None, q: str | None = None, limit: int = 5
             stmt = stmt.where((Media.name.ilike(like)) | (Media.description.ilike(like)))
         stmt = stmt.order_by(Media.created_at.desc(), Media.id.desc()).limit(limit).offset(offset)
         rows = session.execute(stmt).all()
-        return [_media_out(m, local_video_count=int(c or 0)) for m, c in rows]
+        return [_media_out(session, m, local_video_count=int(c or 0)) for m, c in rows]
 
 
 @router.get("/media/export")
@@ -391,7 +386,7 @@ def get_media(media_id: uuid.UUID) -> MediaOut:
         if not media:
             raise HTTPException(status_code=404, detail="media not found")
         c = session.execute(select(func.count()).select_from(Video).where(Video.media_id == media.id)).scalar_one()
-        return _media_out(media, local_video_count=int(c or 0))
+        return _media_out(session, media, local_video_count=int(c or 0))
 
 
 @router.patch("/media/{media_id}", response_model=MediaOut)
@@ -410,7 +405,7 @@ def update_media(media_id: uuid.UUID, payload: MediaUpdate) -> MediaOut:
                         session.delete(job)
             session.flush()
         c = session.execute(select(func.count()).select_from(Video).where(Video.media_id == media.id)).scalar_one()
-        return _media_out(media, local_video_count=int(c or 0))
+        return _media_out(session, media, local_video_count=int(c or 0))
 
 
 @router.delete("/media/{media_id}")

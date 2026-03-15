@@ -162,16 +162,16 @@
                     >
                       <div class="relative bg-slate-950/30">
                         <div class="aspect-video bg-slate-950/20">
-                          <template x-if="v.cover_url">
+                          <template x-if="v.cover_asset">
                             <img
                               class="w-full h-full object-cover"
-                              :src="v.cover_url"
+                              :src="assetContentUrl(v.cover_asset)"
                               alt=""
                               loading="lazy"
-                              @error="v.cover_url=null"
+                              @error="clearAssetRef(v, 'cover_asset')"
                             />
                           </template>
-                          <template x-if="!v.cover_url">
+                          <template x-if="!v.cover_asset">
                             <div class="w-full h-full flex items-center justify-center text-sm text-slate-500">无封面</div>
                           </template>
                         </div>
@@ -196,10 +196,10 @@
                             class="w-8 h-8 rounded-md ring-1 ring-inset"
                             :class="mediaAvatarClasses({provider: v.provider})"
                           >
-                            <template x-if="v.media_avatar_url">
-                              <img class="w-8 h-8 rounded-md object-cover" :src="v.media_avatar_url" alt="" loading="lazy" @error="v.media_avatar_url=null" />
+                            <template x-if="v.media_avatar_asset">
+                              <img class="w-8 h-8 rounded-md object-cover" :src="assetContentUrl(v.media_avatar_asset)" alt="" loading="lazy" @error="clearAssetRef(v, 'media_avatar_asset')" />
                             </template>
-                            <template x-if="!v.media_avatar_url">
+                            <template x-if="!v.media_avatar_asset">
                               <div class="w-8 h-8 flex items-center justify-center">
                                 <span class="text-[10px] font-semibold" x-text="videoMediaAvatarLabel(v)"></span>
                               </div>
@@ -209,10 +209,10 @@
                             <div class="text-xs text-slate-200 truncate" x-text="videoMediaDisplayName(v)"></div>
                             <div class="text-[11px] text-slate-400 truncate" x-text="formatDateTime(v.published_at)"></div>
                           </div>
-                          <template x-if="v.video_download_url">
+                          <template x-if="v.video_asset">
                             <a
                               class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60"
-                              :href="v.video_download_url"
+                              :href="assetDownloadUrl(v.video_asset)"
                               target="_blank"
                               rel="noopener noreferrer"
                               @click.stop

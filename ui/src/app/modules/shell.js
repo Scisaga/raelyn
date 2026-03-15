@@ -19,6 +19,15 @@ export function createShellModule({ sidebarCollapsedKey, sidebarHiddenKey }) {
     globalStatus: "",
     pause: { paused: false, reason: null, message: null, set_at: null },
     providerPauses: {},
+    assetDelivery: {
+      strategy: "startup_probe",
+      directProbeUrl: "",
+      proxyBasePath: "/api/assets",
+      presignEnabled: true,
+      mode: "proxy",
+      probed: false,
+      probeError: "",
+    },
     _pausePollId: null,
     services: {
       db: { ok: false, url: "", error: null },
@@ -121,8 +130,36 @@ export function createShellModule({ sidebarCollapsedKey, sidebarHiddenKey }) {
         } else {
           this.providerPauses = {};
         }
+        const assetDelivery = payload && payload.asset_delivery ? payload.asset_delivery : null;
+        if (assetDelivery && typeof assetDelivery === "object") {
+          this.assetDelivery = {
+            strategy: String(assetDelivery.strategy || "startup_probe"),
+            directProbeUrl: String(assetDelivery.direct_probe_url || ""),
+            proxyBasePath: String(assetDelivery.proxy_base_path || "/api/assets").replace(/\/+$/, ""),
+            presignEnabled: assetDelivery.presign_enabled !== false,
+            mode: this.assetDelivery && this.assetDelivery.mode ? this.assetDelivery.mode : "proxy",
+            probed: this.assetDelivery && this.assetDelivery.probed ? this.assetDelivery.probed : false,
+            probeError: "",
+          };
+        }
       } catch (e) {
         if (!silent) this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    async initAssetDelivery() {
+      const current = this.assetDelivery || {};
+      const directProbeUrl = String(current.directProbeUrl || "").trim();
+      if (!current.presignEnabled || !directProbeUrl) {
+        this.assetDelivery = { ...current, mode: "proxy", probed: true, probeError: "" };
+        return;
+      }
+      try {
+        await fetch(directProbeUrl, { method: "GET", mode: "no-cors", cache: "no-store" });
+        this.assetDelivery = { ...current, mode: "direct", probed: true, probeError: "" };
+      } catch (e) {
+        const message = e && e.message ? e.message : String(e);
+        this.assetDelivery = { ...current, mode: "proxy", probed: true, probeError: message };
       }
     },
 

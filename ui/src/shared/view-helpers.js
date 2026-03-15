@@ -163,6 +163,32 @@ export function createCommonViewMethods() {
       return service.ok ? "OK" : "Error";
     },
 
+    assetContentUrl(asset) {
+      if (!asset || !asset.id) return "";
+      const mode = this.assetDelivery && this.assetDelivery.mode ? this.assetDelivery.mode : "proxy";
+      if (mode === "direct" && asset.presigned_url) return String(asset.presigned_url);
+      const base = (this.assetDelivery && this.assetDelivery.proxyBasePath) || "/api/assets";
+      return `${String(base).replace(/\/+$/, "")}/${encodeURIComponent(String(asset.id))}/content`;
+    },
+
+    assetDownloadUrl(asset) {
+      if (!asset || !asset.id) return "";
+      const mode = this.assetDelivery && this.assetDelivery.mode ? this.assetDelivery.mode : "proxy";
+      if (mode === "direct") {
+        return String(asset.download_presigned_url || asset.presigned_url || "");
+      }
+      const base = (this.assetDelivery && this.assetDelivery.proxyBasePath) || "/api/assets";
+      return `${String(base).replace(/\/+$/, "")}/${encodeURIComponent(String(asset.id))}/download`;
+    },
+
+    clearAssetRef(owner, key) {
+      try {
+        if (owner && key) owner[key] = null;
+      } catch {
+        // ignore
+      }
+    },
+
     _cacheGet(cache, key) {
       return getCachedValue(cache, key);
     },

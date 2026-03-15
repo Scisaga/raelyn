@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
     s3_bucket: str = "raelyn"
     s3_use_ssl: bool = False
+    asset_direct_probe_url: str = ""
+    asset_proxy_base_path: str = "/api/assets"
+    asset_presign_enabled: bool = True
 
     ffmpeg_bin: str = "./bin/ffmpeg"
 

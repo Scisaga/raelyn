@@ -26,16 +26,16 @@
                         aria-label="打开播放列表"
                       >
                         <div class="absolute inset-0">
-                          <template x-if="p && p.avatar_url">
+                          <template x-if="p && p.avatar_asset">
 	                            <img
 	                              class="w-full h-full object-cover will-change-transform transition-transform duration-500 ease-out group-hover:scale-110 motion-reduce:transition-none motion-reduce:transform-none"
-	                              :src="p.avatar_url"
+	                              :src="assetContentUrl(p.avatar_asset)"
 	                              alt=""
 	                              loading="lazy"
-	                              @error="p.avatar_url=null"
+	                              @error="clearAssetRef(p, 'avatar_asset')"
 	                            />
                           </template>
-                          <template x-if="!p || !p.avatar_url">
+                          <template x-if="!p || !p.avatar_asset">
                             <div class="w-full h-full bg-slate-900/40 flex items-center justify-center">
                               <span class="text-2xl font-semibold text-slate-100" x-text="p ? (String(p.name||'?').trim().slice(0,2) || '?') : '?'"></span>
                             </div>
@@ -58,10 +58,10 @@
 	                              <div class="flex items-center -space-x-2">
 	                                <template x-for="m in (p.media_preview || []).slice(0,5)" :key="m.id">
 	                                  <div class="w-6 h-6 rounded-full ring-2 ring-slate-900/80 bg-slate-800 overflow-hidden">
-	                                    <template x-if="m.avatar_url">
-	                                      <img class="w-6 h-6 object-cover" :src="m.avatar_url" alt="" loading="lazy" @error="m.avatar_url=null" />
+	                                    <template x-if="m.avatar_asset">
+	                                      <img class="w-6 h-6 object-cover" :src="assetContentUrl(m.avatar_asset)" alt="" loading="lazy" @error="clearAssetRef(m, 'avatar_asset')" />
 	                                    </template>
-	                                    <template x-if="!m.avatar_url">
+	                                    <template x-if="!m.avatar_asset">
 	                                      <div class="w-6 h-6 flex items-center justify-center text-[10px] font-semibold text-slate-200">
 	                                        <span x-text="mediaAvatarLabel(m)"></span>
 	                                      </div>
@@ -124,10 +124,10 @@
 	                              class="w-7 h-7 rounded-md ring-1 flex items-center justify-center overflow-hidden shrink-0"
 	                              :class="mediaAvatarClasses(m)"
 	                            >
-	                              <template x-if="m.avatar_url">
-	                                <img class="w-7 h-7 object-cover" :src="m.avatar_url" alt="" loading="lazy" @error="m.avatar_url=null" />
+	                              <template x-if="m.avatar_asset">
+	                                <img class="w-7 h-7 object-cover" :src="assetContentUrl(m.avatar_asset)" alt="" loading="lazy" @error="clearAssetRef(m, 'avatar_asset')" />
 	                              </template>
-	                              <template x-if="!m.avatar_url">
+	                              <template x-if="!m.avatar_asset">
 	                                <span class="text-[10px] font-semibold" x-text="mediaAvatarLabel(m)"></span>
 	                              </template>
 		                            </div>
