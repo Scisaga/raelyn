@@ -333,6 +333,20 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
         this.assetDelivery = { ...current, mode: "proxy", probed: true, probeError: "" };
         return;
       }
+      try {
+        const resolved = new URL(directProbeUrl, window.location.origin);
+        if (window.location.protocol === "https:" && resolved.protocol === "http:") {
+          this.assetDelivery = {
+            ...current,
+            mode: "proxy",
+            probed: true,
+            probeError: "mixed-content-direct-url",
+          };
+          return;
+        }
+      } catch {
+        // invalid direct probe URL falls through to fetch and proxy fallback
+      }
       const timeoutMs = Math.max(0, Number(current.directProbeTimeoutMs || 1000) || 1000);
       const controller = typeof AbortController === "function" ? new AbortController() : null;
       const timeoutId = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;

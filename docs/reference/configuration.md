@@ -31,11 +31,17 @@
 
 - `ASSET_DIRECT_PROBE_URL`
   - 前端启动时用于探测是否能直接访问对象存储。
+  - 若页面本身运行在 `https://` 下，而该地址是 `http://`，前端会直接判定为 mixed content 风险并回退到代理模式，不再发起直连探测。
 - `ASSET_DIRECT_PROBE_TIMEOUT_MS`
 - `ASSET_PROXY_BASE_PATH`
   - 默认 `/api/assets`
 - `ASSET_PRESIGN_ENABLED`
   - 控制是否为资产生成 presigned URL。
+
+说明：
+
+- HTTPS 主站下，若对象存储或 presigned URL 仍是 `http://`，前端不会使用直连资源，而会统一退回 `ASSET_PROXY_BASE_PATH` 对应的 API 代理路径。
+- 若希望在 HTTPS 主站下继续使用直连 / presigned URL，需要让对象存储出口本身也提供 HTTPS。
 
 ### 工具与下载
 

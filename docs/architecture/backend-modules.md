@@ -46,6 +46,7 @@
 实现要点：
 
 - API 启动后会结合 `ASSET_DIRECT_PROBE_URL`、`ASSET_PRESIGN_ENABLED` 和 `ASSET_PROXY_BASE_PATH` 形成前端可用的分发策略。
+- 若主站页面是 HTTPS，而对象存储直连地址或 presigned URL 是 HTTP，前端会强制回退到代理模式，避免 mixed content 破坏播放与 PWA installability。
 - 代理下载支持 `Range`，用于视频播放与断点读取。
 - `playlist` 头像 / 背景图也复用同一套 standalone asset 写入逻辑。
 

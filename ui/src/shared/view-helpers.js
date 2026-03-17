@@ -9,6 +9,18 @@ import {
 } from "./media-tags.js";
 import { mdLabel } from "./playlist-periods.js";
 
+function isMixedContentDirectUrl(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return false;
+  try {
+    if (window.location.protocol !== "https:") return false;
+    const resolved = new URL(raw, window.location.origin);
+    return resolved.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
 export function createCommonViewMethods() {
   return {
     mediaDisplayName(media) {
@@ -169,10 +181,17 @@ export function createCommonViewMethods() {
       return service.ok ? "OK" : "Error";
     },
 
+    assetDirectUrlUsable(url) {
+      const raw = String(url || "").trim();
+      if (!raw) return false;
+      return !isMixedContentDirectUrl(raw);
+    },
+
     assetContentUrl(asset) {
       if (!asset || !asset.id) return "";
       const mode = this.assetDelivery && this.assetDelivery.mode ? this.assetDelivery.mode : "proxy";
-      if (mode === "direct" && asset.presigned_url) return String(asset.presigned_url);
+      const presignedUrl = String((asset && asset.presigned_url) || "").trim();
+      if (mode === "direct" && this.assetDirectUrlUsable(presignedUrl)) return presignedUrl;
       const base = (this.assetDelivery && this.assetDelivery.proxyBasePath) || "/api/assets";
       return `${String(base).replace(/\/+$/, "")}/${encodeURIComponent(String(asset.id))}/content`;
     },
@@ -181,7 +200,10 @@ export function createCommonViewMethods() {
       if (!asset || !asset.id) return "";
       const mode = this.assetDelivery && this.assetDelivery.mode ? this.assetDelivery.mode : "proxy";
       if (mode === "direct") {
-        return String(asset.download_presigned_url || asset.presigned_url || "");
+        const downloadUrl = String((asset && asset.download_presigned_url) || "").trim();
+        if (this.assetDirectUrlUsable(downloadUrl)) return downloadUrl;
+        const presignedUrl = String((asset && asset.presigned_url) || "").trim();
+        if (this.assetDirectUrlUsable(presignedUrl)) return presignedUrl;
       }
       const base = (this.assetDelivery && this.assetDelivery.proxyBasePath) || "/api/assets";
       return `${String(base).replace(/\/+$/, "")}/${encodeURIComponent(String(asset.id))}/download`;
