@@ -1,6 +1,7 @@
 # Agent instructions
 
-本文件只保留高频、全局、必须立即生效的规则，详细细则按“通用规则 / 项目规则 / 专项附录”分层维护；通用协作与编码细则见 [docs/agent-rules/general.md](docs/agent-rules/general.md)。
+本文件只保留高频、全局、必须立即生效的规则，详细细则按“通用规则 / 项目规则 / 专项附录”分层维护：
+- 通用协作与编码细则见 [docs/agent-rules/general.md](docs/agent-rules/general.md)。
 
 ## 通用规则
 - 默认使用中文回复；代码注释、代码示例使用中文。
