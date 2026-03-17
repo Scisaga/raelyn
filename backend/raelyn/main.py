@@ -58,18 +58,18 @@ def _static_root_file(filename: str, *, media_type: str) -> FileResponse:
     return FileResponse(str(path), media_type=media_type, headers={"Cache-Control": "no-cache"})
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def index() -> FileResponse:
     index_path = static_dir / "index.html"
     return FileResponse(str(index_path))
 
 
-@app.get("/manifest.webmanifest")
+@app.api_route("/manifest.webmanifest", methods=["GET", "HEAD"])
 def web_manifest() -> FileResponse:
     return _static_root_file("manifest.webmanifest", media_type="application/manifest+json")
 
 
-@app.get("/sw.js")
+@app.api_route("/sw.js", methods=["GET", "HEAD"])
 def service_worker() -> FileResponse:
     return _static_root_file("sw.js", media_type="application/javascript")
 
@@ -89,7 +89,7 @@ app.include_router(workers_router, prefix="/api")
 app.include_router(ws_router, prefix="/api")
 
 
-@app.get("/{full_path:path}")
+@app.api_route("/{full_path:path}", methods=["GET", "HEAD"])
 def spa_fallback(full_path: str) -> FileResponse:
     # Allow API/static to 404 properly; everything else returns the SPA shell so History API routes work.
     if full_path.startswith(("api", "static", "pwa", ".well-known")):
