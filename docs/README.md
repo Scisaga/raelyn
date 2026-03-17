@@ -4,6 +4,10 @@
 
 - [项目愿景](vision.md)
 
+## 协作约定
+
+- [通用协作与编码细则](agent-rules/general.md)
+
 ## 架构
 
 - [架构总览](architecture/overview.md)
@@ -21,7 +25,7 @@
 
 ## 交付与运行
 
-- [MVP 路线图](roadmap/mvp.md)
+- [MVP 路线图与当前状态](roadmap/mvp.md)
 - [配置项说明](reference/configuration.md)
 
 ## 未来约定

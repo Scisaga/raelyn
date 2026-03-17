@@ -1,119 +1,107 @@
 # 架构总览
 
-`raelyn` 是一个基于 `yt-dlp + ffmpeg` 的单用户媒体订阅与视频采集系统，支持 YouTube / B 站媒体同步、批量 / 增量下载、字幕与转写（可选）、播放列表聚合，以及按天生成 Markdown 简报。
+`raelyn` 当前是一个由 `FastAPI API + 静态 SPA + Worker + Scheduler + 独立 MCP Server` 组成的单用户媒体采集系统。它支持 YouTube / B 站媒体管理、视频同步与下载、字幕 / 转写处理、播放列表聚合，以及按天 / 周 / 月生成 Markdown 简报。
 
-约束与决策（来自需求澄清）：
+## 当前约束与决策
 
-- 单用户（暂不做鉴权 / 审计）
-- 媒体数量 `< 1000`
-- MVP：不处理需要登录 / 付费内容
-- “实时同步”目标：分钟级
-- 简报产物：Markdown
-- 播放列表：MVP 仅支持“添加媒体”，其余后续扩展
-- 任务管理：遵循项目内 skill `skills/job-system-design/` 定义的通用设计原则，包括统一任务存储、Web / Worker 解耦、原子领取、幂等、回收与可观测性
+- 单用户系统；不做多租户与复杂权限模型。
+- 主站 API 可选 Bearer Token，MCP HTTP 必须配置 Bearer Token。
+- 媒体新增后默认 `monitor_enabled=false`，只有启用监控后才会进入分钟级自动同步。
+- 播放列表不只是“媒体集合”，还承载周期聚合粒度、简报提示词、封面与背景图。
+- 任务系统沿用项目内 [skills/job-system-design/SKILL.md](../../skills/job-system-design/SKILL.md) 的通用原则，项目文档只记录本仓库的实现形态。
 
-## 基本概念（Domain Model）
+## 当前领域对象
 
-### Provider
+### Media
 
-- `provider`: `youtube` | `bilibili`
-- `provider_media_id`: 平台侧频道 / UP 主唯一 ID（不是名称）
-- `provider_video_id`: 平台侧视频唯一 ID（YouTube video id / B 站 BV/AV）
+- 表示一个内容源（YouTube 频道 / B 站 UP 主）。
+- 维护 provider id、URL、资料信息、监控开关与同步游标。
+- 新增后只投递 `media.sync_profile`；视频同步由显式同步或 `scheduler` 触发。
 
-### Media（媒体）
+### Video
 
-表示一个内容源（YouTube 频道 / B 站 UP 主）：
+- 表示一个平台视频条目，保存元数据、状态与错误信息。
+- 当前时间线以 `published_at` 为主，缺失时回退到 `created_at`。
+- 通过 `Asset` 关联视频文件、音频、字幕、文字稿、笔记等产物。
 
-- 可被“同步”以更新头像、简介、订阅量等元数据
-- 可被“抓取 / 同步视频列表”以发现新视频
+### Asset
 
-### Video（视频）
+- 统一抽象视频文件、音频、字幕、转写、笔记、简报、播放列表图片等对象。
+- 内容落在 MinIO / S3，数据库仅保存引用、格式、来源、语言、变体和元信息。
+- API 会根据运行时探测结果选择直连 presign 或代理下载路径。
 
-表示一个可下载、可播放、可分析的视频条目：
+### Playlist / Brief
 
-- 只存元数据与处理状态；大文件内容不落地在 DB
-- 产物统一通过 Asset 关联
+- `playlist` 用于聚合媒体，并保存简报粒度、独立提示词、头像、背景图。
+- 当前简报主表是 `brief`，支持 `day / week / month` 三种粒度。
+- `daily_brief` 仍保留用于兼容历史数据读取。
 
-### Asset（产物 / 资源）
+### Job / WorkerHeartbeat / AppConfig
 
-统一抽象：视频文件、音频文件、字幕文件、标准化字幕文本、ASR 转写文本、简报等都属于 Asset：
+- `job` 统一承载同步、下载、处理、AI 任务。
+- `worker_heartbeat` 用于在线状态展示和孤儿任务回收。
+- `app_config` 保存运行时开关，例如 Cookies、字幕下载、会员视频、下载格式、简报策略与转写润色提示词。
 
-- 内容本体存 MinIO（S3）
-- DB 存引用与索引（`s3_key`、类型、格式、语言、校验和等）
+## 当前组件划分
 
-建议的 `asset.type`：
+### API 进程
 
-- `video`：下载后的视频文件
-- `audio`：从视频分离的音频
-- `subtitle`：原始字幕文件
-- `transcript`：标准化文本，建议同时产出 `json` 分段 + 时间戳 与 `txt` 纯文本
-- `brief`：按天简报 Markdown
+- 入口是 [backend/raelyn/main.py](../../backend/raelyn/main.py)。
+- 提供 `/api/*`、`/api/ws/*`、`/docs`、`/openapi.json`，以及根路径 SPA / PWA 壳。
+- 负责资源查询、任务投递、系统状态、配置写入、资产访问与 WebSocket 推送。
 
-### Playlist（播放列表）
+### Worker 进程
 
-MVP 中，播放列表仅是“媒体集合”：
+- 入口是 [backend/raelyn/worker.py](../../backend/raelyn/worker.py)。
+- 支持按 `WORKER_ROLE` 或 `WORKER_TYPES` 拆分角色，例如 `download_youtube`、`download_bilibili`、`audio`、`process`、`asr`、`sync`、`ai`。
+- 负责任务领取、心跳、孤儿任务回收、失败退避与实际处理逻辑执行。
 
-- `playlist`：列表本身
-- `playlist_media`：列表包含哪些媒体
+### Scheduler 进程
 
-后续扩展点包括自动同步规则、已播放记录、自动播放最新等。
+- 入口是 [backend/raelyn/scheduler.py](../../backend/raelyn/scheduler.py)。
+- 每分钟扫描已启用监控且超过同步间隔的媒体，投递 `media.sync_videos`。
+- 会尊重系统暂停和 provider 暂停状态，避免继续放量。
 
-### Job（任务）
+### MCP Server
 
-所有重任务（同步媒体、拉取新视频、下载、转写、简报）都以 Job 表示：
+- 入口是 [backend/raelyn/mcp_main.py](../../backend/raelyn/mcp_main.py)。
+- 作为独立进程运行，默认挂载在 `MCP_BASE_PATH=/mcp`。
+- 复用现有 DB / service / job enqueue 能力，不通过 `/api/*` 再套一层 HTTP。
 
-- API 只负责“创建 / 查询 / 运维”，不在请求线程执行重活
-- Worker 通过 DB 原子领取任务执行
-- 任务可拆分父子任务（批量下载为父任务，单视频下载为子任务）
+### 静态 UI / PWA
 
-## 总体架构与数据流
+- SPA 构建产物位于 `static/`，源码与模板位于 `ui/`。
+- 主要页面为：概览、媒体、视频、播放列表列表、播放列表详情、任务、MCP Server 指南、设置。
+- 启动时会先探测 API 鉴权与资产分发策略，再进入应用主界面。
 
-### 组件划分
+## 当前关键数据流
 
-- `api`：推荐使用 FastAPI，提供 HTTP API、静态 UI（`/static`）以及任务创建 / 查询
-- `worker`：执行下载、处理、转写、总结等任务，可多进程 / 多实例运行
-- `scheduler`：分钟级触发媒体增量同步任务的投递，可与 `api` 合并或独立运行
-- 外部依赖：
-  - `yt-dlp`（`default + curl_cffi`）负责抓取与下载
-  - `ffmpeg` 负责分离音频与转码
-  - `PostgreSQL` 保存元数据与任务状态
-  - `MinIO` 保存对象内容
-  - `qwen3-asr` 作为可选 ASR 服务
-  - `LLM` 用于简报 / 笔记，可对接 Ollama 或在线推理
+### 1. 添加媒体与启用监控
 
-### 关键数据流（MVP）
+- `POST /api/media` 新增媒体，默认 `monitor_enabled=false`。
+- API 立即投递 `media.sync_profile`，以补齐名称、头像、描述等资料。
+- 用户在媒体页显式开启监控后，媒体才会进入调度循环。
 
-1. 添加媒体
+### 2. 媒体同步
 
-- UI 通过 API 创建 media
-- API 投递 `media.sync_profile` 与 `media.sync_videos`
+- 手动同步支持 `scope=recent|all`。
+- `scheduler` 只对已启用监控媒体投递增量 `media.sync_videos`。
+- 同步逻辑会根据 provider、Cookies、会员视频开关和平台暂停状态决定是否继续发现与自动下载。
 
-2. 分钟级增量同步
+### 3. 下载与文本处理
 
-- `scheduler` 每 N 分钟为需要同步的媒体投递 `media.sync_videos`
-- 发现新视频后为每个视频创建或更新 `video` 记录，并可按配置自动投递下载任务
+- `video.download.*` 下载视频、缩略图、字幕等原始产物。
+- `video.extract_audio` 生成音频资产。
+- `video.normalize_subtitle` 生成 transcript，并可继续触发 `video.polish_transcript`。
+- 若没有可用中文字幕且配置了 ASR，则进入 `video.asr_transcribe`。
+- 需要时可手动触发 `video.generate_note` 生成视频级 Markdown 笔记。
 
-3. 下载与处理
+### 4. 播放列表聚合与简报
 
-- `video.download`：使用 `yt-dlp` 下载视频与字幕到临时目录
-- `video.extract_audio`：使用 `ffmpeg` 分离音频并上传 S3
-- `video.normalize_subtitle`：字幕转标准文本并上传 S3
-- 若无中文字幕且已配置 ASR，继续投递 `video.asr_transcribe`
-
-4. 简报（按天）
-
-- `brief.generate_daily` 按播放列表和日期聚合当日已就绪的 transcript 或字幕文本
-- 调用 LLM 生成 Markdown，上传 S3 并落库
+- 播放列表维护媒体集合、周期粒度和提示词。
+- 播放列表变更会触发对应周期的简报刷新计划。
+- `brief.generate_period` / `brief.generate_daily` 基于粒度聚合视频文本，生成 Markdown 简报并存为 `asset(type=brief)`。
 
 ## 文档导航
 
-- [任务系统](job-system.md)
-- [数据模型与存储布局](data-model.md)
-- [后端模块](backend-modules.md)
-- [MCP 集成设计](mcp.md)
-- [REST API 设计](../api/rest.md)
-- [UI 设计总览](../ui/overview.md)
-- [MVP 路线图](../roadmap/mvp.md)
-- [配置项说明](../reference/configuration.md)
-- [风险与处理](risks.md)
-- `docs/adr/` 预留给未来的架构决策记录
+- 完整文档入口与分类见 [docs/README.md](../README.md)。

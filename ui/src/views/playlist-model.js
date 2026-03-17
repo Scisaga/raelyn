@@ -148,13 +148,129 @@ export function createPlaylistViewMethods() {
       return `grid-column:span ${count} / span ${count};`;
     },
 
-    playlistCalendarTrackStyle() {
+    playlistCalendarStripWidthPx() {
+      try {
+        const width =
+          this.$refs && this.$refs.playlistCalendarStrip && this.$refs.playlistCalendarStrip.clientWidth
+            ? Number(this.$refs.playlistCalendarStrip.clientWidth)
+            : 0;
+        return Number.isFinite(width) && width > 0 ? width : 0;
+      } catch {
+        return 0;
+      }
+    },
+
+    playlistCalendarInteractionBusy() {
+      return !!(this.playlistCalendarDragging || this.playlistCalendarSettling);
+    },
+
+    playlistCalendarResolvedAnchor(rawAnchor = null) {
+      const g = this.playlistGranularity();
+      const rawStart = String(this.playlistTimelineStart || "").trim();
+      const rawEnd = String(this.playlistTimelineEnd || "").trim();
+      const start = this._periodStartIso(rawStart, g);
+      const end = this._periodStartIso(rawEnd, g);
+      const selected = this._periodStartIso(String(this.playlistSelectedDate || "").trim(), g);
+      const n = Math.max(5, Number(this.playlistCalendarCount || 14));
+      if (!start || !end) return "";
+
+      const source = rawAnchor == null ? this.playlistCalendarAnchor : rawAnchor;
+      let anchor = this._periodStartIso(String(source || "").trim(), g);
+      if (!anchor) anchor = selected ? this._periodAddIso(selected, g, -(n - 1)) : start;
+
+      const maxAnchor = this._periodAddIso(end, g, -(n - 1));
+      if (this._isoMs(maxAnchor) < this._isoMs(start)) return start;
+      return this._periodStartIso(this._periodClampIso(anchor, start, maxAnchor), g);
+    },
+
+    playlistCalendarPreviewStep() {
+      if (this.playlistCalendarSettling) {
+        const settlingStep = Number(this.playlistCalendarSettleStep || 0);
+        return Number.isFinite(settlingStep) ? settlingStep : 0;
+      }
+      if (!this.playlistCalendarDragging) return 0;
       const offset = Number(this.playlistCalendarDragOffsetX || 0);
-      const transition = this.playlistCalendarDragging ? "none" : "transform 180ms ease";
+      if (!Number.isFinite(offset) || offset === 0) return 0;
+      const step = this.playlistCalendarDragStep();
+      if (offset > 0) return this.playlistCalendarCanJump(-step) ? -step : 0;
+      return this.playlistCalendarCanJump(step) ? step : 0;
+    },
+
+    playlistCalendarCurrentTrackStyle() {
+      const offset = Number(this.playlistCalendarDragOffsetX || 0);
+      const transition = this.playlistCalendarDragging || this.playlistCalendarSuppressTransition ? "none" : "transform 180ms ease";
       return `transform:translate3d(${offset}px,0,0);transition:${transition};`;
     },
 
-    playlistCalendarResetDragState() {
+    playlistCalendarPreviewTrackStyle() {
+      const step = this.playlistCalendarPreviewStep();
+      const offset = Number(this.playlistCalendarDragOffsetX || 0);
+      const width = this.playlistCalendarStripWidthPx();
+      const transition =
+        this.playlistCalendarDragging || this.playlistCalendarSuppressTransition ? "none" : "transform 180ms ease,opacity 160ms ease";
+      if (!step || width <= 0) return `transform:translate3d(${offset}px,0,0);transition:${transition};opacity:0;`;
+      const base = step < 0 ? -width : width;
+      return `transform:translate3d(${base + offset}px,0,0);transition:${transition};opacity:1;`;
+    },
+
+    playlistCalendarTracks() {
+      const interactive = !this.playlistCalendarInteractionBusy();
+      const tracks = [
+        {
+          key: "current",
+          items: this.playlistCalendarItems(),
+          style: this.playlistCalendarCurrentTrackStyle(),
+          interactive,
+        },
+      ];
+      const previewItems = this.playlistCalendarPreviewItems();
+      if (previewItems.length) {
+        tracks.push({
+          key: "preview",
+          items: previewItems,
+          style: this.playlistCalendarPreviewTrackStyle(),
+          interactive: false,
+        });
+      }
+      return tracks;
+    },
+
+    playlistCalendarClearSettleTimer() {
+      try {
+        if (this._playlistCalendarSettleTimer != null) window.clearTimeout(this._playlistCalendarSettleTimer);
+      } catch {
+        // ignore
+      }
+      this._playlistCalendarSettleTimer = null;
+    },
+
+    playlistCalendarClearTransitionFrames() {
+      try {
+        if (this._playlistCalendarTransitionRaf1 != null) window.cancelAnimationFrame(this._playlistCalendarTransitionRaf1);
+      } catch {
+        // ignore
+      }
+      try {
+        if (this._playlistCalendarTransitionRaf2 != null) window.cancelAnimationFrame(this._playlistCalendarTransitionRaf2);
+      } catch {
+        // ignore
+      }
+      this._playlistCalendarTransitionRaf1 = null;
+      this._playlistCalendarTransitionRaf2 = null;
+    },
+
+    playlistCalendarScheduleTransitionRestore() {
+      this.playlistCalendarClearTransitionFrames();
+      this._playlistCalendarTransitionRaf1 = window.requestAnimationFrame(() => {
+        this._playlistCalendarTransitionRaf1 = null;
+        this._playlistCalendarTransitionRaf2 = window.requestAnimationFrame(() => {
+          this._playlistCalendarTransitionRaf2 = null;
+          this.playlistCalendarSuppressTransition = false;
+        });
+      });
+    },
+
+    playlistCalendarReleasePointerTracking() {
       try {
         if (this._playlistCalendarDragMove) window.removeEventListener("pointermove", this._playlistCalendarDragMove);
       } catch {
@@ -174,8 +290,78 @@ export function createPlaylistViewMethods() {
       this.playlistCalendarDragPointerId = null;
       this.playlistCalendarDragStartX = 0;
       this.playlistCalendarDragStartY = 0;
-      this.playlistCalendarDragOffsetX = 0;
       this.playlistCalendarDragDidMove = false;
+    },
+
+    playlistCalendarResetDragState() {
+      this.playlistCalendarClearSettleTimer();
+      this.playlistCalendarClearTransitionFrames();
+      this.playlistCalendarReleasePointerTracking();
+      this.playlistCalendarSettling = false;
+      this.playlistCalendarSettleStep = 0;
+      this.playlistCalendarSuppressTransition = false;
+      this.playlistCalendarDragOffsetX = 0;
+    },
+
+    playlistCalendarStartSettle(step, targetOffset, onDone = null) {
+      const settleStep = Number(step || 0);
+      const target = Number(targetOffset || 0);
+      this.playlistCalendarClearSettleTimer();
+      this.playlistCalendarSettling = true;
+      this.playlistCalendarSettleStep = Number.isFinite(settleStep) ? settleStep : 0;
+      this.playlistCalendarDragOffsetX = Number.isFinite(target) ? target : 0;
+      this._playlistCalendarSettleTimer = window.setTimeout(() => {
+        this._playlistCalendarSettleTimer = null;
+        if (typeof onDone === "function") {
+          onDone();
+          return;
+        }
+        this.playlistCalendarResetDragState();
+      }, 210);
+    },
+
+    playlistCalendarCommitSettledStep(step) {
+      const delta = Number(step || 0);
+      const g = this.playlistGranularity();
+      const start = String(this.playlistTimelineStart || "").trim();
+      const end = String(this.playlistTimelineEnd || "").trim();
+      const selected = this._periodStartIso(String(this.playlistSelectedDate || "").trim(), g);
+      const anchor = this.playlistCalendarResolvedAnchor();
+
+      this.playlistCalendarClearSettleTimer();
+      this.playlistCalendarClearTransitionFrames();
+      this.playlistCalendarSuppressTransition = true;
+      this.playlistCalendarSettling = false;
+      this.playlistCalendarSettleStep = 0;
+      this.playlistCalendarDragOffsetX = 0;
+
+      if (!start || !end || !selected || !Number.isFinite(delta) || delta === 0) {
+        this.playlistCalendarScheduleTransitionRestore();
+        return;
+      }
+
+      try {
+        if (anchor) this.playlistCalendarAnchor = this._periodAddIso(anchor, g, delta);
+      } catch {
+        // ignore
+      }
+
+      const next = this._periodClampIso(this._periodAddIso(selected, g, delta), start, end);
+      if (next !== selected) {
+        this.playlistSelectedDate = next;
+        this.playlistCalendarEnsureVisible();
+        this.playlistPrefetchCalendarCounts();
+        if (this.playlistTimelineStart) {
+          const max = Number(this.playlistTimelineMax || 0);
+          this.playlistTimelineValue = Math.max(0, Math.min(max, this._periodDiff(this.playlistTimelineStart, next, g)));
+        }
+        this._syncUrl({ push: false });
+        this.playlistLoadDay(next);
+      } else {
+        this.playlistCalendarEnsureVisible();
+        this.playlistPrefetchCalendarCounts();
+      }
+      this.playlistCalendarScheduleTransitionRestore();
     },
 
     playlistCalendarCanJump(deltaPeriods) {
@@ -191,10 +377,7 @@ export function createPlaylistViewMethods() {
 
     playlistCalendarGestureThresholdPx() {
       const count = Math.max(5, Number(this.playlistCalendarCount || 14));
-      const width =
-        this.$refs && this.$refs.playlistCalendarStrip && this.$refs.playlistCalendarStrip.clientWidth
-          ? Number(this.$refs.playlistCalendarStrip.clientWidth)
-          : 0;
+      const width = this.playlistCalendarStripWidthPx();
       const cardWidth = width > 0 ? width / count : 72;
       return Math.max(28, Math.min(88, Math.round(cardWidth * 0.35)));
     },
@@ -202,10 +385,7 @@ export function createPlaylistViewMethods() {
     playlistCalendarResolveDragOffset(rawDx) {
       const dx = Number(rawDx || 0);
       if (!Number.isFinite(dx) || dx === 0) return 0;
-      const width =
-        this.$refs && this.$refs.playlistCalendarStrip && this.$refs.playlistCalendarStrip.clientWidth
-          ? Number(this.$refs.playlistCalendarStrip.clientWidth)
-          : 0;
+      const width = this.playlistCalendarStripWidthPx();
       const maxOffset = Math.max(48, Math.min(width > 0 ? width * 0.72 : 220, 240));
       const canMove = dx > 0 ? this.playlistCalendarCanJump(-1) : this.playlistCalendarCanJump(1);
       const factor = canMove ? 1 : 0.28;
@@ -219,6 +399,7 @@ export function createPlaylistViewMethods() {
 
     playlistCalendarPointerDown(ev) {
       if (this.playlistSubview !== "main") return;
+      if (this.playlistCalendarSettling) return;
       if (this.playlistCalendarDragPointerId !== null) return;
       if (!ev || (ev.pointerType === "mouse" && ev.button !== 0)) return;
       if (ev && ev.isPrimary === false) return;
@@ -274,6 +455,7 @@ export function createPlaylistViewMethods() {
       const offset = Number(this.playlistCalendarDragOffsetX || 0);
       const didMove = !!this.playlistCalendarDragDidMove;
       const threshold = this.playlistCalendarGestureThresholdPx();
+      const step = this.playlistCalendarPreviewStep();
 
       if (didMove) {
         this.playlistCalendarDragSuppressClickUntil = Date.now() + 300;
@@ -284,11 +466,22 @@ export function createPlaylistViewMethods() {
         }
       }
 
-      this.playlistCalendarResetDragState();
+      this.playlistCalendarReleasePointerTracking();
 
-      if (!didMove || Math.abs(offset) < threshold) return;
-      const step = this.playlistCalendarDragStep();
-      this.playlistJump(offset > 0 ? -step : step);
+      if (!didMove) {
+        this.playlistCalendarResetDragState();
+        return;
+      }
+
+      if (!step || Math.abs(offset) < threshold) {
+        this.playlistCalendarStartSettle(step, 0);
+        return;
+      }
+
+      const width = this.playlistCalendarStripWidthPx();
+      const magnitude = width > 0 ? width : Math.max(Math.abs(offset), 120);
+      const targetOffset = step < 0 ? magnitude : -magnitude;
+      this.playlistCalendarStartSettle(step, targetOffset, () => this.playlistCalendarCommitSettledStep(step));
     },
 
     playlistCalendarSelectDate(date, ev = null) {
@@ -499,11 +692,34 @@ export function createPlaylistViewMethods() {
       return { start: this._periodStartIso(winStart, g), end: this._periodStartIso(winEnd, g) };
     },
 
+    playlistCalendarCountsRange() {
+      const g = this.playlistGranularity();
+      const rawStart = String(this.playlistTimelineStart || "").trim();
+      const rawEnd = String(this.playlistTimelineEnd || "").trim();
+      const start = this._periodStartIso(rawStart, g);
+      const end = this._periodStartIso(rawEnd, g);
+      const visible = this.playlistCalendarVisibleEnabledRange();
+      if (!start || !end || !visible || !visible.start || !visible.end) return null;
+
+      const step = this.playlistCalendarDragStep();
+      let rangeStart = this._periodAddIso(visible.start, g, -step);
+      let rangeEnd = this._periodAddIso(visible.end, g, step);
+
+      if (this._isoMs(rangeStart) < this._isoMs(start)) rangeStart = start;
+      if (this._isoMs(rangeEnd) > this._isoMs(end)) rangeEnd = end;
+      if (this._isoMs(rangeEnd) < this._isoMs(rangeStart)) return null;
+
+      return {
+        start: this._periodStartIso(rangeStart, g),
+        end: this._periodStartIso(rangeEnd, g),
+      };
+    },
+
     async playlistPrefetchCalendarCounts() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       if (!pid) return;
       const g = this.playlistGranularity();
-      const r = this.playlistCalendarVisibleEnabledRange();
+      const r = this.playlistCalendarCountsRange();
       if (!r || !r.start || !r.end) return;
 
       const key = `${pid}:${g}:${r.start}:${r.end}`;
@@ -580,7 +796,7 @@ export function createPlaylistViewMethods() {
       }
     },
 
-    playlistCalendarItems() {
+    playlistCalendarItemsForAnchor(rawAnchor = null) {
       const g = this.playlistGranularity();
       const rawStart = String(this.playlistTimelineStart || "").trim();
       const rawEnd = String(this.playlistTimelineEnd || "").trim();
@@ -591,8 +807,8 @@ export function createPlaylistViewMethods() {
       if (!start || !end) return [];
 
       const today = this._periodStartIso(this._todayIsoLocal(), g);
-      let anchor = this._periodStartIso(String(this.playlistCalendarAnchor || "").trim(), g);
-      if (!anchor) anchor = selected ? this._periodAddIso(selected, g, -(n - 1)) : start;
+      const anchor = this.playlistCalendarResolvedAnchor(rawAnchor);
+      if (!anchor) return [];
 
       const out = [];
       for (let i = 0; i < n; i++) {
@@ -622,6 +838,19 @@ export function createPlaylistViewMethods() {
       return out;
     },
 
+    playlistCalendarPreviewItems() {
+      const step = this.playlistCalendarPreviewStep();
+      if (!step) return [];
+      const g = this.playlistGranularity();
+      const anchor = this.playlistCalendarResolvedAnchor();
+      if (!anchor) return [];
+      return this.playlistCalendarItemsForAnchor(this._periodAddIso(anchor, g, step));
+    },
+
+    playlistCalendarItems() {
+      return this.playlistCalendarItemsForAnchor();
+    },
+
     playlistTimelineApply() {
       const g = this.playlistGranularity();
       const start = String(this.playlistTimelineStart || "").trim();
@@ -633,6 +862,9 @@ export function createPlaylistViewMethods() {
     },
 
     playlistSetDate(iso) {
+      if (this.playlistCalendarDragging || this.playlistCalendarSettling || this.playlistCalendarDragPointerId !== null) {
+        this.playlistCalendarResetDragState();
+      }
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       if (!pid) return;
       const g = this.playlistGranularity();
@@ -1119,6 +1351,9 @@ export function createPlaylistViewMethods() {
     },
 
     playlistJump(deltaPeriods) {
+      if (this.playlistCalendarDragging || this.playlistCalendarSettling || this.playlistCalendarDragPointerId !== null) {
+        this.playlistCalendarResetDragState();
+      }
       const g = this.playlistGranularity();
       const start = String(this.playlistTimelineStart || "").trim();
       const end = String(this.playlistTimelineEnd || "").trim();

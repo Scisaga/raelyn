@@ -1,34 +1,56 @@
 # MVP 路线图
 
-## 1. 基础设施与数据模型
+本文不再记录最初的空白路线图，而是记录“当前已实现的 MVP 主线”与“下一阶段仍待收敛的事项”。
 
-- 打通 Postgres + MinIO 连接
-- 完成 `media / video / asset / job` 表与基础 CRUD
+## 当前已实现
 
-## 2. 任务系统（最小可用）
+### 1. 基础设施与运行形态
 
-- 完成 job 创建、查询、领取、租约、重试
-- 让 worker 跑通一个简单任务，例如 `sleep + progress`
+- Postgres + MinIO 已打通。
+- API、Worker、Scheduler、独立 MCP Server 都有明确入口脚本。
+- 本地开发支持 `devctl.sh` 一键启动多角色 worker。
 
-## 3. 媒体同步（发现视频）
+### 2. 数据模型与任务系统
 
-- 支持添加媒体
-- 跑通 `media.sync_videos`
-- 通过 upsert 写入 videos
+- `media / video / asset / playlist / brief / job / app_config / worker_heartbeat` 已落地。
+- 任务领取、租约、重试、孤儿任务回收、事件记录已实现。
+- Worker 可按角色拆分执行不同类型任务。
 
-## 4. 下载与产物链路
+### 3. 媒体同步与下载
 
-- `video.download` -> `asset(video)`
-- `video.extract_audio` -> `asset(audio)`
-- `video.normalize_subtitle` -> `asset(transcript)`
-- 视频列表支持筛选与获取内容（presigned 或代理）
+- 支持添加、导入、导出媒体。
+- 支持资料同步、近期同步、历史全量同步。
+- 支持 YouTube / B 站下载、音频提取、字幕标准化、ASR、转写润色。
+- 支持 Cookies 与会员视频开关等运行时配置。
 
-## 5. 播放列表与简报
+### 4. 播放列表与简报
 
-- 完成 playlist CRUD 与 `playlist_media`
-- 跑通 `brief.generate_daily`
-- 支持简报列表与查看
+- 播放列表 CRUD、媒体聚合、头像 / 背景图上传已实现。
+- 支持按天 / 周 / 月聚合视频。
+- 支持单周期生成与按区间重建简报。
+- 支持播放列表级简报提示词和简报调度策略。
 
-## 6. UI（App Shell + 核心页面）
+### 5. UI 与运维
 
-- 完成 Media / Videos / Jobs / Playlists / Briefs / Settings
+- 已实现概览、媒体、视频、播放列表、任务、MCP Server 指南、设置页面。
+- 已实现 API 鉴权启动门面、PWA 安装入口、任务实时刷新。
+- 已实现系统暂停、provider 暂停、worker 状态查看、遗留视频清理。
+
+## 下一阶段建议
+
+### 1. 文档与接口稳定化
+
+- 继续收敛 `docs/` 与实际代码的一致性。
+- 明确哪些配置走环境变量，哪些走 `app_config`。
+- 对外接口优先围绕现有 OpenAPI 与 MCP 能力做稳定化。
+
+### 2. 运行时健壮性
+
+- 继续观察 YouTube / B 站风控、Cookies 失效与 provider pause 策略。
+- 评估下载 / ASR / LLM 成本与重试策略是否需要更细的分类治理。
+
+### 3. 产品层增强
+
+- 评估是否增加更强的播放列表管理能力。
+- 评估简报检索、视频笔记管理和更细粒度的周期视图。
+- 如未来需要公网 / 多用户能力，再单独进入新的专题文档或 ADR。

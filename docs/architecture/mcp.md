@@ -5,8 +5,8 @@
 项目已经实现独立的 MCP HTTP 服务：
 
 - 启动入口：`python -m raelyn.mcp_server`
-- 运行应用：[backend/raelyn/mcp_main.py](/home/scisaga/projects/video-sync/backend/raelyn/mcp_main.py)
-- MCP 注册层：[backend/raelyn/mcp/](/home/scisaga/projects/video-sync/backend/raelyn/mcp/)
+- 运行应用：[backend/raelyn/mcp_main.py](../../backend/raelyn/mcp_main.py)
+- MCP 注册层：[backend/raelyn/mcp/](../../backend/raelyn/mcp/)
 - 默认监听：`0.0.0.0:8001`
 - 默认入口：`/mcp`
 - 健康检查：`GET /health`
@@ -43,11 +43,11 @@ MCP 不挂进现有 API 进程，而是独立进程运行；但它直接复用�
 
 MCP 没有复制 API 路由逻辑，而是复用了抽出的共享 helper：
 
-- [backend/raelyn/services/periods.py](/home/scisaga/projects/video-sync/backend/raelyn/services/periods.py)：`day/week/month` 周期计算
-- [backend/raelyn/services/transcripts.py](/home/scisaga/projects/video-sync/backend/raelyn/services/transcripts.py)：transcript 选择与文本读取
-- [backend/raelyn/services/media_actions.py](/home/scisaga/projects/video-sync/backend/raelyn/services/media_actions.py)：媒体同步任务投递
-- [backend/raelyn/services/video_actions.py](/home/scisaga/projects/video-sync/backend/raelyn/services/video_actions.py)：下载与重转写任务投递
-- [backend/raelyn/services/brief_actions.py](/home/scisaga/projects/video-sync/backend/raelyn/services/brief_actions.py)：简报生成任务投递
+- [backend/raelyn/services/periods.py](../../backend/raelyn/services/periods.py)：`day/week/month` 周期计算
+- [backend/raelyn/services/transcripts.py](../../backend/raelyn/services/transcripts.py)：transcript 选择与文本读取
+- [backend/raelyn/services/media_actions.py](../../backend/raelyn/services/media_actions.py)：媒体同步任务投递
+- [backend/raelyn/services/video_actions.py](../../backend/raelyn/services/video_actions.py)：下载与重转写任务投递
+- [backend/raelyn/services/brief_actions.py](../../backend/raelyn/services/brief_actions.py)：简报生成任务投递
 
 现有 REST API 也改为复用这些 helper，避免规则分叉。
 
@@ -195,8 +195,8 @@ MCP 与 REST 的关系不是一比一镜像，而是：
 
 本地开发脚本：
 
-- [scripts/dev/run-mcp.sh](/home/scisaga/projects/video-sync/scripts/dev/run-mcp.sh)
-- [scripts/dev/devctl.sh](/home/scisaga/projects/video-sync/scripts/dev/devctl.sh)
+- [scripts/dev/run-mcp.sh](../../scripts/dev/run-mcp.sh)
+- [scripts/dev/devctl.sh](../../scripts/dev/devctl.sh)
 
 `devctl.sh start` 的行为：
 

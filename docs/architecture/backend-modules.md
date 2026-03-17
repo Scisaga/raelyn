@@ -1,95 +1,83 @@
 # 后端模块
 
+本文只记录当前仓库已经落地的模块职责，不重复展开 job-system skill 中的通用原则。
+
 ## 媒体管理（Media）
 
-能力：
+当前能力：
 
-- 添加 / 删除媒体
-- 同步媒体资料（头像、名称、描述、订阅数等）
-- 同步媒体视频列表，增量发现新视频
+- 添加单个媒体、导入文本列表、导出全部媒体 URL。
+- 媒体新增时只投递 `media.sync_profile`，默认不启用监控。
+- 支持显式开启 / 关闭 `monitor_enabled`。
+- 关闭监控时会删除该媒体尚未执行的下载任务。
+- 支持手动同步单个媒体或全部已启用监控媒体，范围可选 `recent` 或 `all`。
 
-建议的同步实现（MVP 可先粗后精）：
+实现要点：
 
-- YouTube：优先用 `yt-dlp` extractor 获取 channel / playlist 的 flat 列表，再按视频补全
-- B 站：按 UP 主视频列表做增量抓取
-- `sync_cursor` 保存“已同步到的最新发布时间 / 页码 / last_video_id”等 provider 特定游标
+- provider 与 `provider_media_id` 通过 URL 解析得到，保证幂等。
+- 手动同步由 [backend/raelyn/services/media_actions.py](../../backend/raelyn/services/media_actions.py) 统一调度。
+- `scheduler` 只处理 `monitor_enabled=true` 的媒体。
 
-输出：
+## 视频同步与下载
 
-- 新视频落库为 `video.status=discovered`
-- 可配置是否自动投递下载任务，MVP 建议默认开启
+当前任务链：
 
-## 视频下载（yt-dlp）
+- `media.sync_videos`：发现新视频、更新视频元数据，并按配置决定是否自动下载。
+- `video.download.youtube` / `video.download.bilibili`：下载视频、缩略图、字幕等原始产物。
+- `video.extract_audio`：提取音频资产，供移动播放和 ASR 使用。
+- `video.normalize_subtitle`：将字幕标准化为 transcript。
+- `video.asr_transcribe`：在无可用中文字幕 transcript 时调用 ASR。
+- `video.polish_transcript`：可选的 LLM 文字稿润色。
+- `video.generate_note`：按需生成单视频 Markdown 笔记。
 
-`video.download` 任务：
+当前边界：
 
-- 输入：`video_id`
-- 行为：
-  - 生成临时工作目录（按 `job_id`）
-  - 使用 `yt-dlp` 下载视频文件、字幕、缩略图、`info.json`
-  - 将 video 文件作为 `asset(type=video)` 上传
-  - 写入或更新 `video.status`
+- 字幕下载是否开启由运行时配置 `ytdlp_subtitles` 决定。
+- YouTube 会员视频默认不会下载；只有配置 `ytdlp_members_only.enabled=true` 时才会尝试。
+- Cookies 来自 `app_config`，运行时会写入 `tmp/` 下的 provider 专属 `cookies.txt` 文件。
 
-注意点：
+## 资产访问与分发
 
-- 失败原因要落到 `job.error_message / error_stack` 与 `video.error_message`
-- 下载流程可以重试，但产物写入必须保持幂等，避免重复上传
+当前 API 同时支持两种访问模式：
 
-## 音频分离（ffmpeg）
+- 直连模式：通过 `AssetRef.presigned_url` / `download_presigned_url` 直接访问对象存储。
+- 代理模式：通过 `/api/assets/{asset_id}/content` 或 `/download` 由 API 代理流式读取。
 
-`video.extract_audio` 任务：
+实现要点：
 
-- 输入：`video_id` + `video_asset_id`
-- 输出：`asset(type=audio)`
+- API 启动后会结合 `ASSET_DIRECT_PROBE_URL`、`ASSET_PRESIGN_ENABLED` 和 `ASSET_PROXY_BASE_PATH` 形成前端可用的分发策略。
+- 代理下载支持 `Range`，用于视频播放与断点读取。
+- `playlist` 头像 / 背景图也复用同一套 standalone asset 写入逻辑。
 
-策略：
+## 播放列表与简报
 
-- 优先无损抽取（copy）或最小转码，视容器和编码情况决定
-- 音频既服务于 ASR，也服务于后续分析，体积与质量的权衡可配置
+当前能力：
 
-## 字幕处理（Normalize Subtitle -> Transcript）
+- 播放列表支持创建、删除、重命名、改描述、替换媒体集合。
+- 支持上传头像与背景图。
+- 支持按 `day / week / month` 设置简报聚合粒度。
+- 支持为单个播放列表配置独立的简报提示词。
+- 支持获取按日期 / 按周期的视频列表与周期视频计数。
+- 支持按单周期生成简报，也支持按区间批量重建。
 
-`video.normalize_subtitle` 任务：
+实现要点：
 
-- 输入：字幕 asset（`vtt / srt / ass`），优先选择中文（`zh / zh-Hans / zh-CN`）
-- 输出：
-  - `asset(type=transcript, format=json, variant=segments)`：分段 + 时间戳
-  - `asset(type=transcript, format=txt, variant=plain)`：纯文本
+- 播放列表媒体变更会调用 `schedule_brief_refresh_for_media_change()` 触发相关周期简报刷新。
+- 简报调度策略由 `brief_generation_policy` 决定，区分“最新周期冷却时间”和“历史周期每日批处理时间”。
+- `brief` 是当前主表，`daily_brief` 仅用于历史兼容读取。
 
-规则建议：
+## 系统运维与观测
 
-- 保留时间戳，便于回放定位
-- 合并过碎片段，过滤纯标点或明显噪声
+当前能力：
 
-## ASR（qwen3-asr，可选）
+- `/api/system` 返回系统暂停状态、provider 暂停状态和资产分发策略。
+- `/api/workers` 返回 worker 在线情况、角色分布和最后心跳时间。
+- `/api/stats` 返回概览页统计、最近媒体 / 视频 / 播放列表，以及 ASR / LLM 使用量。
+- `/api/jobs` 与 `/api/ws/*` 提供任务列表、事件、时序统计和实时刷新能力。
+- `/api/cleanup/stale-videos` 用于扫描 / 清理“已停用监控、仍处于 discovered、且没有有效下载任务或视频资产”的遗留视频记录。
 
-触发条件：
+实现要点：
 
-- 未检测到中文字幕 transcript
-- 已配置 ASR 服务地址
-
-`video.asr_transcribe` 任务：
-
-- 输入：audio asset + 期望语言（可选）
-- 输出：`asset(type=transcript, source=qwen3-asr, format=json/txt)`
-
-接口抽象建议：
-
-- `POST /v1/audio/transcriptions`
-- 通过 multipart 上传音频，返回 segments + text（OpenAI-compatible）
-
-## 按天简报（LLM -> Markdown）
-
-`brief.generate_daily` 任务：
-
-- 输入：`playlist_id` + `date`（本地日历日）+ `timezone`
-- 数据选择：
-  - 取播放列表包含媒体在当日发布的视频
-  - 只选择“已就绪”的 transcript，优先中文字幕，其次 ASR
-  - 对超长文本做 chunking，并保留来源引用（`video_id / title / link`）
-
-输出：
-
-- 调用 LLM 生成 Markdown，包含标题、要点、主题分类、重要引用或建议行动项
-- 生成后上传为 `asset(type=brief, format=md, source=llm)`
-- 将 `daily_brief.status` 更新为 `ready` 并关联 `markdown_asset_id`
+- worker 启动时会写入心跳，并回收孤儿 `running` 任务。
+- 主站 API Bearer Token 开启后，`/api/*` 需要 `Authorization` 或 `raelyn_api_token` cookie，`/api/ws/*` 需要 query `token`。
+- 系统 / provider 暂停主要用于 Cookies 失效、平台风控或人工运维时的保护性停机。

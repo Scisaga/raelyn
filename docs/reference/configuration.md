@@ -1,13 +1,24 @@
 # 配置项说明
 
-这份文档只负责记录运行配置项，不承载架构设计或 API 约定。
+这份文档只记录当前运行配置，不承载架构设计或接口说明。配置分为两类：
 
-## 核心运行配置
+- 环境变量：进程启动时读取，主要来自 `.env`。
+- 运行时配置：保存在 `app_config`，通过 `/api/config/*` 修改，通常无需重启即可生效。
+
+## 环境变量
+
+### 核心运行
 
 - `APP_ENV`
 - `BASE_URL`
 - `TIMEZONE`
-- `API_BEARER_TOKEN`：主站 API 鉴权开关；为空时不启用鉴权，非空时 `/api/*` 要求 `Authorization: Bearer <token>`（同源浏览器资源请求兼容 `raelyn_api_token` cookie），`/api/ws/*` 要求 query `token=<token>`
+- `API_BEARER_TOKEN`
+  - 为空时不启用主站 API 鉴权。
+  - 非空时 `/api/*` 需要 `Authorization: Bearer <token>` 或 `raelyn_api_token` cookie。
+  - `/api/ws/*` 需要 query `token=<token>`。
+
+### 数据与对象存储
+
 - `DATABASE_URL`
 - `S3_ENDPOINT`
 - `S3_ACCESS_KEY`
@@ -16,7 +27,17 @@
 - `S3_BUCKET`
 - `S3_USE_SSL`
 
-## 工具与处理链路
+### 资产分发策略
+
+- `ASSET_DIRECT_PROBE_URL`
+  - 前端启动时用于探测是否能直接访问对象存储。
+- `ASSET_DIRECT_PROBE_TIMEOUT_MS`
+- `ASSET_PROXY_BASE_PATH`
+  - 默认 `/api/assets`
+- `ASSET_PRESIGN_ENABLED`
+  - 控制是否为资产生成 presigned URL。
+
+### 工具与下载
 
 - `FFMPEG_BIN`
 - `AUDIO_CODEC`
@@ -24,12 +45,14 @@
 - `AUDIO_SAMPLE_RATE_HZ`
 - `AUDIO_CHANNELS`
 - `YTDLP_PROXY`
-- `YTDLP_REMOTE_COMPONENTS`：默认 `ejs:github`；用于允许 yt-dlp 在 YouTube EJS/JS challenge 场景下拉取远程组件。可留空禁用，多个值可用逗号或空格分隔。
+- `YTDLP_REMOTE_COMPONENTS`
+  - 默认 `ejs:github`
 - `YTDLP_FORMAT`
+  - 作为默认格式选择器；若运行时配置 `ytdlp_format.text` 存在，会优先使用运行时配置。
 
-## 同步与并发
+### 同步与并发
 
-- `SYNC_INTERVAL_MINUTES`：默认 `5`
+- `SYNC_INTERVAL_MINUTES`
 - `SYNC_BATCH_SIZE`
 - `SYNC_MAX_ENTRIES`
 - `AUTO_DOWNLOAD_NEW_VIDEOS`
@@ -38,9 +61,20 @@
 - `YOUTUBE_DOWNLOAD_CONCURRENCY`
 - `BILIBILI_DOWNLOAD_CONCURRENCY`
 
-## ASR / LLM
+### Worker 心跳与孤儿任务回收
+
+- `WORKER_HEARTBEAT_INTERVAL_SECONDS`
+- `WORKER_STALE_AFTER_SECONDS`
+- `ORPHAN_REQUEUE_PRIORITY_BUMP`
+
+### ASR / LLM
 
 - `ASR_URL`
+- `ASR_ENDPOINT`
+- `ASR_MODEL`
+- `ASR_PROMPT`
+- `ASR_TEMPERATURE`
+- `ASR_RESPONSE_FORMAT`
 - `ASR_TIMEOUT_SECONDS`
 - `LLM_URL`
 - `LLM_MODEL`
@@ -48,21 +82,106 @@
 - `LLM_HEADERS_JSON`
 - `LLM_TIMEOUT_SECONDS`
 
-## Worker
+### Worker 进程选择
 
 - `WORKER_ROLE`
+  - 支持 `download_youtube`、`download_bilibili`、`audio`、`process`、`asr`、`sync`、`ai`、`all`
 - `WORKER_TYPES`
+  - 逗号分隔的 job type 列表，优先级高于 `WORKER_ROLE`
 
-## MCP HTTP
+### MCP HTTP
 
-- `MCP_HOST`：默认 `0.0.0.0`
-- `MCP_PORT`：默认 `8001`
-- `MCP_BASE_PATH`：默认 `/mcp`
-- `MCP_BEARER_TOKEN`：MCP HTTP 服务必填；为空时 `python -m raelyn.mcp_server` 会直接启动失败，`scripts/dev/devctl.sh start` 也会跳过 MCP 进程
+- `MCP_HOST`
+- `MCP_PORT`
+- `MCP_BASE_PATH`
+- `MCP_BEARER_TOKEN`
+  - MCP 服务强制要求；为空时 `run-mcp.sh` 无法启动，`devctl.sh start` 会跳过 MCP。
 
-MCP 运行边界：
+## 运行时配置（`app_config`）
 
-- `GET /health` 允许匿名访问
-- `MCP_BASE_PATH` 下的 MCP 请求全部要求 `Authorization: Bearer <MCP_BEARER_TOKEN>`
-- 默认监听 `0.0.0.0` 是为了受信任局域网访问，不按公网暴露方案设计
-- 如果只希望本机访问，可把 `MCP_HOST` 改成 `127.0.0.1`
+### 平台 Cookies
+
+- `ytdlp_cookies_youtube`
+- `ytdlp_cookies_bilibili`
+
+值结构：
+
+```json
+{ "text": "<netscape cookies.txt>" }
+```
+
+说明：
+
+- 通过 `/api/config/{key}` 写入。
+- 服务运行时会把内容写到 `tmp/ytdlp_cookies_*.txt` 供 yt-dlp / profile fetch 使用。
+- 更新后若系统是因为 Cookies 失效被自动暂停，会尝试自动恢复。
+
+### 字幕与会员视频
+
+- `ytdlp_subtitles`
+- `ytdlp_members_only`
+
+值结构：
+
+```json
+{ "enabled": true }
+```
+
+说明：
+
+- `ytdlp_subtitles` 控制是否下载字幕 / 自动字幕。
+- `ytdlp_members_only` 控制是否尝试下载 YouTube 会员专享视频。
+
+### 下载格式
+
+- `ytdlp_format`
+
+值结构：
+
+```json
+{ "preset": "1080|720|custom", "text": "<yt-dlp format selector>" }
+```
+
+说明：
+
+- 若存在此项，下载时优先于环境变量 `YTDLP_FORMAT`。
+
+### 转写润色提示词
+
+- `llm_transcript_polish_prompt`
+
+值结构：
+
+```json
+{ "text": "<prompt template>" }
+```
+
+说明：
+
+- 用于 `video.polish_transcript`。
+- 建议保留 `{chunk}` 占位符；`{index}` / `{total}` 可选。
+
+### 简报调度策略
+
+- `brief_generation_policy`
+
+值结构：
+
+```json
+{
+  "latest_cooldown_minutes": 120,
+  "historical_daily_run_time": "04:00"
+}
+```
+
+说明：
+
+- 控制最新周期的冷却时间与历史周期批处理时间。
+- 默认值可通过 `GET /api/config/defaults` 获取。
+
+## 当前配置边界
+
+- 环境变量偏“进程级 / 基础设施级”。
+- `app_config` 偏“运行时行为开关”。
+- 并不是所有环境变量都有 UI 页面；也不是所有 `app_config` 都有独立 UI 标签。
+- 平台 Cookies、字幕、会员视频、下载格式、转写润色提示词目前都有现成 UI；简报调度策略目前主要通过 API 管理。

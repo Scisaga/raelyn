@@ -748,28 +748,38 @@
                     <div
                       x-ref="playlistCalendarStrip"
                       class="min-w-0 overflow-hidden select-none"
-                      :class="playlistCalendarDragging ? 'cursor-grabbing' : 'cursor-grab'"
+                      :class="playlistCalendarInteractionBusy() ? 'cursor-grabbing' : 'cursor-grab'"
                       :style="playlistCalendarStripStyle() + ';touch-action:pan-y;'"
                       @pointerdown="playlistCalendarPointerDown($event)"
                     >
-                      <div class="grid h-16 grid-flow-col auto-cols-fr divide-x divide-slate-800 will-change-transform" :style="playlistCalendarTrackStyle()">
-                        <template x-for="d in playlistCalendarItems()" :key="d.date">
-                          <button
-                            type="button"
-                            class="h-16 px-2 flex flex-col items-center justify-center text-center relative"
-                            :class="(playlistCalendarDragging ? '' : 'hover:bg-slate-800/40 transition') + (d.selected ? ' bg-emerald-500/15 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.35)]' : (d.today ? ' bg-sky-500/15 shadow-[inset_0_0_0_1px_rgba(56,189,248,0.25)]' : '')) + (d.disabled ? ' opacity-40 cursor-not-allowed' : '')"
-                            @click="playlistCalendarSelectDate(d.date, $event)"
-                            :disabled="d.disabled"
-                            :title="d.date"
+                      <div class="relative h-16">
+                        <template x-for="track in playlistCalendarTracks()" :key="track.key">
+                          <div
+                            class="absolute inset-0 grid h-16 grid-flow-col auto-cols-fr divide-x divide-slate-800 will-change-transform"
+                            :class="track.interactive ? '' : 'pointer-events-none'"
+                            :style="track.style"
+                            :aria-hidden="track.interactive ? null : 'true'"
                           >
-                            <div class="text-sm font-semibold text-slate-100 whitespace-nowrap leading-4" x-text="d.md"></div>
-                            <div class="mt-0.5 text-[11px] text-slate-400 whitespace-nowrap leading-4" x-text="d.weekday"></div>
-	                            <div class="pointer-events-none absolute top-0.5 right-0.5 sm:top-1 sm:right-1 flex flex-col items-end gap-[1px]" x-show="!d.disabled && playlistCalendarDotCount(d.date) > 0">
-	                              <template x-for="(x, i) in playlistCalendarDots(d.date)" :key="i">
-	                                <div class="w-[3px] h-[3px] rounded-full bg-teal-600/80 drop-shadow-[0_0_2px_rgba(0,0,0,0.25)]"></div>
-	                              </template>
-	                            </div>
-                          </button>
+                            <template x-for="d in track.items" :key="track.key + ':' + d.date">
+                              <button
+                                type="button"
+                                class="h-16 px-2 flex flex-col items-center justify-center text-center relative"
+                                :class="(playlistCalendarInteractionBusy() ? '' : 'hover:bg-slate-800/40 transition') + (d.selected ? ' bg-emerald-500/15 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.35)]' : (d.today ? ' bg-sky-500/15 shadow-[inset_0_0_0_1px_rgba(56,189,248,0.25)]' : '')) + (d.disabled ? ' opacity-40 cursor-not-allowed' : '')"
+                                @click="track.interactive ? playlistCalendarSelectDate(d.date, $event) : null"
+                                :disabled="d.disabled"
+                                :tabindex="track.interactive ? null : -1"
+                                :title="d.date"
+                              >
+                                <div class="text-sm font-semibold text-slate-100 whitespace-nowrap leading-4" x-text="d.md"></div>
+                                <div class="mt-0.5 text-[11px] text-slate-400 whitespace-nowrap leading-4" x-text="d.weekday"></div>
+                                <div class="pointer-events-none absolute top-0.5 right-0.5 sm:top-1 sm:right-1 flex flex-col items-end gap-[1px]" x-show="!d.disabled && playlistCalendarDotCount(d.date) > 0">
+                                  <template x-for="(x, i) in playlistCalendarDots(d.date)" :key="i">
+                                    <div class="w-[3px] h-[3px] rounded-full bg-teal-600/80 drop-shadow-[0_0_2px_rgba(0,0,0,0.25)]"></div>
+                                  </template>
+                                </div>
+                              </button>
+                            </template>
+                          </div>
                         </template>
                       </div>
                     </div>
