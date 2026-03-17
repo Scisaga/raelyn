@@ -126,6 +126,7 @@
 ### `POST /api/videos/{video_id}/download`
 
 - 投递下载任务。
+- 若已存在同一视频的活跃下载任务，则不重复创建，而是复用该任务；若其仍为 `pending`，会把优先级提升到 `10`。
 - 可能返回 `409`，例如重复下载或当前状态不允许下载。
 
 ### `GET /api/videos/{video_id}/transcript`

@@ -138,6 +138,7 @@ export function createAppInitMethods() {
       try {
         this._initShellListeners();
         this._initShellRouteState();
+        await this.initPwa();
         await this.waitForStartupGatePaint();
         await this._continueStartupSequence();
       } catch (e) {

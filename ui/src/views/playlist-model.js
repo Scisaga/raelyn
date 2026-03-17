@@ -24,8 +24,10 @@ export function createPlaylistViewMethods() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       if (!pid) {
         this.playlistCalendarResetDragState();
+        this.playlistDayListResetSwipeState();
         this.playlistDetail = null;
         this.playlistDayVideos = [];
+        this.playlistPlayerNeedsDownload = false;
         this.playlistBriefHtml = "";
         this.playlistBriefMarkdown = "";
         this._abortCtrl("_playlistCountsAbortCtrl");
@@ -47,9 +49,11 @@ export function createPlaylistViewMethods() {
 
       try {
         this.playlistCalendarResetDragState();
+        this.playlistDayListResetSwipeState();
         this._syncUrl({ push: false });
         this.playlistDayVideosError = "";
         this.playlistBriefError = "";
+        this.playlistPlayerNeedsDownload = false;
 
         const detail = await this.api(`/playlists/${encodeURIComponent(pid)}/detail`);
         this.playlistDetail = detail || null;
@@ -501,6 +505,226 @@ export function createPlaylistViewMethods() {
       this.playlistSetDate(date);
     },
 
+    playlistDayListSwipeEnabled() {
+      try {
+        return !!(window.matchMedia && window.matchMedia("(max-width: 1023px)").matches);
+      } catch {
+        return !!(window && window.innerWidth && Number(window.innerWidth) <= 1023);
+      }
+    },
+
+    playlistDayListGestureThresholdPx() {
+      try {
+        const width =
+          this.$refs && this.$refs.playlistDayListScroller && this.$refs.playlistDayListScroller.clientWidth
+            ? Number(this.$refs.playlistDayListScroller.clientWidth)
+            : 0;
+        if (Number.isFinite(width) && width > 0) return Math.max(44, Math.min(96, Math.round(width * 0.14)));
+      } catch {
+        // ignore
+      }
+      return 56;
+    },
+
+    playlistDayListPanelStyle() {
+      const offset = Number(this.playlistDayListDragOffsetX || 0);
+      const settling = !!this.playlistDayListSettling;
+      const transition = settling ? "transform 180ms cubic-bezier(0.22, 1, 0.36, 1)" : "none";
+      return `transform:translate3d(${offset}px,0,0);transition:${transition};will-change:transform;`;
+    },
+
+    playlistDayListCanSwipe(step) {
+      const delta = Number(step || 0);
+      if (!Number.isFinite(delta) || delta === 0) return false;
+      const g = this.playlistGranularity();
+      const start = String(this.playlistTimelineStart || "").trim();
+      const end = String(this.playlistTimelineEnd || "").trim();
+      const selected = String(this.playlistSelectedDate || "").trim();
+      if (!start || !end || !selected) return false;
+      const next = this._periodClampIso(this._periodAddIso(selected, g, delta), start, end);
+      return !!next && next !== selected;
+    },
+
+    playlistDayListResolveDragOffset(rawDx) {
+      const dx = Number(rawDx || 0);
+      if (!Number.isFinite(dx) || dx === 0) return 0;
+      let width = 0;
+      try {
+        width =
+          this.$refs && this.$refs.playlistDayListScroller && this.$refs.playlistDayListScroller.clientWidth
+            ? Number(this.$refs.playlistDayListScroller.clientWidth)
+            : 0;
+      } catch {
+        // ignore
+      }
+      const maxOffset = Math.max(56, Math.min(width > 0 ? width * 0.72 : 260, 280));
+      const canMove = dx > 0 ? this.playlistDayListCanSwipe(-1) : this.playlistDayListCanSwipe(1);
+      const factor = canMove ? 1 : 0.28;
+      return Math.max(-maxOffset, Math.min(maxOffset, dx * factor));
+    },
+
+    playlistDayListClearSettleTimer() {
+      try {
+        if (this._playlistDayListSettleTimer) clearTimeout(this._playlistDayListSettleTimer);
+      } catch {
+        // ignore
+      }
+      this._playlistDayListSettleTimer = null;
+    },
+
+    playlistDayListReleasePointerTracking() {
+      try {
+        if (this._playlistDayListDragMove) window.removeEventListener("pointermove", this._playlistDayListDragMove);
+      } catch {
+        // ignore
+      }
+      try {
+        if (this._playlistDayListDragEnd) {
+          window.removeEventListener("pointerup", this._playlistDayListDragEnd);
+          window.removeEventListener("pointercancel", this._playlistDayListDragEnd);
+        }
+      } catch {
+        // ignore
+      }
+      this._playlistDayListDragMove = null;
+      this._playlistDayListDragEnd = null;
+      this.playlistDayListDragPointerId = null;
+      this.playlistDayListDragStartX = 0;
+      this.playlistDayListDragStartY = 0;
+      this.playlistDayListDragDidMove = false;
+    },
+
+    playlistDayListStartSettle(targetOffset, onDone = null) {
+      const target = Number(targetOffset || 0);
+      this.playlistDayListClearSettleTimer();
+      this.playlistDayListSettling = true;
+      this.playlistDayListDragOffsetX = Number.isFinite(target) ? target : 0;
+      this._playlistDayListSettleTimer = window.setTimeout(() => {
+        this._playlistDayListSettleTimer = null;
+        if (typeof onDone === "function") {
+          onDone();
+          return;
+        }
+        this.playlistDayListResetSwipeState();
+      }, 180);
+    },
+
+    playlistDayListResetSwipeState() {
+      this.playlistDayListClearSettleTimer();
+      this.playlistDayListReleasePointerTracking();
+      this.playlistDayListSettling = false;
+      this.playlistDayListDragOffsetX = 0;
+    },
+
+    playlistDayListPointerDown(ev) {
+      if (!this.playlistDayListSwipeEnabled()) return;
+      if (this.playlistDayListSettling) return;
+      if (this.playlistDayListDragPointerId !== null) return;
+      if (!ev || (ev.pointerType === "mouse" && ev.button !== 0)) return;
+      if (ev && ev.isPrimary === false) return;
+
+      this.playlistDayListResetSwipeState();
+      this.playlistDayListDragPointerId = ev.pointerId;
+      this.playlistDayListDragStartX = Number(ev.clientX || 0);
+      this.playlistDayListDragStartY = Number(ev.clientY || 0);
+
+      const onMove = (nextEv) => this.playlistDayListPointerMove(nextEv);
+      const onEnd = (nextEv) => this.playlistDayListPointerEnd(nextEv);
+      this._playlistDayListDragMove = onMove;
+      this._playlistDayListDragEnd = onEnd;
+
+      try {
+        window.addEventListener("pointermove", onMove, { passive: false });
+        window.addEventListener("pointerup", onEnd, { passive: false });
+        window.addEventListener("pointercancel", onEnd, { passive: false });
+      } catch {
+        // ignore
+      }
+    },
+
+    playlistDayListPointerMove(ev) {
+      if (!ev || this.playlistDayListDragPointerId === null || ev.pointerId !== this.playlistDayListDragPointerId) return;
+
+      const dx = Number(ev.clientX || 0) - Number(this.playlistDayListDragStartX || 0);
+      const dy = Number(ev.clientY || 0) - Number(this.playlistDayListDragStartY || 0);
+      const absX = Math.abs(dx);
+      const absY = Math.abs(dy);
+
+      if (!this.playlistDayListDragDidMove) {
+        if (absX < 8 && absY < 8) return;
+        if (absY > absX) {
+          this.playlistDayListResetSwipeState();
+          return;
+        }
+        this.playlistDayListDragDidMove = true;
+      }
+
+      this.playlistDayListDragOffsetX = this.playlistDayListResolveDragOffset(dx);
+      try {
+        if (ev.cancelable) ev.preventDefault();
+      } catch {
+        // ignore
+      }
+    },
+
+    playlistDayListPointerEnd(ev) {
+      if (!ev || this.playlistDayListDragPointerId === null || ev.pointerId !== this.playlistDayListDragPointerId) return;
+
+      const dx = Number(ev.clientX || 0) - Number(this.playlistDayListDragStartX || 0);
+      const didMove = !!this.playlistDayListDragDidMove;
+      const threshold = this.playlistDayListGestureThresholdPx();
+
+      if (didMove) {
+        this.playlistDayListDragSuppressClickUntil = Date.now() + 300;
+        try {
+          if (ev.cancelable) ev.preventDefault();
+        } catch {
+          // ignore
+        }
+      }
+
+      this.playlistDayListReleasePointerTracking();
+
+      if (!didMove) {
+        this.playlistDayListResetSwipeState();
+        return;
+      }
+
+      if (Math.abs(dx) < threshold) {
+        this.playlistDayListStartSettle(0);
+        return;
+      }
+
+      let width = 0;
+      try {
+        width =
+          this.$refs && this.$refs.playlistDayListScroller && this.$refs.playlistDayListScroller.clientWidth
+            ? Number(this.$refs.playlistDayListScroller.clientWidth)
+            : 0;
+      } catch {
+        // ignore
+      }
+      const magnitude = width > 0 ? Math.max(width * 0.82, Math.abs(dx)) : Math.max(Math.abs(dx), 180);
+      const targetOffset = dx > 0 ? magnitude : -magnitude;
+      this.playlistDayListStartSettle(targetOffset, () => {
+        this.playlistDayListResetSwipeState();
+        if (dx > 0) this.playlistPrevDay();
+        else this.playlistNextDay();
+      });
+    },
+
+    playlistSelectVideoFromList(v, ev = null) {
+      if (Date.now() < Number(this.playlistDayListDragSuppressClickUntil || 0)) {
+        try {
+          if (ev && ev.preventDefault) ev.preventDefault();
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      this.playlistSelectVideo(v, { autoPlay: true });
+    },
+
     playlistGranularity() {
       try {
         const detailGranularity = this.playlistDetail && this.playlistDetail.brief_granularity ? String(this.playlistDetail.brief_granularity) : "";
@@ -870,6 +1094,7 @@ export function createPlaylistViewMethods() {
       if (this.playlistCalendarDragging || this.playlistCalendarSettling || this.playlistCalendarDragPointerId !== null) {
         this.playlistCalendarResetDragState();
       }
+      if (this.playlistDayListDragPointerId !== null) this.playlistDayListResetSwipeState();
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       if (!pid) return;
       const g = this.playlistGranularity();
@@ -902,12 +1127,14 @@ export function createPlaylistViewMethods() {
       this._abortCtrl("_playlistDayAbortCtrl");
       this._abortCtrl("_playlistBriefAbortCtrl");
       this._abortCtrl("_playlistBriefMdAbortCtrl");
+      this._abortCtrl("_playlistPlayableProbeAbortCtrl");
       this._abortCtrl("_playlistSelectAbortCtrl");
       this.playlistResetMediaElements({ cancelAutoPlay: true });
 
       const prevCurrentId =
         this.playlistCurrentVideo && this.playlistCurrentVideo.id ? String(this.playlistCurrentVideo.id) : "";
       this.playlistPlayerError = "";
+      this.playlistPlayerNeedsDownload = false;
       this.playlistPlayerVideoUrl = "";
       this.playlistPlayerAudioUrl = "";
       this.playlistTranscriptText = "";
@@ -956,7 +1183,11 @@ export function createPlaylistViewMethods() {
         this.syncSystemMediaSession({ forcePosition: true });
       }
       const selectPromise = this.playlistCurrentVideo
-        ? this.playlistSelectVideo(this.playlistCurrentVideo, { autoPlay, loadToken })
+        ? this.playlistSelectVideo(this.playlistCurrentVideo, {
+            autoPlay,
+            loadToken,
+            fallbackVideos: autoPlay ? this.playlistDayVideos : null,
+          })
         : Promise.resolve();
       const briefPromise = this.playlistLoadBrief(day, { loadToken });
       try {
@@ -967,15 +1198,114 @@ export function createPlaylistViewMethods() {
       if (Number(this.playlistLoadToken || 0) === loadToken) this.syncSystemMediaSession({ forcePosition: true });
     },
 
-    async playlistSelectVideo(v, { autoPlay = false, loadToken = null } = {}) {
+    playlistResolveAssetSources(assets) {
+      const list = Array.isArray(assets) ? assets : [];
+      const videos = list.filter((a) => a && a.type === "video");
+      const audios = list.filter((a) => a && a.type === "audio");
+      const videoAsset = videos.find((a) => String(a.format || "").toLowerCase() === "mp4") || videos[0] || null;
+      const audioAsset = audios.find((a) => String(a.format || "").toLowerCase() === "m4a") || audios[0] || null;
+      return {
+        list,
+        videoAsset,
+        audioAsset,
+        videoUrl: (videoAsset && this.assetContentUrl(videoAsset)) || "",
+        audioUrl: (audioAsset && this.assetContentUrl(audioAsset)) || "",
+      };
+    },
+
+    playlistModeSourceUrlFromAssets(assets, audioOnly = this.playlistAudioOnly) {
+      const resolved = this.playlistResolveAssetSources(assets);
+      return String(audioOnly ? resolved.audioUrl : resolved.videoUrl).trim();
+    },
+
+    playlistCurrentModeUnavailableMessage(resolvedAssets = null, audioOnly = this.playlistAudioOnly) {
+      const assets = resolvedAssets && typeof resolvedAssets === "object" ? resolvedAssets : null;
+      const hasVideo = !!String((assets && assets.videoUrl) || "").trim();
+      const hasAudio = !!String((assets && assets.audioUrl) || "").trim();
+      if (audioOnly) {
+        if (hasVideo) return "当前条目暂无可播放音频，可切换到视频模式或发起下载";
+        return "当前条目暂无可播放音频，可发起下载";
+      }
+      if (hasAudio) return "当前条目暂无可播放视频，可切换到音频模式或发起下载";
+      return "当前条目暂无可播放视频，可发起下载";
+    },
+
+    playlistRefreshCurrentModeAvailability(resolvedAssets = null, audioOnly = this.playlistAudioOnly) {
+      const assets =
+        resolvedAssets && typeof resolvedAssets === "object"
+          ? resolvedAssets
+          : {
+              videoUrl: this.playlistPlayerVideoUrl || "",
+              audioUrl: this.playlistPlayerAudioUrl || "",
+            };
+      const currentModeUrl = String(audioOnly ? assets.audioUrl || "" : assets.videoUrl || "").trim();
+      this.playlistPlayerNeedsDownload = !currentModeUrl;
+      if (currentModeUrl) {
+        if (String(this.playlistPlayerError || "").startsWith("当前条目暂无可播放")) this.playlistPlayerError = "";
+        return currentModeUrl;
+      }
+      if (!String(this.playlistPlayerError || "").trim()) {
+        this.playlistPlayerError = this.playlistCurrentModeUnavailableMessage(assets, audioOnly);
+      }
+      return "";
+    },
+
+    async playlistFindFirstPlayableVideo(videos, { loadToken = null, excludeIds = [], audioOnly = this.playlistAudioOnly } = {}) {
+      const items = Array.isArray(videos) ? videos : [];
+      if (!items.length) return null;
+
+      const token = Number(loadToken || this.playlistLoadToken || 0);
+      const excluded = new Set(
+        (Array.isArray(excludeIds) ? excludeIds : [])
+          .map((id) => String(id || "").trim())
+          .filter(Boolean)
+      );
+
+      this._abortCtrl("_playlistPlayableProbeAbortCtrl");
+      const ctrl = new AbortController();
+      this._playlistPlayableProbeAbortCtrl = ctrl;
+
+      try {
+        for (const video of items) {
+          if (Number(this.playlistLoadToken || 0) !== token) return null;
+
+          const vid = video && video.id ? String(video.id).trim() : "";
+          if (!vid || excluded.has(vid)) continue;
+
+          let assets = this._cacheGet(this.playlistVideoAssetsCache, vid);
+          if (!assets) {
+            try {
+              assets = await this.api(`/videos/${encodeURIComponent(vid)}/assets?presign=1&download=0&localize_title=0`, {
+                signal: ctrl.signal,
+              });
+              if (Number(this.playlistLoadToken || 0) !== token) return null;
+              this._cacheSet(this.playlistVideoAssetsCache, vid, assets, PLAYLIST_ASSETS_CACHE_TTL_MS);
+            } catch (e) {
+              if (this._isAbortError(e)) return null;
+              continue;
+            }
+          }
+
+          if (this.playlistModeSourceUrlFromAssets(assets, audioOnly)) return video;
+        }
+      } finally {
+        if (this._playlistPlayableProbeAbortCtrl === ctrl) this._playlistPlayableProbeAbortCtrl = null;
+      }
+
+      return null;
+    },
+
+    async playlistSelectVideo(v, { autoPlay = false, loadToken = null, fallbackVideos = null } = {}) {
       if (!v) return;
       const vid = String(v.id || "").trim();
       if (!vid) return;
       const token = Number(loadToken || this.playlistLoadToken || 0);
+      const fallbackItems = Array.isArray(fallbackVideos) ? fallbackVideos : null;
       if (autoPlay) this.playlistPendingAutoPlayId = vid;
       else if (String(this.playlistPendingAutoPlayId || "").trim() === vid) this.playlistPendingAutoPlayId = "";
       this.playlistCurrentVideo = v;
       this.playlistPlayerError = "";
+      this.playlistPlayerNeedsDownload = false;
       const selectingId = vid;
       this.syncSystemMediaSession({ forcePosition: true });
 
@@ -998,14 +1328,11 @@ export function createPlaylistViewMethods() {
 
       const applyAssets = (assets) => {
         if (isStale()) return;
-        const list = Array.isArray(assets) ? assets : [];
+        const resolved = this.playlistResolveAssetSources(assets);
+        const list = resolved.list;
         this.playlistRememberAudioThumbnailSources(v, list);
-        const videos = list.filter((a) => a && a.type === "video");
-        const audios = list.filter((a) => a && a.type === "audio");
-        const mp4 = videos.find((a) => String(a.format || "").toLowerCase() === "mp4") || videos[0] || null;
-        const m4a = audios.find((a) => String(a.format || "").toLowerCase() === "m4a") || audios[0] || null;
-        this.playlistPlayerVideoUrl = (mp4 && this.assetContentUrl(mp4)) || "";
-        this.playlistPlayerAudioUrl = (m4a && this.assetContentUrl(m4a)) || "";
+        this.playlistPlayerVideoUrl = resolved.videoUrl;
+        this.playlistPlayerAudioUrl = resolved.audioUrl;
         this.$nextTick(() => {
           if (isStale()) return;
           this.handleVisibilityMediaPolicy();
@@ -1018,6 +1345,7 @@ export function createPlaylistViewMethods() {
           }
           this.playlistSyncMediaState();
         });
+        return resolved;
       };
 
       const applyTranscript = (transcript) => {
@@ -1035,8 +1363,9 @@ export function createPlaylistViewMethods() {
         }
       };
 
+      let resolvedAssets = null;
       const cachedAssets = this._cacheGet(this.playlistVideoAssetsCache, selectingId);
-      if (cachedAssets) applyAssets(cachedAssets);
+      if (cachedAssets) resolvedAssets = applyAssets(cachedAssets) || resolvedAssets;
       else {
         this.playlistPlayerVideoUrl = "";
         this.playlistPlayerAudioUrl = "";
@@ -1065,7 +1394,7 @@ export function createPlaylistViewMethods() {
         const [assetsRes, transcriptRes] = await Promise.allSettled([assetsPromise, transcriptPromise]);
 
         if (assetsRes.status === "fulfilled") {
-          applyAssets(assetsRes.value);
+          resolvedAssets = applyAssets(assetsRes.value) || resolvedAssets;
           if (!cachedAssets) this._cacheSet(this.playlistVideoAssetsCache, selectingId, assetsRes.value, PLAYLIST_ASSETS_CACHE_TTL_MS);
         } else if (!cachedAssets) {
           const err = assetsRes.reason;
@@ -1082,6 +1411,30 @@ export function createPlaylistViewMethods() {
       } catch (e) {
         if (!this._isAbortError(e) && !isStale()) this.playlistPlayerError = e && e.message ? e.message : String(e);
       }
+
+      if (!isStale()) {
+        this.playlistRefreshCurrentModeAvailability(resolvedAssets, this.playlistAudioOnly);
+      }
+
+      if (!isStale() && autoPlay && fallbackItems && fallbackItems.length > 1) {
+        const currentModeUrl = String(
+          resolvedAssets ? (this.playlistAudioOnly ? resolvedAssets.audioUrl : resolvedAssets.videoUrl) || "" : ""
+        ).trim();
+        if (!currentModeUrl) {
+          const fallback = await this.playlistFindFirstPlayableVideo(fallbackItems, {
+            loadToken: token,
+            excludeIds: [selectingId],
+            audioOnly: this.playlistAudioOnly,
+          });
+          if (!isStale()) {
+            const fallbackId = fallback && fallback.id ? String(fallback.id).trim() : "";
+            if (fallbackId && fallbackId !== selectingId) {
+              return this.playlistSelectVideo(fallback, { autoPlay: true, loadToken: token });
+            }
+          }
+        }
+      }
+
       if (!isStale()) {
         this.playlistTranscriptLoading = false;
         if (!this.playlistCurrentVideo && String(this.playlistPendingAutoPlayId || "").trim() === selectingId) {
@@ -1593,8 +1946,33 @@ export function createPlaylistViewMethods() {
         } catch {
           // ignore
         }
+        this.playlistRefreshCurrentModeAvailability(null, next);
         this.playlistSyncMediaState();
       });
+    },
+
+    playlistCanDownloadCurrentVideo() {
+      const video = this.playlistCurrentVideo;
+      const videoId = video && video.id ? String(video.id).trim() : "";
+      return !!videoId && !!this.playlistPlayerNeedsDownload;
+    },
+
+    async playlistDownloadCurrentVideo() {
+      const video = this.playlistCurrentVideo;
+      const videoId = video && video.id ? String(video.id).trim() : "";
+      if (!videoId || this.playlistDownloadSubmitting) return;
+
+      this.playlistDownloadSubmitting = true;
+      try {
+        const res = await this.api(`/videos/${encodeURIComponent(videoId)}/download`, { method: "POST" });
+        const msg = res && res.message ? String(res.message) : "下载任务已提交";
+        this.globalStatus = msg;
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.playlistDownloadSubmitting = false;
+      }
     },
 
     playlistCurrentVideoIndex() {
