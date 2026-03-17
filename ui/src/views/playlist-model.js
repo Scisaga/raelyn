@@ -1307,11 +1307,6 @@ export function createPlaylistViewMethods() {
       this.playlistPlayerError = "";
       this.playlistPlayerNeedsDownload = false;
       const selectingId = vid;
-      try {
-        if (typeof this.initMediaSession === "function") this.initMediaSession();
-      } catch {
-        // ignore
-      }
       this.syncSystemMediaSession({ forcePosition: true });
 
       this._abortCtrl("_playlistSelectAbortCtrl");
