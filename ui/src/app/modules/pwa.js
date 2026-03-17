@@ -1,5 +1,3 @@
-const PWA_RUNTIME_VERSION = "20260318.1";
-
 function readStoredBool(key) {
   try {
     return localStorage.getItem(key) === "1";
@@ -211,7 +209,6 @@ export function createPwaModule({ installHintDismissedKey }) {
       }
 
       window.addEventListener("beforeinstallprompt", (event) => {
-        if (this._isMobileInstallViewport()) event.preventDefault();
         this.pwaDeferredPrompt = event;
       });
 
@@ -225,14 +222,7 @@ export function createPwaModule({ installHintDismissedKey }) {
       if (!("serviceWorker" in window) || !isInstallSupportedContext()) return;
 
       try {
-        const registration = await window.navigator.serviceWorker.register(`/sw.js?v=${encodeURIComponent(PWA_RUNTIME_VERSION)}`, {
-          scope: "/",
-        });
-        try {
-          await registration.update();
-        } catch {
-          // ignore
-        }
+        await window.navigator.serviceWorker.register("/sw.js", { scope: "/" });
         this.pwaRegistrationOk = true;
         this.pwaRegistrationError = "";
       } catch (e) {
