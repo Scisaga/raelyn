@@ -12,7 +12,6 @@ from sqlalchemy import func, select
 
 from raelyn.api.orm import OrmModel
 from raelyn.db import session_scope
-from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Job, JobEvent, Media
 from raelyn.timeutil import utcnow
 
@@ -238,15 +237,32 @@ def retry_job(job_id: uuid.UUID) -> dict:
         job = session.get(Job, job_id)
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
-        enqueue_job(
-            session,
-            type_=job.type,
-            params=job.params,
-            priority=job.priority,
-            parent_job_id=str(job.parent_job_id) if job.parent_job_id else None,
+        if job.status in {"pending", "running"}:
+            return {"ok": True, "job_id": str(job.id), "status": job.status}
+
+        previous_status = str(job.status or "")
+        previous_attempt = int(job.attempt or 0)
+        job.status = "pending"
+        job.attempt = 0
+        job.result = None
+        job.progress_current = None
+        job.progress_total = None
+        job.error_message = None
+        job.error_stack = None
+        job.started_at = None
+        job.finished_at = None
+        job.lease_expires_at = None
+        job.worker_id = None
+        job.scheduled_for = utcnow()
+        session.add(
+            JobEvent(
+                job_id=job.id,
+                level="info",
+                message="manual retry requested",
+                data={"previous_status": previous_status, "previous_attempt": previous_attempt},
+            )
         )
-        session.add(JobEvent(job_id=job.id, level="info", message="retry enqueued"))
-    return {"ok": True}
+    return {"ok": True, "job_id": str(job_id), "status": "pending"}
 
 
 @router.post("/jobs/cancel_active")

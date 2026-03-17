@@ -995,7 +995,8 @@ export function createJobsViewMethods() {
         this.globalStatus = "正在投递重试…";
         await this.api(`/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" });
         this.globalStatus = "已投递重试任务";
-        if (this.activeView === "jobs" && this.jobsTab !== "active") this.refreshJobs();
+        if (this.activeView === "jobs" && this.jobsTab !== "active") await this.refreshJobs();
+        if (this.jobsHiddenDoneIds) delete this.jobsHiddenDoneIds[id];
       } catch (e) {
         try {
           if (this.jobsHiddenDoneIds) delete this.jobsHiddenDoneIds[id];
