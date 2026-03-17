@@ -1965,11 +1965,16 @@ export function createPlaylistViewMethods() {
       this.playlistDownloadSubmitting = true;
       try {
         const res = await this.api(`/videos/${encodeURIComponent(videoId)}/download`, { method: "POST" });
-        const msg = res && res.message ? String(res.message) : "下载任务已提交";
+        const reused = !!(res && res.reused);
+        const msg = reused ? "已更新下载任务优先级" : "已添加新下载任务";
+        this.playlistPlayerError = "";
+        this.playlistPlayerNeedsDownload = false;
         this.globalStatus = msg;
+        this.toastSuccess(msg, { action: this.toastJobsAction() });
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
         this.globalStatus = `error: ${msg}`;
+        this.toastError(`下载任务提交失败：${msg}`, { action: this.toastJobsAction() });
       } finally {
         this.playlistDownloadSubmitting = false;
       }

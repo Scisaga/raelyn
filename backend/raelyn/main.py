@@ -48,6 +48,7 @@ def _system_paused_handler(_request, exc: SystemPausedError) -> JSONResponse:
 
 static_dir = Path(__file__).resolve().parents[2] / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+app.mount("/pwa", StaticFiles(directory=str(static_dir / "pwa")), name="pwa")
 
 
 def _static_root_file(filename: str, *, media_type: str) -> FileResponse:
@@ -91,7 +92,7 @@ app.include_router(ws_router, prefix="/api")
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str) -> FileResponse:
     # Allow API/static to 404 properly; everything else returns the SPA shell so History API routes work.
-    if full_path.startswith(("api", "static", ".well-known")):
+    if full_path.startswith(("api", "static", "pwa", ".well-known")):
         raise HTTPException(status_code=404)
     index_path = static_dir / "index.html"
     return FileResponse(str(index_path))
