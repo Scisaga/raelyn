@@ -209,6 +209,7 @@ export function createPwaModule({ installHintDismissedKey }) {
       }
 
       window.addEventListener("beforeinstallprompt", (event) => {
+        event.preventDefault();
         this.pwaDeferredPrompt = event;
       });
 

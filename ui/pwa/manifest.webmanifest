@@ -1,7 +1,6 @@
 {
   "name": "RAELYN",
   "short_name": "RAELYN",
-  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
