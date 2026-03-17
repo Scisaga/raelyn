@@ -147,7 +147,12 @@ static/
 ### UI 风格与规范（必须遵循）
 
 * 定位：深色优先、现代克制、偏“管理后台 / SaaS 控制台”风格；信息密度中等，强调可读性与状态表达
-* 配色方案（集中定义，可独立调整；后续改色优先只改本表，其它地方如出现颜色 class 必须引用本表）：
+* 配色方案：
+
+  * `docs/ui/theme.md` 若存在，则它是当前项目的配色重载事实来源；与本节默认值冲突时，以 `docs/ui/theme.md` 为准
+  * 本节只提供默认定义，保证该 skill 在脱离当前项目文档时仍可独立使用
+  * 后续改色时，项目内优先修改 `docs/ui/theme.md`；不要把项目主题差异直接堆回本节默认值
+  * 其它地方如出现颜色 class，应优先引用“Base / Primary / Danger / Warning / Info / Overlay”这些语义槽位，而不是分散定义
 
   * Base（中性基底 / Slate）：
 
@@ -176,7 +181,7 @@ static/
 
     * 弱底：bg-sky-500/15 text-sky-200 border-sky-500/25
     * 文案：text-sky-300
-  * Overlay（遮罩）：
+  * Overlay（遮罩，默认值）：
 
     * 弹窗遮罩：bg-black/60
 * 主题：
@@ -256,6 +261,7 @@ static/
 
 * 资源引用必须为本地资源（不可 CDN），并与目录结构一致（不要写成 `/static/...` 这种不存在的路径）
 * Material Symbols 必须自托管（`assets/css/material-symbols.css` + `assets/fonts/*.woff2`）
+* 若项目存在 `docs/ui/theme.md`，验收时配色应以该文档为准；本 skill 中的配色表仅作为默认值
 
 ### 路由与 App Shell
 

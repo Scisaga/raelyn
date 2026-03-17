@@ -22,6 +22,7 @@
 
 - [REST API 设计](api/rest.md)
 - [UI 设计总览](ui/overview.md)
+- [UI 主题配色](ui/theme.md)
 
 ## 交付与运行
 
