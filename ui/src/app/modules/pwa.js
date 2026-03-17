@@ -22,6 +22,14 @@ function isIos() {
   }
 }
 
+function isAndroid() {
+  try {
+    return /android/i.test(window.navigator.userAgent || "");
+  } catch {
+    return false;
+  }
+}
+
 function isSafari() {
   try {
     const ua = String(window.navigator.userAgent || "").toLowerCase();
@@ -58,7 +66,6 @@ function isInstallSupportedContext() {
 
 export function createPwaModule({ installHintDismissedKey }) {
   return {
-    pwaDeferredPrompt: null,
     pwaInstalled: false,
     pwaGuideOpen: false,
     pwaGuideMode: "",
@@ -70,14 +77,15 @@ export function createPwaModule({ installHintDismissedKey }) {
 
     _refreshPwaState() {
       this.pwaInstalled = isStandalone();
-      if (this.pwaInstalled) {
-        this.pwaDeferredPrompt = null;
-        this.pwaGuideOpen = false;
-      }
+      if (this.pwaInstalled) this.pwaGuideOpen = false;
     },
 
     _isIosDevice() {
       return isIos();
+    },
+
+    _isAndroidDevice() {
+      return isAndroid();
     },
 
     _isSafariBrowser() {
@@ -92,8 +100,8 @@ export function createPwaModule({ installHintDismissedKey }) {
       }
     },
 
-    pwaCanInstallDirectly() {
-      return !this.pwaInstalled && !!this.pwaDeferredPrompt;
+    pwaCanGuideNativeInstall() {
+      return !this.pwaInstalled && !this._isIosDevice() && isInstallSupportedContext();
     },
 
     pwaCanAddOnIos() {
@@ -105,12 +113,12 @@ export function createPwaModule({ installHintDismissedKey }) {
     },
 
     pwaHasInstallEntry() {
-      return this.pwaInstalled || this.pwaCanInstallDirectly() || this.pwaCanAddOnIos() || this.pwaNeedsSafariHint();
+      return this.pwaInstalled || this.pwaCanGuideNativeInstall() || this.pwaCanAddOnIos() || this.pwaNeedsSafariHint();
     },
 
     pwaCardTitle() {
       if (this.pwaInstalled) return "已安装到主屏幕";
-      if (this.pwaCanInstallDirectly()) return "安装应用";
+      if (this.pwaCanGuideNativeInstall()) return "添加到主屏幕";
       if (this.pwaCanAddOnIos()) return "添加到主屏幕";
       if (this.pwaNeedsSafariHint()) return "请用 Safari 添加到主屏幕";
       return "主屏幕";
@@ -118,7 +126,7 @@ export function createPwaModule({ installHintDismissedKey }) {
 
     pwaCardDescription() {
       if (this.pwaInstalled) return "当前已在独立应用模式中运行。";
-      if (this.pwaCanInstallDirectly()) return "Android / Chromium 浏览器可直接安装，安装后可像原生应用一样从主屏幕启动。";
+      if (this.pwaCanGuideNativeInstall()) return "请使用浏览器原生“添加到主屏幕/安装应用”入口完成安装或添加。";
       if (this.pwaCanAddOnIos()) return "iPhone / iPad 请使用 Safari 的分享菜单，将 RAELYN 添加到主屏幕。";
       if (this.pwaNeedsSafariHint()) return "当前浏览器不支持 iOS 的主屏幕添加，请改用 Safari 打开此页面。";
       return "";
@@ -126,14 +134,14 @@ export function createPwaModule({ installHintDismissedKey }) {
 
     pwaActionLabel() {
       if (this.pwaInstalled) return "已安装";
-      if (this.pwaCanInstallDirectly()) return "安装应用";
+      if (this.pwaCanGuideNativeInstall()) return "查看步骤";
       if (this.pwaCanAddOnIos()) return "查看添加步骤";
       if (this.pwaNeedsSafariHint()) return "查看说明";
       return "主屏幕";
     },
 
     pwaHintText() {
-      if (this.pwaCanInstallDirectly()) return "可安装到主屏幕，后续可像应用一样直接打开。";
+      if (this.pwaCanGuideNativeInstall()) return "请从地址栏或浏览器菜单进入“添加到主屏幕/安装应用”。";
       if (this.pwaCanAddOnIos()) return "可添加到主屏幕，建议从 Safari 的分享菜单完成。";
       if (this.pwaNeedsSafariHint()) return "若要添加到主屏幕，请改用 Safari 打开。";
       return "";
@@ -144,7 +152,7 @@ export function createPwaModule({ installHintDismissedKey }) {
         !this.pwaInstalled &&
         !this.pwaInstallHintDismissed &&
         this._isMobileInstallViewport() &&
-        (this.pwaCanInstallDirectly() || this.pwaCanAddOnIos() || this.pwaNeedsSafariHint())
+        (this.pwaCanGuideNativeInstall() || this.pwaCanAddOnIos() || this.pwaNeedsSafariHint())
       );
     },
 
@@ -160,20 +168,10 @@ export function createPwaModule({ installHintDismissedKey }) {
 
     async openPwaInstall() {
       if (this.pwaInstalled) return;
-      if (this.pwaCanInstallDirectly()) {
-        const promptEvent = this.pwaDeferredPrompt;
-        this.pwaDeferredPrompt = null;
-        try {
-          await promptEvent.prompt();
-          const choice = await promptEvent.userChoice;
-          const outcome = choice && choice.outcome ? String(choice.outcome) : "";
-          this.globalStatus = outcome === "accepted" ? "已触发安装提示" : "已取消安装提示";
-        } catch (e) {
-          const msg = e && e.message ? e.message : String(e);
-          this.globalStatus = `error: ${msg}`;
-        } finally {
-          this.dismissPwaHint();
-        }
+      if (this.pwaCanGuideNativeInstall()) {
+        this.pwaGuideMode = this._isAndroidDevice() ? "android" : "browser-install";
+        this.pwaGuideOpen = true;
+        this.dismissPwaHint();
         return;
       }
       if (this.pwaCanAddOnIos()) {
@@ -208,13 +206,8 @@ export function createPwaModule({ installHintDismissedKey }) {
         }
       }
 
-      window.addEventListener("beforeinstallprompt", (event) => {
-        this.pwaDeferredPrompt = event;
-      });
-
       window.addEventListener("appinstalled", () => {
         this.pwaInstalled = true;
-        this.pwaDeferredPrompt = null;
         this.closePwaGuide();
         this.dismissPwaHint();
       });
