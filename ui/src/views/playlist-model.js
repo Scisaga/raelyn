@@ -1009,7 +1009,8 @@ export function createPlaylistViewMethods() {
         this.$nextTick(() => {
           if (isStale()) return;
           this.handleVisibilityMediaPolicy();
-          const el = this.playlistAudioOnly ? this.$refs && this.$refs.playlistAudioEl : this.$refs && this.$refs.playlistVideoEl;
+          const el = this.playlistMediaElForMode(this.playlistAudioOnly);
+          this.playlistEnsureActiveMediaSource(el);
           if (autoPlay) {
             void this.playlistTryAutoPlay({ el });
             this.syncSystemMediaSession({ forcePosition: true });
@@ -1098,7 +1099,7 @@ export function createPlaylistViewMethods() {
       if (!this.playlistIsActiveMediaEl(mediaEl)) return false;
       if (!mediaEl || typeof mediaEl.play !== "function") return false;
 
-      const src = String(mediaEl.currentSrc || mediaEl.src || "").trim();
+      const src = this.playlistEnsureActiveMediaSource(mediaEl);
       if (!src) return false;
 
       try {
@@ -1142,12 +1143,52 @@ export function createPlaylistViewMethods() {
       void this.playlistTryAutoPlay({ el });
     },
 
-    playlistActiveMediaEl() {
+    playlistMediaElForMode(audioOnly = this.playlistAudioOnly) {
       try {
-        return this.playlistAudioOnly ? this.$refs && this.$refs.playlistAudioEl : this.$refs && this.$refs.playlistVideoEl;
+        return audioOnly ? this.$refs && this.$refs.playlistAudioEl : this.$refs && this.$refs.playlistVideoEl;
       } catch {
         return null;
       }
+    },
+
+    playlistActiveMediaEl() {
+      return this.playlistMediaElForMode(this.playlistAudioOnly);
+    },
+
+    playlistMediaSourceUrlForMode(audioOnly = this.playlistAudioOnly) {
+      return String(audioOnly ? this.playlistPlayerAudioUrl || "" : this.playlistPlayerVideoUrl || "").trim();
+    },
+
+    playlistActiveMediaSourceUrl() {
+      return this.playlistMediaSourceUrlForMode(this.playlistAudioOnly);
+    },
+
+    playlistEnsureMediaSource(el, expectedSrc = "") {
+      const mediaEl = el || this.playlistActiveMediaEl();
+      const nextSrc = String(expectedSrc || "").trim();
+      if (!mediaEl || !nextSrc) return "";
+
+      try {
+        const currentAttr = String(mediaEl.getAttribute("src") || "").trim();
+        const currentSrc = String(mediaEl.currentSrc || mediaEl.src || "").trim();
+        const currentMatches =
+          currentAttr === nextSrc || currentSrc === nextSrc || (currentSrc && currentSrc.endsWith(nextSrc));
+        if (!currentMatches) {
+          mediaEl.src = nextSrc;
+          if (typeof mediaEl.load === "function") mediaEl.load();
+        }
+      } catch {
+        // ignore
+      }
+
+      return nextSrc;
+    },
+
+    playlistEnsureActiveMediaSource(el) {
+      const mediaEl = el || this.playlistActiveMediaEl();
+      const expectedSrc = this.playlistActiveMediaSourceUrl();
+      if (!mediaEl || !expectedSrc) return "";
+      return this.playlistEnsureMediaSource(mediaEl, expectedSrc);
     },
 
     playlistIsActiveMediaEl(el) {
@@ -1272,7 +1313,13 @@ export function createPlaylistViewMethods() {
 
     playlistSyncMediaState() {
       const el = this.playlistActiveMediaEl();
-      if (!el) return;
+      if (!el) {
+        this.playlistMediaDurationSec = 0;
+        this.playlistMediaCurrentTimeSec = 0;
+        this.playlistMediaPlaying = false;
+        this.syncSystemMediaSession();
+        return;
+      }
       const dur = Number(el.duration || 0);
       const cur = Number(el.currentTime || 0);
       this.playlistMediaDurationSec = Number.isFinite(dur) && dur > 0 ? dur : 0;
@@ -1377,7 +1424,7 @@ export function createPlaylistViewMethods() {
       });
 
       try {
-        const src = String(el.currentSrc || el.src || "").trim();
+        const src = this.playlistEnsureActiveMediaSource(el);
         if (!src) return;
         if (el.ended) el.currentTime = 0;
         if (el.paused || el.ended) el.play();
@@ -1519,11 +1566,8 @@ export function createPlaylistViewMethods() {
     },
 
     playlistToggleAudioOnly() {
-      const videoEl = this.$refs && this.$refs.playlistVideoEl;
-      const audioEl = this.$refs && this.$refs.playlistAudioEl;
       const next = !this.playlistAudioOnly;
-      const fromEl = next ? videoEl : audioEl;
-      const toEl = next ? audioEl : videoEl;
+      const fromEl = this.playlistMediaElForMode(this.playlistAudioOnly);
 
       let t = 0;
       let wasPlaying = false;
@@ -1540,6 +1584,8 @@ export function createPlaylistViewMethods() {
       this.playlistAudioOnly = next;
       this.$nextTick(() => {
         try {
+          const toEl = this.playlistMediaElForMode(next);
+          this.playlistEnsureMediaSource(toEl, this.playlistMediaSourceUrlForMode(next));
           if (toEl) {
             if (Number.isFinite(t) && t > 0) toEl.currentTime = t;
             if (wasPlaying && typeof toEl.play === "function") toEl.play();
