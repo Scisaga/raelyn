@@ -61,7 +61,6 @@ export function createAppInitMethods() {
     },
 
     async _finishInitAfterStartupGate() {
-      await this.initPwa();
       await this._refreshHealthStatus();
       this._resumeProtectedRealtime();
       await this._refreshProtectedData();
@@ -136,6 +135,7 @@ export function createAppInitMethods() {
       try {
         this._initShellListeners();
         this._initShellRouteState();
+        await this.initPwa();
         await this.waitForStartupGatePaint();
         await this._continueStartupSequence();
       } catch (e) {
