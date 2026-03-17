@@ -291,7 +291,22 @@
                       <template x-if="playlistDayVideosLoading || playlistDayVideosError || (Array.isArray(playlistDayVideos) && playlistDayVideos.length>0)">
                         <div class="bg-black/30 overflow-hidden shrink-0">
                           <div class="relative w-full aspect-video bg-black" x-show="!playlistAudioOnly">
-                            <video x-ref="playlistVideoEl" class="absolute inset-0 w-full h-full" :src="playlistPlayerVideoUrl || null" controls playsinline @ended="playlistOnEnded($event)"></video>
+                            <video
+                              x-ref="playlistVideoEl"
+                              class="absolute inset-0 w-full h-full"
+                              :src="playlistPlayerVideoUrl || null"
+                              controls
+                              playsinline
+                              preload="metadata"
+                              @loadedmetadata="playlistMediaOnLoadedMetadata($event)"
+                              @timeupdate="playlistMediaOnTimeUpdate($event)"
+                              @durationchange="playlistMediaOnLoadedMetadata($event)"
+                              @play="playlistMediaOnPlay($event)"
+                              @pause="playlistMediaOnPause($event)"
+                              @volumechange="playlistMediaOnVolumeChange($event)"
+                              @canplay="playlistMaybeAutoPlay($event)"
+                              @ended="playlistOnEnded($event)"
+                            ></video>
                             <div class="absolute inset-0 flex items-center justify-center text-sm text-slate-500" x-show="playlistDayVideosLoading">加载中…</div>
                             <div class="absolute inset-0 flex items-center justify-center text-sm text-rose-200 px-4 text-center" x-show="playlistDayVideosError" x-text="playlistDayVideosError"></div>
                           </div>
@@ -313,71 +328,51 @@
                             @play="playlistMediaOnPlay($event)"
                             @pause="playlistMediaOnPause($event)"
                             @volumechange="playlistMediaOnVolumeChange($event)"
+                            @canplay="playlistMaybeAutoPlay($event)"
                             @ended="playlistOnEnded($event)"
                           ></audio>
 
                           <div
-                            class="border-t border-slate-800 bg-slate-950/15 p-3 space-y-3"
+                            class="relative border-t border-slate-800 bg-slate-950/15 overflow-hidden"
                             x-show="playlistAudioOnly && !playlistDayVideosLoading && !playlistDayVideosError && Array.isArray(playlistDayVideos) && playlistDayVideos.length>0"
                           >
-                            <div class="grid grid-cols-[3rem_minmax(0,1fr)] gap-3 items-center">
-                              <button
-                                type="button"
-                                class="h-12 w-12 inline-flex items-center justify-center border border-slate-700 bg-slate-950/30 text-slate-200 hover:bg-slate-800/60 rounded-none"
-                                @click="playlistMediaTogglePlay()"
-                                title="播放/暂停"
-                                aria-label="播放/暂停"
+                            <template x-if="playlistCurrentAudioThumbnail().url">
+                              <img
+                                class="absolute inset-0 h-full w-full object-cover"
+                                :src="playlistCurrentAudioThumbnail().url"
+                                alt=""
+                                loading="lazy"
+                                @error="playlistAudioThumbnailOnError()"
+                              />
+                            </template>
+                            <div class="absolute inset-0 bg-slate-950/72"></div>
+
+                            <div class="relative h-24 px-4 py-4 flex flex-col justify-end gap-3">
+                              <div class="flex items-center gap-3 min-w-0">
+                                <div class="text-sm md:text-base tabular-nums text-slate-100 truncate" x-text="playlistMediaTimeLabel()"></div>
+                              </div>
+
+                              <div
+                                class="h-2 border border-slate-700 bg-slate-950/55 cursor-pointer select-none rounded-none overflow-hidden"
+                                @pointerdown.prevent="playlistSeekPointerDown($event)"
+                                title="拖动/点击跳转"
+                                aria-label="进度条"
                               >
-                                <template x-if="playlistMediaPlaying">
-                                  <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
-                                    <rect x="6" y="5" width="4" height="14"></rect>
-                                    <rect x="14" y="5" width="4" height="14"></rect>
-                                  </svg>
-                                </template>
-                                <template x-if="!playlistMediaPlaying">
-                                  <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
-                                    <polygon points="8,5 20,12 8,19"></polygon>
-                                  </svg>
-                                </template>
-                              </button>
-
-                              <div class="min-w-0 space-y-2">
-                                <div class="flex items-center gap-3 min-w-0">
-                                  <div class="text-xs md:text-sm tabular-nums text-slate-200 truncate" x-text="playlistMediaTimeLabel()"></div>
-                                </div>
-
-                                <div
-                                  class="h-2 border border-slate-700 bg-slate-950/40 cursor-pointer select-none rounded-none overflow-hidden"
-                                  @pointerdown.prevent="playlistSeekPointerDown($event)"
-                                  title="拖动/点击跳转"
-                                  aria-label="进度条"
-                                >
-                                  <div class="h-full bg-emerald-500/80" :style="`width:${playlistMediaProgressPct()}%`"></div>
-                                </div>
+                                <div class="h-full bg-emerald-500/80" :style="`width:${playlistMediaProgressPct()}%`"></div>
                               </div>
                             </div>
                           </div>
                         </div>
                       </template>
 
-                      <div class="grid grid-cols-5 divide-x divide-slate-800 border-t border-slate-800 bg-slate-950/15 overflow-hidden shrink-0">
-                        <button
-                          class="h-11 text-slate-200 hover:bg-slate-800/60 inline-flex items-center justify-center"
-                          @click="playlistPrevDay()"
-                          :title="playlistPrevPeriodTitle()"
-                          :aria-label="playlistPrevPeriodTitle()"
-                        >
-                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <path d="M15 18l-6-6 6-6"></path>
-                          </svg>
-                        </button>
+                      <div class="grid grid-cols-6 divide-x divide-slate-800 border-t border-slate-800 bg-slate-950/15 overflow-hidden shrink-0">
                         <button
                           class="h-11 text-slate-200 hover:bg-slate-800/60 inline-flex items-center justify-center"
                           @click="playlistPrevVideo()"
-                          :disabled="!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0"
-                          :class="(!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0) ? 'opacity-40 cursor-not-allowed hover:bg-transparent' : ''"
-                          title="上一个视频"
-                          aria-label="上一个视频"
+                          :disabled="!playlistHasPrevVideo()"
+                          :class="!playlistHasPrevVideo() ? 'text-slate-600 opacity-50 cursor-not-allowed hover:bg-transparent' : ''"
+                          title="上一条"
+                          aria-label="上一条"
                         >
                           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                             <polygon points="19 20 9 12 19 4 19 20"></polygon>
@@ -386,11 +381,44 @@
                         </button>
                         <button
                           class="h-11 text-slate-200 hover:bg-slate-800/60 inline-flex items-center justify-center"
+                          @click="playlistSeekBy(-15)"
+                          :disabled="!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0"
+                          :class="(!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0) ? 'opacity-40 cursor-not-allowed hover:bg-transparent' : ''"
+                          title="后退15秒"
+                          aria-label="后退15秒"
+                        >
+                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M11 19l-7-7 7-7"></path>
+                            <path d="M20 19l-7-7 7-7"></path>
+                          </svg>
+                        </button>
+                        <button
+                          class="h-11 text-slate-200 hover:bg-slate-800/60 inline-flex items-center justify-center"
+                          @click="playlistMediaTogglePlay()"
+                          :disabled="!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0"
+                          :class="(!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0) ? 'opacity-40 cursor-not-allowed hover:bg-transparent' : ''"
+                          title="播放/暂停"
+                          aria-label="播放/暂停"
+                        >
+                          <template x-if="playlistMediaPlaying">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+                              <rect x="6" y="5" width="4" height="14"></rect>
+                              <rect x="14" y="5" width="4" height="14"></rect>
+                            </svg>
+                          </template>
+                          <template x-if="!playlistMediaPlaying">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+                              <polygon points="8,5 20,12 8,19"></polygon>
+                            </svg>
+                          </template>
+                        </button>
+                        <button
+                          class="h-11 text-slate-200 hover:bg-slate-800/60 inline-flex items-center justify-center"
                           @click="playlistToggleAudioOnly()"
                           :disabled="!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0"
                           :class="(!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0) ? 'opacity-40 cursor-not-allowed hover:bg-transparent' : (playlistAudioOnly ? 'bg-emerald-500/10' : '')"
-                          title="切换：只播放音频"
-                          aria-label="切换：只播放音频"
+                          title="视频/音频切换"
+                          aria-label="视频/音频切换"
                         >
                           <span class="inline-flex items-center justify-center gap-0.5">
                             <span
@@ -421,25 +449,28 @@
                         </button>
                         <button
                           class="h-11 text-slate-200 hover:bg-slate-800/60 inline-flex items-center justify-center"
-                          @click="playlistNextVideo()"
+                          @click="playlistSeekBy(15)"
                           :disabled="!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0"
                           :class="(!Array.isArray(playlistDayVideos) || playlistDayVideos.length===0) ? 'opacity-40 cursor-not-allowed hover:bg-transparent' : ''"
-                          title="下一个视频"
-                          aria-label="下一个视频"
+                          title="前进15秒"
+                          aria-label="前进15秒"
                         >
                           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <polygon points="5 4 15 12 5 20 5 4"></polygon>
-                            <line x1="19" y1="5" x2="19" y2="19"></line>
+                            <path d="M4 5l7 7-7 7"></path>
+                            <path d="M13 5l7 7-7 7"></path>
                           </svg>
                         </button>
                         <button
                           class="h-11 text-slate-200 hover:bg-slate-800/60 inline-flex items-center justify-center"
-                          @click="playlistNextDay()"
-                          :title="playlistNextPeriodTitle()"
-                          :aria-label="playlistNextPeriodTitle()"
+                          @click="playlistNextVideo()"
+                          :disabled="!playlistHasNextVideo()"
+                          :class="!playlistHasNextVideo() ? 'text-slate-600 opacity-50 cursor-not-allowed hover:bg-transparent' : ''"
+                          title="下一条"
+                          aria-label="下一条"
                         >
                           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <path d="M9 18l6-6-6-6"></path>
+                            <polygon points="5 4 15 12 5 20 5 4"></polygon>
+                            <line x1="19" y1="5" x2="19" y2="19"></line>
                           </svg>
                         </button>
                       </div>
@@ -478,7 +509,7 @@
                           <button
                             class="w-full text-left p-4 hover:bg-slate-900/40 flex items-start justify-between gap-3"
                             :class="playlistCurrentVideo && String(playlistCurrentVideo.id)===String(v.id) ? 'bg-emerald-500/10' : ''"
-                            @click="playlistSelectVideo(v)"
+                            @click="playlistSelectVideo(v, { autoPlay: true })"
                           >
                             <div class="min-w-0">
                               <div class="text-xs text-teal-500" x-text="formatDateTimeShort(playlistVideoTimelineAt(v)) || '-'"></div>

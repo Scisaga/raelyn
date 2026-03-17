@@ -38,6 +38,9 @@ export function createPlaylistViewMethods() {
         this.playlistNameSaving = false;
         this.playlistDescEditing = false;
         this.playlistDescDraft = "";
+        this.playlistPendingAutoPlayId = "";
+        this.playlistAudioThumbnailFailures = new Map();
+        this.playlistAudioThumbnailSources = new Map();
         this.pageTitle = "播放列表页";
         return;
       }
@@ -56,6 +59,8 @@ export function createPlaylistViewMethods() {
         this.playlistPeriodCountsKey = "";
         this.playlistPeriodCountsLoading = false;
         this.playlistPeriodCountsError = "";
+        this.playlistAudioThumbnailSources = new Map();
+        this.playlistAudioThumbnailFailures = new Map();
 
         this.playlistCalendarUpdateCount();
         try {
@@ -86,7 +91,7 @@ export function createPlaylistViewMethods() {
         this.playlistCalendarEnsureVisible();
         this.playlistPrefetchCalendarCounts();
         this.playlistEditResetFromDetail();
-        await this.playlistLoadDay(this.playlistSelectedDate);
+        await this.playlistLoadDay(this.playlistSelectedDate, { autoPlay: false });
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
       }
@@ -356,7 +361,7 @@ export function createPlaylistViewMethods() {
           this.playlistTimelineValue = Math.max(0, Math.min(max, this._periodDiff(this.playlistTimelineStart, next, g)));
         }
         this._syncUrl({ push: false });
-        this.playlistLoadDay(next);
+        this.playlistLoadDay(next, { autoPlay: true });
       } else {
         this.playlistCalendarEnsureVisible();
         this.playlistPrefetchCalendarCounts();
@@ -861,7 +866,7 @@ export function createPlaylistViewMethods() {
       this.playlistSetDate(this._periodClampIso(next, start, end));
     },
 
-    playlistSetDate(iso) {
+    playlistSetDate(iso, { autoPlay = true } = {}) {
       if (this.playlistCalendarDragging || this.playlistCalendarSettling || this.playlistCalendarDragPointerId !== null) {
         this.playlistCalendarResetDragState();
       }
@@ -881,10 +886,10 @@ export function createPlaylistViewMethods() {
         this.playlistTimelineValue = Math.max(0, Math.min(max, this._periodDiff(this.playlistTimelineStart, clamped, g)));
       }
       this._syncUrl({ push: false });
-      this.playlistLoadDay(clamped);
+      this.playlistLoadDay(clamped, { autoPlay });
     },
 
-    async playlistLoadDay(iso) {
+    async playlistLoadDay(iso, { autoPlay = false } = {}) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       const g = this.playlistGranularity();
       const day = this._periodStartIso(String(iso || "").trim(), g);
@@ -898,6 +903,7 @@ export function createPlaylistViewMethods() {
       this._abortCtrl("_playlistBriefAbortCtrl");
       this._abortCtrl("_playlistBriefMdAbortCtrl");
       this._abortCtrl("_playlistSelectAbortCtrl");
+      this.playlistResetMediaElements({ cancelAutoPlay: true });
 
       const prevCurrentId =
         this.playlistCurrentVideo && this.playlistCurrentVideo.id ? String(this.playlistCurrentVideo.id) : "";
@@ -945,8 +951,12 @@ export function createPlaylistViewMethods() {
       }
 
       if (Number(this.playlistLoadToken || 0) !== loadToken) return;
+      if (!this.playlistCurrentVideo) {
+        this.playlistPendingAutoPlayId = "";
+        this.syncSystemMediaSession({ forcePosition: true });
+      }
       const selectPromise = this.playlistCurrentVideo
-        ? this.playlistSelectVideo(this.playlistCurrentVideo, { autoPlay: false, loadToken })
+        ? this.playlistSelectVideo(this.playlistCurrentVideo, { autoPlay, loadToken })
         : Promise.resolve();
       const briefPromise = this.playlistLoadBrief(day, { loadToken });
       try {
@@ -954,6 +964,7 @@ export function createPlaylistViewMethods() {
       } catch {
         // ignore
       }
+      if (Number(this.playlistLoadToken || 0) === loadToken) this.syncSystemMediaSession({ forcePosition: true });
     },
 
     async playlistSelectVideo(v, { autoPlay = false, loadToken = null } = {}) {
@@ -961,9 +972,12 @@ export function createPlaylistViewMethods() {
       const vid = String(v.id || "").trim();
       if (!vid) return;
       const token = Number(loadToken || this.playlistLoadToken || 0);
+      if (autoPlay) this.playlistPendingAutoPlayId = vid;
+      else if (String(this.playlistPendingAutoPlayId || "").trim() === vid) this.playlistPendingAutoPlayId = "";
       this.playlistCurrentVideo = v;
       this.playlistPlayerError = "";
       const selectingId = vid;
+      this.syncSystemMediaSession({ forcePosition: true });
 
       this._abortCtrl("_playlistSelectAbortCtrl");
       const ctrl = new AbortController();
@@ -980,9 +994,12 @@ export function createPlaylistViewMethods() {
         return false;
       };
 
+      this.playlistRememberAudioThumbnailSources(v);
+
       const applyAssets = (assets) => {
         if (isStale()) return;
         const list = Array.isArray(assets) ? assets : [];
+        this.playlistRememberAudioThumbnailSources(v, list);
         const videos = list.filter((a) => a && a.type === "video");
         const audios = list.filter((a) => a && a.type === "audio");
         const mp4 = videos.find((a) => String(a.format || "").toLowerCase() === "mp4") || videos[0] || null;
@@ -991,11 +1008,12 @@ export function createPlaylistViewMethods() {
         this.playlistPlayerAudioUrl = (m4a && this.assetContentUrl(m4a)) || "";
         this.$nextTick(() => {
           if (isStale()) return;
-          try {
-            const el = this.playlistAudioOnly ? this.$refs && this.$refs.playlistAudioEl : this.$refs && this.$refs.playlistVideoEl;
-            if (autoPlay && el && typeof el.play === "function") el.play();
-          } catch {
-            // ignore
+          this.handleVisibilityMediaPolicy();
+          const el = this.playlistAudioOnly ? this.$refs && this.$refs.playlistAudioEl : this.$refs && this.$refs.playlistVideoEl;
+          if (autoPlay) {
+            void this.playlistTryAutoPlay({ el });
+            this.syncSystemMediaSession({ forcePosition: true });
+            return;
           }
           this.playlistSyncMediaState();
         });
@@ -1063,7 +1081,65 @@ export function createPlaylistViewMethods() {
       } catch (e) {
         if (!this._isAbortError(e) && !isStale()) this.playlistPlayerError = e && e.message ? e.message : String(e);
       }
-      if (!isStale()) this.playlistTranscriptLoading = false;
+      if (!isStale()) {
+        this.playlistTranscriptLoading = false;
+        if (!this.playlistCurrentVideo && String(this.playlistPendingAutoPlayId || "").trim() === selectingId) {
+          this.playlistPendingAutoPlayId = "";
+        }
+      }
+    },
+
+    async playlistTryAutoPlay({ el = null } = {}) {
+      const pendingId = String(this.playlistPendingAutoPlayId || "").trim();
+      const currentId = this.playlistCurrentVideo && this.playlistCurrentVideo.id ? String(this.playlistCurrentVideo.id) : "";
+      if (!pendingId || !currentId || pendingId !== currentId) return false;
+
+      const mediaEl = el || this.playlistActiveMediaEl();
+      if (!this.playlistIsActiveMediaEl(mediaEl)) return false;
+      if (!mediaEl || typeof mediaEl.play !== "function") return false;
+
+      const src = String(mediaEl.currentSrc || mediaEl.src || "").trim();
+      if (!src) return false;
+
+      try {
+        const playing = mediaEl.play();
+        if (playing && typeof playing.then === "function") await playing;
+        this.playlistPendingAutoPlayId = "";
+        this.playlistPlayerError = "";
+        this.playlistSyncMediaState();
+        return true;
+      } catch (e) {
+        if (this._isAbortError(e)) return false;
+
+        const name = String((e && e.name) || "").trim();
+        const msg = e && e.message ? String(e.message) : String(e);
+
+        if (name === "NotAllowedError") {
+          this.playlistPendingAutoPlayId = "";
+          this.playlistPlayerError = "浏览器阻止自动播放，请手动点击播放";
+          this.globalStatus = "error: 浏览器阻止自动播放，请手动点击播放";
+          this.playlistSyncMediaState();
+          return false;
+        }
+
+        try {
+          if (Number(mediaEl.readyState || 0) < 2) return false;
+        } catch {
+          // ignore
+        }
+
+        this.playlistPendingAutoPlayId = "";
+        this.playlistPlayerError = `自动播放失败：${msg}`;
+        this.globalStatus = `error: 自动播放失败：${msg}`;
+        this.playlistSyncMediaState();
+        return false;
+      }
+    },
+
+    playlistMaybeAutoPlay(ev = null) {
+      const el = ev && ev.target ? ev.target : null;
+      if (!this.playlistIsActiveMediaEl(el)) return;
+      void this.playlistTryAutoPlay({ el });
     },
 
     playlistActiveMediaEl() {
@@ -1072,6 +1148,126 @@ export function createPlaylistViewMethods() {
       } catch {
         return null;
       }
+    },
+
+    playlistIsActiveMediaEl(el) {
+      if (!el) return false;
+      try {
+        const activeEl = this.playlistActiveMediaEl();
+        return !!activeEl && activeEl === el;
+      } catch {
+        return false;
+      }
+    },
+
+    playlistMediaElements() {
+      const els = [];
+      try {
+        const videoEl = this.$refs && this.$refs.playlistVideoEl ? this.$refs.playlistVideoEl : null;
+        const audioEl = this.$refs && this.$refs.playlistAudioEl ? this.$refs.playlistAudioEl : null;
+        if (videoEl) els.push(videoEl);
+        if (audioEl) els.push(audioEl);
+      } catch {
+        // ignore
+      }
+      return els;
+    },
+
+    playlistAnyMediaPlaying() {
+      return this.playlistMediaElements().some((el) => {
+        try {
+          return !!el && !el.paused && !el.ended;
+        } catch {
+          return false;
+        }
+      });
+    },
+
+    playlistResetMediaElements({ cancelAutoPlay = false } = {}) {
+      if (cancelAutoPlay) this.playlistPendingAutoPlayId = "";
+
+      this.playlistMediaElements().forEach((el) => {
+        try {
+          if (typeof el.pause === "function") el.pause();
+        } catch {
+          // ignore
+        }
+        try {
+          el.removeAttribute("src");
+        } catch {
+          // ignore
+        }
+        try {
+          if (typeof el.load === "function") el.load();
+        } catch {
+          // ignore
+        }
+      });
+
+      this.playlistMediaPlaying = false;
+      this.playlistMediaDurationSec = 0;
+      this.playlistMediaCurrentTimeSec = 0;
+    },
+
+    playlistCurrentAudioThumbnail() {
+      const video = this.playlistCurrentVideo;
+      const vid = video && video.id ? String(video.id) : "";
+      if (!vid) return { url: "", source: "" };
+
+      const failures = this.playlistAudioThumbnailFailures instanceof Map ? this.playlistAudioThumbnailFailures.get(vid) || {} : {};
+      const remembered = this.playlistAudioThumbnailSources instanceof Map ? this.playlistAudioThumbnailSources.get(vid) || {} : {};
+      const cachedAssets = this._cacheGet(this.playlistVideoAssetsCache, vid);
+      const assets = Array.isArray(cachedAssets) ? cachedAssets : [];
+
+      const rememberedLocalUrl = remembered && remembered.localUrl ? String(remembered.localUrl).trim() : "";
+      if (rememberedLocalUrl && !failures.local) return { url: rememberedLocalUrl, source: "local" };
+
+      if (!failures.local) {
+        const thumb = assets.find((asset) => asset && asset.type === "thumbnail");
+        const localUrl = thumb ? String(this.assetContentUrl(thumb) || "").trim() : "";
+        if (localUrl) return { url: localUrl, source: "local" };
+      }
+
+      const remoteUrl = remembered && remembered.remoteUrl ? String(remembered.remoteUrl).trim() : video && video.thumbnail_url ? String(video.thumbnail_url).trim() : "";
+      if (remoteUrl && !failures.remote) return { url: remoteUrl, source: "remote" };
+
+      return { url: "", source: "" };
+    },
+
+    playlistRememberAudioThumbnailSources(video, assets = null) {
+      const vid = video && video.id ? String(video.id) : "";
+      if (!vid) return;
+
+      const current = this.playlistAudioThumbnailSources instanceof Map ? new Map(this.playlistAudioThumbnailSources) : new Map();
+      const prev = current.get(vid) || {};
+      const list = Array.isArray(assets) ? assets : [];
+      const thumb = list.find((asset) => asset && asset.type === "thumbnail");
+      const localUrl = thumb ? String(this.assetContentUrl(thumb) || "").trim() : "";
+      const remoteUrl = video && video.thumbnail_url ? String(video.thumbnail_url).trim() : "";
+
+      const next = { ...prev };
+      if (localUrl) next.localUrl = localUrl;
+      if (remoteUrl) next.remoteUrl = remoteUrl;
+      if (!next.localUrl && !next.remoteUrl) return;
+
+      current.set(vid, next);
+      this.playlistAudioThumbnailSources = current;
+    },
+
+    playlistAudioThumbnailOnError() {
+      const video = this.playlistCurrentVideo;
+      const vid = video && video.id ? String(video.id) : "";
+      if (!vid) return;
+
+      const current = this.playlistCurrentAudioThumbnail();
+      const source = String((current && current.source) || "").trim();
+      if (!source) return;
+
+      const failures = this.playlistAudioThumbnailFailures instanceof Map ? new Map(this.playlistAudioThumbnailFailures) : new Map();
+      const prev = failures.get(vid) || {};
+      failures.set(vid, { ...prev, [source]: true });
+      this.playlistAudioThumbnailFailures = failures;
+      this.syncSystemMediaSession({ forcePosition: true });
     },
 
     playlistSyncMediaState() {
@@ -1085,16 +1281,18 @@ export function createPlaylistViewMethods() {
       this.playlistMediaMuted = !!el.muted;
       const vol = Number(el.volume);
       this.playlistMediaVolume = Number.isFinite(vol) ? Math.max(0, Math.min(1, vol)) : this.playlistMediaVolume;
+      this.syncSystemMediaSession();
     },
 
     playlistMediaOnLoadedMetadata(ev) {
       try {
         const el = ev && ev.target ? ev.target : this.playlistActiveMediaEl();
-        if (!el) return;
+        if (!this.playlistIsActiveMediaEl(el)) return;
         const dur = Number(el.duration || 0);
         this.playlistMediaDurationSec = Number.isFinite(dur) && dur > 0 ? dur : 0;
         const cur = Number(el.currentTime || 0);
         this.playlistMediaCurrentTimeSec = Number.isFinite(cur) && cur >= 0 ? cur : this.playlistMediaCurrentTimeSec;
+        this.playlistMediaPlaying = !!el && !el.paused && !el.ended;
       } catch {
         // ignore
       }
@@ -1104,26 +1302,34 @@ export function createPlaylistViewMethods() {
     playlistMediaOnTimeUpdate(ev) {
       try {
         const el = ev && ev.target ? ev.target : this.playlistActiveMediaEl();
-        if (!el) return;
+        if (!this.playlistIsActiveMediaEl(el)) return;
         const cur = Number(el.currentTime || 0);
         if (Number.isFinite(cur) && cur >= 0) this.playlistMediaCurrentTimeSec = cur;
+        this.playlistMediaPlaying = !!el && !el.paused && !el.ended;
       } catch {
         // ignore
       }
+      this.syncSystemMediaSession();
     },
 
-    playlistMediaOnPlay() {
-      this.playlistMediaPlaying = true;
+    playlistMediaOnPlay(ev) {
+      const el = ev && ev.target ? ev.target : this.playlistActiveMediaEl();
+      if (!this.playlistIsActiveMediaEl(el)) return;
+      this.playlistSyncMediaState();
+      const currentId = this.playlistCurrentVideo && this.playlistCurrentVideo.id ? String(this.playlistCurrentVideo.id) : "";
+      if (currentId && String(this.playlistPendingAutoPlayId || "").trim() === currentId) this.playlistPendingAutoPlayId = "";
     },
 
-    playlistMediaOnPause() {
-      this.playlistMediaPlaying = false;
+    playlistMediaOnPause(ev) {
+      const el = ev && ev.target ? ev.target : this.playlistActiveMediaEl();
+      if (!this.playlistIsActiveMediaEl(el)) return;
+      this.playlistSyncMediaState();
     },
 
     playlistMediaOnVolumeChange(ev) {
       try {
         const el = ev && ev.target ? ev.target : this.playlistActiveMediaEl();
-        if (!el) return;
+        if (!this.playlistIsActiveMediaEl(el)) return;
         this.playlistMediaMuted = !!el.muted;
         const vol = Number(el.volume);
         if (Number.isFinite(vol)) this.playlistMediaVolume = Math.max(0, Math.min(1, vol));
@@ -1155,12 +1361,67 @@ export function createPlaylistViewMethods() {
       return String(v * 100);
     },
 
-    playlistMediaTogglePlay() {
+    playlistMediaPlay() {
+      if (String(this.playlistPendingAutoPlayId || "").trim()) this.playlistPendingAutoPlayId = "";
+
       const el = this.playlistActiveMediaEl();
       if (!el) return;
+
+      this.playlistMediaElements().forEach((mediaEl) => {
+        if (!mediaEl || mediaEl === el) return;
+        try {
+          if (typeof mediaEl.pause === "function") mediaEl.pause();
+        } catch {
+          // ignore
+        }
+      });
+
       try {
+        const src = String(el.currentSrc || el.src || "").trim();
+        if (!src) return;
+        if (el.ended) el.currentTime = 0;
         if (el.paused || el.ended) el.play();
-        else el.pause();
+      } catch {
+        // ignore
+      }
+
+      this.playlistSyncMediaState();
+    },
+
+    playlistMediaPause() {
+      if (String(this.playlistPendingAutoPlayId || "").trim()) this.playlistPendingAutoPlayId = "";
+
+      this.playlistMediaElements().forEach((el) => {
+        try {
+          if (typeof el.pause === "function") el.pause();
+        } catch {
+          // ignore
+        }
+      });
+
+      this.playlistSyncMediaState();
+    },
+
+    playlistMediaTogglePlay() {
+      if (this.playlistAnyMediaPlaying()) {
+        this.playlistMediaPause();
+        return;
+      }
+
+      this.playlistMediaPlay();
+    },
+
+    playlistSeekBy(deltaSec) {
+      const el = this.playlistActiveMediaEl();
+      const delta = Number(deltaSec || 0);
+      if (!el || !Number.isFinite(delta) || delta === 0) return;
+
+      try {
+        const dur = Number(el.duration || 0);
+        const cur = Number(el.currentTime || 0);
+        const next = cur + delta;
+        if (Number.isFinite(dur) && dur > 0) el.currentTime = Math.max(0, Math.min(dur, next));
+        else el.currentTime = Math.max(0, next);
       } catch {
         // ignore
       }
@@ -1194,6 +1455,7 @@ export function createPlaylistViewMethods() {
           const t = dur * clamped;
           el.currentTime = t;
           this.playlistMediaCurrentTimeSec = t;
+          this.syncSystemMediaSession();
         } catch {
           // ignore
         }
@@ -1289,21 +1551,37 @@ export function createPlaylistViewMethods() {
       });
     },
 
+    playlistCurrentVideoIndex() {
+      const items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
+      if (!items.length) return -1;
+      const id = this.playlistCurrentVideo && this.playlistCurrentVideo.id ? String(this.playlistCurrentVideo.id) : "";
+      if (!id) return -1;
+      return items.findIndex((x) => x && String(x.id) === id);
+    },
+
+    playlistHasPrevVideo() {
+      return this.playlistCurrentVideoIndex() > 0;
+    },
+
+    playlistHasNextVideo() {
+      const items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
+      const idx = this.playlistCurrentVideoIndex();
+      return idx >= 0 && idx < items.length - 1;
+    },
+
     playlistPrevVideo() {
       const items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
-      if (!items.length) return;
-      const id = this.playlistCurrentVideo && this.playlistCurrentVideo.id ? String(this.playlistCurrentVideo.id) : "";
-      const idx = id ? items.findIndex((x) => x && String(x.id) === id) : -1;
-      const next = idx > 0 ? items[idx - 1] : items[0];
+      const idx = this.playlistCurrentVideoIndex();
+      if (!items.length || idx <= 0) return;
+      const next = items[idx - 1];
       if (next) this.playlistSelectVideo(next, { autoPlay: true });
     },
 
     playlistNextVideo() {
       const items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
-      if (!items.length) return;
-      const id = this.playlistCurrentVideo && this.playlistCurrentVideo.id ? String(this.playlistCurrentVideo.id) : "";
-      const idx = id ? items.findIndex((x) => x && String(x.id) === id) : -1;
-      const next = idx >= 0 && idx < items.length - 1 ? items[idx + 1] : items[items.length - 1];
+      const idx = this.playlistCurrentVideoIndex();
+      if (!items.length || idx < 0 || idx >= items.length - 1) return;
+      const next = items[idx + 1];
       if (next) this.playlistSelectVideo(next, { autoPlay: true });
     },
 
@@ -1531,9 +1809,9 @@ export function createPlaylistViewMethods() {
         const text = briefTruncLabel(rawText) || "视频...";
         const safeText = formatInlineEsc(this._escapeHtml(text));
         return [
-          '<span class="inline-flex items-stretch rounded-none border border-slate-700 bg-slate-950/30 overflow-hidden align-middle ml-1 mr-1">',
-          `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" title="${safeUrl}" class="min-w-0 max-w-xs px-1 py-0.5 text-[11px] text-slate-200 hover:bg-slate-800/60 truncate no-underline">${safeText}</a>`,
-          `<button type="button" class="shrink-0 px-1 py-0.5 border-l border-slate-700 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20 text-[11px]" data-play-url="${enc}" title="播放该视频">▶</button>`,
+          '<span class="inline-flex items-stretch rounded-md border border-slate-700 bg-slate-950/30 overflow-hidden align-middle ml-1 mr-1">',
+          `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" title="${safeUrl}" class="min-w-0 max-w-xs pl-1.5 pr-1 py-0.5 text-[11px] text-slate-200 hover:bg-slate-800/60 truncate no-underline">${safeText}</a>`,
+          `<button type="button" class="shrink-0 pl-1.5 pr-1.5 py-0.5 border-l border-slate-700 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20 text-[11px]" data-play-url="${enc}" title="播放该视频">▶</button>`,
           "</span>",
         ].join("");
       };
