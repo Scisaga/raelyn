@@ -17,6 +17,9 @@ export function createAppInitMethods() {
         if (this.activeView === "playlist" && viewKey !== "playlist" && typeof this.playlistStopBriefSpeech === "function") {
           this.playlistStopBriefSpeech({ clearError: true });
         }
+        if (this.activeView === "playlist" && viewKey !== "playlist" && typeof this.playlistMediaPause === "function") {
+          this.playlistMediaPause();
+        }
         this.activeView = viewKey;
         const item = this.navItems.find((nav) => nav.key === viewKey);
         this.pageTitle = item ? item.label : viewKey;

@@ -1000,7 +1000,11 @@ export function createPlaylistViewMethods() {
       if (!this.playlistDetail) return;
       this.playlistCalendarResetDragState();
       this.playlistStopBriefSpeech({ clearError: true });
-      this.playlistSubview = this.playlistSubview === "settings" ? "main" : "settings";
+      const nextSubview = this.playlistSubview === "settings" ? "main" : "settings";
+      if (nextSubview !== "main" && typeof this.playlistMediaPause === "function") {
+        this.playlistMediaPause();
+      }
+      this.playlistSubview = nextSubview;
       if (this.playlistSubview === "main") {
         try {
           if (this.$nextTick) this.$nextTick(() => this.playlistCalendarUpdateCount());

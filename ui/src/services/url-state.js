@@ -129,6 +129,9 @@ export function createUrlStateMethods({ settingsTabs }) {
       if (this.activeView === "playlist" && key !== "playlist" && typeof this.playlistStopBriefSpeech === "function") {
         this.playlistStopBriefSpeech({ clearError: true });
       }
+      if (this.activeView === "playlist" && key !== "playlist" && typeof this.playlistMediaPause === "function") {
+        this.playlistMediaPause();
+      }
       if (key === "videos") this._ensureVideoRange();
       this.activeView = key;
       this.pageTitle = item ? item.label : key;
