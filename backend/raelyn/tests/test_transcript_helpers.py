@@ -13,7 +13,7 @@ if str(_BACKEND_DIR) not in sys.path:
 
 from raelyn.mcp.chunking import build_chunk_bounds, get_text_chunk, normalize_chunk_size
 from raelyn.models import Asset
-from raelyn.services.transcripts import pick_transcript_asset
+from raelyn.services.transcripts import build_transcript_payload, pick_transcript_asset
 
 
 def _scalar_one_or_none(value):
@@ -85,6 +85,49 @@ class TranscriptHelperTests(unittest.TestCase):
 
         self.assertIs(result, latest)
         self.assertEqual(session.execute.call_count, 7)
+
+    def test_pick_transcript_asset_respects_requested_variant_and_source(self) -> None:
+        exact = Asset(
+            id=uuid.uuid4(),
+            video_id=uuid.uuid4(),
+            type="transcript",
+            format="txt",
+            language="zh",
+            source="qwen3-asr",
+            variant="plain",
+            s3_bucket="bucket",
+            s3_key="plain.txt",
+            created_at=datetime(2026, 3, 10, tzinfo=timezone.utc),
+        )
+        session = Mock()
+        session.execute.side_effect = [_scalar_one_or_none(exact)]
+
+        result = pick_transcript_asset(session, exact.video_id, variant="plain", source="qwen3-asr")
+
+        self.assertIs(result, exact)
+        self.assertEqual(session.execute.call_count, 1)
+
+    def test_build_transcript_payload_returns_requested_selector_when_missing(self) -> None:
+        session = Mock()
+        session.execute.side_effect = [_scalar_one_or_none(None), _scalar_one_or_none(None)]
+
+        payload = build_transcript_payload(
+            session,
+            uuid.uuid4(),
+            variant="plain",
+            source="qwen3-asr",
+        )
+
+        self.assertEqual(
+            payload,
+            {
+                "ok": False,
+                "reason": "no transcript",
+                "text": "",
+                "variant": "plain",
+                "source": "qwen3-asr",
+            },
+        )
 
     def test_build_chunk_bounds_prefers_newline_near_chunk_end(self) -> None:
         text = ("a" * 8000) + "\n" + ("b" * 8000)

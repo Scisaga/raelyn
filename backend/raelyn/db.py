@@ -210,6 +210,11 @@ where job.type = 'video.download'
         cols = {c.get("name") for c in insp.get_columns("job")}
         if "dedupe_key" not in cols:
             conn.execute(text("alter table job add column dedupe_key varchar"))
+        if "cancel_requested_at" not in cols:
+            if conn.dialect.name == "postgresql":
+                conn.execute(text("alter table job add column cancel_requested_at timestamptz"))
+            else:
+                conn.execute(text("alter table job add column cancel_requested_at datetime"))
         try:
             conn.execute(text("drop index if exists job_brief_dedupe_active_ux"))
         except Exception:

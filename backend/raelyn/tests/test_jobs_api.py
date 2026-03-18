@@ -38,6 +38,51 @@ class _FakeSession:
 
 
 class JobsApiTests(unittest.TestCase):
+    def test_cancel_pending_job_immediately_marks_canceled(self) -> None:
+        job_id = uuid.uuid4()
+        job = Job(
+            id=job_id,
+            type="video.download.youtube",
+            status="pending",
+            priority=8,
+            params={"video_id": "video-1"},
+        )
+        session = _FakeSession(job)
+
+        with patch("raelyn.api.jobs.session_scope", lambda: _fake_session_scope(session)):
+            payload = jobs_api.cancel_job(job_id)
+
+        self.assertEqual(payload, {"ok": True, "job_id": str(job_id), "status": "canceled"})
+        self.assertEqual(job.status, "canceled")
+        self.assertIsNotNone(job.cancel_requested_at)
+        self.assertIsNotNone(job.finished_at)
+        self.assertEqual(len(session.added), 1)
+        event = session.added[0]
+        self.assertEqual(event.message, "canceled")
+        self.assertEqual(event.data["mode"], "immediate")
+
+    def test_cancel_running_job_sets_cancel_requested(self) -> None:
+        job_id = uuid.uuid4()
+        job = Job(
+            id=job_id,
+            type="media.delete",
+            status="running",
+            priority=20,
+            params={"media_id": "media-1"},
+        )
+        session = _FakeSession(job)
+
+        with patch("raelyn.api.jobs.session_scope", lambda: _fake_session_scope(session)):
+            payload = jobs_api.cancel_job(job_id)
+
+        self.assertEqual(payload, {"ok": True, "job_id": str(job_id), "status": "cancel_requested"})
+        self.assertEqual(job.status, "running")
+        self.assertIsNotNone(job.cancel_requested_at)
+        self.assertEqual(len(session.added), 1)
+        event = session.added[0]
+        self.assertEqual(event.message, "cancel requested")
+        self.assertEqual(event.data["mode"], "cooperative")
+
     def test_retry_job_reuses_failed_job_and_resets_runtime_state(self) -> None:
         job_id = uuid.uuid4()
         retry_at = datetime(2026, 3, 17, 8, 0, tzinfo=timezone.utc)
@@ -74,6 +119,7 @@ class JobsApiTests(unittest.TestCase):
         self.assertIsNone(job.progress_total)
         self.assertIsNone(job.error_message)
         self.assertIsNone(job.error_stack)
+        self.assertIsNone(job.cancel_requested_at)
         self.assertIsNone(job.started_at)
         self.assertIsNone(job.finished_at)
         self.assertIsNone(job.lease_expires_at)

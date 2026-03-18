@@ -96,7 +96,6 @@ export function createToastModule() {
         const action = toast && toast.action ? toast.action : null;
         if (!action || action.type !== "jobs") return;
         if (this.modals) {
-          this.modals.videoPlayer = false;
           this.modals.addMedia = false;
           this.modals.createPlaylist = false;
           this.modals.mediaImport = false;

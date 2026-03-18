@@ -15,7 +15,7 @@ from raelyn.timeutil import utcnow
 def _default_max_attempts(type_: str) -> int | None:
     # Keep retries low for provider-facing jobs to avoid hammering platforms when blocked (e.g. 352/412).
     # "1 retry" => max_attempts=2 (first try + one retry).
-    if type_ in {"media.sync_profile", "media.sync_videos", "video.download"}:
+    if type_ in {"media.sync_profile", "media.sync_videos", "media.delete", "video.download"}:
         return 2
     return None
 
@@ -48,7 +48,18 @@ def _brief_period_start(d: date, granularity: str) -> date:
     return d
 
 
-def _brief_normalize_date_and_params(type_: str, params: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+    if type_ == "media.delete":
+        if not isinstance(params, dict):
+            return None, params
+        params2 = dict(params)
+        raw_media_id = params2.get("media_id")
+        try:
+            media_id = uuid.UUID(str(raw_media_id))
+        except Exception:
+            return None, params2
+        return f"media.delete:{media_id}", params2
+
     if type_ not in {"brief.generate_period", "brief.generate_daily"}:
         return None, params
     if not isinstance(params, dict):
@@ -85,6 +96,10 @@ def _brief_normalize_date_and_params(type_: str, params: dict[str, Any]) -> tupl
     return dedupe_key, params2
 
 
+def _brief_normalize_date_and_params(type_: str, params: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+    return _normalize_dedupe_key_and_params(type_, params)
+
+
 def enqueue_job(
     session: Session,
     *,
@@ -95,7 +110,7 @@ def enqueue_job(
     parent_job_id: str | None = None,
 ) -> uuid.UUID:
     max_attempts = _default_max_attempts(type_)
-    dedupe_key, params2 = _brief_normalize_date_and_params(type_, params)
+    dedupe_key, params2 = _normalize_dedupe_key_and_params(type_, params)
     job = Job(
         type=type_,
         status="pending",

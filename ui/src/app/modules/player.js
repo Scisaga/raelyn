@@ -1,5 +1,29 @@
+function mergeVideoDetail(baseVideo, detail) {
+  const base = baseVideo && typeof baseVideo === "object" ? baseVideo : {};
+  const next = detail && typeof detail === "object" ? detail : {};
+  return { ...base, ...next };
+}
+
+const TRANSCRIPT_VARIANTS = ["plain", "polished"];
+
+function emptyTranscriptVariants() {
+  return { plain: false, polished: false };
+}
+
+function normalizeTranscriptVariant(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  return TRANSCRIPT_VARIANTS.includes(normalized) ? normalized : "";
+}
+
+function normalizeTranscriptSource(value) {
+  return String(value || "").trim();
+}
+
 export function createPlayerModule() {
   return {
+    playerPageVideoId: "",
     playerVideo: null,
     playerAssets: [],
     playerVideoUrl: "",
@@ -10,11 +34,15 @@ export function createPlayerModule() {
     playerTranscriptText: "",
     playerTranscriptAssetId: "",
     playerTranscriptSource: "",
+    playerTranscriptActiveSource: "",
     playerTranscriptVariant: "",
+    playerTranscriptSelectedVariant: "",
+    playerTranscriptAvailableVariants: emptyTranscriptVariants(),
     playerTranscriptPolishMethod: "",
     playerTranscriptUpdatedAt: "",
     playerTranscriptNotice: "",
     playerTranscriptRefreshing: false,
+    playerTranscriptSwitching: false,
     playerRetranscribeSubmitting: false,
     playerTranscriptPollKey: "",
     playerTranscriptPollTries: 0,
@@ -22,14 +50,9 @@ export function createPlayerModule() {
     playerLoading: false,
     playerError: "",
     playerTab: "transcript",
+    playerLoadToken: 0,
 
-    async openVideoPlayer(video) {
-      if (!video || !video.id) return;
-      this.modals.addMedia = false;
-      this.modals.createPlaylist = false;
-      this.modals.mediaImport = false;
-      this.modals.videoPlayer = true;
-      this.playerVideo = video;
+    _playerResetState({ keepVideo = false, keepPageVideoId = false } = {}) {
       this.playerAssets = [];
       this.playerVideoUrl = "";
       this.playerVideoDownloadUrl = "";
@@ -39,29 +62,149 @@ export function createPlayerModule() {
       this.playerTranscriptText = "";
       this.playerTranscriptAssetId = "";
       this.playerTranscriptSource = "";
+      this.playerTranscriptActiveSource = "";
       this.playerTranscriptVariant = "";
+      this.playerTranscriptSelectedVariant = "";
+      this.playerTranscriptAvailableVariants = emptyTranscriptVariants();
       this.playerTranscriptPolishMethod = "";
       this.playerTranscriptUpdatedAt = "";
       this.playerTranscriptNotice = "";
       this.playerTranscriptRefreshing = false;
+      this.playerTranscriptSwitching = false;
       this.playerRetranscribeSubmitting = false;
       this.playerTranscriptPollKey = "";
       this.playerTranscriptPollTries = 0;
       this.playerDescription = "";
+      this.playerLoading = false;
       this.playerError = "";
-      this.playerLoading = true;
       this.playerTab = "transcript";
+      this.playerLoadToken = Number(this.playerLoadToken || 0) + 1;
+      if (!keepVideo) this.playerVideo = null;
+      if (!keepPageVideoId) this.playerPageVideoId = "";
+    },
+
+    leaveVideoPage() {
+      this._playerResetState();
+    },
+
+    _playerViewActive(videoId = "") {
+      if (this.activeView !== "video") return false;
+      const currentId = String(this.playerPageVideoId || "").trim();
+      if (!videoId) return !!currentId;
+      return !!currentId && currentId === String(videoId || "").trim();
+    },
+
+    _playerTranscriptTextAssets(assets = null) {
+      const list = Array.isArray(assets) ? assets : Array.isArray(this.playerAssets) ? this.playerAssets : [];
+      return list.filter(
+        (asset) => asset && asset.type === "transcript" && String(asset.format || "").trim().toLowerCase() === "txt"
+      );
+    },
+
+    _playerTranscriptAvailableVariantsForSource(source = "", assets = null) {
+      const sourceValue = normalizeTranscriptSource(source);
+      const available = emptyTranscriptVariants();
+      const items = this._playerTranscriptTextAssets(assets);
+      for (const asset of items) {
+        if (sourceValue && normalizeTranscriptSource(asset.source) !== sourceValue) continue;
+        const variant = normalizeTranscriptVariant(asset.variant);
+        if (variant) available[variant] = true;
+      }
+      return available;
+    },
+
+    _playerTranscriptRequestPath(videoId, { variant = "", source = "" } = {}) {
+      const params = new URLSearchParams();
+      const normalizedVariant = normalizeTranscriptVariant(variant);
+      const normalizedSource = normalizeTranscriptSource(source);
+      if (normalizedVariant) params.set("variant", normalizedVariant);
+      if (normalizedSource) params.set("source", normalizedSource);
+      const query = params.toString();
+      return `/videos/${encodeURIComponent(videoId)}/transcript${query ? `?${query}` : ""}`;
+    },
+
+    _playerApplyTranscriptPayload(transcript, { updateSelection = true } = {}) {
+      const payload = transcript && typeof transcript === "object" ? transcript : null;
+      const ok = !!(payload && payload.ok);
+      const source = normalizeTranscriptSource(ok ? payload.source : payload && payload.source);
+      const variant = normalizeTranscriptVariant(ok ? payload.variant : payload && payload.variant);
+
+      this.playerTranscriptText = ok ? payload.text || "" : "";
+      this.playerTranscriptAssetId = ok ? payload.asset_id || "" : "";
+      this.playerTranscriptSource = source;
+      this.playerTranscriptVariant = variant;
+      this.playerTranscriptPolishMethod = ok && variant === "polished" ? payload.polish_method || "" : "";
+      this.playerTranscriptUpdatedAt = ok ? payload.updated_at || payload.created_at || "" : "";
+
+      if (updateSelection) {
+        this.playerTranscriptActiveSource = source;
+        this.playerTranscriptSelectedVariant = variant;
+      }
+
+      this.playerTranscriptAvailableVariants = this._playerTranscriptAvailableVariantsForSource(source);
+    },
+
+    playerTranscriptVariantAvailable(variant) {
+      const normalized = normalizeTranscriptVariant(variant);
+      return !!(normalized && this.playerTranscriptAvailableVariants && this.playerTranscriptAvailableVariants[normalized]);
+    },
+
+    playerTranscriptVariantActive(variant) {
+      const normalized = normalizeTranscriptVariant(variant);
+      const current = normalizeTranscriptVariant(this.playerTranscriptSelectedVariant || this.playerTranscriptVariant);
+      return !!normalized && normalized === current;
+    },
+
+    async openVideoPlayer(video) {
+      if (!video || !video.id) return;
+      this.modals.addMedia = false;
+      this.modals.createPlaylist = false;
+      this.modals.mediaImport = false;
+
+      const nextId = String(video.id || "").trim();
+      const currentUrl = `${window.location.pathname || "/"}${window.location.search || ""}`;
+      const currentState = history.state && typeof history.state === "object" ? history.state : {};
+      const returnTo = this.activeView === "video" ? String(currentState.returnTo || "").trim() : currentUrl;
+
+      this.playerPageVideoId = nextId;
+      this.playerVideo = video;
+      this._playerResetState({ keepVideo: true, keepPageVideoId: true });
+      this.switchView("video", {
+        push: true,
+        refresh: false,
+        stateExtras: returnTo ? { returnTo } : null,
+      });
+      await this.loadVideoPage({ previewVideo: video, videoId: nextId });
+    },
+
+    async loadVideoPage({ previewVideo = null, videoId = null } = {}) {
+      const nextId = String(videoId || this.playerPageVideoId || (this.playerVideo && this.playerVideo.id) || "").trim();
+      if (!nextId) {
+        this.closeVideoPage({ fallbackToVideos: true });
+        return;
+      }
+
+      this.playerPageVideoId = nextId;
+      if (!this.playerVideo || String(this.playerVideo.id || "").trim() !== nextId) {
+        this.playerVideo = previewVideo && String(previewVideo.id || "").trim() === nextId ? previewVideo : { id: nextId };
+      }
+
+      this._playerResetState({ keepVideo: true, keepPageVideoId: true });
+      this.playerLoading = true;
+      const loadToken = Number(this.playerLoadToken || 0);
 
       try {
         const [assets, transcript, detail] = await Promise.all([
-          this.api(`/videos/${video.id}/assets?presign=true&download=true`),
-          this.api(`/videos/${video.id}/transcript`),
-          this.api(`/videos/${video.id}`),
+          this.api(`/videos/${encodeURIComponent(nextId)}/assets?presign=true&download=true`),
+          this.api(`/videos/${encodeURIComponent(nextId)}/transcript`),
+          this.api(`/videos/${encodeURIComponent(nextId)}`),
         ]);
 
+        if (Number(this.playerLoadToken || 0) !== loadToken || !this._playerViewActive(nextId)) return;
+
         this.playerAssets = Array.isArray(assets) ? assets : [];
-        const detailDesc = detail && typeof detail === "object" ? detail.description || "" : "";
-        this.playerDescription = detailDesc || "";
+        this.playerVideo = mergeVideoDetail(previewVideo || this.playerVideo, detail);
+        this.playerDescription = this.playerVideo && this.playerVideo.description ? this.playerVideo.description : "";
 
         const videos = this.playerAssets.filter((asset) => asset && asset.type === "video");
         const mp4 = videos.find((asset) => String(asset.format || "").toLowerCase() === "mp4") || videos[0] || null;
@@ -74,42 +217,76 @@ export function createPlayerModule() {
         this.playerAudioDownloadUrl = (m4a && this.assetDownloadUrl(m4a)) || "";
         this.playerAudioDownloadName = (m4a && m4a.filename) || "";
 
-        this.playerTranscriptText = transcript && transcript.ok ? transcript.text || "" : "";
-        this.playerTranscriptAssetId = transcript && transcript.ok ? transcript.asset_id || "" : "";
-        this.playerTranscriptSource = transcript && transcript.ok ? transcript.source || "" : "";
-        this.playerTranscriptVariant = transcript && transcript.ok ? transcript.variant || "" : "";
-        this.playerTranscriptPolishMethod = transcript && transcript.ok ? transcript.polish_method || "" : "";
-        this.playerTranscriptUpdatedAt = transcript && transcript.ok ? transcript.updated_at || transcript.created_at || "" : "";
+        this._playerApplyTranscriptPayload(transcript);
       } catch (e) {
-        this.playerError = e && e.message ? e.message : String(e);
+        const msg = e && e.message ? e.message : String(e);
+        if (Number(this.playerLoadToken || 0) !== loadToken || !this._playerViewActive(nextId)) return;
+        if (String(msg).startsWith("404:")) {
+          this.closeVideoPage({ fallbackToVideos: true });
+          return;
+        }
+        this.playerError = msg;
       } finally {
-        this.playerLoading = false;
+        if (Number(this.playerLoadToken || 0) === loadToken && this._playerViewActive(nextId)) this.playerLoading = false;
       }
     },
 
-    closeVideoPlayer() {
-      this.modals.videoPlayer = false;
-      this.playerVideoUrl = "";
-      this.playerVideoDownloadUrl = "";
-      this.playerAudioDownloadUrl = "";
-      this.playerVideo = null;
-      this.playerTranscriptPollKey = "";
+    closeVideoPage({ fallbackToVideos = false } = {}) {
+      const currentState = history.state && typeof history.state === "object" ? history.state : {};
+      const returnTo = String(currentState.returnTo || "").trim();
+      this.leaveVideoPage();
+
+      if (!fallbackToVideos && returnTo) {
+        history.back();
+        return;
+      }
+
+      this.switchView("videos", { push: false });
+    },
+
+    async switchPlayerTranscriptVariant(targetVariant) {
+      const videoId = String(this.playerPageVideoId || (this.playerVideo && this.playerVideo.id) || "").trim();
+      if (!videoId || this.playerTranscriptSwitching || !this._playerViewActive(videoId)) return;
+
+      const nextVariant = normalizeTranscriptVariant(targetVariant);
+      const currentVariant = normalizeTranscriptVariant(this.playerTranscriptSelectedVariant || this.playerTranscriptVariant);
+      const source = normalizeTranscriptSource(this.playerTranscriptActiveSource || this.playerTranscriptSource);
+      if (!nextVariant || !source || nextVariant === currentVariant) return;
+
+      this.playerTranscriptAvailableVariants = this._playerTranscriptAvailableVariantsForSource(source);
+      if (!this.playerTranscriptVariantAvailable(nextVariant)) return;
+
+      this.playerTranscriptSwitching = true;
+      try {
+        const transcript = await this.api(
+          this._playerTranscriptRequestPath(videoId, {
+            variant: nextVariant,
+            source,
+          })
+        );
+        if (!this._playerViewActive(videoId)) return;
+        if (transcript && transcript.ok) this._playerApplyTranscriptPayload(transcript);
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.toastError(`切换转写版本失败：${msg}`);
+      } finally {
+        this.playerTranscriptSwitching = false;
+      }
     },
 
     async refreshPlayerTranscript() {
-      const videoId = this.playerVideo && this.playerVideo.id ? String(this.playerVideo.id) : "";
-      if (!videoId || this.playerTranscriptRefreshing) return;
+      const videoId = String(this.playerPageVideoId || (this.playerVideo && this.playerVideo.id) || "").trim();
+      if (!videoId || this.playerTranscriptRefreshing || !this._playerViewActive(videoId)) return;
       this.playerTranscriptRefreshing = true;
       try {
-        const transcript = await this.api(`/videos/${encodeURIComponent(videoId)}/transcript`);
-        if (transcript && transcript.ok) {
-          this.playerTranscriptText = transcript.text || "";
-          this.playerTranscriptAssetId = transcript.asset_id || this.playerTranscriptAssetId || "";
-          this.playerTranscriptSource = transcript.source || this.playerTranscriptSource || "";
-          this.playerTranscriptVariant = transcript.variant || this.playerTranscriptVariant || "";
-          this.playerTranscriptPolishMethod = transcript.polish_method || this.playerTranscriptPolishMethod || "";
-          this.playerTranscriptUpdatedAt = transcript.updated_at || transcript.created_at || this.playerTranscriptUpdatedAt || "";
-        }
+        const transcript = await this.api(
+          this._playerTranscriptRequestPath(videoId, {
+            variant: this.playerTranscriptSelectedVariant || this.playerTranscriptVariant,
+            source: this.playerTranscriptActiveSource || this.playerTranscriptSource,
+          })
+        );
+        if (!this._playerViewActive(videoId)) return;
+        this._playerApplyTranscriptPayload(transcript);
       } finally {
         this.playerTranscriptRefreshing = false;
       }
@@ -123,7 +300,7 @@ export function createPlayerModule() {
 
         const tick = async () => {
           if (this.playerTranscriptPollKey !== key) return;
-          if (!this.modals.videoPlayer) return;
+          if (!this._playerViewActive(videoId)) return;
           if (!this.playerVideo || String(this.playerVideo.id || "") !== String(videoId)) return;
 
           const tries = Number(this.playerTranscriptPollTries || 0);
@@ -134,11 +311,17 @@ export function createPlayerModule() {
           this.playerTranscriptPollTries = tries + 1;
 
           try {
-            const transcript = await this.api(`/videos/${encodeURIComponent(videoId)}/transcript`);
+            const transcript = await this.api(
+              this._playerTranscriptRequestPath(videoId, {
+                variant: this.playerTranscriptSelectedVariant || this.playerTranscriptVariant,
+                source: this.playerTranscriptActiveSource || this.playerTranscriptSource,
+              })
+            );
+            if (!this._playerViewActive(videoId)) return;
             if (transcript && transcript.ok) {
               const nextAssetId = transcript.asset_id || "";
               const nextText = transcript.text || "";
-              const nextVariant = transcript.variant || "";
+              const nextVariant = normalizeTranscriptVariant(transcript.variant);
               const nextMethod = transcript.polish_method || "";
               const nextUpdatedAt = transcript.updated_at || transcript.created_at || "";
               const changed =
@@ -148,12 +331,7 @@ export function createPlayerModule() {
                 (nextMethod && nextMethod !== String(this.playerTranscriptPolishMethod || "")) ||
                 (nextUpdatedAt && nextUpdatedAt !== String(this.playerTranscriptUpdatedAt || ""));
               if (changed) {
-                this.playerTranscriptText = nextText;
-                this.playerTranscriptAssetId = nextAssetId || this.playerTranscriptAssetId || "";
-                this.playerTranscriptSource = transcript.source || this.playerTranscriptSource || "";
-                this.playerTranscriptVariant = transcript.variant || this.playerTranscriptVariant || "";
-                this.playerTranscriptPolishMethod = transcript.polish_method || this.playerTranscriptPolishMethod || "";
-                this.playerTranscriptUpdatedAt = nextUpdatedAt || this.playerTranscriptUpdatedAt || "";
+                this._playerApplyTranscriptPayload(transcript);
                 this.playerTranscriptNotice = "转写文本已更新。";
                 this.playerTranscriptPollKey = "";
                 return;
@@ -175,13 +353,14 @@ export function createPlayerModule() {
     },
 
     async retranscribePlayerTranscript() {
-      const videoId = this.playerVideo && this.playerVideo.id ? String(this.playerVideo.id) : "";
-      if (!videoId || this.playerRetranscribeSubmitting) return;
+      const videoId = String(this.playerPageVideoId || (this.playerVideo && this.playerVideo.id) || "").trim();
+      if (!videoId || this.playerRetranscribeSubmitting || !this._playerViewActive(videoId)) return;
       this.playerRetranscribeSubmitting = true;
       this.playerTranscriptNotice = "";
       const prevAssetId = this.playerTranscriptAssetId || "";
       try {
         await this.api(`/videos/${encodeURIComponent(videoId)}/transcript/retranscribe`, { method: "POST" });
+        if (!this._playerViewActive(videoId)) return;
         this.playerTranscriptNotice = "已提交重新转写，正在等待生成…";
         this.toastSuccess("已提交重新转写任务", { action: this.toastJobsAction() });
         this._playerPollTranscriptAfterRetranscribe(videoId, prevAssetId);

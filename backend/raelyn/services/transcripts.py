@@ -11,6 +11,7 @@ from raelyn.services.s3 import s3_get_bytes
 
 
 TRANSCRIPT_VARIANTS = ("polished", "plain")
+TRANSCRIPT_VARIANT_SET = frozenset(TRANSCRIPT_VARIANTS)
 # Keep the legacy "speaches" source name for backward compatibility with old assets.
 TRANSCRIPT_SOURCE_LANGUAGE_ORDER = (
     ("subtitle", "zh"),
@@ -19,33 +20,96 @@ TRANSCRIPT_SOURCE_LANGUAGE_ORDER = (
 )
 
 
-def pick_transcript_asset(session: Session, video_id: uuid.UUID, *, format_: str = "txt") -> Asset | None:
-    for variant in TRANSCRIPT_VARIANTS:
-        for source, language in TRANSCRIPT_SOURCE_LANGUAGE_ORDER:
+def _pick_transcript_asset_exact(
+    session: Session,
+    video_id: uuid.UUID,
+    *,
+    variant: str,
+    source: str | None = None,
+    format_: str = "txt",
+) -> Asset | None:
+    source_value = str(source or "").strip()
+    if source_value:
+        preferred_languages = [language for src, language in TRANSCRIPT_SOURCE_LANGUAGE_ORDER if src == source_value]
+        for language in preferred_languages:
             asset = session.execute(
                 select(Asset).where(
                     Asset.video_id == video_id,
                     Asset.type == "transcript",
                     Asset.format == format_,
                     Asset.variant == variant,
-                    Asset.source == source,
+                    Asset.source == source_value,
                     Asset.language == language,
                 )
             ).scalar_one_or_none()
             if asset:
                 return asset
 
-    for variant in TRANSCRIPT_VARIANTS:
-        asset = session.execute(
+        return session.execute(
             select(Asset)
             .where(
                 Asset.video_id == video_id,
                 Asset.type == "transcript",
                 Asset.format == format_,
                 Asset.variant == variant,
+                Asset.source == source_value,
             )
             .order_by(Asset.created_at.desc())
         ).scalar_one_or_none()
+
+    for source_name, language in TRANSCRIPT_SOURCE_LANGUAGE_ORDER:
+        asset = session.execute(
+            select(Asset).where(
+                Asset.video_id == video_id,
+                Asset.type == "transcript",
+                Asset.format == format_,
+                Asset.variant == variant,
+                Asset.source == source_name,
+                Asset.language == language,
+            )
+        ).scalar_one_or_none()
+        if asset:
+            return asset
+
+    return session.execute(
+        select(Asset)
+        .where(
+            Asset.video_id == video_id,
+            Asset.type == "transcript",
+            Asset.format == format_,
+            Asset.variant == variant,
+        )
+        .order_by(Asset.created_at.desc())
+    ).scalar_one_or_none()
+
+
+def pick_transcript_asset(
+    session: Session,
+    video_id: uuid.UUID,
+    *,
+    format_: str = "txt",
+    variant: str | None = None,
+    source: str | None = None,
+) -> Asset | None:
+    variant_value = str(variant or "").strip().lower()
+    source_value = str(source or "").strip() or None
+    if variant_value:
+        return _pick_transcript_asset_exact(
+            session,
+            video_id,
+            format_=format_,
+            variant=variant_value,
+            source=source_value,
+        )
+
+    for variant_name in TRANSCRIPT_VARIANTS:
+        asset = _pick_transcript_asset_exact(
+            session,
+            video_id,
+            format_=format_,
+            variant=variant_name,
+            source=source_value,
+        )
         if asset:
             return asset
     return None
@@ -72,10 +136,25 @@ def transcript_polish_method(asset: Asset | None) -> str | None:
     return None
 
 
-def build_transcript_payload(session: Session, video_id: uuid.UUID, *, max_chars: int = 200_000) -> dict[str, Any]:
-    asset = pick_transcript_asset(session, video_id)
+def build_transcript_payload(
+    session: Session,
+    video_id: uuid.UUID,
+    *,
+    max_chars: int = 200_000,
+    variant: str | None = None,
+    source: str | None = None,
+) -> dict[str, Any]:
+    variant_value = str(variant or "").strip().lower() or None
+    source_value = str(source or "").strip() or None
+    asset = pick_transcript_asset(session, video_id, variant=variant_value, source=source_value)
     if not asset:
-        return {"ok": False, "reason": "no transcript", "text": ""}
+        return {
+            "ok": False,
+            "reason": "no transcript",
+            "text": "",
+            "variant": variant_value,
+            "source": source_value,
+        }
 
     text, truncated = read_text_asset(asset, max_chars=max_chars)
     created_at = getattr(asset, "created_at", None)

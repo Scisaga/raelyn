@@ -16,8 +16,9 @@ from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Asset, Media, Video
 from raelyn.services.downloads import build_download_filename, content_disposition_attachment
 from raelyn.services.llm import llm_enabled
+from raelyn.services.media_deletion import ensure_media_not_deleting
 from raelyn.services.s3 import s3_get_bytes
-from raelyn.services.transcripts import build_transcript_payload
+from raelyn.services.transcripts import TRANSCRIPT_VARIANT_SET, build_transcript_payload
 from raelyn.services.video_actions import schedule_video_download, schedule_video_retranscribe
 from raelyn.services.video_meta import parse_published_at
 
@@ -217,12 +218,27 @@ def download_video(video_id: uuid.UUID) -> dict:
 
 
 @router.get("/videos/{video_id}/transcript")
-def get_video_transcript(video_id: uuid.UUID, max_chars: int = 200_000) -> dict:
+def get_video_transcript(
+    video_id: uuid.UUID,
+    max_chars: int = 200_000,
+    variant: str | None = None,
+    source: str | None = None,
+) -> dict:
+    variant_value = str(variant or "").strip().lower() or None
+    if variant_value and variant_value not in TRANSCRIPT_VARIANT_SET:
+        raise HTTPException(status_code=400, detail="variant must be one of: plain, polished")
+    source_value = str(source or "").strip() or None
     with session_scope() as session:
         video = session.get(Video, video_id)
         if not video:
             raise HTTPException(status_code=404, detail="video not found")
-        return build_transcript_payload(session, video_id, max_chars=max_chars)
+        return build_transcript_payload(
+            session,
+            video_id,
+            max_chars=max_chars,
+            variant=variant_value,
+            source=source_value,
+        )
 
 
 @router.get("/videos/{video_id}/note")
@@ -259,6 +275,10 @@ def generate_video_note(video_id: uuid.UUID) -> dict:
         video = session.get(Video, video_id)
         if not video:
             raise HTTPException(status_code=404, detail="video not found")
+        try:
+            ensure_media_not_deleting(session, video.media_id)
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
         enqueue_job(session, type_="video.generate_note", params={"video_id": str(video.id)}, priority=2)
     return {"ok": True}
 
@@ -272,3 +292,5 @@ def retranscribe_video_transcript(video_id: uuid.UUID) -> dict:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e

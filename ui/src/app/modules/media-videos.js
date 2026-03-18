@@ -24,5 +24,8 @@ export function createMediaVideosModule() {
     mediaImportSubmitting: false,
     mediaImportError: "",
     mediaImportResult: null,
+    mediaDeleteTracking: {},
+    _mediaDeletePollId: null,
+    _mediaDeletePolling: false,
   };
 }

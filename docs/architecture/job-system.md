@@ -20,6 +20,7 @@
 - `scheduled_for`：定时执行（分钟级同步依赖它）
 - `lease_expires_at`：`running` 的租约到期时间，用于卡死回收
 - `progress_current` / `progress_total`
+- `cancel_requested_at`：协作式取消请求时间；`running` 任务收到请求后由 handler 在安全检查点退出
 
 ## 原子领取（Atomic Claim）
 
@@ -71,3 +72,10 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - 每个 job 记录 `type / status / params / result / error / attempt / worker_id`
 - 结构化日志带 `job_id` 与 `video_id / media_id`
 - `job_events` 保存关键事件，便于 UI 展示与排障
+
+## 当前协作式取消语义
+
+- `POST /api/jobs/{job_id}/cancel` 不再把 `running` 任务直接硬改成 `canceled`
+- `pending + cancel_requested_at`：worker 会在领取前直接落为 `canceled`
+- `running + cancel_requested_at`：handler 在安全检查点退出，worker 统一收口为 `canceled`
+- `media.delete` 复用这套机制，用于等待相关下载、转写、摘要任务安全退出后再执行级联删除

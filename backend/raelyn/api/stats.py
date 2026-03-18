@@ -281,13 +281,15 @@ def stats() -> dict:
                     ).scalar_one_or_none()
                     if brief:
                         st = (getattr(brief, "status", None) or "").strip().lower()
-                        if st == "succeeded" and getattr(brief, "markdown_asset_id", None):
+                        if st == "ready" and getattr(brief, "markdown_asset_id", None):
                             asset = session.get(Asset, brief.markdown_asset_id)
                             latest_brief_snippet = _brief_snippet_from_asset(asset)
                         elif st in {"pending", "running"}:
                             latest_brief_snippet = "简报生成中"
                         elif st == "failed":
                             latest_brief_snippet = "简报生成失败"
+                        elif st == "empty":
+                            latest_brief_snippet = "本周期暂无视频"
 
                 playlists.append(
                     {

@@ -53,7 +53,7 @@ function resolveFfmpegBinary() {
 
 function buildPwaAssets() {
   const ffmpegBin = resolveFfmpegBinary();
-  const pwaSourcePng = resolve(uiDir, "pwa/icon-source.png");
+  const pwaSourcePng = resolve(root, "static/brand/logo.png");
   const icon192 = resolve(pwaDir, "icon-192.png");
   const icon512 = resolve(pwaDir, "icon-512.png");
   const iconMaskable512 = resolve(pwaDir, "icon-maskable-512.png");

@@ -4,13 +4,14 @@ import re
 import uuid
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
 from raelyn.models import Brief, Job, Playlist, PlaylistMedia, Video
 from raelyn.services.assets import ensure_asset
+from raelyn.services.media_deletion import mark_brief_empty
 from raelyn.services.brief_schedule import schedule_brief_refresh_for_video
 from raelyn.services.brief_prompt import (
     DEFAULT_BRIEF_PROMPT_TEMPLATE,
@@ -50,38 +51,29 @@ def _brief_generate_period_impl(
     start_utc, end_utc = brief_period_bounds_utc(period_start, value)
     media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == playlist_id)).scalars().all()
     if not media_ids:
-        brief = session.execute(
-            select(Brief).where(Brief.playlist_id == playlist_id, Brief.granularity == value, Brief.period_start == period_start)
-        ).scalar_one_or_none()
-        if not brief:
-            brief = Brief(playlist_id=playlist_id, granularity=value, period_start=period_start, status="running")
-            session.add(brief)
-            session.flush()
-        else:
-            brief.status = "running"
-        brief.status = "failed"
-        brief.error_message = "播放列表为空"
-        brief.markdown_asset_id = None
-        return {"failed": True, "reason": "empty playlist"}
+        mark_brief_empty(session, playlist_id=playlist_id, granularity=value, period_start=period_start)
+        return {"empty": True, "reason": "empty playlist"}
 
+    co_ts = func.coalesce(Video.published_at, Video.created_at)
     videos = (
         session.execute(
             select(Video)
-            .where(Video.media_id.in_(list(media_ids)), Video.published_at >= start_utc, Video.published_at < end_utc)
-            .order_by(Video.published_at.asc().nullslast())
+            .where(Video.media_id.in_(list(media_ids)), co_ts >= start_utc, co_ts < end_utc)
+            .order_by(co_ts.asc().nullslast())
         )
         .scalars()
         .all()
     )
     if not videos:
+        mark_brief_empty(session, playlist_id=playlist_id, granularity=value, period_start=period_start)
         job_log(
             session,
             job,
-            f"skip brief: no videos in period {value} {period_start.isoformat()}",
+            f"brief empty: no videos in period {value} {period_start.isoformat()}",
             level="info",
             data={"granularity": value, "period_start": period_start.isoformat()},
         )
-        return {"skipped": True, "reason": "no videos"}
+        return {"empty": True, "reason": "no videos"}
 
     brief = session.execute(
         select(Brief).where(Brief.playlist_id == playlist_id, Brief.granularity == value, Brief.period_start == period_start)

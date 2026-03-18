@@ -123,6 +123,12 @@
 		                            class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/20 px-2 py-0.5 text-[11px] text-slate-300 whitespace-nowrap shrink-0"
 		                            x-text="'视频 ' + ((m.video_count===0 || m.video_count) ? m.video_count : '-')"
 		                          ></span>
+                              <span
+                                x-show="m.deleting"
+                                class="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-200 whitespace-nowrap shrink-0"
+                              >
+                                删除中
+                              </span>
 		                        </div>
 	                        <a
 	                          class="text-xs text-slate-400 truncate hover:text-slate-200 hover:underline"
@@ -137,11 +143,16 @@
 	                    <div class="flex flex-wrap items-center gap-2 justify-end">
                       <div class="flex items-center gap-2 mr-1">
                         <span class="text-xs text-slate-400">监控</span>
-                        <label class="relative inline-flex items-center cursor-pointer select-none" @click.stop>
+                        <label
+                          class="relative inline-flex items-center select-none"
+                          :class="m.deleting ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'"
+                          @click.stop
+                        >
                           <input
                             type="checkbox"
                             class="sr-only peer"
                             :checked="m.monitor_enabled !== false"
+                            :disabled="!!m.deleting"
                             @change.stop="setMediaMonitor(m.id, $event.target.checked)"
                           />
                           <div class="relative w-9 h-5 rounded-full bg-slate-700/60 peer-focus:ring-2 peer-focus:ring-emerald-500/30 peer-checked:bg-emerald-600/80 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:h-4 after:w-4 after:rounded-full after:bg-slate-100 after:transition-all peer-checked:after:translate-x-4"></div>
@@ -154,9 +165,10 @@
                       >
                         <button
                           type="button"
-                          class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset border-r border-slate-700"
+                          class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset border-r border-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
                           @click.stop="syncMediaRecent(m.id)"
-                          title="同步近期"
+                          :disabled="!!m.deleting"
+                          :title="m.deleting ? '删除中，无法同步' : '同步近期'"
                         >
                           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                             <path d="M21 12a9 9 0 0 0-9-9 9 9 0 0 0-6.36 2.64L3 8"></path>
@@ -164,13 +176,14 @@
                             <path d="M3 12a9 9 0 0 0 9 9 9 9 0 0 0 6.36-2.64L21 16"></path>
                             <path d="M21 21v-5h-5"></path>
                           </svg>
-                          <span>近期</span>
+                          <span x-text="m.deleting ? '删除中' : '近期'"></span>
                         </button>
                         <button
                           type="button"
-                          class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset border-r border-slate-700"
+                          class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset border-r border-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
                           @click.stop="syncMediaAll(m.id)"
-                          title="同步全部"
+                          :disabled="!!m.deleting"
+                          :title="m.deleting ? '删除中，无法同步' : '同步全部'"
                         >
                           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                             <path d="M21 12a9 9 0 0 0-9-9 9 9 0 0 0-6.36 2.64L3 8"></path>
@@ -182,10 +195,11 @@
                         </button>
                         <button
                           type="button"
-                          class="inline-flex items-center justify-center px-2.5 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset"
+                          class="inline-flex items-center justify-center px-2.5 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset disabled:cursor-not-allowed disabled:opacity-60"
                           @click.stop="deleteMedia(m.id)"
-                          title="删除"
-                          aria-label="删除"
+                          :disabled="!!m.deleting"
+                          :title="m.deleting ? '删除任务执行中' : '删除'"
+                          :aria-label="m.deleting ? '删除中' : '删除'"
                         >
                           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                             <polyline points="3 6 5 6 21 6"></polyline>

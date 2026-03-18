@@ -17,6 +17,7 @@ import raelyn.jobs.handlers  # noqa: F401  注册 handlers
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
 from raelyn.jobs.reschedule import JobReschedule
+from raelyn.services.job_cancellation import JobCancelRequested, finalize_canceled_job, job_cancel_requested
 from raelyn.services.log_timestamps import install_if_needed
 from raelyn.services.s3 import s3_ensure_bucket
 from raelyn.timeutil import utcnow
@@ -42,14 +43,14 @@ _ROLE_TYPES: dict[str, list[str]] = {
     "audio": ["video.extract_audio"],
     "process": ["video.normalize_subtitle"],
     "asr": ["video.asr_transcribe"],
-    "sync": ["media.sync_profile", "media.sync_videos"],
+    "sync": ["media.sync_profile", "media.sync_videos", "media.delete"],
     "ai": ["video.polish_transcript", "video.generate_note", "brief.generate_daily", "brief.generate_period"],
 }
 
 
 def _effective_max_attempts(job_type: str, current: int) -> int:
     # Reduce retries for provider-facing jobs to avoid repeated blocks.
-    if job_type in {"media.sync_profile", "media.sync_videos", "video.download", "video.download.youtube", "video.download.bilibili"}:
+    if job_type in {"media.sync_profile", "media.sync_videos", "media.delete", "video.download", "video.download.youtube", "video.download.bilibili"}:
         return min(int(current or 0) or 5, 2)
     return int(current or 0) or 5
 
@@ -155,6 +156,9 @@ def run_loop() -> None:
                     job.finished_at = utcnow()
                     job_log(session, job, "job canceled; skip")
                     continue
+                if job_cancel_requested(job):
+                    finalize_canceled_job(session, job, message="canceled before run", reason="cancel_requested")
+                    continue
 
                 try:
                     job_log(session, job, "running")
@@ -169,6 +173,9 @@ def run_loop() -> None:
                         job.lease_expires_at = None
                         job_log(session, job, "canceled; result ignored", level="warn")
                         continue
+                    if job_cancel_requested(job):
+                        finalize_canceled_job(session, job, message="canceled after handler completed", reason="cancel_requested")
+                        continue
 
                     job.result = result
                     job.status = "succeeded"
@@ -177,6 +184,8 @@ def run_loop() -> None:
                     job.finished_at = utcnow()
                     job.lease_expires_at = None
                     job_log(session, job, "succeeded")
+                except JobCancelRequested:
+                    finalize_canceled_job(session, job, message="canceled while running", reason="cancel_requested")
                 except JobReschedule as e:
                     # Best-effort: if an operator canceled the job while it was running, keep status=canceled.
                     try:
@@ -187,6 +196,9 @@ def run_loop() -> None:
                         job.finished_at = job.finished_at or utcnow()
                         job.lease_expires_at = None
                         job_log(session, job, "canceled", level="warn")
+                        continue
+                    if job_cancel_requested(job):
+                        finalize_canceled_job(session, job, message="canceled while rescheduling", reason="cancel_requested")
                         continue
 
                     job.status = "pending"
@@ -210,6 +222,9 @@ def run_loop() -> None:
                         job.lease_expires_at = None
                         job.worker_id = None
                         job_log(session, job, "canceled", level="warn")
+                        continue
+                    if job_cancel_requested(job):
+                        finalize_canceled_job(session, job, message="canceled after handler error", reason="cancel_requested")
                         continue
 
                     job.attempt += 1

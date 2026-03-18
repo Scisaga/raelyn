@@ -333,6 +333,7 @@ export function createJobsViewMethods() {
 
     jobsTypeOptions() {
       const known = [
+        "media.delete",
         "media.sync_profile",
         "media.sync_videos",
         "video.download",

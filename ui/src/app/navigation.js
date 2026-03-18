@@ -6,6 +6,12 @@ export function createNavItems() {
     { key: "media", label: "媒体", icon: raelynIcon('<path d="M16 18a4 4 0 0 0-8 0"/><circle cx="12" cy="10" r="4"/><path d="M5 20h14"/>') },
     { key: "videos", label: "视频", icon: raelynIcon('<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>') },
     {
+      key: "video",
+      label: "视频详情",
+      hidden: true,
+      icon: raelynIcon('<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>'),
+    },
+    {
       key: "playlists",
       label: "播放列表",
       icon: raelynIcon(

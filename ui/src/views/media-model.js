@@ -5,8 +5,151 @@ export function createMediaViewMethods() {
         this._syncUrl({ push: false });
         const query = this.mediaQuery ? `&q=${encodeURIComponent(this.mediaQuery)}` : "";
         this.mediaList = await this.api(`/media?limit=50&offset=0${query}`);
+        this._syncMediaDeleteTrackingFromList(this.mediaList);
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
+      }
+    },
+
+    _mediaFindById(mediaId) {
+      const id = String(mediaId || "").trim();
+      if (!id) return null;
+      const list = Array.isArray(this.mediaList) ? this.mediaList : [];
+      return list.find((item) => item && String(item.id) === id) || null;
+    },
+
+    _mediaIndexFindById(mediaId) {
+      const id = String(mediaId || "").trim();
+      if (!id) return null;
+      const list = Array.isArray(this.mediaIndex) ? this.mediaIndex : [];
+      return list.find((item) => item && String(item.id) === id) || null;
+    },
+
+    _markMediaDeleting(mediaId, jobId) {
+      const id = String(mediaId || "").trim();
+      const job = String(jobId || "").trim();
+      if (!id || !job) return;
+      const media = this._mediaFindById(id);
+      if (media) {
+        media.deleting = true;
+        media.deletion_job_id = job;
+        media.monitor_enabled = false;
+      }
+      const mediaIndexItem = this._mediaIndexFindById(id);
+      if (mediaIndexItem) {
+        mediaIndexItem.deleting = true;
+        mediaIndexItem.deletion_job_id = job;
+        mediaIndexItem.monitor_enabled = false;
+      }
+    },
+
+    _removeMediaLocally(mediaId) {
+      const id = String(mediaId || "").trim();
+      if (!id) return;
+      this.mediaList = (Array.isArray(this.mediaList) ? this.mediaList : []).filter((item) => !(item && String(item.id) === id));
+      this.mediaIndex = (Array.isArray(this.mediaIndex) ? this.mediaIndex : []).filter((item) => !(item && String(item.id) === id));
+    },
+
+    _trackMediaDelete(mediaId, jobId) {
+      const id = String(mediaId || "").trim();
+      const job = String(jobId || "").trim();
+      if (!id || !job) return;
+      if (!this.mediaDeleteTracking || typeof this.mediaDeleteTracking !== "object") this.mediaDeleteTracking = {};
+      this.mediaDeleteTracking[id] = { jobId: job };
+      this._ensureMediaDeletePoller();
+    },
+
+    _untrackMediaDelete(mediaId) {
+      const id = String(mediaId || "").trim();
+      if (!id || !this.mediaDeleteTracking || typeof this.mediaDeleteTracking !== "object") return;
+      delete this.mediaDeleteTracking[id];
+      if (Object.keys(this.mediaDeleteTracking).length === 0) {
+        this._stopMediaDeletePoller();
+      }
+    },
+
+    _syncMediaDeleteTrackingFromList(list) {
+      const items = Array.isArray(list) ? list : [];
+      for (const item of items) {
+        if (!item || item.deleting !== true || !item.deletion_job_id) continue;
+        this._trackMediaDelete(item.id, item.deletion_job_id);
+      }
+    },
+
+    _ensureMediaDeletePoller() {
+      if (this._mediaDeletePollId) return;
+      this._mediaDeletePollId = setInterval(() => {
+        this._pollMediaDeleteJobs();
+      }, 1500);
+      this._pollMediaDeleteJobs();
+    },
+
+    _stopMediaDeletePoller() {
+      try {
+        if (this._mediaDeletePollId) clearInterval(this._mediaDeletePollId);
+      } catch {
+        // ignore
+      }
+      this._mediaDeletePollId = null;
+    },
+
+    async _refreshMediaAndStatsAfterDelete() {
+      await this.loadMedia();
+      this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
+      this._syncMediaDeleteTrackingFromList(this.mediaIndex);
+      await Promise.all([this.loadStats(), this.loadJobs()]);
+    },
+
+    async _handleMediaDeleteJobFinished(mediaId, job) {
+      const status = String((job && job.status) || "").trim().toLowerCase();
+      const id = String(mediaId || "").trim();
+      if (!id) return;
+      if (status === "succeeded") {
+        this._removeMediaLocally(id);
+        this._untrackMediaDelete(id);
+        this.globalStatus = "已删除媒体";
+        this.toastSuccess("已删除媒体", { action: this.toastJobsAction() });
+        await this._refreshMediaAndStatsAfterDelete();
+        return;
+      }
+
+      if (!["failed", "canceled"].includes(status)) return;
+      const message = String((job && job.error_message) || "").trim() || (status === "canceled" ? "删除任务已取消" : "删除任务失败");
+      this._untrackMediaDelete(id);
+      this.globalStatus = `error: ${message}`;
+      if (status === "canceled") this.toastError(message, { action: this.toastJobsAction() });
+      else this.toastError(`删除失败：${message}`, { action: this.toastJobsAction() });
+      await this._refreshMediaAndStatsAfterDelete();
+    },
+
+    async _pollMediaDeleteJobs() {
+      if (this._mediaDeletePolling) return;
+      const entries = Object.entries(this.mediaDeleteTracking || {});
+      if (!entries.length) {
+        this._stopMediaDeletePoller();
+        return;
+      }
+      this._mediaDeletePolling = true;
+      try {
+        for (const [mediaId, item] of entries) {
+          const jobId = item && item.jobId ? String(item.jobId) : "";
+          if (!jobId) {
+            this._untrackMediaDelete(mediaId);
+            continue;
+          }
+          try {
+            const job = await this.api(`/jobs/${encodeURIComponent(jobId)}`);
+            await this._handleMediaDeleteJobFinished(mediaId, job);
+          } catch (e) {
+            const msg = e && e.message ? String(e.message) : String(e);
+            if (msg.startsWith("404:")) {
+              this._untrackMediaDelete(mediaId);
+              await this._refreshMediaAndStatsAfterDelete();
+            }
+          }
+        }
+      } finally {
+        this._mediaDeletePolling = false;
       }
     },
 
@@ -65,7 +208,7 @@ export function createMediaViewMethods() {
         this.modals.createPlaylist = false;
         this.modals.mediaImport = true;
       }
-      this.closeVideoPlayer();
+      if (typeof this.leaveVideoPage === "function") this.leaveVideoPage();
       this.mediaImportSubmitting = false;
       this.mediaImportError = "";
       this.mediaImportResult = null;
@@ -126,7 +269,7 @@ export function createMediaViewMethods() {
     openAddMedia() {
       this.modals.createPlaylist = false;
       this.modals.mediaImport = false;
-      this.closeVideoPlayer();
+      if (typeof this.leaveVideoPage === "function") this.leaveVideoPage();
       this.addMediaUrl = "";
       this.addMediaError = "";
       this.addMediaSubmitting = false;
@@ -170,6 +313,7 @@ export function createMediaViewMethods() {
 
       const mediaList = Array.isArray(this.mediaList) ? this.mediaList : [];
       const media = mediaList.find((item) => item && String(item.id) === id);
+      if (media && media.deleting) return;
       const prev = media ? media.monitor_enabled !== false : true;
       if (media) media.monitor_enabled = next;
       const mediaIndex = Array.isArray(this.mediaIndex) ? this.mediaIndex : [];
@@ -196,6 +340,8 @@ export function createMediaViewMethods() {
     async _syncMedia(mediaId, scope) {
       const id = String(mediaId || "").trim();
       if (!id) return;
+      const media = this._mediaFindById(id);
+      if (media && media.deleting) return;
       const query = scope ? `?scope=${encodeURIComponent(scope)}` : "";
       await this.api(`/media/${id}/sync${query}`, { method: "POST" });
       const message = scope === "all" ? "已投递全量同步任务" : "已投递近期同步任务";
@@ -255,14 +401,19 @@ export function createMediaViewMethods() {
     async deleteMedia(mediaId) {
       const id = String(mediaId || "").trim();
       if (!id) return;
+      const media = this._mediaFindById(id);
+      if (media && media.deleting) return;
       try {
         if (!confirm("确认删除该媒体？该操作会删除媒体及其关联数据（视频/任务/简报等可能会受影响）。")) return;
-        this.globalStatus = "正在删除媒体…";
-        await this.api(`/media/${encodeURIComponent(id)}`, { method: "DELETE" });
-        await this.loadMedia();
-        this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
-        this.globalStatus = "已删除媒体";
-        this.toastSuccess("已删除媒体");
+        this.globalStatus = "正在提交删除媒体任务…";
+        const result = await this.api(`/media/${encodeURIComponent(id)}`, { method: "DELETE" });
+        const jobId = result && result.job_id ? String(result.job_id) : "";
+        if (!jobId) throw new Error("删除任务提交失败：缺少 job_id");
+        this._markMediaDeleting(id, jobId);
+        this._trackMediaDelete(id, jobId);
+        this.globalStatus = "已提交删除媒体任务";
+        this.toastSuccess("已提交删除媒体任务", { action: this.toastJobsAction() });
+        await this.loadJobs();
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
         this.toastError(`删除失败：${e.message}`);

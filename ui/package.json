@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "ui:brand": "bash scripts/run-node.sh scripts/build-brand-logo.mjs",
     "ui:build": "bash scripts/run-node.sh scripts/build.mjs",
     "ui:watch": "bash scripts/run-node.sh scripts/watch.mjs"
   },

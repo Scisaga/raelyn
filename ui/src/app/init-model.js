@@ -13,6 +13,10 @@ export function createAppInitMethods() {
         const viewKey = this._parseViewFromLocation();
         if (this.activeView === "videos" && viewKey !== "videos") this._teardownVideoIo();
         if (this.activeView === "jobs" && viewKey !== "jobs") this._destroyJobsDoneChart();
+        if (this.activeView === "video" && viewKey !== "video" && typeof this.leaveVideoPage === "function") this.leaveVideoPage();
+        if (this.activeView === "playlist" && viewKey !== "playlist" && typeof this.playlistStopBriefSpeech === "function") {
+          this.playlistStopBriefSpeech({ clearError: true });
+        }
         this.activeView = viewKey;
         const item = this.navItems.find((nav) => nav.key === viewKey);
         this.pageTitle = item ? item.label : viewKey;
@@ -56,6 +60,7 @@ export function createAppInitMethods() {
 
     async _refreshProtectedData() {
       this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
+      if (typeof this._syncMediaDeleteTrackingFromList === "function") this._syncMediaDeleteTrackingFromList(this.mediaIndex);
       await this.refreshActive();
       await this.loadStats();
     },

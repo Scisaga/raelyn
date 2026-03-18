@@ -45,7 +45,7 @@
 	                  <div class="h-20 px-4 py-3 flex items-center gap-3">
 	                    <button
 	                      type="button"
-	                      class="w-14 h-14 rounded-xl ring-1 ring-inset shrink-0 overflow-hidden focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+	                      class="w-12 h-12 rounded-lg ring-1 ring-inset shrink-0 overflow-hidden focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
 	                      :class="(playlistDetail && playlistDetail.avatar_asset ? 'ring-slate-800/70 bg-slate-800/30' : 'ring-slate-700/60 bg-slate-800 text-slate-200') + (playlistDetail ? ' cursor-pointer' : ' opacity-60 cursor-not-allowed')"
                       @click="$refs && $refs.playlistAvatarInput && $refs.playlistAvatarInput.click()"
                       :disabled="!playlistDetail"
@@ -53,7 +53,7 @@
                       aria-label="修改头像"
                     >
                       <template x-if="playlistDetail && playlistDetail.avatar_asset">
-                        <img class="w-14 h-14 rounded-sm object-cover" :src="assetContentUrl(playlistDetail.avatar_asset)" alt="" loading="lazy" @error="clearAssetRef(playlistDetail, 'avatar_asset')" />
+                        <img class="w-12 h-12 rounded-sm object-cover" :src="assetContentUrl(playlistDetail.avatar_asset)" alt="" loading="lazy" @error="clearAssetRef(playlistDetail, 'avatar_asset')" />
                       </template>
                       <template x-if="!playlistDetail || !playlistDetail.avatar_asset">
                         <div class="w-14 h-14 flex items-center justify-center">
@@ -500,20 +500,48 @@
 
                       <!-- Transcript: only show in 2xl (3-column) layout -->
                       <div class="hidden 2xl:flex flex-col flex-1 min-h-0">
-                        <div class="h-10 shrink-0 px-4 border-t border-slate-800 bg-slate-950/10 flex items-center justify-between gap-3">
-                          <div class="text-xs text-slate-400 shrink-0">文本</div>
+                        <div class="shrink-0 px-4 py-2 border-t border-slate-800 bg-slate-950/10 flex items-start justify-between gap-3">
+                          <div class="min-w-0 flex flex-wrap items-center gap-2">
+                            <div class="text-xs text-slate-400 shrink-0 mr-1">文本</div>
+                            <button
+                              type="button"
+                              class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] transition"
+                              :class="playlistTranscriptVariantActive('plain')
+                                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+                                : (playlistTranscriptVariantAvailable('plain')
+                                    ? 'border-slate-700 bg-slate-950/30 text-slate-300 hover:bg-slate-800/60'
+                                    : 'border-slate-800 bg-slate-950/10 text-slate-500 cursor-not-allowed opacity-60')"
+                              :disabled="!playlistTranscriptVariantAvailable('plain') || playlistTranscriptSwitching"
+                              @click="playlistSwitchTranscriptVariant('plain')"
+                            >原始</button>
+                            <button
+                              type="button"
+                              class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] transition"
+                              :class="playlistTranscriptVariantActive('polished')
+                                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+                                : (playlistTranscriptVariantAvailable('polished')
+                                    ? 'border-slate-700 bg-slate-950/30 text-slate-300 hover:bg-slate-800/60'
+                                    : 'border-slate-800 bg-slate-950/10 text-slate-500 cursor-not-allowed opacity-60')"
+                              :disabled="!playlistTranscriptVariantAvailable('polished') || playlistTranscriptSwitching"
+                              @click="playlistSwitchTranscriptVariant('polished')"
+                            >润色</button>
+                            <span
+                              class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/10 px-2 py-0.5 text-[11px] text-slate-400"
+                              x-show="playlistTranscriptSwitching"
+                            >切换中…</span>
+                          </div>
                           <div
-                            class="text-[11px] text-slate-500 truncate"
+                            class="text-[11px] text-slate-500 text-right"
                             x-show="playlistTranscriptSource || playlistTranscriptLanguage || playlistTranscriptUpdatedAt"
                             x-text="(playlistTranscriptSource ? playlistTranscriptSource : '') + (playlistTranscriptLanguage ? ((playlistTranscriptSource ? ' · ' : '') + playlistTranscriptLanguage) : '') + (playlistTranscriptUpdatedAt ? ((playlistTranscriptSource || playlistTranscriptLanguage ? ' · ' : '') + ('更新: ' + formatDateTimeShort(playlistTranscriptUpdatedAt))) : '')"
                           ></div>
                         </div>
                         <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar px-4 py-3">
-                          <div class="text-xs text-slate-400" x-show="playlistTranscriptLoading">加载中…</div>
+                          <div class="text-xs text-slate-400" x-show="playlistTranscriptLoading || playlistTranscriptSwitching">加载中…</div>
                           <div class="text-xs text-rose-200" x-show="playlistTranscriptError" x-text="playlistTranscriptError"></div>
                           <div
                             class="text-sm text-slate-400 leading-6 whitespace-pre-wrap"
-                            x-show="!playlistTranscriptLoading && !playlistTranscriptError"
+                            x-show="!playlistTranscriptLoading && !playlistTranscriptSwitching && !playlistTranscriptError"
                             x-text="playlistTranscriptText || '暂无文本（需要字幕或 ASR）'"
                           ></div>
                         </div>
@@ -601,32 +629,53 @@
                             周期：<span class="text-slate-200" x-text="playlistPeriodLabel() || '-'"></span>
                           </div>
                         </div>
-                        <button
-                          class="inline-flex items-center gap-2 rounded-md border border-slate-800 bg-slate-950/20 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800/60"
-                          @click="playlistGenerateBriefForSelectedDate()"
-                          :disabled="!playlistDetail || !playlistSelectedDate || playlistBriefGeneratingForSelectedDate() || (Array.isArray(playlistDayVideos) && playlistDayVideos.length===0)"
-                          :class="playlistDetail && playlistSelectedDate && !playlistBriefGeneratingForSelectedDate() && (!Array.isArray(playlistDayVideos) || playlistDayVideos.length>0) ? '' : 'opacity-60 cursor-not-allowed'"
-                          :title="'生成' + playlistBriefTitle()"
-                          :aria-label="'生成' + playlistBriefTitle()"
-                        >
-                          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <path d="M12 2v6"></path>
-                            <path d="M12 16v6"></path>
-                            <path d="M4.93 4.93l4.24 4.24"></path>
-                            <path d="M14.83 14.83l4.24 4.24"></path>
-                            <path d="M2 12h6"></path>
-                            <path d="M16 12h6"></path>
-                            <path d="M4.93 19.07l4.24-4.24"></path>
-                            <path d="M14.83 9.17l4.24-4.24"></path>
-                          </svg>
-                          <span x-show="!playlistBriefGeneratingForSelectedDate()">生成</span>
-                          <span x-show="playlistBriefGeneratingForSelectedDate()">生成中…</span>
-                        </button>
+                        <div class="shrink-0 flex items-center gap-2">
+                          <button
+                            class="inline-flex items-center gap-2 rounded-md border border-emerald-500/40 bg-slate-950/20 px-3 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/10"
+                            @click="playlistSpeakBrief()"
+                            :disabled="!playlistBriefCanSpeak()"
+                            :class="playlistBriefCanSpeak() ? '' : 'opacity-60 cursor-not-allowed'"
+                            :title="playlistBriefSpeechButtonTitle()"
+                            :aria-label="playlistBriefSpeechButtonTitle()"
+                          >
+                            <svg x-show="!playlistBriefSpeakingForSelectedDate()" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                              <polygon points="11 5 6 9 3 9 3 15 6 15 11 19 11 5"></polygon>
+                              <path d="M15.5 8.5a5 5 0 0 1 0 7"></path>
+                              <path d="M18.5 5.5a9 9 0 0 1 0 13"></path>
+                            </svg>
+                            <svg x-show="playlistBriefSpeakingForSelectedDate()" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                              <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+                            </svg>
+                            <span x-text="playlistBriefSpeechButtonLabel()"></span>
+                          </button>
+                          <button
+                            class="inline-flex items-center gap-2 rounded-md border border-slate-800 bg-slate-950/20 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800/60"
+                            @click="playlistGenerateBriefForSelectedDate()"
+                            :disabled="!playlistDetail || !playlistSelectedDate || playlistBriefGeneratingForSelectedDate() || (Array.isArray(playlistDayVideos) && playlistDayVideos.length===0)"
+                            :class="playlistDetail && playlistSelectedDate && !playlistBriefGeneratingForSelectedDate() && (!Array.isArray(playlistDayVideos) || playlistDayVideos.length>0) ? '' : 'opacity-60 cursor-not-allowed'"
+                            :title="'生成' + playlistBriefTitle()"
+                            :aria-label="'生成' + playlistBriefTitle()"
+                          >
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                              <path d="M12 2v6"></path>
+                              <path d="M12 16v6"></path>
+                              <path d="M4.93 4.93l4.24 4.24"></path>
+                              <path d="M14.83 14.83l4.24 4.24"></path>
+                              <path d="M2 12h6"></path>
+                              <path d="M16 12h6"></path>
+                              <path d="M4.93 19.07l4.24-4.24"></path>
+                              <path d="M14.83 9.17l4.24-4.24"></path>
+                            </svg>
+                            <span x-show="!playlistBriefGeneratingForSelectedDate()">生成</span>
+                            <span x-show="playlistBriefGeneratingForSelectedDate()">生成中…</span>
+                          </button>
+                        </div>
                       </div>
 
                       <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar p-4">
                         <div class="text-xs text-slate-400" x-show="playlistBriefLoading" x-text="playlistBriefGeneratingForSelectedDate() ? '生成中…' : '加载中…'"></div>
                         <div class="text-xs text-rose-200" x-show="playlistBriefError" x-text="playlistBriefError"></div>
+                        <div class="text-xs text-amber-200" x-show="playlistBriefSpeechError" x-text="playlistBriefSpeechError"></div>
                         <div
                           class="raelyn-brief prose prose-invert max-w-none text-md text-slate-400 prose-p:text-slate-400 prose-li:text-slate-400 prose-li:marker:text-slate-500 prose-strong:text-slate-200 prose-headings:text-slate-300 prose-hr:border-slate-700 prose-a:text-emerald-300 prose-a:hover:text-emerald-100"
                           x-show="!playlistBriefLoading && !playlistBriefError"

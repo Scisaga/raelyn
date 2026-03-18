@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from raelyn.api.orm import OrmModel
 from raelyn.db import session_scope
 from raelyn.models import Job, JobEvent, Media
+from raelyn.services.job_cancellation import request_job_cancel
 from raelyn.timeutil import utcnow
 
 
@@ -223,12 +224,10 @@ def cancel_job(job_id: uuid.UUID) -> dict:
         job = session.get(Job, job_id)
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
-        if job.status in {"succeeded", "failed"}:
+        action = request_job_cancel(session, job, reason="manual")
+        if action == "noop":
             return {"ok": True}
-        job.status = "canceled"
-        job.finished_at = utcnow()
-        session.add(JobEvent(job_id=job.id, level="info", message="canceled"))
-    return {"ok": True}
+        return {"ok": True, "job_id": str(job_id), "status": "canceled" if action == "canceled" else "cancel_requested"}
 
 
 @router.post("/jobs/{job_id:uuid}/retry")
@@ -249,6 +248,7 @@ def retry_job(job_id: uuid.UUID) -> dict:
         job.progress_total = None
         job.error_message = None
         job.error_stack = None
+        job.cancel_requested_at = None
         job.started_at = None
         job.finished_at = None
         job.lease_expires_at = None
@@ -268,18 +268,14 @@ def retry_job(job_id: uuid.UUID) -> dict:
 @router.post("/jobs/cancel_active")
 def cancel_active_jobs() -> dict:
     with session_scope() as session:
-        now = utcnow()
         jobs = session.execute(select(Job).where(Job.status.in_(["pending", "running"]))).scalars().all()
         n = 0
         for j in jobs:
             if j.status not in {"pending", "running"}:
                 continue
-            j.status = "canceled"
-            j.finished_at = now
-            j.lease_expires_at = None
-            j.worker_id = None
-            session.add(JobEvent(job_id=j.id, level="info", message="canceled (bulk)"))
-            n += 1
+            action = request_job_cancel(session, j, reason="bulk")
+            if action != "noop":
+                n += 1
         session.flush()
         return {"ok": True, "canceled": n}
 

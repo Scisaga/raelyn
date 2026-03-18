@@ -59,6 +59,9 @@
 
 - query：`provider`、`q`、`limit`、`offset`
 - 返回媒体列表与本地视频数。
+- 每条媒体额外包含：
+  - `deleting`：是否存在活跃 `media.delete` 任务
+  - `deletion_job_id`：当前删除任务 ID，便于前端恢复轮询状态
 
 ### `GET /api/media/export`
 
@@ -72,17 +75,24 @@
 
 ### `GET /api/media/{media_id}`
 
-- 返回单个媒体详情。
+- 返回单个媒体详情，字段同媒体列表。
 
 ### `PATCH /api/media/{media_id}`
 
 - 当前主要用于更新 `monitor_enabled`。
 - 关闭监控时会清理该媒体待执行的下载任务。
+- 若媒体正在删除中，返回 `409`。
 
 ### `DELETE /api/media/{media_id}`
 
-- 删除媒体及其级联数据。
-- 提交后会 best-effort 清理相关 S3 前缀。
+- 异步提交 `media.delete` 任务，返回 `202 Accepted`。
+- 返回：`job_id`、`job_type="media.delete"`、`media_id`、`status="accepted"`、`reused`。
+- 删除任务会：
+  - 删除相关 `pending` 媒体/视频/摘要任务
+  - 对相关 `running` 任务发起协作式取消请求并等待退出
+  - 删除媒体及其级联数据
+  - best-effort 清理相关 S3 前缀
+  - 重新调度受影响摘要周期；若周期已无视频，则将摘要置为 `empty`
 
 ### `POST /api/media/sync`
 
@@ -93,6 +103,7 @@
 
 - query：`scope=recent|all`
 - 投递单个媒体的资料同步和视频同步任务。
+- 若媒体正在删除中，返回 `409`。
 
 ### `GET /api/cleanup/stale-videos`
 
@@ -128,6 +139,7 @@
 - 投递下载任务。
 - 若已存在同一视频的活跃下载任务，则不重复创建，而是复用该任务；若其仍为 `pending`，会把优先级提升到 `10`。
 - 可能返回 `409`，例如重复下载或当前状态不允许下载。
+- 若所属媒体正在删除中，也会返回 `409`。
 
 ### `GET /api/videos/{video_id}/transcript`
 
@@ -137,6 +149,7 @@
 ### `POST /api/videos/{video_id}/transcript/retranscribe`
 
 - 重新投递转写 / 处理链路。
+- 若所属媒体正在删除中，返回 `409`。
 
 ### `GET /api/videos/{video_id}/note`
 
@@ -146,6 +159,7 @@
 ### `POST /api/videos/{video_id}/note`
 
 - 若已配置 LLM，则投递 `video.generate_note`。
+- 若所属媒体正在删除中，返回 `409`。
 
 ### `GET /api/videos/{video_id}/assets`
 
@@ -196,6 +210,8 @@
 ### `POST /api/jobs/{job_id}/cancel`
 
 - 取消单个任务。
+- `pending` 任务会立即转为 `canceled`。
+- `running` 任务会写入取消请求，由 handler 在安全检查点协作式退出后转为 `canceled`。
 
 ### `POST /api/jobs/{job_id}/retry`
 
@@ -257,6 +273,7 @@
 ### `DELETE /api/playlists/{playlist_id}/media/{media_id}`
 
 - 移除播放列表内的媒体。
+- 该变更会触发受影响周期的摘要刷新；若某周期已无视频，则对应摘要状态会变为 `empty`。
 
 ### `PUT /api/playlists/{playlist_id}/media`
 

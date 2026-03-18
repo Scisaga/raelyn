@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from raelyn.jobs.enqueue import enqueue_in, enqueue_job
 from raelyn.models import AppConfig, Asset, Job, JobEvent, Video
 from raelyn.services.asr import asr_enabled
+from raelyn.services.media_deletion import ensure_media_not_deleting
 
 _DOWNLOAD_JOB_TYPES = {"video.download", "video.download.youtube", "video.download.bilibili"}
 _DOWNLOAD_JOB_PRIORITY = 10
@@ -45,6 +46,7 @@ def schedule_video_download(session: Session, video_id: uuid.UUID) -> dict[str, 
     video = session.get(Video, video_id)
     if not video:
         raise LookupError("video not found")
+    ensure_media_not_deleting(session, video.media_id)
 
     if (video.status or "") == "members_only":
         item = session.get(AppConfig, "ytdlp_members_only")
@@ -104,6 +106,7 @@ def schedule_video_retranscribe(session: Session, video_id: uuid.UUID) -> dict[s
     video = session.get(Video, video_id)
     if not video:
         raise LookupError("video not found")
+    ensure_media_not_deleting(session, video.media_id)
 
     has_zh_subtitle = session.execute(
         select(Asset.id).where(

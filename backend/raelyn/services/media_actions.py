@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from raelyn.config import settings
 from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Media
+from raelyn.services.media_deletion import active_media_delete_job_map, ensure_media_not_deleting
 
 _RECENT_SYNC_DOWNLOAD_PRIORITY = 8
 
@@ -26,6 +27,7 @@ def schedule_media_sync(session: Session, media_id: uuid.UUID, *, scope: str = "
     media = session.get(Media, media_id)
     if not media:
         raise LookupError("media not found")
+    ensure_media_not_deleting(session, media.id)
 
     scope_key, max_entries = normalize_sync_scope(scope)
     video_job_params: dict[str, Any] = {"media_id": str(media.id), "force": True, "max_entries": max_entries}
@@ -54,6 +56,8 @@ def schedule_media_sync(session: Session, media_id: uuid.UUID, *, scope: str = "
 def schedule_all_media_sync(session: Session, *, scope: str = "recent") -> dict[str, Any]:
     scope_key, max_entries = normalize_sync_scope(scope)
     media_ids = session.execute(select(Media.id).where(Media.monitor_enabled.is_(True))).scalars().all()
+    deleting = set(active_media_delete_job_map(session, list(media_ids)).keys())
+    media_ids = [media_id for media_id in media_ids if media_id not in deleting]
     for media_id in media_ids:
         video_job_params: dict[str, Any] = {"media_id": str(media_id), "force": True, "max_entries": max_entries}
         if scope_key == "recent":

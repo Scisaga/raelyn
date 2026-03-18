@@ -18,10 +18,29 @@ import {
   weekdayZh,
 } from "../shared/playlist-periods.js";
 
+const PLAYLIST_TRANSCRIPT_VARIANTS = ["plain", "polished"];
+
+function emptyPlaylistTranscriptVariants() {
+  return { plain: false, polished: false };
+}
+
+function normalizePlaylistTranscriptVariant(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  return PLAYLIST_TRANSCRIPT_VARIANTS.includes(normalized) ? normalized : "";
+}
+
+function normalizePlaylistTranscriptSource(value) {
+  return String(value || "").trim();
+}
+
 export function createPlaylistViewMethods() {
   return {
     async loadPlaylistPage() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      this._playlistSyncBriefSpeechSupport();
+      this.playlistStopBriefSpeech({ clearError: true });
       if (!pid) {
         this.playlistCalendarResetDragState();
         this.playlistDayListResetSwipeState();
@@ -30,6 +49,7 @@ export function createPlaylistViewMethods() {
         this.playlistPlayerNeedsDownload = false;
         this.playlistBriefHtml = "";
         this.playlistBriefMarkdown = "";
+        this.playlistBriefSpeechText = "";
         this._abortCtrl("_playlistCountsAbortCtrl");
         this.playlistPeriodCounts = new Map();
         this.playlistPeriodCountsKey = "";
@@ -751,6 +771,191 @@ export function createPlaylistViewMethods() {
       return `${start} ~ ${end}`;
     },
 
+    _playlistBriefSpeechApi() {
+      try {
+        if (typeof window === "undefined") return null;
+        const synth = window.speechSynthesis;
+        return synth && typeof window.SpeechSynthesisUtterance === "function" ? synth : null;
+      } catch {
+        return null;
+      }
+    },
+
+    _playlistSyncBriefSpeechSupport() {
+      const supported = !!this._playlistBriefSpeechApi();
+      this.playlistBriefSpeechSupported = supported;
+      return supported;
+    },
+
+    _playlistBriefSpeechKeyForSelectedDate() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const g = this.playlistGranularity();
+      const day = String(this.playlistSelectedDate || "").trim();
+      return this._playlistBriefKey(pid, g, day);
+    },
+
+    playlistBriefSpeakingForSelectedDate() {
+      const key = this._playlistBriefSpeechKeyForSelectedDate();
+      return !!key && this.playlistBriefSpeaking && String(this.playlistBriefSpeakingKey || "") === key;
+    },
+
+    playlistBriefCanSpeak() {
+      if (this.playlistBriefSpeakingForSelectedDate()) return true;
+      if (!this._playlistSyncBriefSpeechSupport()) return false;
+      if (this.playlistBriefLoading) return false;
+      return !!String(this.playlistBriefSpeechText || "").trim();
+    },
+
+    playlistBriefSpeechButtonLabel() {
+      return this.playlistBriefSpeakingForSelectedDate() ? "停止" : "朗读";
+    },
+
+    playlistBriefSpeechButtonTitle() {
+      if (this.playlistBriefSpeakingForSelectedDate()) return "停止朗读当前简报";
+      if (!this._playlistSyncBriefSpeechSupport()) return "当前浏览器不支持朗读";
+      if (this.playlistBriefLoading) return "简报加载中";
+      if (!String(this.playlistBriefSpeechText || "").trim()) return "暂无可朗读内容";
+      return "朗读当前简报";
+    },
+
+    _playlistResetBriefSpeechState({ clearError = false } = {}) {
+      this.playlistBriefSpeaking = false;
+      this.playlistBriefSpeakingKey = "";
+      this._playlistBriefSpeechUtterance = null;
+      if (clearError) this.playlistBriefSpeechError = "";
+    },
+
+    playlistStopBriefSpeech({ clearError = true } = {}) {
+      const synth = this._playlistBriefSpeechApi();
+      this._playlistResetBriefSpeechState({ clearError });
+      if (!synth) return;
+      try {
+        if (synth.speaking || synth.pending) synth.cancel();
+      } catch {
+        // ignore
+      }
+    },
+
+    _playlistBriefResolveVoice(voices = null) {
+      const list = Array.isArray(voices) ? voices.filter(Boolean) : [];
+      return (
+        list.find((voice) => /^zh[-_]cn$/i.test(String(voice && voice.lang || "").trim())) ||
+        list.find((voice) => /^zh[-_]/i.test(String(voice && voice.lang || "").trim())) ||
+        list.find((voice) => /^zh/i.test(String(voice && voice.lang || "").trim())) ||
+        null
+      );
+    },
+
+    _briefToSpeechText(md) {
+      const src = String(md || "").replace(/\r\n?/g, "\n");
+      if (!src.trim()) return "";
+
+      const out = [];
+      const lines = src.split("\n");
+      for (const rawLine of lines) {
+        let line = String(rawLine || "").trim();
+        if (!line) {
+          if (out.length && out[out.length - 1] !== "") out.push("");
+          continue;
+        }
+
+        line = line.replace(/(?:[（(]\s*)?来源\s*[:：].*$/u, "");
+        line = line.replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1");
+        line = line.replace(/^\s*#{1,6}\s+/, "");
+        line = line.replace(/^\s*\d+[\).]\s+/, "");
+        line = line.replace(/^\s*[-*+]\s+/, "");
+        line = line.replace(/^\s*>\s?/, "");
+        line = line.replace(/\[([^\]\n]+)\]\(\s*(https?:\/\/[^\s\)）]+)\s*[\)）]+\s*/g, "$1");
+        line = line.replace(/\bhttps?:\/\/[^\s\)）]+/g, "");
+        line = line.replace(/`([^`]+)`/g, "$1");
+        line = line.replace(/\*\*([^*]+)\*\*/g, "$1");
+        line = line.replace(/__([^_]+)__/g, "$1");
+        line = line.replace(/~~([^~]+)~~/g, "$1");
+        line = line.replace(/(^|[\s(（\["'])\*([^*]+)\*(?=[$\s,，。！？!?:：;；)）\]"'])/g, "$1$2");
+        line = line.replace(/(^|[\s(（\["'])_([^_]+)_(?=[$\s,，。！？!?:：;；)）\]"'])/g, "$1$2");
+        line = line.replace(/[ \t]+/g, " ").trim();
+        line = line.replace(/^[,，、;；:：)\]】）]+/u, "").trim();
+        if (!line) continue;
+        if (!/[。！？!?；;：:]$/u.test(line)) line += "。";
+        out.push(line);
+      }
+
+      return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    },
+
+    playlistSpeakBrief() {
+      if (this.playlistBriefSpeakingForSelectedDate()) {
+        this.playlistStopBriefSpeech({ clearError: true });
+        return;
+      }
+
+      this.playlistBriefSpeechError = "";
+      if (!this._playlistSyncBriefSpeechSupport()) {
+        this.playlistBriefSpeechError = "当前浏览器不支持朗读";
+        return;
+      }
+
+      const key = this._playlistBriefSpeechKeyForSelectedDate();
+      if (!key) return;
+
+      let text = String(this.playlistBriefSpeechText || "").trim();
+      if (!text) {
+        text = this._briefToSpeechText(this.playlistBriefMarkdown);
+        this.playlistBriefSpeechText = text;
+      }
+      if (!text) {
+        this.playlistBriefSpeechError = "当前简报暂无可朗读内容";
+        return;
+      }
+
+      const synth = this._playlistBriefSpeechApi();
+      if (!synth) {
+        this.playlistBriefSpeechSupported = false;
+        this.playlistBriefSpeechError = "当前浏览器不支持朗读";
+        return;
+      }
+
+      this.playlistStopBriefSpeech({ clearError: true });
+
+      let utterance;
+      try {
+        utterance = new window.SpeechSynthesisUtterance(text);
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.playlistBriefSpeechError = `朗读初始化失败：${msg}`;
+        this.toastError(this.playlistBriefSpeechError);
+        return;
+      }
+
+      const voice = this._playlistBriefResolveVoice(typeof synth.getVoices === "function" ? synth.getVoices() : []);
+      if (voice) utterance.voice = voice;
+      utterance.lang = voice && voice.lang ? String(voice.lang) : "zh-CN";
+      utterance.onend = () => {
+        if (this._playlistBriefSpeechUtterance !== utterance) return;
+        this._playlistResetBriefSpeechState({ clearError: true });
+      };
+      utterance.onerror = (event) => {
+        if (this._playlistBriefSpeechUtterance !== utterance) return;
+        const detail = event && event.error ? `：${event.error}` : "";
+        this._playlistResetBriefSpeechState({ clearError: false });
+        this.playlistBriefSpeechError = `朗读失败${detail}`;
+        this.toastError(this.playlistBriefSpeechError);
+      };
+
+      try {
+        this._playlistBriefSpeechUtterance = utterance;
+        this.playlistBriefSpeaking = true;
+        this.playlistBriefSpeakingKey = key;
+        synth.cancel();
+        synth.speak(utterance);
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this._playlistResetBriefSpeechState({ clearError: false });
+        this.playlistBriefSpeechError = `朗读失败：${msg}`;
+        this.toastError(this.playlistBriefSpeechError);
+      }
+    },
+
     _todayIsoLocal() {
       return todayIsoLocal();
     },
@@ -794,6 +999,7 @@ export function createPlaylistViewMethods() {
     playlistToggleSubview() {
       if (!this.playlistDetail) return;
       this.playlistCalendarResetDragState();
+      this.playlistStopBriefSpeech({ clearError: true });
       this.playlistSubview = this.playlistSubview === "settings" ? "main" : "settings";
       if (this.playlistSubview === "main") {
         try {
@@ -1103,6 +1309,7 @@ export function createPlaylistViewMethods() {
       const start = String(this.playlistTimelineStart || "").trim();
       const end = String(this.playlistTimelineEnd || "").trim();
       const clamped = start && end ? this._periodClampIso(next, start, end) : next;
+      this.playlistStopBriefSpeech({ clearError: true });
       this.playlistSelectedDate = clamped;
       this.playlistCalendarEnsureVisible();
       this.playlistPrefetchCalendarCounts();
@@ -1112,6 +1319,127 @@ export function createPlaylistViewMethods() {
       }
       this._syncUrl({ push: false });
       this.playlistLoadDay(clamped, { autoPlay });
+    },
+
+    playlistTranscriptCacheKey(videoId, { variant = "", source = "" } = {}) {
+      const vid = String(videoId || "").trim();
+      if (!vid) return "";
+      const normalizedVariant = normalizePlaylistTranscriptVariant(variant);
+      const normalizedSource = normalizePlaylistTranscriptSource(source);
+      if (!normalizedVariant && !normalizedSource) return `${vid}::default`;
+      return `${vid}::${normalizedSource || "*"}::${normalizedVariant || "default"}`;
+    },
+
+    playlistTranscriptTextAssets(assets = null) {
+      const list = Array.isArray(assets) ? assets : [];
+      return list.filter(
+        (asset) => asset && asset.type === "transcript" && String(asset.format || "").trim().toLowerCase() === "txt"
+      );
+    },
+
+    playlistTranscriptAvailableVariantsForSource(source = "", assets = null) {
+      const sourceValue = normalizePlaylistTranscriptSource(source);
+      const available = emptyPlaylistTranscriptVariants();
+      const items = this.playlistTranscriptTextAssets(assets);
+      for (const asset of items) {
+        if (sourceValue && normalizePlaylistTranscriptSource(asset.source) !== sourceValue) continue;
+        const variant = normalizePlaylistTranscriptVariant(asset.variant);
+        if (variant) available[variant] = true;
+      }
+      return available;
+    },
+
+    playlistTranscriptVariantAvailable(variant) {
+      const normalized = normalizePlaylistTranscriptVariant(variant);
+      return !!(normalized && this.playlistTranscriptAvailableVariants && this.playlistTranscriptAvailableVariants[normalized]);
+    },
+
+    playlistTranscriptVariantActive(variant) {
+      const normalized = normalizePlaylistTranscriptVariant(variant);
+      const current = normalizePlaylistTranscriptVariant(this.playlistTranscriptSelectedVariant || this.playlistTranscriptVariant);
+      return !!normalized && normalized === current;
+    },
+
+    playlistTranscriptRequestPath(videoId, { variant = "", source = "" } = {}) {
+      const params = new URLSearchParams();
+      const normalizedVariant = normalizePlaylistTranscriptVariant(variant);
+      const normalizedSource = normalizePlaylistTranscriptSource(source);
+      if (normalizedVariant) params.set("variant", normalizedVariant);
+      if (normalizedSource) params.set("source", normalizedSource);
+      const query = params.toString();
+      return `/videos/${encodeURIComponent(videoId)}/transcript${query ? `?${query}` : ""}`;
+    },
+
+    playlistApplyTranscriptState(transcript, { assets = null, updateSelection = true } = {}) {
+      const payload = transcript && typeof transcript === "object" ? transcript : null;
+      const ok = !!(payload && payload.ok);
+      const source = normalizePlaylistTranscriptSource(ok ? payload.source : payload && payload.source);
+      const variant = normalizePlaylistTranscriptVariant(ok ? payload.variant : payload && payload.variant);
+      const availability = this.playlistTranscriptAvailableVariantsForSource(source, assets);
+
+      this.playlistTranscriptText = ok ? payload.text || "" : "";
+      this.playlistTranscriptLanguage = ok ? payload.language || "" : "";
+      this.playlistTranscriptSource = source;
+      this.playlistTranscriptVariant = variant;
+      this.playlistTranscriptUpdatedAt = ok ? payload.updated_at || payload.created_at || "" : "";
+      this.playlistTranscriptAvailableVariants = availability;
+
+      if (updateSelection) {
+        this.playlistTranscriptActiveSource = source;
+        this.playlistTranscriptSelectedVariant = variant;
+      }
+    },
+
+    async playlistSwitchTranscriptVariant(targetVariant) {
+      const currentVideo = this.playlistCurrentVideo;
+      const selectingId = currentVideo && currentVideo.id ? String(currentVideo.id).trim() : "";
+      if (!selectingId || this.playlistTranscriptSwitching) return;
+
+      const nextVariant = normalizePlaylistTranscriptVariant(targetVariant);
+      const currentVariant = normalizePlaylistTranscriptVariant(this.playlistTranscriptSelectedVariant || this.playlistTranscriptVariant);
+      const source = normalizePlaylistTranscriptSource(this.playlistTranscriptActiveSource || this.playlistTranscriptSource);
+      if (!nextVariant || !source || nextVariant === currentVariant) return;
+
+      this.playlistTranscriptAvailableVariants = this.playlistTranscriptAvailableVariantsForSource(
+        source,
+        this._cacheGet(this.playlistVideoAssetsCache, selectingId) || []
+      );
+      if (!this.playlistTranscriptVariantAvailable(nextVariant)) return;
+
+      const token = Number(this.playlistLoadToken || 0);
+      this._abortCtrl("_playlistTranscriptVariantAbortCtrl");
+      const ctrl = new AbortController();
+      this._playlistTranscriptVariantAbortCtrl = ctrl;
+      this.playlistTranscriptSwitching = true;
+      this.playlistTranscriptError = "";
+
+      try {
+        const cacheKey = this.playlistTranscriptCacheKey(selectingId, { variant: nextVariant, source });
+        let transcript = this._cacheGet(this.playlistVideoTranscriptCache, cacheKey);
+        if (!transcript) {
+          transcript = await this.api(
+            this.playlistTranscriptRequestPath(selectingId, {
+              variant: nextVariant,
+              source,
+            }),
+            { signal: ctrl.signal }
+          );
+          this._cacheSet(this.playlistVideoTranscriptCache, cacheKey, transcript, PLAYLIST_TRANSCRIPT_CACHE_TTL_MS);
+        }
+        if (Number(this.playlistLoadToken || 0) !== token) return;
+        if (!this.playlistCurrentVideo || String(this.playlistCurrentVideo.id || "").trim() !== selectingId) return;
+        this.playlistApplyTranscriptState(transcript, {
+          assets: this._cacheGet(this.playlistVideoAssetsCache, selectingId) || [],
+        });
+      } catch (e) {
+        if (!this._isAbortError(e)) {
+          const msg = e && e.message ? e.message : String(e);
+          this.toastError(`切换转写版本失败：${msg}`);
+        }
+      } finally {
+        if (this._playlistTranscriptVariantAbortCtrl === ctrl) this._playlistTranscriptVariantAbortCtrl = null;
+        if (Number(this.playlistLoadToken || 0) === token) this.playlistTranscriptSwitching = false;
+      }
     },
 
     async playlistLoadDay(iso, { autoPlay = false } = {}) {
@@ -1129,6 +1457,8 @@ export function createPlaylistViewMethods() {
       this._abortCtrl("_playlistBriefMdAbortCtrl");
       this._abortCtrl("_playlistPlayableProbeAbortCtrl");
       this._abortCtrl("_playlistSelectAbortCtrl");
+      this._abortCtrl("_playlistTranscriptVariantAbortCtrl");
+      this.playlistStopBriefSpeech({ clearError: true });
       this.playlistResetMediaElements({ cancelAutoPlay: true });
 
       const prevCurrentId =
@@ -1142,7 +1472,12 @@ export function createPlaylistViewMethods() {
       this.playlistTranscriptError = "";
       this.playlistTranscriptLanguage = "";
       this.playlistTranscriptSource = "";
+      this.playlistTranscriptActiveSource = "";
+      this.playlistTranscriptVariant = "";
+      this.playlistTranscriptSelectedVariant = "";
+      this.playlistTranscriptAvailableVariants = emptyPlaylistTranscriptVariants();
       this.playlistTranscriptUpdatedAt = "";
+      this.playlistTranscriptSwitching = false;
 
       this.playlistDayVideosLoading = true;
       this.playlistDayVideosError = "";
@@ -1173,6 +1508,10 @@ export function createPlaylistViewMethods() {
         this.playlistTranscriptError = "";
         this.playlistTranscriptLanguage = "";
         this.playlistTranscriptSource = "";
+        this.playlistTranscriptActiveSource = "";
+        this.playlistTranscriptVariant = "";
+        this.playlistTranscriptSelectedVariant = "";
+        this.playlistTranscriptAvailableVariants = emptyPlaylistTranscriptVariants();
       } finally {
         if (Number(this.playlistLoadToken || 0) === loadToken) this.playlistDayVideosLoading = false;
       }
@@ -1310,13 +1649,19 @@ export function createPlaylistViewMethods() {
       this.syncSystemMediaSession({ forcePosition: true });
 
       this._abortCtrl("_playlistSelectAbortCtrl");
+      this._abortCtrl("_playlistTranscriptVariantAbortCtrl");
       const ctrl = new AbortController();
       this._playlistSelectAbortCtrl = ctrl;
 
       this.playlistMediaDurationSec = 0;
       this.playlistMediaCurrentTimeSec = 0;
       this.playlistMediaPlaying = false;
+      this.playlistTranscriptSwitching = false;
       this.playlistTranscriptError = "";
+      this.playlistTranscriptActiveSource = "";
+      this.playlistTranscriptVariant = "";
+      this.playlistTranscriptSelectedVariant = "";
+      this.playlistTranscriptAvailableVariants = emptyPlaylistTranscriptVariants();
 
       const isStale = () => {
         if (Number(this.playlistLoadToken || 0) !== token) return true;
@@ -1333,6 +1678,10 @@ export function createPlaylistViewMethods() {
         this.playlistRememberAudioThumbnailSources(v, list);
         this.playlistPlayerVideoUrl = resolved.videoUrl;
         this.playlistPlayerAudioUrl = resolved.audioUrl;
+        this.playlistTranscriptAvailableVariants = this.playlistTranscriptAvailableVariantsForSource(
+          this.playlistTranscriptActiveSource || this.playlistTranscriptSource,
+          list
+        );
         this.$nextTick(() => {
           if (isStale()) return;
           this.handleVisibilityMediaPolicy();
@@ -1348,19 +1697,9 @@ export function createPlaylistViewMethods() {
         return resolved;
       };
 
-      const applyTranscript = (transcript) => {
+      const applyTranscript = (transcript, assets = null) => {
         if (isStale()) return;
-        if (transcript && typeof transcript === "object" && transcript.ok) {
-          this.playlistTranscriptText = transcript.text || "";
-          this.playlistTranscriptLanguage = transcript.language || "";
-          this.playlistTranscriptSource = transcript.source || "";
-          this.playlistTranscriptUpdatedAt = transcript.updated_at || transcript.created_at || "";
-        } else {
-          this.playlistTranscriptText = "";
-          this.playlistTranscriptLanguage = "";
-          this.playlistTranscriptSource = "";
-          this.playlistTranscriptUpdatedAt = "";
-        }
+        this.playlistApplyTranscriptState(transcript, { assets, updateSelection: true });
       };
 
       let resolvedAssets = null;
@@ -1371,15 +1710,20 @@ export function createPlaylistViewMethods() {
         this.playlistPlayerAudioUrl = "";
       }
 
-      const cachedTranscript = this._cacheGet(this.playlistVideoTranscriptCache, selectingId);
+      const defaultTranscriptCacheKey = this.playlistTranscriptCacheKey(selectingId);
+      const cachedTranscript = this._cacheGet(this.playlistVideoTranscriptCache, defaultTranscriptCacheKey);
       if (cachedTranscript) {
-        applyTranscript(cachedTranscript);
+        applyTranscript(cachedTranscript, cachedAssets || []);
         this.playlistTranscriptLoading = false;
       } else {
         this.playlistTranscriptText = "";
         this.playlistTranscriptLoading = true;
         this.playlistTranscriptLanguage = "";
         this.playlistTranscriptSource = "";
+        this.playlistTranscriptActiveSource = "";
+        this.playlistTranscriptVariant = "";
+        this.playlistTranscriptSelectedVariant = "";
+        this.playlistTranscriptAvailableVariants = emptyPlaylistTranscriptVariants();
         this.playlistTranscriptUpdatedAt = "";
       }
 
@@ -1402,8 +1746,10 @@ export function createPlaylistViewMethods() {
         }
 
         if (transcriptRes.status === "fulfilled") {
-          applyTranscript(transcriptRes.value);
-          if (!cachedTranscript) this._cacheSet(this.playlistVideoTranscriptCache, selectingId, transcriptRes.value, PLAYLIST_TRANSCRIPT_CACHE_TTL_MS);
+          applyTranscript(transcriptRes.value, (resolvedAssets && resolvedAssets.list) || cachedAssets || []);
+          if (!cachedTranscript) {
+            this._cacheSet(this.playlistVideoTranscriptCache, defaultTranscriptCacheKey, transcriptRes.value, PLAYLIST_TRANSCRIPT_CACHE_TTL_MS);
+          }
         } else if (!cachedTranscript) {
           const err2 = transcriptRes.reason;
           if (!this._isAbortError(err2) && !isStale()) this.playlistTranscriptError = err2 && err2.message ? err2.message : String(err2);
@@ -2098,21 +2444,23 @@ export function createPlaylistViewMethods() {
       return !!k && String(this.playlistBriefGeneratingKey || "") === k;
     },
 
-	    async playlistGenerateBriefForSelectedDate() {
+    async playlistGenerateBriefForSelectedDate() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       const g = this.playlistGranularity();
       const day = String(this.playlistSelectedDate || "").trim();
       if (!pid || !day) return;
       const k = this._playlistBriefKey(pid, g, day);
-	      if (k) this.playlistBriefGeneratingKey = k;
-	      this.playlistBriefError = "";
-	      this.playlistBriefHtml = "";
-	      this.playlistBriefMarkdown = "";
-	      try {
-	        await this.api(`/briefs/generate`, {
-	          method: "POST",
-	          headers: { "content-type": "application/json" },
-	          body: JSON.stringify({ playlist_id: pid, granularity: g, date: day }),
+      if (k) this.playlistBriefGeneratingKey = k;
+      this.playlistStopBriefSpeech({ clearError: true });
+      this.playlistBriefError = "";
+      this.playlistBriefHtml = "";
+      this.playlistBriefMarkdown = "";
+      this.playlistBriefSpeechText = "";
+      try {
+        await this.api(`/briefs/generate`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ playlist_id: pid, granularity: g, date: day }),
         });
         this.globalStatus = "已投递简报生成任务（Jobs 可查看进度）";
         this.toastSuccess("已提交简报生成任务", { action: this.toastJobsAction() });
@@ -2164,6 +2512,7 @@ export function createPlaylistViewMethods() {
       const name = (this.playlistDetail && this.playlistDetail.name) || pid;
       if (!confirm(`确认删除播放列表：${name}？\n\n删除后将无法恢复。`)) return;
       try {
+        this.playlistStopBriefSpeech({ clearError: true });
         await this.api(`/playlists/${encodeURIComponent(pid)}`, { method: "DELETE" });
         this.globalStatus = "已删除播放列表";
         this.playlistDetail = null;
@@ -2468,31 +2817,34 @@ export function createPlaylistViewMethods() {
       this.globalStatus = "该链接不在本周期视频列表中";
     },
 
-	    async playlistLoadBrief(day, { loadToken = null } = {}) {
+    async playlistLoadBrief(day, { loadToken = null } = {}) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       const g = this.playlistGranularity();
       const d = String(day || "").trim();
       if (!pid || !d) return;
       const token = Number(loadToken || this.playlistLoadToken || 0);
       const k = this._playlistBriefKey(pid, g, d);
-	      const manualGenerating = !!k && String(this.playlistBriefGeneratingKey || "") === k;
-	      if (!manualGenerating) {
-	        const cached = this._cacheGet(this.playlistBriefHtmlCache, k);
-	        if (cached && Number(this.playlistLoadToken || 0) === token) {
-	          this.playlistBriefLoading = false;
-	          this.playlistBriefError = "";
-	          this.playlistBriefHtml = cached;
-	          const cachedMd = this._cacheGet(this.playlistBriefMarkdownCache, k);
-	          this.playlistBriefMarkdown = cachedMd ? String(cachedMd) : "";
-	          return;
-	        }
-	      }
-	      this.playlistBriefLoading = true;
-	      this.playlistBriefError = "";
-	      this.playlistBriefHtml = "";
-	      this.playlistBriefMarkdown = "";
-	      const hasVideos = Array.isArray(this.playlistDayVideos) && this.playlistDayVideos.length > 0;
-	      try {
+      const manualGenerating = !!k && String(this.playlistBriefGeneratingKey || "") === k;
+      this.playlistStopBriefSpeech({ clearError: true });
+      if (!manualGenerating) {
+        const cached = this._cacheGet(this.playlistBriefHtmlCache, k);
+        if (cached && Number(this.playlistLoadToken || 0) === token) {
+          this.playlistBriefLoading = false;
+          this.playlistBriefError = "";
+          this.playlistBriefHtml = cached;
+          const cachedMd = this._cacheGet(this.playlistBriefMarkdownCache, k);
+          this.playlistBriefMarkdown = cachedMd ? String(cachedMd) : "";
+          this.playlistBriefSpeechText = cachedMd ? this._briefToSpeechText(cachedMd) : "";
+          return;
+        }
+      }
+      this.playlistBriefLoading = true;
+      this.playlistBriefError = "";
+      this.playlistBriefHtml = "";
+      this.playlistBriefMarkdown = "";
+      this.playlistBriefSpeechText = "";
+      const hasVideos = Array.isArray(this.playlistDayVideos) && this.playlistDayVideos.length > 0;
+      try {
         this._abortCtrl("_playlistBriefAbortCtrl");
         this._abortCtrl("_playlistBriefMdAbortCtrl");
         const ctrl = new AbortController();
@@ -2504,9 +2856,17 @@ export function createPlaylistViewMethods() {
         if (Number(this.playlistLoadToken || 0) !== token) return;
         if (!brief || brief.status !== "ready" || !brief.markdown_asset) {
           const s = brief && brief.status ? String(brief.status) : "pending";
+          if (s === "empty") {
+            this.playlistBriefHtml = `<div class="text-slate-400 text-sm">本周期暂无视频，不生成简报</div>`;
+            this.playlistBriefMarkdown = "";
+            this.playlistBriefSpeechText = "";
+            if (manualGenerating) this.playlistBriefGeneratingKey = "";
+            return;
+          }
           if (s === "failed") {
             const em = brief && brief.error_message ? String(brief.error_message) : "";
             this.playlistBriefHtml = `<div class="text-rose-200 text-sm">生成失败${em ? `：${this._escapeHtml(em)}` : ""}</div>`;
+            this.playlistBriefSpeechText = "";
             if (manualGenerating) this.playlistBriefGeneratingKey = "";
             return;
           }
@@ -2527,16 +2887,17 @@ export function createPlaylistViewMethods() {
         const resp = await this.fetchWithApiAuth(markdownUrl, { signal: mdCtrl.signal });
         if (resp.status === 401) this.handleApiUnauthorized({});
         if (!resp.ok) throw new Error(`${resp.status}: brief markdown fetch failed`);
-	        const md = await resp.text();
-	        if (Number(this.playlistLoadToken || 0) !== token) return;
-	        this.playlistBriefMarkdown = md;
-	        this.playlistBriefHtml = this._briefToHtml(md);
-	        this._cacheSet(this.playlistBriefHtmlCache, k, this.playlistBriefHtml, PLAYLIST_BRIEF_CACHE_TTL_MS);
-	        this._cacheSet(this.playlistBriefMarkdownCache, k, md, PLAYLIST_BRIEF_CACHE_TTL_MS);
-	        if (manualGenerating) this.playlistBriefGeneratingKey = "";
-	        try {
-	          const k = this._playlistBriefKey(pid, g, d);
-	          if (this.playlistBriefAutoPoll) this.playlistBriefAutoPoll.delete(k);
+        const md = await resp.text();
+        if (Number(this.playlistLoadToken || 0) !== token) return;
+        this.playlistBriefMarkdown = md;
+        this.playlistBriefSpeechText = this._briefToSpeechText(md);
+        this.playlistBriefHtml = this._briefToHtml(md);
+        this._cacheSet(this.playlistBriefHtmlCache, k, this.playlistBriefHtml, PLAYLIST_BRIEF_CACHE_TTL_MS);
+        this._cacheSet(this.playlistBriefMarkdownCache, k, md, PLAYLIST_BRIEF_CACHE_TTL_MS);
+        if (manualGenerating) this.playlistBriefGeneratingKey = "";
+        try {
+          const k = this._playlistBriefKey(pid, g, d);
+          if (this.playlistBriefAutoPoll) this.playlistBriefAutoPoll.delete(k);
         } catch {}
       } catch (e) {
         if (Number(this.playlistLoadToken || 0) !== token) return;
@@ -2545,6 +2906,7 @@ export function createPlaylistViewMethods() {
         if (String(msg).startsWith("404:") || String(msg).includes(" 404")) {
           if (!hasVideos) {
             this.playlistBriefHtml = `<div class="text-slate-400 text-sm">本周期暂无视频，不生成简报</div>`;
+            this.playlistBriefSpeechText = "";
             if (manualGenerating) this.playlistBriefGeneratingKey = "";
             return;
           }

@@ -6,6 +6,7 @@ from raelyn.services.transcript_polish_prompt import (
 )
 
 from . import briefs as _briefs  # noqa: F401
+from . import media_delete as _media_delete  # noqa: F401
 from . import media_sync as _media_sync  # noqa: F401
 from . import video_ai as _video_ai  # noqa: F401
 from . import video_download as _video_download  # noqa: F401

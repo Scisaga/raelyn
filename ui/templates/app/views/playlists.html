@@ -23,18 +23,18 @@
                     class="w-full p-4 flex items-center justify-between gap-4 text-left hover:bg-slate-900/50"
                     @click="openPlaylistPage(p.id)"
                   >
-                    <div class="min-w-0 flex items-center gap-3">
-                      <div class="w-11 h-11 rounded-lg ring-1 ring-inset shrink-0" :class="p.avatar_asset ? 'ring-slate-800/70 bg-slate-800/30' : 'ring-slate-700/60 bg-slate-800 text-slate-200'">
+                    <div class="min-w-0 flex items-stretch gap-4">
+                      <div class="w-14 h-14 sm:w-16 sm:h-16 rounded-xl ring-1 ring-inset shrink-0 overflow-hidden" :class="p.avatar_asset ? 'ring-slate-800/70 bg-slate-800/30' : 'ring-slate-700/60 bg-slate-800 text-slate-200'">
                         <template x-if="p.avatar_asset">
-                          <img class="w-11 h-11 rounded-lg object-cover" :src="assetContentUrl(p.avatar_asset)" alt="" loading="lazy" @error="clearAssetRef(p, 'avatar_asset')" />
+                          <img class="w-full h-full rounded-xl object-cover" :src="assetContentUrl(p.avatar_asset)" alt="" loading="lazy" @error="clearAssetRef(p, 'avatar_asset')" />
                         </template>
                         <template x-if="!p.avatar_asset">
-                          <div class="w-11 h-11 flex items-center justify-center">
-                            <span class="text-[11px] font-semibold" x-text="(String(p.name||'?').trim().slice(0,2) || '?')"></span>
+                          <div class="w-full h-full flex items-center justify-center">
+                            <span class="text-sm font-semibold" x-text="(String(p.name||'?').trim().slice(0,2) || '?')"></span>
                           </div>
                         </template>
                       </div>
-                      <div class="min-w-0">
+                      <div class="min-w-0 min-h-14 sm:min-h-16 flex flex-col justify-center">
                         <div class="font-medium truncate flex items-center gap-2">
                           <span x-text="p.name"></span>
                         </div>

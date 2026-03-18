@@ -39,6 +39,9 @@ export function createUrlStateMethods({ settingsTabs }) {
         if (toIso) this.videoTo = this._toLocalInputValue(new Date(toIso));
         if (!fromIso && !toIso) this._ensureVideoRange();
       }
+      if (viewKey === "video") {
+        this.playerPageVideoId = searchParams.get("video_id") || "";
+      }
       if (viewKey === "jobs") {
         this.jobsTab = searchParams.get("tab") || this.jobsTab || "active";
         this.jobsTypeFilter = searchParams.get("type") || this.jobsTypeFilter || "";
@@ -80,6 +83,7 @@ export function createUrlStateMethods({ settingsTabs }) {
       if (viewKey === "videos" && this.videoQuery) searchParams.set("q", this.videoQuery);
       if (viewKey === "videos" && this.videoFrom) searchParams.set("from", new Date(this.videoFrom).toISOString());
       if (viewKey === "videos" && this.videoTo) searchParams.set("to", new Date(this.videoTo).toISOString());
+      if (viewKey === "video" && this.playerPageVideoId) searchParams.set("video_id", String(this.playerPageVideoId));
       if (viewKey === "jobs") {
         searchParams.set("tab", this.jobsTab || "active");
         if (this.jobsTypeFilter) searchParams.set("type", this.jobsTypeFilter);
@@ -107,23 +111,29 @@ export function createUrlStateMethods({ settingsTabs }) {
       return search ? `?${search}` : "";
     },
 
-    _syncUrl({ push = false } = {}) {
+    _syncUrl({ push = false, stateExtras = null } = {}) {
       const path = this._viewPath(this.activeView);
       const search = this._buildSearchForView(this.activeView);
       const url = `${path}${search}`;
-      const state = { view: this.activeView };
+      const baseState = !push && history.state && typeof history.state === "object" ? history.state : {};
+      const state = { ...baseState, view: this.activeView };
+      if (stateExtras && typeof stateExtras === "object") Object.assign(state, stateExtras);
       if (push) history.pushState(state, "", url);
       else history.replaceState(state, "", url);
     },
 
-    switchView(key) {
+    switchView(key, { push = true, stateExtras = null, refresh = true } = {}) {
       const item = this.navItems.find((nav) => nav.key === key);
       if (this.activeView === "videos" && key !== "videos") this._teardownVideoIo();
+      if (this.activeView === "video" && key !== "video" && typeof this.leaveVideoPage === "function") this.leaveVideoPage();
+      if (this.activeView === "playlist" && key !== "playlist" && typeof this.playlistStopBriefSpeech === "function") {
+        this.playlistStopBriefSpeech({ clearError: true });
+      }
       if (key === "videos") this._ensureVideoRange();
       this.activeView = key;
       this.pageTitle = item ? item.label : key;
-      this._syncUrl({ push: true });
-      this.refreshActive();
+      this._syncUrl({ push, stateExtras });
+      if (refresh) this.refreshActive();
     },
 
     setSettingsTab(tab) {
@@ -148,6 +158,7 @@ export function createUrlStateMethods({ settingsTabs }) {
         if (this.activeView === "overview") return await this.loadStats();
         if (this.activeView === "media") return await this.loadMedia();
         if (this.activeView === "videos") return await this.loadVideos();
+        if (this.activeView === "video") return await this.loadVideoPage();
         if (this.activeView === "jobs") return await this.loadJobs();
         if (this.activeView === "playlists") return await this.loadPlaylists();
         if (this.activeView === "playlist") return await this.loadPlaylistPage();

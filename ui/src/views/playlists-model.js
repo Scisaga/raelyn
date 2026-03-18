@@ -46,7 +46,7 @@ export function createPlaylistsViewMethods() {
       this.modals.addMedia = false;
       this.modals.createPlaylist = false;
       this.modals.mediaImport = false;
-      this.closeVideoPlayer();
+      if (typeof this.leaveVideoPage === "function") this.leaveVideoPage();
       this.playlistNameEditing = false;
       this.playlistNameDraft = "";
       this.playlistNameSaving = false;
@@ -63,7 +63,7 @@ export function createPlaylistsViewMethods() {
     openCreatePlaylist() {
       this.modals.addMedia = false;
       this.modals.mediaImport = false;
-      this.closeVideoPlayer();
+      if (typeof this.leaveVideoPage === "function") this.leaveVideoPage();
       this.createPlaylistName = "";
       this.createPlaylistDesc = "";
       this.createPlaylistMediaIds = [];

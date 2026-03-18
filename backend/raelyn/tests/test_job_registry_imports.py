@@ -15,6 +15,7 @@ from raelyn.jobs.registry import registry
 class JobRegistryImportTests(unittest.TestCase):
     def test_import_registers_all_expected_job_types(self) -> None:
         expected = {
+            "media.delete",
             "media.sync_profile",
             "media.sync_videos",
             "video.download",

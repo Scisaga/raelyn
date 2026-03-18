@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy import String, and_, cast, delete, func, or_, select
@@ -16,8 +16,13 @@ from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Asset, Job, Media, Video
 from raelyn.services.downloads import content_disposition_attachment
 from raelyn.services.media_actions import schedule_all_media_sync, schedule_media_sync
+from raelyn.services.media_deletion import (
+    MEDIA_DELETE_JOB_TYPE,
+    MEDIA_DELETE_PRIORITY,
+    active_media_delete_job,
+    active_media_delete_job_map,
+)
 from raelyn.services.provider import detect_provider, extract_media_identity
-from raelyn.services.s3 import s3_clear_bucket
 
 
 router = APIRouter(tags=["media"])
@@ -44,6 +49,8 @@ class MediaOut(OrmModel):
     video_count: int | None = None
     last_profile_sync_at: Any | None = None
     last_video_sync_at: Any | None = None
+    deleting: bool = False
+    deletion_job_id: uuid.UUID | None = None
 
 
 class MediaUpdate(BaseModel):
@@ -65,11 +72,28 @@ class CleanupVideoOut(BaseModel):
     created_at: Any | None = None
 
 
-def _media_out(session, m: Media, *, local_video_count: int | None = None) -> MediaOut:
+class MediaDeleteSubmitOut(BaseModel):
+    ok: bool = True
+    status: str = "accepted"
+    media_id: uuid.UUID
+    job_id: uuid.UUID
+    job_type: str = MEDIA_DELETE_JOB_TYPE
+    reused: bool = False
+
+
+def _media_out(
+    session,
+    m: Media,
+    *,
+    local_video_count: int | None = None,
+    deleting_job_id: uuid.UUID | None = None,
+) -> MediaOut:
     out = MediaOut.model_validate(m)
     if local_video_count is not None:
         out.video_count = int(local_video_count)
     out.avatar_asset = build_asset_ref(session.get(Asset, m.avatar_asset_id)) if getattr(m, "avatar_asset_id", None) else None
+    out.deleting = deleting_job_id is not None
+    out.deletion_job_id = deleting_job_id
     return out
 
 
@@ -265,7 +289,16 @@ def list_media(provider: str | None = None, q: str | None = None, limit: int = 5
             stmt = stmt.where((Media.name.ilike(like)) | (Media.description.ilike(like)))
         stmt = stmt.order_by(Media.created_at.desc(), Media.id.desc()).limit(limit).offset(offset)
         rows = session.execute(stmt).all()
-        return [_media_out(session, m, local_video_count=int(c or 0)) for m, c in rows]
+        delete_job_map = active_media_delete_job_map(session, [m.id for m, _c in rows])
+        return [
+            _media_out(
+                session,
+                m,
+                local_video_count=int(c or 0),
+                deleting_job_id=delete_job_map.get(m.id),
+            )
+            for m, c in rows
+        ]
 
 
 @router.get("/media/export")
@@ -386,7 +419,13 @@ def get_media(media_id: uuid.UUID) -> MediaOut:
         if not media:
             raise HTTPException(status_code=404, detail="media not found")
         c = session.execute(select(func.count()).select_from(Video).where(Video.media_id == media.id)).scalar_one()
-        return _media_out(session, media, local_video_count=int(c or 0))
+        active_delete = active_media_delete_job(session, media.id)
+        return _media_out(
+            session,
+            media,
+            local_video_count=int(c or 0),
+            deleting_job_id=active_delete.id if active_delete else None,
+        )
 
 
 @router.patch("/media/{media_id}", response_model=MediaOut)
@@ -395,6 +434,9 @@ def update_media(media_id: uuid.UUID, payload: MediaUpdate) -> MediaOut:
         media = session.get(Media, media_id)
         if not media:
             raise HTTPException(status_code=404, detail="media not found")
+        active_delete = active_media_delete_job(session, media.id)
+        if active_delete:
+            raise HTTPException(status_code=409, detail="媒体删除中，当前操作不可用")
         if payload.monitor_enabled is not None:
             was_enabled = bool(media.monitor_enabled)
             media.monitor_enabled = payload.monitor_enabled
@@ -408,33 +450,24 @@ def update_media(media_id: uuid.UUID, payload: MediaUpdate) -> MediaOut:
         return _media_out(session, media, local_video_count=int(c or 0))
 
 
-@router.delete("/media/{media_id}")
-def delete_media(media_id: uuid.UUID) -> dict:
-    bucket = settings.s3_bucket
-    prefixes: list[str] = []
-
-    # Delete DB row first (transactional), then best-effort cleanup S3 after commit.
-    # Reason: S3 operations can fail; we do not want partial deletes that roll back the DB.
+@router.delete("/media/{media_id}", status_code=status.HTTP_202_ACCEPTED, response_model=MediaDeleteSubmitOut)
+def delete_media(media_id: uuid.UUID) -> MediaDeleteSubmitOut:
     with session_scope() as session:
         media = session.get(Media, media_id)
         if not media:
             raise HTTPException(status_code=404, detail="media not found")
-        prefixes = [f"{media.provider}/{media.id}/", f"media/{media.id}/"]
-        session.delete(media)
+        existing = active_media_delete_job(session, media.id)
+        if existing:
+            return MediaDeleteSubmitOut(media_id=media.id, job_id=existing.id, reused=True)
 
-    s3_errors: list[dict] = []
-    s3_deleted_total = 0
-    for prefix in prefixes:
-        try:
-            res = s3_clear_bucket(bucket=bucket, prefix=prefix)
-            if not res.get("ok"):
-                s3_errors.append({"prefix": prefix, "error": res.get("error")})
-                continue
-            s3_deleted_total += int(res.get("deleted") or 0)
-        except Exception as e:
-            s3_errors.append({"prefix": prefix, "error": str(e)})
-
-    return {"ok": True, "s3_deleted": s3_deleted_total, "s3_errors": s3_errors}
+        media.monitor_enabled = False
+        job_id = enqueue_job(
+            session,
+            type_=MEDIA_DELETE_JOB_TYPE,
+            params={"media_id": str(media.id)},
+            priority=MEDIA_DELETE_PRIORITY,
+        )
+        return MediaDeleteSubmitOut(media_id=media.id, job_id=job_id, reused=False)
 
 
 @router.post("/media/sync")
@@ -455,6 +488,8 @@ def sync_media(media_id: uuid.UUID, scope: str = "recent") -> dict:
             raise HTTPException(status_code=404, detail=str(e)) from e
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.get("/cleanup/stale-videos")
