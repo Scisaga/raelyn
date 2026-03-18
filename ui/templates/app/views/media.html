@@ -116,7 +116,7 @@
                           <span class="text-xs font-semibold" x-text="mediaAvatarLabel(m)"></span>
                         </template>
 	                      </div>
-	                      <div class="min-w-0">
+	                      <div class="min-w-0 flex-1">
 		                        <div class="flex items-center gap-2 min-w-0">
 		                          <div class="font-medium truncate min-w-0 max-w-[14rem] sm:max-w-[18rem] lg:max-w-[24rem]" x-text="mediaDisplayName(m)"></div>
 		                          <span
@@ -131,7 +131,7 @@
                               </span>
 		                        </div>
 	                        <a
-	                          class="text-xs text-slate-400 truncate hover:text-slate-200 hover:underline"
+	                          class="block max-w-full text-xs text-slate-400 truncate hover:text-slate-200 hover:underline"
 	                          :href="(m.url||'').startsWith('http') ? m.url : ('https://' + (m.url||''))"
 	                          target="_blank"
 	                          rel="noreferrer"

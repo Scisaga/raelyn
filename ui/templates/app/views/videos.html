@@ -2,8 +2,8 @@
           <div x-show="activeView==='videos'" x-transition.opacity class="h-full">
             <div class="rounded-none bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
               <div class="shrink-0 px-4 py-3 space-y-3">
-                <div class="flex items-center justify-between gap-3">
-	                  <div class="hidden sm:block text-xs text-slate-400" x-text="videoList.length ? ('已加载 ' + videoList.length + ' 条') : ''"></div>
+                <div class="hidden sm:flex items-center justify-between gap-3">
+	                  <div class="block text-xs text-slate-400" x-text="videoList.length ? ('已加载 ' + videoList.length + ' 条') : ''"></div>
                 </div>
                 <div class="flex flex-wrap items-center gap-2">
                   <!-- Media tag select -->
@@ -62,9 +62,9 @@
                     </div>
                   </div>
 
-                  <div class="relative min-w-[160px]">
+                  <div class="relative min-w-[90px]">
                     <select
-                      class="w-full appearance-none rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 pr-12 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                      class="w-full appearance-none rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 pr-10 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
                       x-model="videoStatus"
                       @change="loadVideos()"
                     >
@@ -96,7 +96,7 @@
                       x-ref="videoFromInput"
                       type="datetime-local"
                       x-model="videoFrom"
-                      class="w-40 rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 pr-5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                      class="w-40 rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 pr-3 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
                       @input.debounce.400ms="loadVideos()"
                       @change="loadVideos()"
                     />
@@ -120,7 +120,7 @@
                       x-ref="videoToInput"
                       type="datetime-local"
                       x-model="videoTo"
-                      class="w-40 rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 pr-5 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                      class="w-40 rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 pr-3 text-xs text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
                       @input.debounce.400ms="loadVideos()"
                       @change="loadVideos()"
                     />

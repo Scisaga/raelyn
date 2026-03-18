@@ -31,6 +31,24 @@
         display: none;
       }
 
+      .raelyn-startup-token-input {
+        color-scheme: dark;
+        background-color: rgba(2, 6, 23, 0.6);
+        color: rgb(241 245 249);
+      }
+
+      .raelyn-startup-token-input:-webkit-autofill,
+      .raelyn-startup-token-input:-webkit-autofill:hover,
+      .raelyn-startup-token-input:-webkit-autofill:focus,
+      .raelyn-startup-token-input:-webkit-autofill:active {
+        -webkit-text-fill-color: rgb(241 245 249);
+        box-shadow:
+          inset 0 0 0 1000px rgba(2, 6, 23, 0.92),
+          inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        transition: background-color 9999s ease-out 0s;
+        caret-color: rgb(241 245 249);
+      }
+
       .video-card {
         will-change: transform;
         transition:
