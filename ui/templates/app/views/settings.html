@@ -445,12 +445,13 @@
                         <div class="flex flex-wrap items-center gap-2">
                           <span
                             class="inline-flex items-center rounded-full border px-2.5 py-1 text-[11px]"
-                            :class="pwaInstalled ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : (pwaCanGuideNativeInstall() ? 'border-sky-500/30 bg-sky-500/10 text-sky-200' : (pwaCanAddOnIos() ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : (pwaNeedsSafariHint() ? 'border-rose-500/30 bg-rose-500/10 text-rose-200' : 'border-slate-700 bg-slate-950/30 text-slate-300')))"
+                            :class="pwaInstallState()==='installed' || pwaInstallState()==='prompt' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : (pwaInstallState()==='native' ? 'border-sky-500/30 bg-sky-500/10 text-sky-200' : (pwaInstallState()==='ios' ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : (pwaInstallState()==='ios-browser' ? 'border-rose-500/30 bg-rose-500/10 text-rose-200' : 'border-slate-700 bg-slate-950/30 text-slate-300')))"
                           >
                             <span x-show="pwaInstalled">已安装</span>
-                            <span x-show="!pwaInstalled && pwaCanGuideNativeInstall()">原生菜单</span>
-                            <span x-show="!pwaInstalled && pwaCanAddOnIos()">Safari 添加</span>
-                            <span x-show="!pwaInstalled && pwaNeedsSafariHint()">需要 Safari</span>
+                            <span x-show="!pwaInstalled && pwaInstallState()==='prompt'">可直接安装</span>
+                            <span x-show="!pwaInstalled && pwaInstallState()==='native'">原生菜单</span>
+                            <span x-show="!pwaInstalled && pwaInstallState()==='ios'">Safari 添加</span>
+                            <span x-show="!pwaInstalled && pwaInstallState()==='ios-browser'">需要 Safari</span>
                             <span x-show="!pwaHasInstallEntry() && !pwaInstalled">移动端可用</span>
                           </span>
                           <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/30 px-2.5 py-1 text-[11px] text-slate-300">
@@ -487,27 +488,28 @@
                         </div>
 
                         <div class="mt-5 divide-y divide-slate-800/80 border-y border-slate-800/80">
-                          <div class="py-5" :class="pwaCanGuideNativeInstall() ? 'bg-sky-500/5' : ''">
+                          <div class="py-5" :class="pwaInstallState()==='prompt' || pwaInstallState()==='native' ? 'bg-sky-500/5' : ''">
                             <div class="flex items-start justify-between gap-3">
                               <div>
                                 <div class="text-base font-semibold text-slate-100">Android / Chromium</div>
                                 <div class="mt-1 text-sm leading-6 text-slate-400">
-                                  Android 端优先使用地址栏或浏览器菜单中的原生“添加到主屏幕/安装应用”入口，这条路径更稳定。
+                                  <span x-show="pwaInstallState()==='prompt'">当前浏览器已经暴露原生安装提示，优先直接安装即可。</span>
+                                  <span x-show="pwaInstallState()!=='prompt'">请使用浏览器原生“添加到主屏幕/安装应用”入口完成安装或添加。</span>
                                 </div>
                               </div>
-                              <span class="shrink-0 rounded-full border px-2 py-0.5 text-[11px]" :class="pwaCanGuideNativeInstall() ? 'border-sky-500/30 bg-sky-500/10 text-sky-200' : 'border-slate-700/80 text-slate-400'">
-                                <span x-text="pwaCanGuideNativeInstall() ? '当前推荐' : '通用说明'"></span>
+                              <span class="shrink-0 rounded-full border px-2 py-0.5 text-[11px]" :class="pwaInstallState()==='prompt' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : (pwaInstallState()==='native' ? 'border-sky-500/30 bg-sky-500/10 text-sky-200' : 'border-slate-700/80 text-slate-400')">
+                                <span x-text="pwaInstallState()==='prompt' ? '可直接安装' : (pwaInstallState()==='native' ? '当前推荐' : '通用说明')"></span>
                               </span>
                             </div>
                             <div class="mt-4 space-y-1.5 text-sm leading-7 text-slate-200">
                               <div>1. 用支持安装的浏览器打开 RAELYN。</div>
-                              <div>2. 点击地址栏或浏览器菜单中的“添加到主屏幕”或“安装应用”。</div>
-                              <div>3. 若出现“安装 / 创建快捷方式”，优先选择“安装”。</div>
-                              <div>4. 若安装仍失败，可先选择“创建快捷方式”。</div>
+                              <div x-show="pwaInstallState()==='prompt'">2. 直接点击页面里的“立即安装”。</div>
+                              <div x-show="pwaInstallState()!=='prompt'">2. 点击地址栏或浏览器菜单中的“添加到主屏幕”或“安装应用”。</div>
+                              <div>3. 按浏览器提示完成安装或添加。</div>
                             </div>
                           </div>
 
-                          <div class="py-5" :class="pwaCanAddOnIos() ? 'bg-amber-500/5' : ''">
+                          <div class="py-5" :class="pwaInstallState()==='ios' ? 'bg-amber-500/5' : ''">
                             <div class="flex items-start justify-between gap-3">
                               <div>
                                 <div class="text-base font-semibold text-slate-100">iPhone / iPad Safari</div>
@@ -515,8 +517,8 @@
                                   iOS 需通过 Safari 的系统分享菜单手动执行“添加到主屏幕”。
                                 </div>
                               </div>
-                              <span class="shrink-0 rounded-full border px-2 py-0.5 text-[11px]" :class="pwaCanAddOnIos() ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-slate-700/80 text-slate-400'">
-                                <span x-text="pwaCanAddOnIos() ? '当前推荐' : 'Safari 路径'"></span>
+                              <span class="shrink-0 rounded-full border px-2 py-0.5 text-[11px]" :class="pwaInstallState()==='ios' ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-slate-700/80 text-slate-400'">
+                                <span x-text="pwaInstallState()==='ios' ? '当前推荐' : 'Safari 路径'"></span>
                               </span>
                             </div>
                             <div class="mt-4 space-y-1.5 text-sm leading-7 text-slate-200">
@@ -527,7 +529,7 @@
                             </div>
                           </div>
 
-                          <div class="py-5" :class="pwaNeedsSafariHint() ? 'bg-rose-500/5' : ''">
+                          <div class="py-5" :class="pwaInstallState()==='ios-browser' ? 'bg-rose-500/5' : ''">
                             <div class="flex items-start justify-between gap-3">
                               <div>
                                 <div class="text-base font-semibold text-slate-100">iOS 非 Safari 浏览器</div>
@@ -535,8 +537,8 @@
                                   iPhone / iPad 只有 Safari 支持“添加到主屏幕”，其他浏览器需要切回 Safari。
                                 </div>
                               </div>
-                              <span class="shrink-0 rounded-full border px-2 py-0.5 text-[11px]" :class="pwaNeedsSafariHint() ? 'border-rose-500/30 bg-rose-500/10 text-rose-200' : 'border-slate-700/80 text-slate-400'">
-                                <span x-text="pwaNeedsSafariHint() ? '当前受限' : '兼容提示'"></span>
+                              <span class="shrink-0 rounded-full border px-2 py-0.5 text-[11px]" :class="pwaInstallState()==='ios-browser' ? 'border-rose-500/30 bg-rose-500/10 text-rose-200' : 'border-slate-700/80 text-slate-400'">
+                                <span x-text="pwaInstallState()==='ios-browser' ? '当前受限' : '兼容提示'"></span>
                               </span>
                             </div>
                             <div class="mt-4 space-y-1.5 text-sm leading-7 text-slate-200">
@@ -564,8 +566,8 @@
                               <span>当前浏览器能力</span>
                               <span
                                 class="text-xs"
-                                :class="pwaCanGuideNativeInstall() || pwaCanAddOnIos() || pwaInstalled ? 'text-emerald-300' : (pwaNeedsSafariHint() ? 'text-rose-300' : 'text-slate-400')"
-                                x-text="pwaInstalled ? '已满足' : (pwaCanGuideNativeInstall() ? '支持原生入口' : (pwaCanAddOnIos() ? '支持 Safari 添加' : (pwaNeedsSafariHint() ? '需切换 Safari' : '建议在移动端打开')))"
+                                :class="pwaInstallState()==='installed' || pwaInstallState()==='prompt' || pwaInstallState()==='native' || pwaInstallState()==='ios' ? 'text-emerald-300' : (pwaInstallState()==='ios-browser' ? 'text-rose-300' : 'text-slate-400')"
+                                x-text="pwaInstalled ? '已满足' : (pwaInstallState()==='prompt' ? '支持直接安装' : (pwaInstallState()==='native' ? '支持原生入口' : (pwaInstallState()==='ios' ? '支持 Safari 添加' : (pwaInstallState()==='ios-browser' ? '需切换 Safari' : '建议在移动端打开'))))"
                               ></span>
                             </div>
                           </div>

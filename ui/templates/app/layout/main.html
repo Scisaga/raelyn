@@ -188,8 +188,7 @@
               <div>
                 <div class="text-sm font-semibold text-slate-100" x-text="pwaCardTitle()"></div>
                 <div class="mt-1 text-xs text-slate-400">
-                  <span x-show="pwaGuideMode==='android'">Android 请优先使用浏览器原生“添加到主屏幕”。</span>
-                  <span x-show="pwaGuideMode==='browser-install'">请使用浏览器地址栏或菜单中的原生安装入口。</span>
+                  <span x-show="pwaGuideMode==='native'">请使用浏览器地址栏或菜单中的原生安装入口。</span>
                   <span x-show="pwaGuideMode==='ios'">使用 Safari 的系统能力完成添加。</span>
                   <span x-show="pwaGuideMode==='ios-browser'">当前浏览器不支持 iOS 主屏幕添加。</span>
                 </div>
@@ -208,13 +207,7 @@
               </button>
             </div>
             <div class="space-y-3 px-5 py-4 text-sm leading-6 text-slate-300">
-              <div x-show="pwaGuideMode==='android'">
-                <div>1. 点击地址栏或浏览器右上角菜单。</div>
-                <div>2. 选择“添加到主屏幕”或“安装应用”。</div>
-                <div>3. 若出现“安装 / 创建快捷方式”，优先选择“安装”。</div>
-                <div>4. 若安装仍失败，可先选择“创建快捷方式”完成添加。</div>
-              </div>
-              <div x-show="pwaGuideMode==='browser-install'">
+              <div x-show="pwaGuideMode==='native'">
                 <div>1. 点击地址栏中的安装图标，或打开浏览器菜单。</div>
                 <div>2. 选择“安装应用”或“添加到主屏幕”。</div>
                 <div>3. 按浏览器提示完成安装或添加。</div>
