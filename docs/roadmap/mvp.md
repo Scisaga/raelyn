@@ -7,7 +7,7 @@
 ### 1. 基础设施与运行形态
 
 - Postgres + MinIO 已打通。
-- API、Worker、Scheduler、独立 MCP Server 都有明确入口脚本。
+- API、Worker、Scheduler 已有明确入口脚本，MCP 能力挂载在主 API 进程内。
 - 本地开发支持 `devctl.sh` 一键启动多角色 worker。
 
 ### 2. 数据模型与任务系统

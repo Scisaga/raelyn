@@ -20,7 +20,6 @@ WORKER_ASR_PID_FILE="${PID_DIR}/worker-asr.pid"
 WORKER_SYNC_PID_FILE="${PID_DIR}/worker-sync.pid"
 WORKER_AI_PID_FILE="${PID_DIR}/worker-ai.pid"
 SCHED_PID_FILE="${PID_DIR}/scheduler.pid"
-MCP_PID_FILE="${PID_DIR}/mcp.pid"
 
 API_LOG="${LOG_DIR}/api.log"
 WORKER_YT_DL_LOG="${LOG_DIR}/worker-download-youtube.log"
@@ -31,7 +30,6 @@ WORKER_ASR_LOG="${LOG_DIR}/worker-asr.log"
 WORKER_SYNC_LOG="${LOG_DIR}/worker-sync.log"
 WORKER_AI_LOG="${LOG_DIR}/worker-ai.log"
 SCHED_LOG="${LOG_DIR}/scheduler.log"
-MCP_LOG="${LOG_DIR}/mcp.log"
 
 mkdir -p "$PID_DIR" "$LOG_DIR"
 
@@ -52,12 +50,12 @@ usage() {
 Usage: ./scripts/dev/devctl.sh <command>
 
 Commands:
-  start     Start api/worker/scheduler/mcp in background
+  start     Start api/worker/scheduler in background
   stop      Stop all started processes
   restart   Stop then start
   reset     Stop + clear DB/S3 (DANGEROUS)
   status    Show running status + pids
-  logs      Tail logs (api/workers/scheduler/mcp)
+  logs      Tail logs (api/workers/scheduler)
 
 Notes:
   - Uses pidfiles under tmp/pids/ and logs under tmp/logs/
@@ -71,7 +69,6 @@ Notes:
       scripts/dev/run-worker.sh sync
       scripts/dev/run-worker.sh ai
       scripts/dev/run-scheduler.sh
-      scripts/dev/run-mcp.sh
   - Reset uses:
       scripts/dev/reset-data.sh --yes
 EOF
@@ -200,7 +197,6 @@ kill_strays() {
     "python.*-m raelyn\\.api_server"
     "python.*-m raelyn\\.worker"
     "python.*-m raelyn\\.scheduler"
-    "python.*-m raelyn\\.mcp_server"
   )
   local pids=()
   local pat
@@ -229,7 +225,7 @@ kill_strays() {
 }
 
 do_status() {
-  local api_pid yt_dl_pid bili_dl_pid audio_pid process_pid asr_pid sync_pid ai_pid sched_pid mcp_pid
+  local api_pid yt_dl_pid bili_dl_pid audio_pid process_pid asr_pid sync_pid ai_pid sched_pid
   api_pid="$(read_pid "$API_PID_FILE")"
   yt_dl_pid="$(read_pid "$WORKER_YT_DL_PID_FILE")"
   bili_dl_pid="$(read_pid "$WORKER_BILI_DL_PID_FILE")"
@@ -239,7 +235,6 @@ do_status() {
   sync_pid="$(read_pid "$WORKER_SYNC_PID_FILE")"
   ai_pid="$(read_pid "$WORKER_AI_PID_FILE")"
   sched_pid="$(read_pid "$SCHED_PID_FILE")"
-  mcp_pid="$(read_pid "$MCP_PID_FILE")"
 
   if is_running "$api_pid"; then
     echo "[status] api: running pid=${api_pid} log=${API_LOG}"
@@ -294,12 +289,6 @@ do_status() {
   else
     echo "[status] scheduler: stopped"
   fi
-
-  if is_running "$mcp_pid"; then
-    echo "[status] mcp: running pid=${mcp_pid} log=${MCP_LOG}"
-  else
-    echo "[status] mcp: stopped"
-  fi
 }
 
 cmd="${1:-}"
@@ -323,19 +312,9 @@ case "$cmd" in
     start_worker_role "worker-sync" "$WORKER_SYNC_PID_FILE" "$WORKER_SYNC_LOG" "sync"
     start_worker_role "worker-ai" "$WORKER_AI_PID_FILE" "$WORKER_AI_LOG" "ai"
     start_one "scheduler" "$SCHED_PID_FILE" "$SCHED_LOG" bash scripts/dev/run-scheduler.sh
-    if [[ -n "${MCP_BEARER_TOKEN:-}" ]]; then
-      start_one "mcp" "$MCP_PID_FILE" "$MCP_LOG" bash scripts/dev/run-mcp.sh
-      if ! wait_for_http_ok "mcp" "http://127.0.0.1:8001/health" "$MCP_PID_FILE" "$MCP_LOG" 20; then
-        do_status
-        exit 1
-      fi
-    else
-      echo "[start] mcp: skip (MCP_BEARER_TOKEN is empty)"
-    fi
     do_status
     ;;
   stop)
-    stop_one "mcp" "$MCP_PID_FILE"
     stop_one "scheduler" "$SCHED_PID_FILE"
     stop_one "worker-ai" "$WORKER_AI_PID_FILE"
     stop_one "worker-sync" "$WORKER_SYNC_PID_FILE"
@@ -364,8 +343,8 @@ case "$cmd" in
     do_status
     ;;
   logs)
-    echo "[logs] tail -f ${API_LOG} ${WORKER_YT_DL_LOG} ${WORKER_BILI_DL_LOG} ${WORKER_AUDIO_LOG} ${WORKER_PROCESS_LOG} ${WORKER_ASR_LOG} ${WORKER_SYNC_LOG} ${WORKER_AI_LOG} ${SCHED_LOG} ${MCP_LOG}"
-    tail -n 200 -f "$API_LOG" "$WORKER_YT_DL_LOG" "$WORKER_BILI_DL_LOG" "$WORKER_AUDIO_LOG" "$WORKER_PROCESS_LOG" "$WORKER_ASR_LOG" "$WORKER_SYNC_LOG" "$WORKER_AI_LOG" "$SCHED_LOG" "$MCP_LOG"
+    echo "[logs] tail -f ${API_LOG} ${WORKER_YT_DL_LOG} ${WORKER_BILI_DL_LOG} ${WORKER_AUDIO_LOG} ${WORKER_PROCESS_LOG} ${WORKER_ASR_LOG} ${WORKER_SYNC_LOG} ${WORKER_AI_LOG} ${SCHED_LOG}"
+    tail -n 200 -f "$API_LOG" "$WORKER_YT_DL_LOG" "$WORKER_BILI_DL_LOG" "$WORKER_AUDIO_LOG" "$WORKER_PROCESS_LOG" "$WORKER_ASR_LOG" "$WORKER_SYNC_LOG" "$WORKER_AI_LOG" "$SCHED_LOG"
     ;;
   -h|--help|help|"")
     usage

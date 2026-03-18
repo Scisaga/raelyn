@@ -6,7 +6,7 @@
                     <div>
                       <h1 class="text-sm font-semibold text-slate-100">MCP Server 接入说明</h1>
                       <div class="mt-1 text-xs text-slate-400">
-                      本项目提供的是一个独立运行的 MCP Server。这里从客户端如何接入这个 Server 的角度，说明连接参数、鉴权方式、验证步骤和可调用能力。前端页面路由是
+                      本项目提供的是一个挂载在主 API 进程内的 MCP Server。这里从客户端如何接入这个 Server 的角度，说明连接参数、鉴权方式、验证步骤和可调用能力。前端页面路由是
                       <code class="text-slate-200">/mcp-guide</code>，真实 MCP endpoint 默认仍是
                       <code class="text-slate-200">http(s)://&lt;host&gt;:&lt;port&gt;&lt;base_path&gt;</code>。
                     </div>
@@ -15,7 +15,7 @@
                     <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/30 px-2.5 py-1">Role: MCP Server</span>
                     <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/30 px-2.5 py-1">Transport: Streamable HTTP</span>
                     <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/30 px-2.5 py-1">Auth: Bearer Token</span>
-                    <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/30 px-2.5 py-1">Process: 独立 MCP 服务</span>
+                    <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/30 px-2.5 py-1">Process: 主 API 同端口挂载</span>
                   </div>
                 </div>
               </div>
@@ -34,7 +34,7 @@
                     <div class="space-y-1.5">
                       <h3 class="text-sm font-medium text-slate-200">连接信息</h3>
                       <div class="text-[12px] leading-6 text-slate-400">
-                        示例接入地址可写为 <code class="text-slate-200">http://raelyn:8001/mcp</code>；
+                        示例接入地址可写为 <code class="text-slate-200">http://raelyn:8000/mcp</code>；
                         远端部署时再替换为实际域名、内网 IP 或反向代理地址。
                       </div>
                     </div>
@@ -149,7 +149,7 @@ Authorization: Bearer &lt;MCP_BEARER_TOKEN&gt;</code></pre>
                         </div>
                       </div>
                       <pre x-show="toolTab==='vscode'" x-transition.opacity class="overflow-x-auto border border-slate-800 bg-slate-950 px-3 py-2 text-[12px] text-slate-200"><code>[mcp_servers.raelyn]
-url = "http://raelyn:8001/mcp"
+url = "http://raelyn:8000/mcp"
 bearer_token_env_var = "MCP_BEARER_TOKEN"</code></pre>
 
                       <div x-show="toolTab==='cli'" x-transition.opacity class="space-y-1.5">
@@ -160,7 +160,7 @@ bearer_token_env_var = "MCP_BEARER_TOKEN"</code></pre>
                       </div>
                       <pre x-show="toolTab==='cli'" x-transition.opacity class="overflow-x-auto border border-slate-800 bg-slate-950 px-3 py-2 text-[12px] text-slate-200"><code>export MCP_BEARER_TOKEN=replace-with-your-token
 codex mcp add raelyn \
-  --url http://raelyn:8001/mcp \
+  --url http://raelyn:8000/mcp \
   --bearer-token-env-var MCP_BEARER_TOKEN</code></pre>
 
                       <div x-show="toolTab==='openclaw'" x-transition.opacity class="space-y-1.5">
@@ -173,7 +173,7 @@ codex mcp add raelyn \
                       <pre x-show="toolTab==='openclaw'" x-transition.opacity class="overflow-x-auto border border-slate-800 bg-slate-950 px-3 py-2 text-[12px] text-slate-200"><code>{
   "mcpServers": {
     "raelyn": {
-      "url": "http://raelyn:8001/mcp",
+      "url": "http://raelyn:8000/mcp",
       "headers": {
         "Authorization": "Bearer ${MCP_BEARER_TOKEN}"
       }
@@ -203,7 +203,7 @@ openclaw gateway restart</code></pre>
                       <div>
                         <h3 class="text-sm font-medium text-slate-200">HTTP</h3>
                         <div class="mt-2 space-y-1.5">
-                          <div><code class="text-slate-200">GET /health</code></div>
+                          <div><code class="text-slate-200">GET /mcp/health</code></div>
                           <div><code class="text-slate-200">POST /mcp</code></div>
                           <div><code class="text-slate-200">GET /mcp</code></div>
                           <div><code class="text-slate-200">DELETE /mcp</code></div>

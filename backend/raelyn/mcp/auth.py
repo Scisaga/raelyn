@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from collections.abc import Iterable
 
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -23,14 +24,27 @@ def require_mcp_token(token: str | None) -> str:
 
 
 class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, *, token: str, protected_prefix: str) -> None:
+    def __init__(
+        self,
+        app,
+        *,
+        token: str,
+        protected_prefix: str,
+        public_paths: Iterable[str] | None = None,
+    ) -> None:
         super().__init__(app)
         self._token = require_mcp_token(token)
         self._protected_prefix = normalize_mount_path(protected_prefix)
+        self._public_paths = {
+            normalize_mount_path(path, default="/")
+            for path in (public_paths or ())
+        }
 
     async def dispatch(self, request, call_next):
         path = request.url.path
-        protected = path == self._protected_prefix or path.startswith(f"{self._protected_prefix}/")
+        protected = self._protected_prefix == "/" or path == self._protected_prefix or path.startswith(f"{self._protected_prefix}/")
+        if path in self._public_paths:
+            protected = False
         if not protected:
             return await call_next(request)
 

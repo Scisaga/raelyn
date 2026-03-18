@@ -1,6 +1,6 @@
 # 架构总览
 
-`raelyn` 当前是一个由 `FastAPI API + 静态 SPA + Worker + Scheduler + 独立 MCP Server` 组成的单用户媒体采集系统。它支持 YouTube / B 站媒体管理、视频同步与下载、字幕 / 转写处理、播放列表聚合，以及按天 / 周 / 月生成 Markdown 简报。
+`raelyn` 当前是一个由 `FastAPI API（含挂载式 MCP） + 静态 SPA + Worker + Scheduler` 组成的单用户媒体采集系统。它支持 YouTube / B 站媒体管理、视频同步与下载、字幕 / 转写处理、播放列表聚合，以及按天 / 周 / 月生成 Markdown 简报。
 
 ## 当前约束与决策
 
@@ -62,10 +62,10 @@
 - 每分钟扫描已启用监控且超过同步间隔的媒体，投递 `media.sync_videos`。
 - 会尊重系统暂停和 provider 暂停状态，避免继续放量。
 
-### MCP Server
+### MCP HTTP 挂载
 
-- 入口是 [backend/raelyn/mcp_main.py](../../backend/raelyn/mcp_main.py)。
-- 作为独立进程运行，默认挂载在 `MCP_BASE_PATH=/mcp`。
+- 由 [backend/raelyn/main.py](../../backend/raelyn/main.py) 按 `MCP_BASE_PATH=/mcp` 挂载。
+- 只有在配置了 `MCP_BEARER_TOKEN` 时才启用；否则主 API 正常启动但不提供 `/mcp`。
 - 复用现有 DB / service / job enqueue 能力，不通过 `/api/*` 再套一层 HTTP。
 
 ### 静态 UI / PWA

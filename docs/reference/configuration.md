@@ -97,11 +97,9 @@
 
 ### MCP HTTP
 
-- `MCP_HOST`
-- `MCP_PORT`
 - `MCP_BASE_PATH`
 - `MCP_BEARER_TOKEN`
-  - MCP 服务强制要求；为空时 `run-mcp.sh` 无法启动，`devctl.sh start` 会跳过 MCP。
+  - 非空时主 API 进程会挂载 `/mcp`；为空时 `/mcp` 与 `/mcp/health` 返回 `404`。
 
 ## 运行时配置（`app_config`）
 

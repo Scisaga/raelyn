@@ -2,24 +2,22 @@
 
 ## 当前实现
 
-项目已经实现独立的 MCP HTTP 服务：
+项目已经实现挂载在主 API 进程内的 MCP HTTP 服务：
 
-- 启动入口：`python -m raelyn.mcp_server`
-- 运行应用：[backend/raelyn/mcp_main.py](../../backend/raelyn/mcp_main.py)
+- 主应用入口：[backend/raelyn/main.py](../../backend/raelyn/main.py)
 - MCP 注册层：[backend/raelyn/mcp/](../../backend/raelyn/mcp/)
-- 默认监听：`0.0.0.0:8001`
 - 默认入口：`/mcp`
-- 健康检查：`GET /health`
+- 健康检查：`GET /mcp/health`
 - Transport：官方 Python `mcp` SDK 的 `FastMCP` + `Streamable HTTP`
 
-MCP 不挂进现有 API 进程，而是独立进程运行；但它直接复用现有 DB / model / service / job enqueue 能力，不通过 `/api/*` 再走一层 HTTP。
+MCP 作为主 API 的子应用挂载，但它直接复用现有 DB / model / service / job enqueue 能力，不通过 `/api/*` 再走一层 HTTP。
 
 ## 安全边界
 
-- `MCP_BEARER_TOKEN` 是强制项；为空时 MCP 服务直接启动失败。
-- `/health` 允许匿名访问。
+- `MCP_BEARER_TOKEN` 非空时才会挂载 MCP；为空时主 API 仍可正常启动，但 `/mcp` 不可用。
+- `/mcp/health` 允许匿名访问。
 - `/mcp` 下的所有请求都要求 `Authorization: Bearer <token>`。
-- 默认监听 `0.0.0.0` 是为了局域网内设备访问，不按公网暴露方案设计。
+- MCP 与主 API 共用同一个监听端口，不额外占用独立端口。
 - 远程使用时仍应配合主机防火墙、受控网段或反向代理。
 
 ## 能力范围
@@ -193,17 +191,12 @@ MCP 与 REST 的关系不是一比一镜像，而是：
 
 ## 运行与开发
 
-本地开发脚本：
+本地开发入口：
 
-- [scripts/dev/run-mcp.sh](../../scripts/dev/run-mcp.sh)
+- [backend/raelyn/main.py](../../backend/raelyn/main.py)
 - [scripts/dev/devctl.sh](../../scripts/dev/devctl.sh)
 
-`devctl.sh start` 的行为：
-
-- 如果 `MCP_BEARER_TOKEN` 非空，则启动 MCP
-- 如果为空，则明确打印 skip
-
-这保证默认开发环境不会在局域网里无鉴权暴露 MCP 入口。
+`devctl.sh start` 只启动 API/worker/scheduler；如果 `MCP_BEARER_TOKEN` 非空，MCP 会随 API 一起挂载到 `/mcp`。如果为空，则 `/mcp` 与 `/mcp/health` 返回 `404`。
 
 ## 测试覆盖
 
