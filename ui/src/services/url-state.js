@@ -126,11 +126,8 @@ export function createUrlStateMethods({ settingsTabs }) {
       const item = this.navItems.find((nav) => nav.key === key);
       if (this.activeView === "videos" && key !== "videos") this._teardownVideoIo();
       if (this.activeView === "video" && key !== "video" && typeof this.leaveVideoPage === "function") this.leaveVideoPage();
-      if (this.activeView === "playlist" && key !== "playlist" && typeof this.playlistStopBriefSpeech === "function") {
-        this.playlistStopBriefSpeech({ clearError: true });
-      }
-      if (this.activeView === "playlist" && key !== "playlist" && typeof this.playlistMediaPause === "function") {
-        this.playlistMediaPause();
+      if (this.activeView === "playlist" && key !== "playlist" && typeof this.leavePlaylistPage === "function") {
+        this.leavePlaylistPage();
       }
       if (key === "videos") this._ensureVideoRange();
       this.activeView = key;

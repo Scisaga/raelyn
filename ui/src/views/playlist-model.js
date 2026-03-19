@@ -868,8 +868,8 @@ export function createPlaylistViewMethods() {
 
     playlistBriefPointerEnd(ev) {
       this._playlistSwipePointerEnd("brief", ev, (delta) => {
-        if (delta < 0) this.playlistPrevDay();
-        else this.playlistNextDay();
+        if (delta < 0) this.playlistPrevDay({ autoPlay: false });
+        else this.playlistNextDay({ autoPlay: false });
       });
     },
 
@@ -1154,6 +1154,35 @@ export function createPlaylistViewMethods() {
         }
       }
       this._syncUrl({ push: false });
+    },
+
+    leavePlaylistPage() {
+      try {
+        if (typeof this.playlistStopBriefSpeech === "function") {
+          this.playlistStopBriefSpeech({ clearError: true });
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        if (typeof this.playlistMediaPause === "function") this.playlistMediaPause();
+      } catch {
+        // ignore
+      }
+      try {
+        if (typeof this.playlistResetMediaElements === "function") {
+          this.playlistResetMediaElements({ cancelAutoPlay: true });
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        if (typeof this.syncSystemMediaSession === "function") {
+          this.syncSystemMediaSession({ forcePosition: true });
+        }
+      } catch {
+        // ignore
+      }
     },
 
     playlistPeriodUnitZh() {
@@ -2531,22 +2560,22 @@ export function createPlaylistViewMethods() {
       if (next) this.playlistSelectVideo(next, { autoPlay: true });
     },
 
-    playlistPrevDay() {
+    playlistPrevDay({ autoPlay = true } = {}) {
       const g = this.playlistGranularity();
       const start = String(this.playlistTimelineStart || "").trim();
       const end = String(this.playlistTimelineEnd || "").trim();
       if (!start || !end || !this.playlistSelectedDate) return;
       const next = this._periodClampIso(this._periodAddIso(this.playlistSelectedDate, g, -1), start, end);
-      this.playlistSetDate(next);
+      this.playlistSetDate(next, { autoPlay });
     },
 
-    playlistNextDay() {
+    playlistNextDay({ autoPlay = true } = {}) {
       const g = this.playlistGranularity();
       const start = String(this.playlistTimelineStart || "").trim();
       const end = String(this.playlistTimelineEnd || "").trim();
       if (!start || !end || !this.playlistSelectedDate) return;
       const next = this._periodClampIso(this._periodAddIso(this.playlistSelectedDate, g, 1), start, end);
-      this.playlistSetDate(next);
+      this.playlistSetDate(next, { autoPlay });
     },
 
     playlistJump(deltaPeriods) {

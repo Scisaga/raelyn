@@ -14,11 +14,8 @@ export function createAppInitMethods() {
         if (this.activeView === "videos" && viewKey !== "videos") this._teardownVideoIo();
         if (this.activeView === "jobs" && viewKey !== "jobs") this._destroyJobsDoneChart();
         if (this.activeView === "video" && viewKey !== "video" && typeof this.leaveVideoPage === "function") this.leaveVideoPage();
-        if (this.activeView === "playlist" && viewKey !== "playlist" && typeof this.playlistStopBriefSpeech === "function") {
-          this.playlistStopBriefSpeech({ clearError: true });
-        }
-        if (this.activeView === "playlist" && viewKey !== "playlist" && typeof this.playlistMediaPause === "function") {
-          this.playlistMediaPause();
+        if (this.activeView === "playlist" && viewKey !== "playlist" && typeof this.leavePlaylistPage === "function") {
+          this.leavePlaylistPage();
         }
         this.activeView = viewKey;
         const item = this.navItems.find((nav) => nav.key === viewKey);
