@@ -165,11 +165,11 @@
 		                      <span>成功 / 失败（按完成时间）</span>
 		                      <span class="inline-flex items-center gap-1 text-[11px] text-slate-400">
 		                        <span class="w-2 h-2 rounded-sm bg-emerald-500/70"></span>
-		                        succeeded
+		                        <span x-text="`succeeded ${formatInteger(jobsSeriesDoneSucceededTotal || 0)}`"></span>
 		                      </span>
 		                      <span class="inline-flex items-center gap-1 text-[11px] text-slate-400">
 		                        <span class="w-2 h-2 rounded-sm bg-rose-500/70"></span>
-		                        failed
+		                        <span x-text="`failed ${formatInteger(jobsSeriesDoneFailedTotal || 0)}`"></span>
 		                      </span>
 		                    </div>
 		                    <div class="text-[11px] text-slate-500" x-text="jobsSeriesDoneMax ? ('max: ' + jobsSeriesDoneMax) : ''"></div>

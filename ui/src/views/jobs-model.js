@@ -510,6 +510,16 @@ export function createJobsViewMethods() {
       return max;
     },
 
+    _jobsSeriesTotals(series) {
+      let succeeded = 0;
+      let failed = 0;
+      for (const point of Array.isArray(series) ? series : []) {
+        succeeded += Number((point && point.succeeded) || 0);
+        failed += Number((point && point.failed) || 0);
+      }
+      return { succeeded, failed };
+    },
+
     _destroyJobsDoneChart() {
       try {
         clearTimeout(this._jobsDoneChartRetryTimer);
@@ -946,6 +956,9 @@ export function createJobsViewMethods() {
           const failed = Number(counts.failed || 0);
           return { ts: point.ts, succeeded, failed, total: succeeded + failed };
         });
+        const totals = this._jobsSeriesTotals(this.jobsSeriesDone);
+        this.jobsSeriesDoneSucceededTotal = totals.succeeded;
+        this.jobsSeriesDoneFailedTotal = totals.failed;
         this.jobsSeriesDoneMax = this._jobsSeriesMax(this.jobsSeriesDone);
         this._updateJobsDoneChart();
       } catch (e) {

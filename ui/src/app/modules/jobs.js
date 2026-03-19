@@ -18,6 +18,8 @@ export function createJobsModule() {
     jobsDoneFrom: "",
     jobsDoneTo: "",
     jobsSeriesDone: [],
+    jobsSeriesDoneSucceededTotal: 0,
+    jobsSeriesDoneFailedTotal: 0,
     jobsSeriesDoneMax: 0,
     jobsSeriesLoading: false,
     jobsSeriesError: "",
