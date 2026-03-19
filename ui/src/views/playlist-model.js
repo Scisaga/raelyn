@@ -2778,7 +2778,7 @@ export function createPlaylistViewMethods() {
       let briefSourceCarry = false;
       const linkifyAndFormat = (rawText) => {
         const raw = String(rawText || "");
-        const re = /\[([^\]\n]+)\]\(\s*(https?:\/\/[^\s\)）]+)\s*[\)）]+\s*|\b(https?:\/\/[^\s\)）]+)\b/g;
+        const re = /\[([^\]\n]+)\]\(\s*(https?:\/\/[^\s,，、;；\)）]+)\s*[\)）]+\s*|\b(https?:\/\/[^\s,，、;；\)）]+)\b/g;
         let last = 0;
         let html = "";
         let inSourceGroup = briefSourceCarry;
