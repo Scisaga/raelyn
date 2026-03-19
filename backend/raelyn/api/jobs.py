@@ -59,6 +59,11 @@ class JobSeriesPoint(BaseModel):
     total: int
 
 
+class JobCountsOut(BaseModel):
+    counts: dict[str, int]
+    total: int
+
+
 def _parse_csv(value: str | None) -> list[str]:
     if not value:
         return []
@@ -147,6 +152,49 @@ def list_jobs(
                 pass
             out.append(JobListOut(**payload))
         return out
+
+
+@router.get("/jobs/counts", response_model=JobCountsOut)
+def job_counts(
+    status: str | None = None,
+    status_in: str | None = None,
+    type: str | None = None,
+    type_in: str | None = None,
+    created_since: datetime | None = None,
+    created_until: datetime | None = None,
+    finished_since: datetime | None = None,
+    finished_until: datetime | None = None,
+) -> JobCountsOut:
+    statuses = _parse_csv(status_in)
+    if status and str(status).strip():
+        statuses.append(str(status).strip())
+    statuses = list(dict.fromkeys([s for s in statuses if s]))
+
+    types = _parse_csv(type_in)
+    if type and str(type).strip():
+        types.append(str(type).strip())
+    types = list(dict.fromkeys([t for t in types if t]))
+
+    with session_scope() as session:
+        stmt = select(Job.status, func.count(Job.id).label("n"))
+        if statuses:
+            stmt = stmt.where(Job.status.in_(statuses))
+        if types:
+            stmt = stmt.where(Job.type.in_(types))
+        if created_since:
+            stmt = stmt.where(Job.created_at >= created_since)
+        if created_until:
+            stmt = stmt.where(Job.created_at < created_until)
+        if finished_since:
+            stmt = stmt.where(Job.finished_at.is_not(None), Job.finished_at >= finished_since)
+        if finished_until:
+            stmt = stmt.where(Job.finished_at.is_not(None), Job.finished_at < finished_until)
+        stmt = stmt.group_by(Job.status)
+
+        rows = session.execute(stmt).all()
+        counts = {str(st): int(n or 0) for st, n in rows}
+        total = sum(counts.values())
+        return JobCountsOut(counts=counts, total=total)
 
 
 @router.get("/jobs/series", response_model=list[JobSeriesPoint])

@@ -6,6 +6,8 @@ export function createJobsModule() {
     jobStatsWsError: "",
     _jobStatsWsRetryTimer: null,
     jobsTab: "active",
+    jobsActiveFilteredTotal: null,
+    _jobsActiveCountLastFetchAt: 0,
     jobListActive: [],
     jobListDone: [],
     jobsDoneLoading: false,

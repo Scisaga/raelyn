@@ -37,6 +37,22 @@ class _FakeSession:
         self.added.append(obj)
 
 
+class _FakeRowsResult:
+    def __init__(self, rows) -> None:
+        self._rows = list(rows)
+
+    def all(self):
+        return list(self._rows)
+
+
+class _FakeCountsSession:
+    def __init__(self, rows) -> None:
+        self.rows = list(rows)
+
+    def execute(self, _stmt):
+        return _FakeRowsResult(self.rows)
+
+
 class JobsApiTests(unittest.TestCase):
     def test_cancel_pending_job_immediately_marks_canceled(self) -> None:
         job_id = uuid.uuid4()
@@ -152,6 +168,14 @@ class JobsApiTests(unittest.TestCase):
         self.assertEqual(job.status, "running")
         self.assertEqual(job.attempt, 1)
         self.assertEqual(session.added, [])
+
+    def test_job_counts_returns_grouped_counts_and_total(self) -> None:
+        session = _FakeCountsSession([("pending", 2), ("running", 3)])
+
+        with patch("raelyn.api.jobs.session_scope", lambda: _fake_session_scope(session)):
+            payload = jobs_api.job_counts(status_in="pending,running", type="video.download.youtube")
+
+        self.assertEqual(payload.model_dump(), {"counts": {"pending": 2, "running": 3}, "total": 5})
 
 
 if __name__ == "__main__":

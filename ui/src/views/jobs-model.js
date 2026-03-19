@@ -7,15 +7,29 @@ export function createJobsViewMethods() {
     },
 
     jobsActiveCount() {
+      const typeFilter = String(this.jobsTypeFilter || "").trim();
       if (!String(this.jobsTypeFilter || "").trim()) {
         const pending = Number(this.jobStats && this.jobStats.pending);
         const running = Number(this.jobStats && this.jobStats.running);
         if (Number.isFinite(pending) && Number.isFinite(running)) return pending + running;
       }
 
+      if (typeFilter) {
+        const total = Number(this.jobsActiveFilteredTotal);
+        if (Number.isFinite(total) && total >= 0) return total;
+      }
+
       const server = Array.isArray(this.jobListActive) ? this.jobListActive.length : 0;
-      const extra = Array.isArray(this.jobsOptimisticActive) ? this.jobsOptimisticActive.length : 0;
+      const extra = (Array.isArray(this.jobsOptimisticActive) ? this.jobsOptimisticActive : []).filter((item) => {
+        if (!item) return false;
+        if (!typeFilter) return true;
+        return String(item.type || "") === typeFilter;
+      }).length;
       return server + extra;
+    },
+
+    jobsActiveListTruncated() {
+      return this.jobsActiveCount() > 200;
     },
 
     _cleanupJobsOptimisticActive() {
@@ -252,6 +266,7 @@ export function createJobsViewMethods() {
           this.jobListActive = filtered;
           this.ensureJobContextForList(filtered);
           this._cleanupJobsOptimisticActive();
+          this.refreshJobsActiveCount();
         } catch {
           // ignore
         }
@@ -290,6 +305,30 @@ export function createJobsViewMethods() {
         this.jobListActive = filtered;
         this.ensureJobContextForList(filtered);
         this._cleanupJobsOptimisticActive();
+      } catch {
+        // ignore
+      }
+    },
+
+    async refreshJobsActiveCount({ force = false } = {}) {
+      try {
+        if (this.activeView !== "jobs" || this.jobsTab !== "active") return;
+        const typeFilter = String(this.jobsTypeFilter || "").trim();
+        if (!typeFilter) {
+          this.jobsActiveFilteredTotal = null;
+          return;
+        }
+
+        const now = Date.now();
+        if (!force && this._jobsActiveCountLastFetchAt && now - this._jobsActiveCountLastFetchAt < 2500) return;
+        this._jobsActiveCountLastFetchAt = now;
+
+        const qs = new URLSearchParams();
+        qs.set("status_in", "pending,running");
+        qs.set("type", typeFilter);
+        const payload = await this.api(`/jobs/counts?${qs.toString()}`);
+        const total = payload && typeof payload.total === "number" ? payload.total : null;
+        this.jobsActiveFilteredTotal = total != null && Number.isFinite(Number(total)) ? Number(total) : 0;
       } catch {
         // ignore
       }
@@ -448,6 +487,11 @@ export function createJobsViewMethods() {
 
     applyJobsTypeFilter() {
       this._disconnectJobsWs();
+      this.jobListActive = [];
+      this.jobsActiveFilteredTotal = null;
+      this._jobsActiveServerCount = 0;
+      this._jobsActiveLastFetchAt = 0;
+      this._jobsActiveCountLastFetchAt = 0;
       this._syncUrl({ push: false });
       this.refreshJobs();
       this.refreshJobsSeries({ force: true });
@@ -976,6 +1020,7 @@ export function createJobsViewMethods() {
         }
         this._connectJobsWs();
         this._fetchJobsActiveSnapshot();
+        this.refreshJobsActiveCount();
         this.refreshWorkers();
 
         if (this.jobsTab === "active") {

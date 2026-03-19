@@ -39,7 +39,7 @@
 		                      </span>
 		                      <span
 		                        class="text-[11px] text-slate-500"
-		                        x-show="!jobsTypeFilter && (Number(jobStats.pending||0) + Number(jobStats.running||0)) > 200"
+		                        x-show="jobsActiveListTruncated()"
 		                      >
 		                        列表仅显示前 200 条
 		                      </span>

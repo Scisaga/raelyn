@@ -189,6 +189,15 @@
   - `finished_since` / `finished_until`
   - `limit` / `offset`
 
+### `GET /api/jobs/counts`
+
+- query：
+  - `status` / `status_in`
+  - `type` / `type_in`
+  - `created_since` / `created_until`
+  - `finished_since` / `finished_until`
+- 响应示例：`{ "counts": { "pending": 12, "running": 3 }, "total": 15 }`
+
 ### `GET /api/jobs/series`
 
 - query：
