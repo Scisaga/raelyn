@@ -44,6 +44,7 @@ export function createPlaylistViewMethods() {
       if (!pid) {
         this.playlistCalendarResetDragState();
         this.playlistDayListResetSwipeState();
+        this.playlistBriefResetSwipeState();
         this.playlistDetail = null;
         this.playlistDayVideos = [];
         this.playlistPlayerNeedsDownload = false;
@@ -70,6 +71,7 @@ export function createPlaylistViewMethods() {
       try {
         this.playlistCalendarResetDragState();
         this.playlistDayListResetSwipeState();
+        this.playlistBriefResetSwipeState();
         this._syncUrl({ push: false });
         this.playlistDayVideosError = "";
         this.playlistBriefError = "";
@@ -525,7 +527,30 @@ export function createPlaylistViewMethods() {
       this.playlistSetDate(date);
     },
 
-    playlistDayListSwipeEnabled() {
+    _playlistSwipeTargetConfig(target) {
+      return target === "brief"
+        ? {
+            statePrefix: "playlistBrief",
+            moveHandlerKey: "_playlistBriefDragMove",
+            endHandlerKey: "_playlistBriefDragEnd",
+            settleTimerKey: "_playlistBriefSettleTimer",
+            scrollerRef: "playlistBriefScroller",
+          }
+        : {
+            statePrefix: "playlistDayList",
+            moveHandlerKey: "_playlistDayListDragMove",
+            endHandlerKey: "_playlistDayListDragEnd",
+            settleTimerKey: "_playlistDayListSettleTimer",
+            scrollerRef: "playlistDayListScroller",
+          };
+    },
+
+    _playlistSwipeStateKey(target, suffix) {
+      const config = this._playlistSwipeTargetConfig(target);
+      return `${config.statePrefix}${suffix}`;
+    },
+
+    _playlistSwipeEnabled() {
       try {
         return !!(window.matchMedia && window.matchMedia("(max-width: 1023px)").matches);
       } catch {
@@ -533,27 +558,33 @@ export function createPlaylistViewMethods() {
       }
     },
 
-    playlistDayListGestureThresholdPx() {
+    _playlistSwipeScrollerWidth(target) {
+      const config = this._playlistSwipeTargetConfig(target);
       try {
         const width =
-          this.$refs && this.$refs.playlistDayListScroller && this.$refs.playlistDayListScroller.clientWidth
-            ? Number(this.$refs.playlistDayListScroller.clientWidth)
+          this.$refs && this.$refs[config.scrollerRef] && this.$refs[config.scrollerRef].clientWidth
+            ? Number(this.$refs[config.scrollerRef].clientWidth)
             : 0;
-        if (Number.isFinite(width) && width > 0) return Math.max(44, Math.min(96, Math.round(width * 0.14)));
+        return Number.isFinite(width) && width > 0 ? width : 0;
       } catch {
-        // ignore
+        return 0;
       }
+    },
+
+    _playlistSwipeGestureThresholdPx(target) {
+      const width = this._playlistSwipeScrollerWidth(target);
+      if (width > 0) return Math.max(44, Math.min(96, Math.round(width * 0.14)));
       return 56;
     },
 
-    playlistDayListPanelStyle() {
-      const offset = Number(this.playlistDayListDragOffsetX || 0);
-      const settling = !!this.playlistDayListSettling;
+    _playlistSwipePanelStyle(target) {
+      const offset = Number(this[this._playlistSwipeStateKey(target, "DragOffsetX")] || 0);
+      const settling = !!this[this._playlistSwipeStateKey(target, "Settling")];
       const transition = settling ? "transform 180ms cubic-bezier(0.22, 1, 0.36, 1)" : "none";
       return `transform:translate3d(${offset}px,0,0);transition:${transition};will-change:transform;`;
     },
 
-    playlistDayListCanSwipe(step) {
+    _playlistPeriodCanSwipe(step) {
       const delta = Number(step || 0);
       if (!Number.isFinite(delta) || delta === 0) return false;
       const g = this.playlistGranularity();
@@ -565,93 +596,95 @@ export function createPlaylistViewMethods() {
       return !!next && next !== selected;
     },
 
-    playlistDayListResolveDragOffset(rawDx) {
+    _playlistSwipeResolveDragOffset(target, rawDx) {
       const dx = Number(rawDx || 0);
       if (!Number.isFinite(dx) || dx === 0) return 0;
-      let width = 0;
-      try {
-        width =
-          this.$refs && this.$refs.playlistDayListScroller && this.$refs.playlistDayListScroller.clientWidth
-            ? Number(this.$refs.playlistDayListScroller.clientWidth)
-            : 0;
-      } catch {
-        // ignore
-      }
+      const width = this._playlistSwipeScrollerWidth(target);
       const maxOffset = Math.max(56, Math.min(width > 0 ? width * 0.72 : 260, 280));
-      const canMove = dx > 0 ? this.playlistDayListCanSwipe(-1) : this.playlistDayListCanSwipe(1);
+      const canMove = dx > 0 ? this._playlistPeriodCanSwipe(-1) : this._playlistPeriodCanSwipe(1);
       const factor = canMove ? 1 : 0.28;
       return Math.max(-maxOffset, Math.min(maxOffset, dx * factor));
     },
 
-    playlistDayListClearSettleTimer() {
+    _playlistSwipeClearSettleTimer(target) {
+      const config = this._playlistSwipeTargetConfig(target);
       try {
-        if (this._playlistDayListSettleTimer) clearTimeout(this._playlistDayListSettleTimer);
+        if (this[config.settleTimerKey]) clearTimeout(this[config.settleTimerKey]);
       } catch {
         // ignore
       }
-      this._playlistDayListSettleTimer = null;
+      this[config.settleTimerKey] = null;
     },
 
-    playlistDayListReleasePointerTracking() {
+    _playlistSwipeReleasePointerTracking(target) {
+      const config = this._playlistSwipeTargetConfig(target);
+      const statePrefix = config.statePrefix;
       try {
-        if (this._playlistDayListDragMove) window.removeEventListener("pointermove", this._playlistDayListDragMove);
+        if (this[config.moveHandlerKey]) window.removeEventListener("pointermove", this[config.moveHandlerKey]);
       } catch {
         // ignore
       }
       try {
-        if (this._playlistDayListDragEnd) {
-          window.removeEventListener("pointerup", this._playlistDayListDragEnd);
-          window.removeEventListener("pointercancel", this._playlistDayListDragEnd);
+        if (this[config.endHandlerKey]) {
+          window.removeEventListener("pointerup", this[config.endHandlerKey]);
+          window.removeEventListener("pointercancel", this[config.endHandlerKey]);
         }
       } catch {
         // ignore
       }
-      this._playlistDayListDragMove = null;
-      this._playlistDayListDragEnd = null;
-      this.playlistDayListDragPointerId = null;
-      this.playlistDayListDragStartX = 0;
-      this.playlistDayListDragStartY = 0;
-      this.playlistDayListDragDidMove = false;
+      this[config.moveHandlerKey] = null;
+      this[config.endHandlerKey] = null;
+      this[`${statePrefix}DragPointerId`] = null;
+      this[`${statePrefix}DragStartX`] = 0;
+      this[`${statePrefix}DragStartY`] = 0;
+      this[`${statePrefix}DragDidMove`] = false;
     },
 
-    playlistDayListStartSettle(targetOffset, onDone = null) {
-      const target = Number(targetOffset || 0);
-      this.playlistDayListClearSettleTimer();
-      this.playlistDayListSettling = true;
-      this.playlistDayListDragOffsetX = Number.isFinite(target) ? target : 0;
-      this._playlistDayListSettleTimer = window.setTimeout(() => {
-        this._playlistDayListSettleTimer = null;
+    _playlistSwipeStartSettle(target, targetOffset, onDone = null) {
+      const swipeTarget = String(target || "").trim();
+      const config = this._playlistSwipeTargetConfig(swipeTarget);
+      const statePrefix = config.statePrefix;
+      const resolvedOffset = Number(targetOffset || 0);
+      this._playlistSwipeClearSettleTimer(swipeTarget);
+      this[`${statePrefix}Settling`] = true;
+      this[`${statePrefix}DragOffsetX`] = Number.isFinite(resolvedOffset) ? resolvedOffset : 0;
+      this[config.settleTimerKey] = window.setTimeout(() => {
+        this[config.settleTimerKey] = null;
         if (typeof onDone === "function") {
           onDone();
           return;
         }
-        this.playlistDayListResetSwipeState();
+        this._playlistSwipeResetState(swipeTarget);
       }, 180);
     },
 
-    playlistDayListResetSwipeState() {
-      this.playlistDayListClearSettleTimer();
-      this.playlistDayListReleasePointerTracking();
-      this.playlistDayListSettling = false;
-      this.playlistDayListDragOffsetX = 0;
+    _playlistSwipeResetState(target) {
+      const config = this._playlistSwipeTargetConfig(target);
+      const statePrefix = config.statePrefix;
+      this._playlistSwipeClearSettleTimer(target);
+      this._playlistSwipeReleasePointerTracking(target);
+      this[`${statePrefix}Settling`] = false;
+      this[`${statePrefix}DragOffsetX`] = 0;
     },
 
-    playlistDayListPointerDown(ev) {
-      if (!this.playlistDayListSwipeEnabled()) return;
-      if (this.playlistDayListSettling) return;
-      if (this.playlistDayListDragPointerId !== null) return;
+    _playlistSwipePointerDown(target, ev, onMoveFactory, onEndFactory) {
+      const config = this._playlistSwipeTargetConfig(target);
+      const statePrefix = config.statePrefix;
+      if (!this._playlistSwipeEnabled()) return;
+      if (this[`${statePrefix}Settling`]) return;
+      if (this[`${statePrefix}DragPointerId`] !== null) return;
       if (!ev || (ev.pointerType === "mouse" && ev.button !== 0)) return;
       if (ev && ev.isPrimary === false) return;
 
-      this.playlistDayListResetSwipeState();
-      this.playlistDayListDragPointerId = ev.pointerId;
-      this.playlistDayListDragStartX = Number(ev.clientX || 0);
-      this.playlistDayListDragStartY = Number(ev.clientY || 0);
+      this._playlistSwipeResetState(target);
+      this[`${statePrefix}DragPointerId`] = ev.pointerId;
+      this[`${statePrefix}DragStartX`] = Number(ev.clientX || 0);
+      this[`${statePrefix}DragStartY`] = Number(ev.clientY || 0);
 
-      const onMove = (nextEv) => this.playlistDayListPointerMove(nextEv);
-      const onEnd = (nextEv) => this.playlistDayListPointerEnd(nextEv);
-      this._playlistDayListDragMove = onMove;
-      this._playlistDayListDragEnd = onEnd;
+      const onMove = onMoveFactory();
+      const onEnd = onEndFactory();
+      this[config.moveHandlerKey] = onMove;
+      this[config.endHandlerKey] = onEnd;
 
       try {
         window.addEventListener("pointermove", onMove, { passive: false });
@@ -662,24 +695,26 @@ export function createPlaylistViewMethods() {
       }
     },
 
-    playlistDayListPointerMove(ev) {
-      if (!ev || this.playlistDayListDragPointerId === null || ev.pointerId !== this.playlistDayListDragPointerId) return;
+    _playlistSwipePointerMove(target, ev) {
+      const config = this._playlistSwipeTargetConfig(target);
+      const statePrefix = config.statePrefix;
+      if (!ev || this[`${statePrefix}DragPointerId`] === null || ev.pointerId !== this[`${statePrefix}DragPointerId`]) return;
 
-      const dx = Number(ev.clientX || 0) - Number(this.playlistDayListDragStartX || 0);
-      const dy = Number(ev.clientY || 0) - Number(this.playlistDayListDragStartY || 0);
+      const dx = Number(ev.clientX || 0) - Number(this[`${statePrefix}DragStartX`] || 0);
+      const dy = Number(ev.clientY || 0) - Number(this[`${statePrefix}DragStartY`] || 0);
       const absX = Math.abs(dx);
       const absY = Math.abs(dy);
 
-      if (!this.playlistDayListDragDidMove) {
+      if (!this[`${statePrefix}DragDidMove`]) {
         if (absX < 8 && absY < 8) return;
         if (absY > absX) {
-          this.playlistDayListResetSwipeState();
+          this._playlistSwipeResetState(target);
           return;
         }
-        this.playlistDayListDragDidMove = true;
+        this[`${statePrefix}DragDidMove`] = true;
       }
 
-      this.playlistDayListDragOffsetX = this.playlistDayListResolveDragOffset(dx);
+      this[`${statePrefix}DragOffsetX`] = this._playlistSwipeResolveDragOffset(target, dx);
       try {
         if (ev.cancelable) ev.preventDefault();
       } catch {
@@ -687,15 +722,17 @@ export function createPlaylistViewMethods() {
       }
     },
 
-    playlistDayListPointerEnd(ev) {
-      if (!ev || this.playlistDayListDragPointerId === null || ev.pointerId !== this.playlistDayListDragPointerId) return;
+    _playlistSwipePointerEnd(target, ev, onCommit) {
+      const config = this._playlistSwipeTargetConfig(target);
+      const statePrefix = config.statePrefix;
+      if (!ev || this[`${statePrefix}DragPointerId`] === null || ev.pointerId !== this[`${statePrefix}DragPointerId`]) return;
 
-      const dx = Number(ev.clientX || 0) - Number(this.playlistDayListDragStartX || 0);
-      const didMove = !!this.playlistDayListDragDidMove;
-      const threshold = this.playlistDayListGestureThresholdPx();
+      const dx = Number(ev.clientX || 0) - Number(this[`${statePrefix}DragStartX`] || 0);
+      const didMove = !!this[`${statePrefix}DragDidMove`];
+      const threshold = this._playlistSwipeGestureThresholdPx(target);
 
       if (didMove) {
-        this.playlistDayListDragSuppressClickUntil = Date.now() + 300;
+        this[`${statePrefix}DragSuppressClickUntil`] = Date.now() + 300;
         try {
           if (ev.cancelable) ev.preventDefault();
         } catch {
@@ -703,32 +740,135 @@ export function createPlaylistViewMethods() {
         }
       }
 
-      this.playlistDayListReleasePointerTracking();
+      this._playlistSwipeReleasePointerTracking(target);
 
       if (!didMove) {
-        this.playlistDayListResetSwipeState();
+        this._playlistSwipeResetState(target);
         return;
       }
 
       if (Math.abs(dx) < threshold) {
-        this.playlistDayListStartSettle(0);
+        this._playlistSwipeStartSettle(target, 0);
         return;
       }
 
-      let width = 0;
-      try {
-        width =
-          this.$refs && this.$refs.playlistDayListScroller && this.$refs.playlistDayListScroller.clientWidth
-            ? Number(this.$refs.playlistDayListScroller.clientWidth)
-            : 0;
-      } catch {
-        // ignore
-      }
+      const width = this._playlistSwipeScrollerWidth(target);
       const magnitude = width > 0 ? Math.max(width * 0.82, Math.abs(dx)) : Math.max(Math.abs(dx), 180);
       const targetOffset = dx > 0 ? magnitude : -magnitude;
-      this.playlistDayListStartSettle(targetOffset, () => {
-        this.playlistDayListResetSwipeState();
-        if (dx > 0) this.playlistPrevDay();
+      this._playlistSwipeStartSettle(target, targetOffset, () => {
+        this._playlistSwipeResetState(target);
+        if (typeof onCommit === "function") onCommit(dx > 0 ? -1 : 1);
+      });
+    },
+
+    playlistDayListSwipeEnabled() {
+      return this._playlistSwipeEnabled();
+    },
+
+    playlistDayListGestureThresholdPx() {
+      return this._playlistSwipeGestureThresholdPx("dayList");
+    },
+
+    playlistDayListPanelStyle() {
+      return this._playlistSwipePanelStyle("dayList");
+    },
+
+    playlistDayListCanSwipe(step) {
+      return this._playlistPeriodCanSwipe(step);
+    },
+
+    playlistDayListResolveDragOffset(rawDx) {
+      return this._playlistSwipeResolveDragOffset("dayList", rawDx);
+    },
+
+    playlistDayListClearSettleTimer() {
+      this._playlistSwipeClearSettleTimer("dayList");
+    },
+
+    playlistDayListReleasePointerTracking() {
+      this._playlistSwipeReleasePointerTracking("dayList");
+    },
+
+    playlistDayListStartSettle(targetOffset, onDone = null) {
+      this._playlistSwipeStartSettle("dayList", targetOffset, onDone);
+    },
+
+    playlistDayListResetSwipeState() {
+      this._playlistSwipeResetState("dayList");
+    },
+
+    playlistDayListPointerDown(ev) {
+      this._playlistSwipePointerDown(
+        "dayList",
+        ev,
+        () => (nextEv) => this.playlistDayListPointerMove(nextEv),
+        () => (nextEv) => this.playlistDayListPointerEnd(nextEv)
+      );
+    },
+
+    playlistDayListPointerMove(ev) {
+      this._playlistSwipePointerMove("dayList", ev);
+    },
+
+    playlistDayListPointerEnd(ev) {
+      this._playlistSwipePointerEnd("dayList", ev, (delta) => {
+        if (delta < 0) this.playlistPrevDay();
+        else this.playlistNextDay();
+      });
+    },
+
+    playlistBriefSwipeEnabled() {
+      return this._playlistSwipeEnabled();
+    },
+
+    playlistBriefGestureThresholdPx() {
+      return this._playlistSwipeGestureThresholdPx("brief");
+    },
+
+    playlistBriefPanelStyle() {
+      return this._playlistSwipePanelStyle("brief");
+    },
+
+    playlistBriefCanSwipe(step) {
+      return this._playlistPeriodCanSwipe(step);
+    },
+
+    playlistBriefResolveDragOffset(rawDx) {
+      return this._playlistSwipeResolveDragOffset("brief", rawDx);
+    },
+
+    playlistBriefClearSettleTimer() {
+      this._playlistSwipeClearSettleTimer("brief");
+    },
+
+    playlistBriefReleasePointerTracking() {
+      this._playlistSwipeReleasePointerTracking("brief");
+    },
+
+    playlistBriefStartSettle(targetOffset, onDone = null) {
+      this._playlistSwipeStartSettle("brief", targetOffset, onDone);
+    },
+
+    playlistBriefResetSwipeState() {
+      this._playlistSwipeResetState("brief");
+    },
+
+    playlistBriefPointerDown(ev) {
+      this._playlistSwipePointerDown(
+        "brief",
+        ev,
+        () => (nextEv) => this.playlistBriefPointerMove(nextEv),
+        () => (nextEv) => this.playlistBriefPointerEnd(nextEv)
+      );
+    },
+
+    playlistBriefPointerMove(ev) {
+      this._playlistSwipePointerMove("brief", ev);
+    },
+
+    playlistBriefPointerEnd(ev) {
+      this._playlistSwipePointerEnd("brief", ev, (delta) => {
+        if (delta < 0) this.playlistPrevDay();
         else this.playlistNextDay();
       });
     },
@@ -999,6 +1139,7 @@ export function createPlaylistViewMethods() {
     playlistToggleSubview() {
       if (!this.playlistDetail) return;
       this.playlistCalendarResetDragState();
+      this.playlistBriefResetSwipeState();
       this.playlistStopBriefSpeech({ clearError: true });
       const nextSubview = this.playlistSubview === "settings" ? "main" : "settings";
       if (nextSubview !== "main" && typeof this.playlistMediaPause === "function") {
@@ -1305,6 +1446,7 @@ export function createPlaylistViewMethods() {
         this.playlistCalendarResetDragState();
       }
       if (this.playlistDayListDragPointerId !== null) this.playlistDayListResetSwipeState();
+      if (this.playlistBriefDragPointerId !== null || this.playlistBriefSettling) this.playlistBriefResetSwipeState();
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       if (!pid) return;
       const g = this.playlistGranularity();
@@ -2694,6 +2836,11 @@ export function createPlaylistViewMethods() {
 
     playlistBriefClick(ev) {
       try {
+        if (Date.now() < Number(this.playlistBriefDragSuppressClickUntil || 0)) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
         const btn = ev && ev.target && ev.target.closest ? ev.target.closest("button[data-play-url]") : null;
         if (!btn) return;
         const enc = btn.getAttribute("data-play-url") || "";

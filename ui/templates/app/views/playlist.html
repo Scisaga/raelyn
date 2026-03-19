@@ -672,7 +672,12 @@
                         </div>
                       </div>
 
-                      <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar p-4">
+                      <div
+                        x-ref="playlistBriefScroller"
+                        class="flex-1 min-h-0 overflow-auto raelyn-scrollbar p-4"
+                        :style="playlistBriefPanelStyle() + ';touch-action: pan-y;'"
+                        @pointerdown="playlistBriefPointerDown($event)"
+                      >
                         <div class="text-xs text-slate-400" x-show="playlistBriefLoading" x-text="playlistBriefGeneratingForSelectedDate() ? '生成中…' : '加载中…'"></div>
                         <div class="text-xs text-rose-200" x-show="playlistBriefError" x-text="playlistBriefError"></div>
                         <div class="text-xs text-amber-200" x-show="playlistBriefSpeechError" x-text="playlistBriefSpeechError"></div>
