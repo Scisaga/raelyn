@@ -23,11 +23,82 @@ _JOB_TYPE_RANK = {
 }
 
 
+def _merge_requeue_into_existing_pending_job(
+    session: Session,
+    *,
+    job: Job,
+    scheduled_for,
+    desired_priority: int | None = None,
+    reason: str,
+) -> bool:
+    dedupe_key = str(getattr(job, "dedupe_key", "") or "").strip()
+    if not dedupe_key:
+        return False
+
+    pending = session.execute(
+        select(Job)
+        .where(Job.dedupe_key == dedupe_key, Job.status == "pending", Job.id != job.id)
+        .order_by(Job.created_at.asc(), Job.id.asc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if not pending:
+        return False
+
+    previous_scheduled_for = pending.scheduled_for
+    previous_priority = int(pending.priority or 0)
+    pending.scheduled_for = min(previous_scheduled_for or scheduled_for, scheduled_for)
+    if desired_priority is not None:
+        pending.priority = max(previous_priority, int(desired_priority or 0))
+    pending.error_message = None
+    pending.error_stack = None
+
+    job.status = "failed"
+    job.finished_at = utcnow()
+    job.worker_id = None
+    job.lease_expires_at = None
+    job.progress_current = None
+    job.progress_total = None
+    job.error_message = reason
+
+    session.add(
+        JobEvent(
+            job_id=pending.id,
+            level="warn",
+            message=reason,
+            data={
+                "source_job_id": str(job.id),
+                "scheduled_for": pending.scheduled_for.isoformat() if pending.scheduled_for else None,
+                "previous_scheduled_for": previous_scheduled_for.isoformat() if previous_scheduled_for else None,
+            },
+        )
+    )
+    session.add(
+        JobEvent(
+            job_id=job.id,
+            level="warn",
+            message=reason,
+            data={
+                "pending_job_id": str(pending.id),
+                "scheduled_for": pending.scheduled_for.isoformat() if pending.scheduled_for else None,
+            },
+        )
+    )
+    return True
+
+
 def requeue_expired_running_jobs(session: Session) -> int:
     now = utcnow()
     stmt = select(Job).where(Job.status == "running", Job.lease_expires_at.is_not(None), Job.lease_expires_at < now)
     jobs = session.execute(stmt).scalars().all()
     for job in jobs:
+        if _merge_requeue_into_existing_pending_job(
+            session,
+            job=job,
+            scheduled_for=now,
+            desired_priority=int(job.priority or 0),
+            reason="lease expired; merged into existing pending job",
+        ):
+            continue
         job.status = "pending"
         job.worker_id = None
         job.lease_expires_at = None
@@ -73,13 +144,22 @@ def requeue_orphan_running_jobs(
     base_priority = int((max_pending_priority or 0) + max(1, int(priority_bump or 0)))
 
     for idx, job in enumerate(jobs):
+        desired_priority = max(int(job.priority or 0), base_priority + idx)
+        if _merge_requeue_into_existing_pending_job(
+            session,
+            job=job,
+            scheduled_for=now,
+            desired_priority=desired_priority,
+            reason="worker stale; merged into existing pending job",
+        ):
+            continue
         job.status = "pending"
         job.worker_id = None
         job.lease_expires_at = None
         job.scheduled_for = now
         job.progress_current = None
         job.progress_total = None
-        job.priority = max(int(job.priority or 0), base_priority + idx)
+        job.priority = desired_priority
         session.add(JobEvent(job_id=job.id, level="warn", message="worker stale; requeued (promoted)"))
 
     return len(jobs)

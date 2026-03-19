@@ -404,7 +404,8 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
 
     providerPauseHint(provider) {
       const key = String(provider || "").trim().toLowerCase();
-      if (key === "bilibili" || key === "youtube") return "请更新 Cookie";
+      if (key === "bilibili") return "请更新 YTDLP_COOKIES_BILIBILI";
+      if (key === "youtube") return "请更新 YTDLP_COOKIES_YOUTUBE";
       return "请检查配置";
     },
 

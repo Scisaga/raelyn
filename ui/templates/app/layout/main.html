@@ -52,6 +52,16 @@
 
           <div class="flex items-center gap-2">
             <button
+              class="inline-flex items-center gap-2 rounded-md border border-red-900/60 bg-red-950/20 px-3 py-1.5 text-sm text-red-200 hover:bg-red-900/30"
+              x-show="hasProviderPause('youtube')"
+              x-transition.opacity.duration.150ms
+              :title="providerPause('youtube').message || 'YouTube任务已暂停'"
+              @click="gotoCookiesSettings('youtube')"
+            >
+              <span class="hidden sm:inline" x-text="providerPauseLabel('youtube')"></span>
+              <span class="text-xs truncate max-w-[240px] hidden md:inline" x-text="providerPauseHint('youtube')"></span>
+            </button>
+            <button
               class="inline-flex items-center gap-2 rounded-md border border-sky-900/60 bg-sky-950/20 px-3 py-1.5 text-sm text-sky-200 hover:bg-sky-900/30"
               x-show="hasProviderPause('bilibili')"
               x-transition.opacity.duration.150ms

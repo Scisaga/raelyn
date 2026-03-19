@@ -8,6 +8,8 @@ import traceback
 import uuid
 from datetime import timedelta
 
+from sqlalchemy import select
+
 from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.db import init_db
@@ -17,6 +19,7 @@ import raelyn.jobs.handlers  # noqa: F401  注册 handlers
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
 from raelyn.jobs.reschedule import JobReschedule
+from raelyn.models import Job
 from raelyn.services.job_cancellation import JobCancelRequested, finalize_canceled_job, job_cancel_requested
 from raelyn.services.log_timestamps import install_if_needed
 from raelyn.services.s3 import s3_ensure_bucket
@@ -70,6 +73,69 @@ def _resolve_worker_types() -> list[str] | None:
 
     print(f"[worker] unknown WORKER_ROLE={role!r}; running in all-types mode")
     return None
+
+
+def _merge_retry_into_existing_pending_job(
+    session,
+    *,
+    job: Job,
+    retry_at,
+    attempt: int,
+    backoff_seconds: int,
+) -> bool:
+    dedupe_key = str(getattr(job, "dedupe_key", "") or "").strip()
+    if not dedupe_key:
+        return False
+
+    pending = session.execute(
+        select(Job)
+        .where(Job.dedupe_key == dedupe_key, Job.status == "pending", Job.id != job.id)
+        .order_by(Job.created_at.asc(), Job.id.asc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if not pending:
+        return False
+
+    previous_scheduled_for = pending.scheduled_for
+    previous_priority = int(pending.priority or 0)
+    pending.scheduled_for = min(previous_scheduled_for or retry_at, retry_at)
+    pending.priority = max(previous_priority, int(job.priority or 0))
+    pending.error_message = None
+    pending.error_stack = None
+
+    job.status = "failed"
+    job.finished_at = utcnow()
+    job.lease_expires_at = None
+    job.worker_id = None
+    job.progress_current = None
+    job.progress_total = None
+
+    job_log(
+        session,
+        pending,
+        "retry merged from duplicate running job",
+        level="warn",
+        data={
+            "source_job_id": str(job.id),
+            "attempt": attempt,
+            "scheduled_for": pending.scheduled_for.isoformat() if pending.scheduled_for else None,
+            "previous_scheduled_for": previous_scheduled_for.isoformat() if previous_scheduled_for else None,
+            "backoff_seconds": backoff_seconds,
+        },
+    )
+    job_log(
+        session,
+        job,
+        "failed; retry merged into existing pending job",
+        level="warn",
+        data={
+            "attempt": attempt,
+            "pending_job_id": str(pending.id),
+            "scheduled_for": pending.scheduled_for.isoformat() if pending.scheduled_for else None,
+            "backoff_seconds": backoff_seconds,
+        },
+    )
+    return True
 
 
 class _HeartbeatThread(threading.Thread):
@@ -244,8 +310,17 @@ def run_loop() -> None:
 
                     if job.attempt < job.max_attempts:
                         backoff = min(600, 10 * (2 ** (job.attempt - 1)))
+                        retry_at = utcnow() + timedelta(seconds=backoff)
+                        if _merge_retry_into_existing_pending_job(
+                            session,
+                            job=job,
+                            retry_at=retry_at,
+                            attempt=job.attempt,
+                            backoff_seconds=backoff,
+                        ):
+                            continue
                         job.status = "pending"
-                        job.scheduled_for = utcnow() + timedelta(seconds=backoff)
+                        job.scheduled_for = retry_at
                         job_log(session, job, f"failed; retry in {backoff}s", level="warn", data={"attempt": job.attempt})
                     else:
                         job.status = "failed"
