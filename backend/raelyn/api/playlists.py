@@ -16,15 +16,17 @@ from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.models import Asset, Media, Playlist, PlaylistMedia, Video
 from raelyn.services.brief_schedule import schedule_brief_refresh_for_media_change
-from raelyn.services.periods import day_bounds_utc, local_date, normalize_granularity, period_bounds_utc, period_start
 from raelyn.services.assets import replace_standalone_asset
+from raelyn.services.periods import day_bounds_utc, local_date, normalize_granularity, period_bounds_utc, period_start
+from raelyn.services.video_admission import (
+    ensure_video_published_at_backfilled,
+    playback_admitted_video_expr,
+)
 
 
 router = APIRouter(tags=["playlists"])
 
 _PLAYLIST_IMG_MAX_BYTES = 2 * 1024 * 1024
-
-
 class PlaylistCreate(BaseModel):
     name: str
     description: str | None = None
@@ -82,6 +84,7 @@ def _media_avatar_asset(session, m: Any) -> AssetRef | None:
 
 
 def _playlist_out(session, p: Playlist, *, preview: list[PlaylistMediaOut] | None = None) -> PlaylistOut:
+    _ensure_playlist_published_at_backfilled(session)
     out = PlaylistOut.model_validate(p)
     out.brief_granularity = (getattr(p, "brief_granularity", None) or "day").strip() or "day"
     out.avatar_asset = build_asset_ref(session.get(Asset, getattr(p, "avatar_asset_id", None))) if getattr(p, "avatar_asset_id", None) else None
@@ -117,14 +120,13 @@ def _playlist_out(session, p: Playlist, *, preview: list[PlaylistMediaOut] | Non
             for m in rows
         ]
     if media_ids:
-        out.video_count = int(session.execute(select(func.count()).select_from(Video).where(Video.media_id.in_(list(media_ids)))).scalar_one() or 0)
+        admitted_expr = playback_admitted_video_expr()
+        out.video_count = int(
+            session.execute(select(func.count()).select_from(Video).where(Video.media_id.in_(list(media_ids)), admitted_expr)).scalar_one() or 0
+        )
         min_ts, max_ts = session.execute(
-            select(func.min(Video.published_at), func.max(Video.published_at)).where(Video.media_id.in_(list(media_ids)))
+            select(func.min(Video.published_at), func.max(Video.published_at)).where(Video.media_id.in_(list(media_ids)), admitted_expr)
         ).one()
-        if not min_ts and not max_ts:
-            min_ts, max_ts = session.execute(
-                select(func.min(Video.created_at), func.max(Video.created_at)).where(Video.media_id.in_(list(media_ids)))
-            ).one()
         out.latest_video_at = max_ts
         out.earliest_date = local_date(min_ts)
         out.latest_date = local_date(max_ts)
@@ -165,6 +167,7 @@ def create_playlist(payload: PlaylistCreate) -> PlaylistOut:
 @router.get("/playlists", response_model=list[PlaylistOut])
 def list_playlists(limit: int = 100, offset: int = 0) -> list[PlaylistOut]:
     with session_scope() as session:
+        _ensure_playlist_published_at_backfilled(session)
         stmt = select(Playlist).order_by(Playlist.updated_at.desc()).limit(limit).offset(offset)
         items = session.execute(stmt).scalars().all()
         playlist_ids = [p.id for p in items]
@@ -181,8 +184,9 @@ def list_playlists(limit: int = 100, offset: int = 0) -> list[PlaylistOut]:
             ).all():
                 media_count_map[pid] = int(cnt or 0)
 
-            # video counts + time range (coalesce published_at->created_at)
-            co_ts = func.coalesce(Video.published_at, Video.created_at)
+            admitted_expr = playback_admitted_video_expr()
+            # video counts + time range: playback list only includes published videos with video assets.
+            co_ts = Video.published_at
             for pid, vcnt, min_ts, max_ts in session.execute(
                 select(
                     PlaylistMedia.playlist_id,
@@ -191,7 +195,7 @@ def list_playlists(limit: int = 100, offset: int = 0) -> list[PlaylistOut]:
                     func.max(co_ts),
                 )
                 .join(Video, Video.media_id == PlaylistMedia.media_id)
-                .where(PlaylistMedia.playlist_id.in_(playlist_ids))
+                .where(PlaylistMedia.playlist_id.in_(playlist_ids), admitted_expr)
                 .group_by(PlaylistMedia.playlist_id)
             ).all():
                 video_stat_map[pid] = {"video_count": int(vcnt or 0), "min_ts": min_ts, "max_ts": max_ts}
@@ -519,7 +523,11 @@ class PlaylistPeriodCountOut(BaseModel):
 
 
 def _playlist_video_ts_expr():
-    return func.coalesce(Video.published_at, Video.created_at)
+    return Video.published_at
+
+
+def _ensure_playlist_published_at_backfilled(session) -> None:
+    ensure_video_published_at_backfilled(session)
 
 
 def _playlist_video_description(video: Video) -> str | None:
@@ -545,7 +553,7 @@ def _playlist_video_out(session, video: Video, media: Media, *, timeline_at: Any
         description=_playlist_video_description(video),
         thumbnail_url=video.thumbnail_url,
         published_at=video.published_at,
-        timeline_at=timeline_at or video.published_at or video.created_at,
+        timeline_at=timeline_at or video.published_at,
         duration_sec=video.duration_sec,
         status=video.status,
         error_message=video.error_message,
@@ -573,16 +581,18 @@ def _playlist_period_counts_from_timestamps(
 @router.get("/playlists/{playlist_id}/videos_by_date", response_model=list[PlaylistVideoOut])
 def list_playlist_videos_by_date(playlist_id: uuid.UUID, date: date) -> list[PlaylistVideoOut]:
     with session_scope() as session:
+        _ensure_playlist_published_at_backfilled(session)
         media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == playlist_id)).scalars().all()
         if not media_ids:
             return []
         start, end = day_bounds_utc(date)
         ts_expr = _playlist_video_ts_expr()
+        admitted_expr = playback_admitted_video_expr()
         rows = (
             session.execute(
                 select(Video, Media, ts_expr.label("timeline_at"))
                 .join(Media, Media.id == Video.media_id)
-                .where(Video.media_id.in_(list(media_ids)), ts_expr >= start, ts_expr < end)
+                .where(Video.media_id.in_(list(media_ids)), admitted_expr, ts_expr >= start, ts_expr < end)
                 .order_by(ts_expr.asc(), Video.created_at.asc(), Video.id.asc())
             )
             .all()
@@ -626,7 +636,9 @@ def list_playlist_video_counts_by_period(
     unit = "day" if g == "day" else ("week" if g == "week" else "month")
 
     with session_scope() as session:
+        _ensure_playlist_published_at_backfilled(session)
         ts_expr = _playlist_video_ts_expr()
+        admitted_expr = playback_admitted_video_expr()
         dialect_name = ""
         try:
             dialect_name = str(session.bind.dialect.name or "").strip().lower()
@@ -647,6 +659,7 @@ def list_playlist_video_counts_by_period(
                     .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
                     .where(
                         PlaylistMedia.playlist_id == playlist_id,
+                        admitted_expr,
                         ts_expr >= start_utc,
                         ts_expr < end_utc,
                     )
@@ -671,6 +684,7 @@ def list_playlist_video_counts_by_period(
                 .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
                 .where(
                     PlaylistMedia.playlist_id == playlist_id,
+                    admitted_expr,
                     ts_expr >= start_utc,
                     ts_expr < end_utc,
                 )
@@ -698,16 +712,19 @@ def list_playlist_videos_by_period(
 
     n = max(1, min(int(limit or 200), 500))
     with session_scope() as session:
+        _ensure_playlist_published_at_backfilled(session)
         media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == playlist_id)).scalars().all()
         if not media_ids:
             return []
         ts_expr = _playlist_video_ts_expr()
+        admitted_expr = playback_admitted_video_expr()
         rows = (
             session.execute(
                 select(Video, Media, ts_expr.label("timeline_at"))
                 .join(Media, Media.id == Video.media_id)
                 .where(
                     Video.media_id.in_(list(media_ids)),
+                    admitted_expr,
                     ts_expr >= start,
                     ts_expr < end,
                 )

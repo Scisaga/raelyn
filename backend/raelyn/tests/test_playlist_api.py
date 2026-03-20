@@ -43,7 +43,7 @@ def _fake_session_scope(session):
 
 
 class PlaylistApiTests(unittest.TestCase):
-    def test_list_playlist_video_counts_by_period_uses_timeline_fallback(self) -> None:
+    def test_list_playlist_video_counts_by_period_requires_playback_admission(self) -> None:
         playlist_id = uuid.uuid4()
         session = Mock()
         session.bind = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
@@ -55,13 +55,14 @@ class PlaylistApiTests(unittest.TestCase):
             ]
         )
 
-        with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
-            result = list_playlist_video_counts_by_period(
-                playlist_id=playlist_id,
-                granularity="day",
-                start=date(2026, 3, 14),
-                end=date(2026, 3, 15),
-            )
+        with patch("raelyn.api.playlists.ensure_video_published_at_backfilled"):
+            with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
+                result = list_playlist_video_counts_by_period(
+                    playlist_id=playlist_id,
+                    granularity="day",
+                    start=date(2026, 3, 14),
+                    end=date(2026, 3, 15),
+                )
 
         self.assertEqual(
             [(item.period_start, item.count) for item in result],
@@ -69,48 +70,51 @@ class PlaylistApiTests(unittest.TestCase):
         )
         stmt = session.execute.call_args.args[0]
         compiled = str(stmt.compile(dialect=postgresql.dialect())).lower()
-        self.assertIn("coalesce(video.published_at, video.created_at)", compiled)
+        self.assertIn("video.published_at", compiled)
+        self.assertIn("asset.type =", compiled)
+        self.assertIn("exists (select 1", compiled)
 
-    def test_list_playlist_videos_by_period_returns_timeline_at_for_discovered_video(self) -> None:
+    def test_list_playlist_videos_by_period_requires_playback_admission(self) -> None:
         playlist_id = uuid.uuid4()
         media_id = uuid.uuid4()
-        timeline_at = datetime(2026, 3, 15, 12, 16, 47, tzinfo=timezone.utc)
-        video = SimpleNamespace(
-            id=uuid.uuid4(),
-            media_id=media_id,
-            url="https://example.com/watch?v=demo",
-            title="demo",
-            description=None,
-            thumbnail_url=None,
-            published_at=None,
-            created_at=timeline_at,
-            duration_sec=123,
-            status="discovered",
-            error_message=None,
-            raw_info=None,
-        )
-        media = SimpleNamespace(id=media_id, name="雷倩", avatar_asset_id=None)
 
         session = Mock()
         session.execute.side_effect = [
             _ScalarResult([media_id]),
-            _RowsResult([(video, media, timeline_at)]),
+            _RowsResult([]),
         ]
 
-        with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
-            result = list_playlist_videos_by_period(
-                playlist_id=playlist_id,
-                granularity="day",
-                date=date(2026, 3, 15),
-            )
+        with patch("raelyn.api.playlists.ensure_video_published_at_backfilled"):
+            with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
+                result = list_playlist_videos_by_period(
+                    playlist_id=playlist_id,
+                    granularity="day",
+                    date=date(2026, 3, 15),
+                )
 
-        self.assertEqual(len(result), 1)
-        self.assertIsNone(result[0].published_at)
-        self.assertEqual(result[0].timeline_at, timeline_at)
+        self.assertEqual(result, [])
         stmt = session.execute.call_args_list[1].args[0]
         compiled = str(stmt.compile(dialect=postgresql.dialect())).lower()
-        self.assertIn("coalesce(video.published_at, video.created_at)", compiled)
-        self.assertNotIn("video.published_at is not null", compiled)
+        self.assertIn("video.published_at is not null", compiled)
+        self.assertIn("asset.type =", compiled)
+        self.assertIn("exists (select 1", compiled)
+
+    def test_playlist_period_api_backfills_published_at_before_grouping(self) -> None:
+        playlist_id = uuid.uuid4()
+        session = Mock()
+        session.bind = SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+        session.execute.return_value = _RowsResult([])
+
+        with patch("raelyn.api.playlists.ensure_video_published_at_backfilled") as ensure_backfilled:
+            with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
+                list_playlist_video_counts_by_period(
+                    playlist_id=playlist_id,
+                    granularity="week",
+                    start=date(2026, 3, 9),
+                    end=date(2026, 3, 15),
+                )
+
+        ensure_backfilled.assert_called_once_with(session)
 
 
 if __name__ == "__main__":

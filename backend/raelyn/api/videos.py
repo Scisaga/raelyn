@@ -7,7 +7,6 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy import or_
 
 from raelyn.api.asset_refs import AssetRef, build_asset_ref
 from raelyn.api.orm import OrmModel
@@ -20,7 +19,7 @@ from raelyn.services.media_deletion import ensure_media_not_deleting
 from raelyn.services.s3 import s3_get_bytes
 from raelyn.services.transcripts import TRANSCRIPT_VARIANT_SET, build_transcript_payload
 from raelyn.services.video_actions import schedule_video_download, schedule_video_retranscribe
-from raelyn.services.video_meta import parse_published_at
+from raelyn.services.video_meta import backfill_video_published_at, parse_published_at
 
 
 router = APIRouter(tags=["videos"])
@@ -59,37 +58,6 @@ class VideoListOut(BaseModel):
     duration_sec: int | None = None
     status: str
     error_message: str | None = None
-
-
-def _backfill_published_at(session, *, limit: int = 5000) -> int:
-    stmt = (
-        select(Video)
-        .where(
-            Video.published_at.is_(None),
-            Video.raw_info.is_not(None),
-            or_(
-                Video.raw_info["timestamp"].astext.is_not(None),
-                Video.raw_info["release_timestamp"].astext.is_not(None),
-                Video.raw_info["upload_date"].astext.is_not(None),
-                Video.raw_info["release_date"].astext.is_not(None),
-            ),
-        )
-        .order_by(Video.created_at.desc())
-        .limit(limit)
-    )
-    videos = session.execute(stmt).scalars().all()
-    updated = 0
-    for v in videos:
-        dt = parse_published_at(v.raw_info)
-        if not dt:
-            continue
-        v.published_at = dt
-        updated += 1
-    if updated:
-        session.flush()
-    return updated
-
-
 @router.get("/videos", response_model=list[VideoListOut])
 def list_videos(
     provider: str | None = None,
@@ -107,7 +75,7 @@ def list_videos(
         if (published_since or published_until) and not _PUBLISHED_AT_BACKFILLED:
             # Older rows may have `raw_info.timestamp/upload_date` but `published_at` was never populated,
             # which would cause time filters to return an empty list. Backfill once per api process.
-            _backfill_published_at(session)
+            backfill_video_published_at(session)
             _PUBLISHED_AT_BACKFILLED = True
 
         stmt = select(Video, Media).join(Media, Media.id == Video.media_id)

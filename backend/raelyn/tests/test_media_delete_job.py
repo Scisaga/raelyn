@@ -156,17 +156,19 @@ class MediaDeleteJobTests(unittest.TestCase):
         session.execute.side_effect = [
             _scalars_all([uuid.uuid4()]),
             _scalars_all([]),
+            _scalar_one_or_none(None),
         ]
 
-        with patch("raelyn.jobs.handlers.briefs.mark_brief_empty") as mark_empty:
-            with patch("raelyn.jobs.handlers.briefs.job_log") as job_log:
-                result = _brief_generate_period_impl(
-                    session,
-                    job,
-                    playlist_id=playlist_id,
-                    granularity="day",
-                    period_start=date(2026, 3, 19),
-                )
+        with patch("raelyn.jobs.handlers.briefs.ensure_video_published_at_backfilled"):
+            with patch("raelyn.jobs.handlers.briefs.mark_brief_empty") as mark_empty:
+                with patch("raelyn.jobs.handlers.briefs.job_log") as job_log:
+                    result = _brief_generate_period_impl(
+                        session,
+                        job,
+                        playlist_id=playlist_id,
+                        granularity="day",
+                        period_start=date(2026, 3, 19),
+                    )
 
         self.assertEqual(result, {"empty": True, "reason": "no videos"})
         mark_empty.assert_called_once_with(
@@ -176,6 +178,42 @@ class MediaDeleteJobTests(unittest.TestCase):
             period_start=date(2026, 3, 19),
         )
         job_log.assert_called_once()
+
+    def test_brief_generate_period_fails_when_period_has_playback_but_no_transcript(self) -> None:
+        playlist_id = uuid.uuid4()
+        job = Job(
+            id=uuid.uuid4(),
+            type="brief.generate_period",
+            status="running",
+            priority=5,
+            params={"playlist_id": str(playlist_id), "granularity": "day", "period_start": "2026-03-19"},
+        )
+        playlist = Playlist(id=playlist_id, name="示例列表", brief_granularity="day")
+        session = Mock()
+        session.get.return_value = playlist
+        session.execute.side_effect = [
+            _scalars_all([uuid.uuid4()]),
+            _scalars_all([]),
+            _scalar_one_or_none(uuid.uuid4()),
+            _scalar_one_or_none(None),
+        ]
+
+        with patch("raelyn.jobs.handlers.briefs.ensure_video_published_at_backfilled"):
+            result = _brief_generate_period_impl(
+                session,
+                job,
+                playlist_id=playlist_id,
+                granularity="day",
+                period_start=date(2026, 3, 19),
+            )
+
+        self.assertEqual(result, {"failed": True, "reason": "no transcript"})
+        added_brief = session.add.call_args.args[0]
+        self.assertEqual(added_brief.playlist_id, playlist_id)
+        self.assertEqual(added_brief.status, "failed")
+        self.assertEqual(added_brief.error_message, "本周期无可用文本（字幕/文字稿缺失）")
+        self.assertEqual(added_brief.markdown_asset_id, None)
+        session.flush.assert_called_once()
 
 
 if __name__ == "__main__":

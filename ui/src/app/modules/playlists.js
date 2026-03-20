@@ -47,6 +47,8 @@ export function createPlaylistsModule() {
     playlistBriefSpeakingKey: "",
     playlistBriefLoading: false,
     playlistBriefError: "",
+    playlistBriefSourceState: "",
+    playlistBriefSourceMessage: "",
     playlistBriefGeneratingKey: "",
     playlistBriefAutoRequests: new Set(),
     playlistBriefAutoPoll: new Map(),

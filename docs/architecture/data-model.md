@@ -31,9 +31,14 @@
 
 关键字段：
 
-- `published_at`：视频发布时间，缺失时 UI / playlist 时间线会回退到 `created_at`。
+- `published_at`：视频发布时间；只负责时间归属，不代表视频产物或文本已就绪。
 - `status`：当前下载 / 处理状态，例如 `discovered`、`members_only` 等。
 - `raw_info`：保留 provider 返回的原始元数据。
+
+播放列表 / 简报准入口径：
+
+- 播放列表时间轴：`published_at` 非空，且存在 `asset(type=video)`。
+- 简报周期聚合：`published_at` 非空，且存在可用于 transcript 读取的文本资产。
 
 约束：
 

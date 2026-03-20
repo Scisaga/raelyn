@@ -304,17 +304,17 @@
 ### `GET /api/playlists/{playlist_id}/videos_by_date`
 
 - query：`date=YYYY-MM-DD`
-- 返回指定本地日期的视频列表。
+- 返回指定本地日期的可播放视频列表；仅包含已发布时间且已落视频资产的视频。
 
 ### `GET /api/playlists/{playlist_id}/video_counts_by_period`
 
 - query：`granularity`、`start`、`end`
-- 返回周期计数，用于日 / 周 / 月时间轴。
+- 返回可播放视频的周期计数，用于日 / 周 / 月时间轴。
 
 ### `GET /api/playlists/{playlist_id}/videos_by_period`
 
 - query：`granularity`、`date`、`limit`
-- 返回某个周期内的视频列表。
+- 返回某个周期内的可播放视频列表；仅包含已发布时间且已落视频资产的视频。
 
 ### `POST /api/briefs/generate`
 

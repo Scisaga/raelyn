@@ -51,6 +51,8 @@ export function createPlaylistViewMethods() {
         this.playlistBriefHtml = "";
         this.playlistBriefMarkdown = "";
         this.playlistBriefSpeechText = "";
+        this.playlistBriefSourceState = "";
+        this.playlistBriefSourceMessage = "";
         this._abortCtrl("_playlistCountsAbortCtrl");
         this.playlistPeriodCounts = new Map();
         this.playlistPeriodCountsKey = "";
@@ -75,6 +77,8 @@ export function createPlaylistViewMethods() {
         this._syncUrl({ push: false });
         this.playlistDayVideosError = "";
         this.playlistBriefError = "";
+        this.playlistBriefSourceState = "";
+        this.playlistBriefSourceMessage = "";
         this.playlistPlayerNeedsDownload = false;
 
         const detail = await this.api(`/playlists/${encodeURIComponent(pid)}/detail`);
@@ -974,6 +978,53 @@ export function createPlaylistViewMethods() {
       } catch {
         // ignore
       }
+    },
+
+    _playlistSetBriefSourceState(state = "", message = "") {
+      this.playlistBriefSourceState = String(state || "").trim();
+      this.playlistBriefSourceMessage = String(message || "").trim();
+    },
+
+    _playlistBriefErrorDetailMessage(error) {
+      const msg = error && error.message ? String(error.message) : String(error || "");
+      const idx = msg.indexOf(": ");
+      return idx >= 0 ? msg.slice(idx + 2).trim() : msg.trim();
+    },
+
+    playlistBriefCanCopyPrompt() {
+      if (this.playlistBriefPromptCopying) return false;
+      if (!this.playlistDetail || !this.playlistSelectedDate) return false;
+      return String(this.playlistBriefSourceState || "") === "ready";
+    },
+
+    playlistBriefPromptButtonTitle() {
+      if (this.playlistBriefPromptCopying) return "提示词复制中…";
+      if (!this.playlistDetail || !this.playlistSelectedDate) return "缺少播放列表或日期";
+      const state = String(this.playlistBriefSourceState || "");
+      if (state === "ready") return "复制简报生成提示词（合并内容）";
+      if (state === "no_videos" || state === "no_transcript") {
+        return String(this.playlistBriefSourceMessage || "").trim() || "当前周期暂无可复制的提示词";
+      }
+      if (this.playlistBriefLoading) return "正在检查简报文本";
+      return "当前周期暂无可复制的提示词";
+    },
+
+    playlistBriefCanGenerate() {
+      if (!this.playlistDetail || !this.playlistSelectedDate) return false;
+      if (this.playlistBriefGeneratingForSelectedDate()) return false;
+      const state = String(this.playlistBriefSourceState || "");
+      return state !== "no_videos" && state !== "no_transcript";
+    },
+
+    playlistBriefGenerateButtonTitle() {
+      const base = `生成${this.playlistBriefTitle()}`;
+      if (!this.playlistDetail || !this.playlistSelectedDate) return "缺少播放列表或日期";
+      if (this.playlistBriefGeneratingForSelectedDate()) return `${base}中…`;
+      const state = String(this.playlistBriefSourceState || "");
+      if (state === "no_videos" || state === "no_transcript") {
+        return String(this.playlistBriefSourceMessage || "").trim() || base;
+      }
+      return base;
     },
 
     _playlistBriefResolveVoice(voices = null) {
@@ -2685,7 +2736,7 @@ export function createPlaylistViewMethods() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       const g = this.playlistGranularity();
       const day = String(this.playlistSelectedDate || "").trim();
-      if (!pid || !day) return;
+      if (!pid || !day || !this.playlistBriefCanGenerate()) return;
       const k = this._playlistBriefKey(pid, g, day);
       if (k) this.playlistBriefGeneratingKey = k;
       this.playlistStopBriefSpeech({ clearError: true });
@@ -3025,7 +3076,7 @@ export function createPlaylistViewMethods() {
 	    },
 
 	    async playlistCopyBriefPrompt() {
-	      if (this.playlistBriefPromptCopying) return;
+	      if (this.playlistBriefPromptCopying || !this.playlistBriefCanCopyPrompt()) return;
 	      this.playlistBriefPromptCopying = true;
 	      try {
 	        const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
@@ -3037,15 +3088,36 @@ export function createPlaylistViewMethods() {
 	        );
 	        const prompt = data && data.prompt ? String(data.prompt) : "";
 	        if (!prompt.trim()) throw new Error("提示词为空");
+          this._playlistSetBriefSourceState("ready", "");
 	        await this._copyToClipboard(prompt);
 	        this.toastSuccess("已复制简报提示词");
 	      } catch (e) {
 	        const msg = e && e.message ? e.message : String(e);
+          const detail = this._playlistBriefErrorDetailMessage(e);
+          if (detail.includes("暂无视频")) this._playlistSetBriefSourceState("no_videos", detail);
+          else if (detail.includes("无可用文本")) this._playlistSetBriefSourceState("no_transcript", detail);
 	        this.toastError(`复制失败：${msg}`);
 	      } finally {
 	        this.playlistBriefPromptCopying = false;
 	      }
 	    },
+
+    async _playlistDetectBriefSource(pid, granularity, day) {
+      try {
+        const data = await this.api(
+          `/briefs/prompt_by_period?playlist_id=${encodeURIComponent(pid)}&granularity=${encodeURIComponent(granularity)}&date=${encodeURIComponent(day)}`
+        );
+        const prompt = data && data.prompt ? String(data.prompt) : "";
+        if (!prompt.trim()) return { state: "unknown", message: "" };
+        return { state: "ready", message: "" };
+      } catch (e) {
+        if (this._isAbortError(e)) throw e;
+        const detail = this._playlistBriefErrorDetailMessage(e);
+        if (detail.includes("暂无视频")) return { state: "no_videos", message: detail };
+        if (detail.includes("无可用文本")) return { state: "no_transcript", message: detail };
+        return { state: "unknown", message: detail };
+      }
+    },
 
 	    playlistSelectVideoByUrl(url) {
 	      const u = String(url || "").trim();
@@ -3073,6 +3145,7 @@ export function createPlaylistViewMethods() {
         if (cached && Number(this.playlistLoadToken || 0) === token) {
           this.playlistBriefLoading = false;
           this.playlistBriefError = "";
+          this._playlistSetBriefSourceState("ready", "");
           this.playlistBriefHtml = cached;
           const cachedMd = this._cacheGet(this.playlistBriefMarkdownCache, k);
           this.playlistBriefMarkdown = cachedMd ? String(cachedMd) : "";
@@ -3085,7 +3158,7 @@ export function createPlaylistViewMethods() {
       this.playlistBriefHtml = "";
       this.playlistBriefMarkdown = "";
       this.playlistBriefSpeechText = "";
-      const hasVideos = Array.isArray(this.playlistDayVideos) && this.playlistDayVideos.length > 0;
+      this._playlistSetBriefSourceState("", "");
       try {
         this._abortCtrl("_playlistBriefAbortCtrl");
         this._abortCtrl("_playlistBriefMdAbortCtrl");
@@ -3099,6 +3172,7 @@ export function createPlaylistViewMethods() {
         if (!brief || brief.status !== "ready" || !brief.markdown_asset) {
           const s = brief && brief.status ? String(brief.status) : "pending";
           if (s === "empty") {
+            this._playlistSetBriefSourceState("no_videos", "本周期暂无视频");
             this.playlistBriefHtml = `<div class="text-slate-400 text-sm">本周期暂无视频，不生成简报</div>`;
             this.playlistBriefMarkdown = "";
             this.playlistBriefSpeechText = "";
@@ -3107,7 +3181,24 @@ export function createPlaylistViewMethods() {
           }
           if (s === "failed") {
             const em = brief && brief.error_message ? String(brief.error_message) : "";
+            if (em.includes("无可用文本")) this._playlistSetBriefSourceState("no_transcript", em);
+            else this._playlistSetBriefSourceState("unknown", em);
             this.playlistBriefHtml = `<div class="text-rose-200 text-sm">生成失败${em ? `：${this._escapeHtml(em)}` : ""}</div>`;
+            this.playlistBriefSpeechText = "";
+            if (manualGenerating) this.playlistBriefGeneratingKey = "";
+            return;
+          }
+          const source = await this._playlistDetectBriefSource(pid, g, d);
+          if (Number(this.playlistLoadToken || 0) !== token) return;
+          this._playlistSetBriefSourceState(source.state, source.message);
+          if (source.state === "no_videos") {
+            this.playlistBriefHtml = `<div class="text-slate-400 text-sm">本周期暂无视频，不生成简报</div>`;
+            this.playlistBriefSpeechText = "";
+            if (manualGenerating) this.playlistBriefGeneratingKey = "";
+            return;
+          }
+          if (source.state === "no_transcript") {
+            this.playlistBriefHtml = `<div class="text-slate-400 text-sm">本周期暂无可用文本（字幕/文字稿缺失）</div>`;
             this.playlistBriefSpeechText = "";
             if (manualGenerating) this.playlistBriefGeneratingKey = "";
             return;
@@ -3117,7 +3208,7 @@ export function createPlaylistViewMethods() {
           } else {
             this.playlistBriefHtml = `<div class="text-slate-400 text-sm">简报状态：${this._escapeHtml(s)}</div>`;
           }
-          if (hasVideos) {
+          if (source.state === "ready") {
             this._playlistEnsureBriefEnqueued(pid, g, d);
             this._playlistPollBrief(pid, g, d);
           }
@@ -3131,6 +3222,7 @@ export function createPlaylistViewMethods() {
         if (!resp.ok) throw new Error(`${resp.status}: brief markdown fetch failed`);
         const md = await resp.text();
         if (Number(this.playlistLoadToken || 0) !== token) return;
+        this._playlistSetBriefSourceState("ready", "");
         this.playlistBriefMarkdown = md;
         this.playlistBriefSpeechText = this._briefToSpeechText(md);
         this.playlistBriefHtml = this._briefToHtml(md);
@@ -3146,8 +3238,17 @@ export function createPlaylistViewMethods() {
         if (this._isAbortError(e)) return;
         const msg = e && e.message ? e.message : String(e);
         if (String(msg).startsWith("404:") || String(msg).includes(" 404")) {
-          if (!hasVideos) {
+          const source = await this._playlistDetectBriefSource(pid, g, d);
+          if (Number(this.playlistLoadToken || 0) !== token) return;
+          this._playlistSetBriefSourceState(source.state, source.message);
+          if (source.state === "no_videos") {
             this.playlistBriefHtml = `<div class="text-slate-400 text-sm">本周期暂无视频，不生成简报</div>`;
+            this.playlistBriefSpeechText = "";
+            if (manualGenerating) this.playlistBriefGeneratingKey = "";
+            return;
+          }
+          if (source.state === "no_transcript") {
+            this.playlistBriefHtml = `<div class="text-slate-400 text-sm">本周期暂无可用文本（字幕/文字稿缺失）</div>`;
             this.playlistBriefSpeechText = "";
             if (manualGenerating) this.playlistBriefGeneratingKey = "";
             return;
@@ -3155,9 +3256,12 @@ export function createPlaylistViewMethods() {
           this.playlistBriefHtml = manualGenerating
             ? `<div class="text-slate-400 text-sm">生成中…</div>`
             : `<div class="text-slate-400 text-sm">暂无简报，已自动触发生成…</div>`;
-          this._playlistEnsureBriefEnqueued(pid, g, d);
-          this._playlistPollBrief(pid, g, d);
+          if (source.state === "ready") {
+            this._playlistEnsureBriefEnqueued(pid, g, d);
+            this._playlistPollBrief(pid, g, d);
+          }
         } else {
+          this._playlistSetBriefSourceState("unknown", msg);
           this.playlistBriefError = msg;
         }
       } finally {

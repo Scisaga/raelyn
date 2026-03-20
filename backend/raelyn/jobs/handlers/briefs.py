@@ -22,6 +22,11 @@ from raelyn.services.brief_prompt import (
     compose_brief_prompt,
 )
 from raelyn.services.llm import llm_enabled, llm_generate
+from raelyn.services.video_admission import (
+    brief_admitted_video_expr,
+    ensure_video_published_at_backfilled,
+    playback_admitted_video_expr,
+)
 from raelyn.services.workdir import job_workdir
 
 
@@ -48,32 +53,56 @@ def _brief_generate_period_impl(
         job_log(session, job, f"brief failed: playlist not found {playlist_id}", level="warn")
         return {"failed": True, "reason": "playlist not found"}
 
+    ensure_video_published_at_backfilled(session)
     start_utc, end_utc = brief_period_bounds_utc(period_start, value)
     media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == playlist_id)).scalars().all()
     if not media_ids:
         mark_brief_empty(session, playlist_id=playlist_id, granularity=value, period_start=period_start)
         return {"empty": True, "reason": "empty playlist"}
 
-    co_ts = func.coalesce(Video.published_at, Video.created_at)
+    co_ts = Video.published_at
+    brief_admitted = brief_admitted_video_expr()
     videos = (
         session.execute(
             select(Video)
-            .where(Video.media_id.in_(list(media_ids)), co_ts >= start_utc, co_ts < end_utc)
+            .where(Video.media_id.in_(list(media_ids)), brief_admitted, co_ts >= start_utc, co_ts < end_utc)
             .order_by(co_ts.asc().nullslast())
         )
         .scalars()
         .all()
     )
     if not videos:
-        mark_brief_empty(session, playlist_id=playlist_id, granularity=value, period_start=period_start)
-        job_log(
-            session,
-            job,
-            f"brief empty: no videos in period {value} {period_start.isoformat()}",
-            level="info",
-            data={"granularity": value, "period_start": period_start.isoformat()},
+        has_playback_videos = (
+            session.execute(
+                select(Video.id)
+                .where(Video.media_id.in_(list(media_ids)), playback_admitted_video_expr(), co_ts >= start_utc, co_ts < end_utc)
+                .limit(1)
+            ).scalar_one_or_none()
+            is not None
         )
-        return {"empty": True, "reason": "no videos"}
+        if not has_playback_videos:
+            mark_brief_empty(session, playlist_id=playlist_id, granularity=value, period_start=period_start)
+            job_log(
+                session,
+                job,
+                f"brief empty: no videos in period {value} {period_start.isoformat()}",
+                level="info",
+                data={"granularity": value, "period_start": period_start.isoformat()},
+            )
+            return {"empty": True, "reason": "no videos"}
+
+        brief = session.execute(
+            select(Brief).where(Brief.playlist_id == playlist_id, Brief.granularity == value, Brief.period_start == period_start)
+        ).scalar_one_or_none()
+        if not brief:
+            brief = Brief(playlist_id=playlist_id, granularity=value, period_start=period_start, status="failed")
+            session.add(brief)
+            session.flush()
+        else:
+            brief.status = "failed"
+        brief.error_message = "本周期无可用文本（字幕/文字稿缺失）"
+        brief.markdown_asset_id = None
+        return {"failed": True, "reason": "no transcript"}
 
     brief = session.execute(
         select(Brief).where(Brief.playlist_id == playlist_id, Brief.granularity == value, Brief.period_start == period_start)

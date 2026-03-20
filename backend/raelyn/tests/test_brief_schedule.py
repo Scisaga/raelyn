@@ -8,6 +8,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from sqlalchemy.dialects import postgresql
+
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
@@ -170,16 +172,23 @@ class BriefScheduleTests(unittest.TestCase):
             return uuid.uuid4()
 
         with patch("raelyn.services.brief_schedule.llm_enabled", return_value=True):
-            with patch("raelyn.services.brief_schedule.schedule_brief_refresh", side_effect=_record_schedule):
-                count = brief_schedule.schedule_brief_refresh_for_media_change(
-                    session,
-                    playlist_id=playlist_id,
-                    changed_media_ids=[media_a, media_b],
-                    change_type="media_replaced",
-                )
+            with patch("raelyn.services.brief_schedule.ensure_video_published_at_backfilled") as ensure_backfilled:
+                with patch("raelyn.services.brief_schedule.schedule_brief_refresh", side_effect=_record_schedule):
+                    count = brief_schedule.schedule_brief_refresh_for_media_change(
+                        session,
+                        playlist_id=playlist_id,
+                        changed_media_ids=[media_a, media_b],
+                        change_type="media_replaced",
+                    )
 
         self.assertEqual(count, 2)
         self.assertEqual(scheduled_periods, [date(2026, 3, 2), date(2026, 3, 9)])
+        ensure_backfilled.assert_called_once_with(session)
+        stmt = session.execute.call_args.args[0]
+        compiled = str(stmt.compile(dialect=postgresql.dialect())).lower()
+        self.assertIn("asset.type =", compiled)
+        self.assertIn("asset.format =", compiled)
+        self.assertIn("exists (select 1", compiled)
 
 
 if __name__ == "__main__":

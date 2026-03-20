@@ -15,6 +15,10 @@ from raelyn.jobs.enqueue import _brief_normalize_date_and_params
 from raelyn.models import AppConfig, Brief, Job, JobEvent, Playlist, PlaylistMedia, Video
 from raelyn.services.brief_prompt import brief_period_start
 from raelyn.services.llm import llm_enabled
+from raelyn.services.video_admission import (
+    brief_admitted_video_expr,
+    ensure_video_published_at_backfilled,
+)
 from raelyn.timeutil import utcnow
 
 DEFAULT_BRIEF_GENERATION_POLICY = {
@@ -319,9 +323,13 @@ def schedule_brief_refresh_for_video(session: Session, *, video: Video, reason: 
     if not llm_enabled():
         return 0
 
-    ts = video.published_at or video.created_at
+    ensure_video_published_at_backfilled(session)
+    ts = video.published_at
     day = _local_date(ts)
     if not day:
+        return 0
+    admitted = session.execute(select(Video.id).where(Video.id == video.id, brief_admitted_video_expr()).limit(1)).scalar_one_or_none()
+    if not admitted:
         return 0
 
     playlist_ids = (
@@ -376,8 +384,11 @@ def schedule_brief_refresh_for_media_change(
     if not media_ids:
         return 0
 
-    co_ts = func.coalesce(Video.published_at, Video.created_at)
-    timestamps = session.execute(select(co_ts).where(Video.media_id.in_(list(media_ids)))).scalars().all()
+    ensure_video_published_at_backfilled(session)
+    co_ts = Video.published_at
+    timestamps = session.execute(
+        select(co_ts).where(Video.media_id.in_(list(media_ids)), brief_admitted_video_expr())
+    ).scalars().all()
     period_starts = _period_starts_for_timestamps(
         timestamps=list(timestamps),
         granularity=getattr(playlist, "brief_granularity", None),

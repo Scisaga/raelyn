@@ -14,6 +14,7 @@ from raelyn.services.pg_lock import advisory_lock_any
 from raelyn.services.provider_pause import ProviderPauseRequestError
 from raelyn.services.profile_fetch import fetch_media_profile
 from raelyn.services.provider import build_media_videos_url
+from raelyn.services.transcripts import TRANSCRIPT_VARIANTS
 from raelyn.services.video_meta import parse_published_at
 from raelyn.services.ytdlp import YtdlpCookiesInvalidError, ytdlp_extract_info
 from raelyn.timeutil import utcnow
@@ -242,7 +243,14 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
             session.flush()
 
             has_transcript = (
-                session.execute(select(Asset.id).where(Asset.video_id == video.id, Asset.type == "transcript").limit(1))
+                session.execute(
+                    select(Asset.id).where(
+                        Asset.video_id == video.id,
+                        Asset.type == "transcript",
+                        Asset.format == "txt",
+                        Asset.variant.in_(list(TRANSCRIPT_VARIANTS)),
+                    ).limit(1)
+                )
                 .scalar_one_or_none()
                 is not None
             )

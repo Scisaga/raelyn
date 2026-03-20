@@ -11,6 +11,11 @@ from raelyn.models import Playlist, PlaylistMedia, Video
 from raelyn.services.periods import month_add_one, period_bounds_utc, period_end_inclusive, period_start
 from raelyn.services.s3 import s3_get_bytes
 from raelyn.services.transcripts import pick_transcript_asset
+from raelyn.services.video_admission import (
+    brief_admitted_video_expr,
+    ensure_video_published_at_backfilled,
+    playback_admitted_video_expr,
+)
 
 
 DEFAULT_BRIEF_PROMPT_TEMPLATE = "\n".join(
@@ -184,6 +189,7 @@ def build_brief_prompt_for_period(
     if not playlist:
         raise LookupError("playlist not found")
 
+    ensure_video_published_at_backfilled(session)
     media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == playlist_id)).scalars().all()
     if not media_ids:
         raise LookupError("empty playlist")
@@ -191,14 +197,27 @@ def build_brief_prompt_for_period(
     videos = (
         session.execute(
             select(Video)
-            .where(Video.media_id.in_(list(media_ids)), Video.published_at >= start_utc, Video.published_at < end_utc)
+            .where(Video.media_id.in_(list(media_ids)), brief_admitted_video_expr(), Video.published_at >= start_utc, Video.published_at < end_utc)
             .order_by(Video.published_at.asc().nullslast())
         )
         .scalars()
         .all()
     )
     if not videos:
-        raise LookupError("no videos")
+        has_playback_videos = (
+            session.execute(
+                select(Video.id)
+                .where(
+                    Video.media_id.in_(list(media_ids)),
+                    playback_admitted_video_expr(),
+                    Video.published_at >= start_utc,
+                    Video.published_at < end_utc,
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            is not None
+        )
+        raise LookupError("no transcript" if has_playback_videos else "no videos")
 
     blocks, video_urls = build_brief_blocks(session, videos)
     if not blocks:
