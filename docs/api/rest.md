@@ -98,11 +98,15 @@
 
 - query：`scope=recent|all`
 - 只对已启用监控的媒体批量投递同步任务。
+- `scope=recent`：同步近期视频；新发现视频会按配置自动投递下载。
+- `scope=all`：全量发现历史视频，并给库里已发现但尚未下载成功的历史视频补投下载。
 
 ### `POST /api/media/{media_id}/sync`
 
 - query：`scope=recent|all`
 - 投递单个媒体的资料同步和视频同步任务。
+- `scope=recent`：只处理近期窗口。
+- `scope=all`：除了全量发现历史视频，还会补投该媒体下仍处于待下载状态的历史视频。
 - 若媒体正在删除中，返回 `409`。
 
 ### `GET /api/cleanup/stale-videos`

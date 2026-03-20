@@ -33,6 +33,9 @@ def schedule_media_sync(session: Session, media_id: uuid.UUID, *, scope: str = "
     video_job_params: dict[str, Any] = {"media_id": str(media.id), "force": True, "max_entries": max_entries}
     if scope_key == "recent":
         video_job_params["download_priority"] = _RECENT_SYNC_DOWNLOAD_PRIORITY
+    else:
+        # 全量历史同步除了发现新视频，还要给库里已发现但尚未下载的历史视频补投下载。
+        video_job_params["enqueue_existing_downloads"] = True
     profile_job_id = enqueue_job(session, type_="media.sync_profile", params={"media_id": str(media.id)}, priority=10)
     videos_job_id = enqueue_job(
         session,
@@ -62,6 +65,8 @@ def schedule_all_media_sync(session: Session, *, scope: str = "recent") -> dict[
         video_job_params: dict[str, Any] = {"media_id": str(media_id), "force": True, "max_entries": max_entries}
         if scope_key == "recent":
             video_job_params["download_priority"] = _RECENT_SYNC_DOWNLOAD_PRIORITY
+        else:
+            video_job_params["enqueue_existing_downloads"] = True
         enqueue_job(session, type_="media.sync_profile", params={"media_id": str(media_id)}, priority=10)
         enqueue_job(
             session,

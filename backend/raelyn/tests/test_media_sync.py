@@ -7,6 +7,8 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from sqlalchemy.dialects import postgresql
+
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
@@ -121,6 +123,45 @@ class MediaSyncVideoOrderingTests(unittest.TestCase):
 
         self.assertEqual(result, {"created": 2})
         self.assertEqual([call.kwargs["priority"] for call in enqueue_job.call_args_list], [8, 8])
+
+    def test_media_sync_all_enqueues_existing_discovered_downloads(self) -> None:
+        media = Media(
+            id=uuid.uuid4(),
+            provider="bilibili",
+            provider_media_id="channel-3",
+            url="https://space.bilibili.com/123/videos",
+            monitor_enabled=True,
+        )
+        job = Job(
+            id=uuid.uuid4(),
+            type="media.sync_videos",
+            params={"media_id": str(media.id), "max_entries": 0, "enqueue_existing_downloads": True},
+            priority=1,
+            status="pending",
+        )
+        session = Mock()
+        session.get.side_effect = lambda model, _key: media if getattr(model, "__name__", "") == "Media" else None
+        existing_video_ids = [uuid.uuid4(), uuid.uuid4()]
+
+        def _execute(stmt):
+            compiled = str(stmt.compile(dialect=postgresql.dialect())).lower()
+            self.assertIn("asset.type =", compiled)
+            self.assertIn("job.type in", compiled)
+            self.assertIn("video.status in", compiled)
+            return Mock(scalars=Mock(return_value=Mock(all=Mock(return_value=existing_video_ids))))
+
+        session.execute.side_effect = _execute
+
+        with patch("raelyn.jobs.handlers.media_sync.advisory_lock_any", return_value=nullcontext("bilibili:sync")):
+            with patch("raelyn.jobs.handlers.media_sync.ytdlp_extract_info", return_value={"entries": []}):
+                with patch("raelyn.jobs.handlers.media_sync.schedule_video_download") as schedule_video_download:
+                    result = media_sync_videos(session, job)
+
+        self.assertEqual(result, {"created": 0})
+        self.assertEqual(
+            [call.args[1] for call in schedule_video_download.call_args_list],
+            existing_video_ids,
+        )
 
 
 if __name__ == "__main__":

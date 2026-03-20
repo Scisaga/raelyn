@@ -372,15 +372,19 @@ export function createJobsViewMethods() {
 
     jobsTypeOptions() {
       const known = [
+        "brief.generate_daily",
+        "brief.generate_period",
         "media.delete",
         "media.sync_profile",
         "media.sync_videos",
-        "video.download",
-        "video.extract_audio",
-        "video.normalize_subtitle",
         "video.asr_transcribe",
+        "video.download",
+        "video.download.bilibili",
+        "video.download.youtube",
+        "video.extract_audio",
         "video.generate_note",
-        "brief.generate_daily",
+        "video.normalize_subtitle",
+        "video.polish_transcript",
       ];
       const set = new Set(known);
       for (const job of Array.isArray(this.jobListActive) ? this.jobListActive : []) {

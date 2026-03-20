@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import String, cast, exists, select
 from sqlalchemy.orm import Session
 
 from raelyn.config import settings
@@ -15,6 +15,7 @@ from raelyn.services.provider_pause import ProviderPauseRequestError
 from raelyn.services.profile_fetch import fetch_media_profile
 from raelyn.services.provider import build_media_videos_url
 from raelyn.services.transcripts import TRANSCRIPT_VARIANTS
+from raelyn.services.video_actions import schedule_video_download
 from raelyn.services.video_meta import parse_published_at
 from raelyn.services.ytdlp import YtdlpCookiesInvalidError, ytdlp_extract_info
 from raelyn.timeutil import utcnow
@@ -34,6 +35,48 @@ from .common import (
 )
 
 _AUTO_DISCOVERED_DOWNLOAD_PRIORITY = 7
+_DOWNLOAD_JOB_TYPES = ("video.download", "video.download.youtube", "video.download.bilibili")
+
+
+def _job_video_id_expr():
+    return Job.params["video_id"].astext
+
+
+def _enqueue_existing_discovered_downloads(
+    session: Session,
+    *,
+    media: Media,
+    allow_members_only_download: bool,
+) -> int:
+    eligible_statuses = ["discovered"]
+    if allow_members_only_download:
+        eligible_statuses.append("members_only")
+
+    video_ids = (
+        session.execute(
+            select(Video.id)
+            .where(
+                Video.media_id == media.id,
+                Video.status.in_(eligible_statuses),
+                ~exists(select(1).where(Asset.video_id == Video.id, Asset.type == "video")),
+                ~exists(
+                    select(1).select_from(Job).where(
+                        Job.type.in_(_DOWNLOAD_JOB_TYPES),
+                        Job.status.in_(("pending", "running")),
+                        _job_video_id_expr() == cast(Video.id, String),
+                    )
+                ),
+            )
+            .order_by(Video.published_at.desc().nullslast(), Video.created_at.desc(), Video.id.desc())
+        )
+        .scalars()
+        .all()
+    )
+    enqueued = 0
+    for video_id in video_ids:
+        schedule_video_download(session, video_id)
+        enqueued += 1
+    return enqueued
 
 
 def _job_download_priority(job: Job) -> int:
@@ -270,11 +313,26 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                 )
                 enqueued_downloads += 1
 
+        existing_downloads = 0
+        if bool(job.params.get("enqueue_existing_downloads")):
+            existing_downloads = _enqueue_existing_discovered_downloads(
+                session,
+                media=media,
+                allow_members_only_download=allow_members_only_download,
+            )
+            enqueued_downloads += existing_downloads
+
         media.last_video_sync_at = utcnow()
         job_log(
             session,
             job,
-            f"sync done created={created} enqueued_downloads={enqueued_downloads} scanned_entries={len(entries)}",
+            (
+                "sync done "
+                f"created={created} "
+                f"enqueued_downloads={enqueued_downloads} "
+                f"existing_downloads={existing_downloads} "
+                f"scanned_entries={len(entries)}"
+            ),
             level="info",
         )
         return {"created": created}
