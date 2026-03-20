@@ -131,13 +131,27 @@
                               </span>
 		                        </div>
 	                        <a
-	                          class="block max-w-full text-xs text-slate-400 truncate hover:text-slate-200 hover:underline"
+	                          class="inline-flex min-w-0 max-w-full items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 hover:underline"
 	                          :href="(m.url||'').startsWith('http') ? m.url : ('https://' + (m.url||''))"
 	                          target="_blank"
 	                          rel="noreferrer"
                             @click.stop
-	                          x-text="m.url"
-	                        ></a>
+	                        >
+                            <template x-if="m.provider==='youtube'">
+                              <svg viewBox="0 0 24 24" width="14" height="14" class="shrink-0" aria-hidden="true">
+                                <path fill="#FF0033" d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.5 31.5 0 0 0 0 12a31.5 31.5 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.5 31.5 0 0 0 24 12a31.5 31.5 0 0 0-.5-5.8Z"/>
+                                <path fill="#FFFFFF" d="M9.6 8.3v7.4L16 12z"/>
+                              </svg>
+                            </template>
+                            <template x-if="m.provider==='bilibili'">
+                              <svg viewBox="0 0 24 24" width="14" height="14" class="shrink-0" aria-hidden="true">
+                                <path fill="#00A1D6" d="M8.95 4.85 6.95 2.85a.82.82 0 1 1 1.16-1.16l2.66 2.66h2.46l2.66-2.66a.82.82 0 1 1 1.16 1.16l-2 2h1.7A4.25 4.25 0 0 1 21 9.1v6.65A4.25 4.25 0 0 1 16.75 20H15.9v.25a1.2 1.2 0 1 1-2.4 0V20h-3v.25a1.2 1.2 0 1 1-2.4 0V20h-.85A4.25 4.25 0 0 1 3 15.75V9.1a4.25 4.25 0 0 1 4.25-4.25h1.7Zm-1.7 2.4A1.85 1.85 0 0 0 5.4 9.1v6.65c0 1.02.83 1.85 1.85 1.85h9.5c1.02 0 1.85-.83 1.85-1.85V9.1a1.85 1.85 0 0 0-1.85-1.85h-9.5Z"/>
+                                <path fill="#00A1D6" d="m7.35 10.35 3.1-.62.42 2.05-3.1.62zm9.3 0-.42 2.05-3.1-.62.42-2.05z"/>
+                                <path d="M9.15 14.65c.32.8.78 1.2 1.32 1.2.52 0 .8-.29.95-.84.15.55.43.84.95.84.54 0 1-.4 1.32-1.2" fill="none" stroke="#00A1D6" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+                              </svg>
+                            </template>
+                            <span class="truncate min-w-0" x-text="m.url"></span>
+	                        </a>
 	                      </div>
 	                    </div>
 	                    <div class="flex flex-wrap items-center gap-2 justify-end">
