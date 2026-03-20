@@ -556,6 +556,7 @@
                     <div
                       class="bg-slate-950/10 flex-1 min-h-0 flex flex-col lg:border-l lg:border-slate-800 lg:col-start-2 lg:row-start-2 2xl:col-start-2 2xl:row-start-1"
                       :class="playlistRow2Tab==='brief' ? 'hidden lg:flex' : ''"
+                      :style="playlistDayListSwipeEnabled() ? playlistDayListPanelStyle() : ''"
                     >
                       <div
                         x-ref="playlistDayListScroller"
