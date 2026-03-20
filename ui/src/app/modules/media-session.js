@@ -20,6 +20,8 @@ export function createMediaSessionModule() {
     videoPictureInPictureSupported: false,
     _mediaSessionBound: false,
     _mediaSessionVisibilityHandler: null,
+    _mediaSessionPageHideHandler: null,
+    _mediaSessionFreezeHandler: null,
     _mediaSessionPositionSyncAt: 0,
 
     _setSystemMediaActionHandler(action, handler) {
@@ -102,9 +104,23 @@ export function createMediaSessionModule() {
       }
 
       const onVisibilityChange = () => this.handleVisibilityMediaPolicy();
+      const onPageHide = () => this.handleVisibilityMediaPolicy();
+      const onFreeze = () => this.handleVisibilityMediaPolicy();
       try {
         document.addEventListener("visibilitychange", onVisibilityChange);
         this._mediaSessionVisibilityHandler = onVisibilityChange;
+      } catch {
+        // ignore
+      }
+      try {
+        window.addEventListener("pagehide", onPageHide);
+        this._mediaSessionPageHideHandler = onPageHide;
+      } catch {
+        // ignore
+      }
+      try {
+        document.addEventListener("freeze", onFreeze);
+        this._mediaSessionFreezeHandler = onFreeze;
       } catch {
         // ignore
       }
@@ -221,7 +237,23 @@ export function createMediaSessionModule() {
       } catch {
         // ignore
       }
+      try {
+        if (this._mediaSessionPageHideHandler) {
+          window.removeEventListener("pagehide", this._mediaSessionPageHideHandler);
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        if (this._mediaSessionFreezeHandler) {
+          document.removeEventListener("freeze", this._mediaSessionFreezeHandler);
+        }
+      } catch {
+        // ignore
+      }
       this._mediaSessionVisibilityHandler = null;
+      this._mediaSessionPageHideHandler = null;
+      this._mediaSessionFreezeHandler = null;
       this._mediaSessionBound = false;
       this._mediaSessionPositionSyncAt = 0;
 
@@ -268,6 +300,16 @@ export function createMediaSessionModule() {
 
       if (!String(this.playlistPlayerAudioUrl || "").trim()) {
         this.syncSystemMediaSession({ forcePosition: true });
+        return;
+      }
+
+      if (!this.playlistMediaPlaying && !(this.playlistAnyMediaPlaying && this.playlistAnyMediaPlaying())) {
+        this.syncSystemMediaSession({ forcePosition: true });
+        return;
+      }
+
+      if (typeof this.playlistActivateBackgroundAudio === "function") {
+        this.playlistActivateBackgroundAudio();
         return;
       }
 

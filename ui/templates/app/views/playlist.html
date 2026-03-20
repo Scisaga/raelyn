@@ -262,7 +262,10 @@
                 <!-- Row 2: Mobile tabs; wide screens split into 3 columns -->
                 <div class="flex-1 min-h-0 flex flex-col" x-data="{ playlistRow2Tab: 'play' }" x-show="playlistSubview==='main'" x-transition.opacity>
                   <!-- Mobile tabs -->
-                  <div class="lg:hidden h-11 grid grid-cols-2 divide-x divide-slate-800 border-b border-slate-800 bg-slate-950/20">
+                  <div
+                    class="lg:hidden h-11 grid grid-cols-2 divide-x divide-slate-800 border-b border-slate-800 bg-slate-950/20"
+                    :style="playlistRow2Tab==='brief' ? playlistBriefPanelStyle() : playlistDayListPanelStyle()"
+                  >
                     <button
                       type="button"
                       class="h-11 text-sm inline-flex items-center justify-center"
@@ -287,6 +290,7 @@
                     <div
                       class="bg-slate-950/10 border-b border-slate-800 2xl:border-b-0 lg:border-l lg:border-slate-800 lg:col-start-2 lg:row-start-1 2xl:col-start-3 2xl:row-start-1 flex flex-col min-h-0 shrink-0"
                       :class="playlistRow2Tab==='brief' ? 'hidden lg:block' : ''"
+                      :style="playlistDayListSwipeEnabled() ? playlistDayListPanelStyle() : ''"
                     >
                       <template x-if="playlistDayVideosLoading || playlistDayVideosError || (Array.isArray(playlistDayVideos) && playlistDayVideos.length>0)">
                         <div class="bg-black/30 overflow-hidden shrink-0">
@@ -321,7 +325,7 @@
                             x-ref="playlistAudioEl"
                             class="hidden"
                             :src="playlistPlayerAudioUrl || null"
-                            preload="metadata"
+                            preload="auto"
                             @loadedmetadata="playlistMediaOnLoadedMetadata($event)"
                             @timeupdate="playlistMediaOnTimeUpdate($event)"
                             @durationchange="playlistMediaOnLoadedMetadata($event)"
@@ -556,7 +560,7 @@
                       <div
                         x-ref="playlistDayListScroller"
                         class="flex-1 min-h-0 overflow-auto raelyn-scrollbar divide-y divide-slate-800"
-                        :style="playlistDayListPanelStyle() + ';touch-action: pan-y;'"
+                        style="touch-action: pan-y;"
                         @pointerdown="playlistDayListPointerDown($event)"
                       >
                         <template x-for="v in playlistDayVideos" :key="v.id">
@@ -586,6 +590,7 @@
                     <div
                       class="relative bg-slate-950/10 flex-1 min-h-0 flex flex-col lg:col-start-1 lg:row-start-1 lg:row-span-2 2xl:col-start-1 2xl:row-start-1 2xl:row-span-1"
                       :class="playlistRow2Tab==='play' ? 'hidden lg:flex' : ''"
+                      :style="playlistBriefSwipeEnabled() ? playlistBriefPanelStyle() : ''"
                     >
                       <div
                         class="absolute top-14 right-4 z-10 inline-flex overflow-hidden rounded-md border border-slate-800 bg-slate-950/30 backdrop-blur divide-x divide-slate-800"
@@ -672,7 +677,7 @@
                       <div
                         x-ref="playlistBriefScroller"
                         class="flex-1 min-h-0 overflow-auto raelyn-scrollbar p-4"
-                        :style="playlistBriefPanelStyle() + ';touch-action: pan-y;'"
+                        style="touch-action: pan-y;"
                         @pointerdown="playlistBriefPointerDown($event)"
                       >
                         <div class="text-xs text-slate-400" x-show="playlistBriefLoading" x-text="playlistBriefGeneratingForSelectedDate() ? '生成中…' : '加载中…'"></div>

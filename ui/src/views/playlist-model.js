@@ -2472,6 +2472,68 @@ export function createPlaylistViewMethods() {
       });
     },
 
+    playlistActivateBackgroundAudio() {
+      if (!this.playlistCurrentVideo) return false;
+
+      const audioUrl = String(this.playlistPlayerAudioUrl || "").trim();
+      const audioEl = this.playlistMediaElForMode(true);
+      if (!audioUrl || !audioEl) return false;
+
+      const fromEl = this.playlistActiveMediaEl();
+      let currentTime = 0;
+      let wasPlaying = false;
+      let muted = !!this.playlistMediaMuted;
+      let volume = Number(this.playlistMediaVolume);
+      if (!Number.isFinite(volume)) volume = 1;
+
+      try {
+        if (fromEl) {
+          currentTime = Number(fromEl.currentTime || 0);
+          wasPlaying = !fromEl.paused && !fromEl.ended;
+          muted = !!fromEl.muted;
+          const nextVolume = Number(fromEl.volume);
+          if (Number.isFinite(nextVolume)) volume = Math.max(0, Math.min(1, nextVolume));
+        }
+      } catch {
+        // ignore
+      }
+
+      this.playlistAudioOnly = true;
+
+      try {
+        this.playlistEnsureMediaSource(audioEl, audioUrl);
+        audioEl.muted = muted;
+        audioEl.volume = volume;
+        if (Number.isFinite(currentTime) && currentTime >= 0) audioEl.currentTime = currentTime;
+      } catch {
+        // ignore
+      }
+
+      let playPromise = null;
+      if (wasPlaying) {
+        try {
+          playPromise = typeof audioEl.play === "function" ? audioEl.play() : null;
+          if (playPromise && typeof playPromise.catch === "function") {
+            playPromise.catch(() => {
+              this.playlistSyncMediaState();
+            });
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      try {
+        if (fromEl && fromEl !== audioEl && typeof fromEl.pause === "function") fromEl.pause();
+      } catch {
+        // ignore
+      }
+
+      this.playlistRefreshCurrentModeAvailability(null, true);
+      this.playlistSyncMediaState();
+      return true;
+    },
+
     playlistCanDownloadCurrentVideo() {
       const video = this.playlistCurrentVideo;
       const videoId = video && video.id ? String(video.id).trim() : "";
