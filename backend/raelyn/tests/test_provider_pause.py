@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from sqlalchemy.dialects import postgresql
+
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
@@ -56,6 +58,59 @@ class ProviderPauseStateTests(unittest.TestCase):
 
 
 class ClaimNextJobProviderPauseTests(unittest.TestCase):
+    def test_claim_next_job_prefers_newer_jobs_when_priority_matches(self) -> None:
+        now = datetime(2026, 3, 20, 8, 0, tzinfo=timezone.utc)
+        older_job = SimpleNamespace(
+            type="video.download.youtube",
+            status="pending",
+            worker_id=None,
+            error_message=None,
+            error_stack=None,
+            progress_current=None,
+            progress_total=None,
+            started_at=None,
+            lease_expires_at=None,
+            priority=7,
+            scheduled_for=now,
+            created_at=datetime(2026, 3, 20, 7, 0, tzinfo=timezone.utc),
+            id="older-job",
+        )
+        newer_job = SimpleNamespace(
+            type="video.download.youtube",
+            status="pending",
+            worker_id=None,
+            error_message=None,
+            error_stack=None,
+            progress_current=None,
+            progress_total=None,
+            started_at=None,
+            lease_expires_at=None,
+            priority=7,
+            scheduled_for=now,
+            created_at=datetime(2026, 3, 20, 7, 30, tzinfo=timezone.utc),
+            id="newer-job",
+        )
+        scalar_result = Mock()
+        scalar_result.all.return_value = [newer_job, older_job]
+        session = Mock()
+
+        def _execute(stmt):
+            compiled = str(stmt.compile(dialect=postgresql.dialect())).lower()
+            self.assertIn("job.created_at desc", compiled)
+            self.assertIn("job.id desc", compiled)
+            return Mock(scalars=Mock(return_value=scalar_result))
+
+        session.execute.side_effect = _execute
+
+        with patch("raelyn.jobs.claim.is_paused", return_value=False):
+            with patch("raelyn.jobs.claim.job_provider", return_value="youtube"):
+                with patch("raelyn.jobs.claim.is_provider_paused", return_value=False):
+                    claimed = claim_next_job(session, worker_id="worker-1", lease_seconds=60)
+
+        self.assertIs(claimed, newer_job)
+        self.assertEqual(newer_job.status, "running")
+        self.assertEqual(newer_job.worker_id, "worker-1")
+
     def test_claim_next_job_skips_paused_provider_jobs(self) -> None:
         now = datetime.now(timezone.utc)
         bili_job = SimpleNamespace(

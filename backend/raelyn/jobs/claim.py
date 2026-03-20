@@ -179,7 +179,15 @@ def claim_next_job(
     base_stmt = select(Job).where(Job.status == "pending", Job.scheduled_for <= now)
     if type_in:
         base_stmt = base_stmt.where(Job.type.in_(list(type_in)))
-    ordered = base_stmt.order_by(Job.priority.desc(), rank.asc(), Job.scheduled_for.asc(), Job.created_at.asc())
+    # 同优先级、同类型等级、同计划时间下，优先领取新创建的任务，
+    # 这样新添加的视频采集任务不会长期被旧任务压在后面。
+    ordered = base_stmt.order_by(
+        Job.priority.desc(),
+        rank.asc(),
+        Job.scheduled_for.asc(),
+        Job.created_at.desc(),
+        Job.id.desc(),
+    )
 
     job = None
     batch_size = 50
