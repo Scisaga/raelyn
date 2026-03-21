@@ -369,9 +369,8 @@ def _apply_common_ytdlp_opts(opts: dict[str, Any], *, url: str | None = None, pr
         )
         headers.setdefault("Referer", "https://www.bilibili.com/")
         opts["http_headers"] = headers
-        # Explicitly bypass YTDLP_PROXY for bilibili requests.
-        # Reason: some users want bilibili to go direct while other providers use a proxy.
-        opts.pop("proxy", None)
+        # 显式禁用代理；仅移除 opts["proxy"] 还不够，yt-dlp 会继续读取进程环境里的 HTTP(S)_PROXY。
+        opts["proxy"] = ""
     else:
         if settings.ytdlp_proxy.strip():
             opts["proxy"] = settings.ytdlp_proxy.strip()
