@@ -46,10 +46,12 @@
   - 项目内 skill 统一放在 [skills/](skills/) 目录。
   - 任务系统相关 skill 入口是 [skills/job-system-design/SKILL.md](skills/job-system-design/SKILL.md)。
   - 静态 UI 相关 skill 入口是 [skills/static-ui/SKILL.md](skills/static-ui/SKILL.md)。
+  - Python Web 服务重构相关 skill 入口是 [skills/python-web-refactor/SKILL.md](skills/python-web-refactor/SKILL.md)。
 
 * 触发场景
   - 涉及任务系统设计、worker、scheduler、job observability、retry、lease、claim、parent-child 编排等工作时，优先使用 [skills/job-system-design/SKILL.md](skills/job-system-design/SKILL.md)。
   - 涉及静态 UI、页面设计、Tailwind/Alpine 前端实现、`static/` 目录下界面维护与扩展等工作时，优先使用 [skills/static-ui/SKILL.md](skills/static-ui/SKILL.md)。
+  - 涉及 Python Web 服务重构、FastAPI/Flask 服务整理、入口收敛、目录治理、配置治理、测试与文档补齐、异步执行边界梳理等工作时，优先使用 [skills/python-web-refactor/SKILL.md](skills/python-web-refactor/SKILL.md)。
 
 *  维护边界
   - `docs` 承载项目文档与规则索引，`skills` 承载专项执行方法；避免全文重复维护。
