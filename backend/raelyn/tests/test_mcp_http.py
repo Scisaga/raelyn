@@ -32,10 +32,19 @@ def _fake_health_session_scope():
 
 
 class McpHttpTests(unittest.IsolatedAsyncioTestCase):
-    def _load_app(self, stack: ExitStack):
+    def _load_app(
+        self,
+        stack: ExitStack,
+        *,
+        mcp_allowed_hosts: str = "",
+        mcp_allowed_origins: str = "",
+    ):
         stack.enter_context(patch.object(config.settings, "api_bearer_token", "apitoken"))
         stack.enter_context(patch.object(config.settings, "mcp_bearer_token", "testtoken"))
         stack.enter_context(patch.object(config.settings, "mcp_base_path", "/mcp"))
+        stack.enter_context(patch.object(config.settings, "mcp_dns_rebinding_protection_enabled", True))
+        stack.enter_context(patch.object(config.settings, "mcp_allowed_hosts", mcp_allowed_hosts))
+        stack.enter_context(patch.object(config.settings, "mcp_allowed_origins", mcp_allowed_origins))
         stack.enter_context(patch.object(config.settings, "asr_url", ""))
         stack.enter_context(patch.object(config.settings, "llm_url", ""))
         stack.enter_context(patch("raelyn.db.init_db"))
@@ -49,6 +58,9 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
         stack.enter_context(patch.object(config.settings, "api_bearer_token", ""))
         stack.enter_context(patch.object(config.settings, "mcp_bearer_token", ""))
         stack.enter_context(patch.object(config.settings, "mcp_base_path", "/mcp"))
+        stack.enter_context(patch.object(config.settings, "mcp_dns_rebinding_protection_enabled", True))
+        stack.enter_context(patch.object(config.settings, "mcp_allowed_hosts", ""))
+        stack.enter_context(patch.object(config.settings, "mcp_allowed_origins", ""))
         stack.enter_context(patch.object(config.settings, "asr_url", ""))
         stack.enter_context(patch.object(config.settings, "llm_url", ""))
         stack.enter_context(patch("raelyn.db.init_db"))
@@ -162,6 +174,42 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
         resource_payload = json.loads(resource_result.contents[0].text)
         self.assertEqual(resource_payload["text"], "hello")
         self.assertEqual(resource_payload["chunk_index"], 0)
+
+    async def test_public_host_can_be_allowed_via_config(self) -> None:
+        with ExitStack() as stack:
+            app = self._load_app(
+                stack,
+                mcp_allowed_hosts="scisaga.cc:234",
+                mcp_allowed_origins="https://scisaga.cc:234",
+            )
+            transport = ASGITransport(app=app)
+
+            async with app.router.lifespan_context(app):
+                async with AsyncClient(
+                    transport=transport,
+                    base_url="https://scisaga.cc:234",
+                    headers={"Authorization": "Bearer testtoken"},
+                ) as client:
+                    response = await client.post(
+                        "/mcp",
+                        headers={
+                            "Accept": "application/json, text/event-stream",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "initialize",
+                            "params": {
+                                "protocolVersion": "2025-03-26",
+                                "capabilities": {},
+                                "clientInfo": {"name": "debug", "version": "1.0"},
+                            },
+                        },
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["result"]["serverInfo"]["name"], "raelyn")
 
 
 if __name__ == "__main__":

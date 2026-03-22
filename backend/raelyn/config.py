@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,6 +15,9 @@ class Settings(BaseSettings):
     api_bearer_token: str = ""
     mcp_base_path: str = "/mcp"
     mcp_bearer_token: str = ""
+    mcp_dns_rebinding_protection_enabled: bool = True
+    mcp_allowed_hosts: str = ""
+    mcp_allowed_origins: str = ""
 
     database_url: str = "postgresql+psycopg://raelyn:raelyn@127.0.0.1:5432/raelyn"
 
@@ -96,6 +101,46 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_headers_json: str = ""
     llm_timeout_seconds: int = 600
+
+    def mcp_allowed_host_values(self) -> list[str]:
+        values = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+        values.extend(_split_csv_values(self.mcp_allowed_hosts))
+
+        base_url = str(self.base_url or "").strip()
+        if base_url:
+            parsed = urlparse(base_url)
+            if parsed.netloc:
+                values.append(parsed.netloc)
+        return _dedupe_keep_order(values)
+
+    def mcp_allowed_origin_values(self) -> list[str]:
+        values = ["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"]
+        values.extend(_split_csv_values(self.mcp_allowed_origins))
+
+        base_url = str(self.base_url or "").strip()
+        if base_url:
+            parsed = urlparse(base_url)
+            if parsed.scheme and parsed.netloc:
+                values.append(f"{parsed.scheme}://{parsed.netloc}")
+        return _dedupe_keep_order(values)
+
+
+def _split_csv_values(raw: str | None) -> list[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    return [item for item in (part.strip() for part in text.split(",")) if item]
+
+
+def _dedupe_keep_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 settings = Settings()

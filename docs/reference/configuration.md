@@ -100,6 +100,12 @@
 - `MCP_BASE_PATH`
 - `MCP_BEARER_TOKEN`
   - 非空时主 API 进程会挂载 `/mcp`；为空时 `/mcp` 与 `/mcp/health` 返回 `404`。
+- `MCP_ALLOWED_HOSTS`
+  - 逗号分隔的 Host 白名单，用于 MCP SDK 的 DNS rebinding 防护。
+  - 反向代理公网访问时，需要把外部 Host 加进去，例如 `scisaga.cc:234`。
+- `MCP_ALLOWED_ORIGINS`
+  - 逗号分隔的 Origin 白名单。
+  - 反向代理公网访问时，通常与 `MCP_ALLOWED_HOSTS` 对应，例如 `https://scisaga.cc:234`。
 
 ## 运行时配置（`app_config`）
 
