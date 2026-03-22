@@ -110,6 +110,22 @@ description: Use this skill when refactoring, straightening, or reviewing a mess
 - 若 `venv` 创建失败，应先记录缺失条件，例如 `python3-venv`、`ensurepip`、编译依赖或系统库
 - 若仓库已有统一启动脚本，应把脚本中对 `.venv` 的使用方式一并纳入重构方案
 
+## 运行时配置与反向代理排障
+
+遇到 “本机直连正常，公网反代异常” 的 MCP 问题时，优先排查 Host 白名单，而不是先怀疑 token 或代码未生效。
+
+- `mcp` Python SDK 在 `host=127.0.0.1` / `localhost` 场景下，会默认开启 DNS rebinding 防护，只放行本地 Host。
+- 如果服务是“本地监听 + 公网域名反代”，必须显式把公网 `Host` / `Origin` 加进 MCP transport security 白名单。
+- 若白名单按 `example.com:234` 配置，Nginx 也必须把带端口的 Host 原样透传；不要把会丢端口的 `$host` 当成通用答案。
+- 这类问题的根因通常不是 Bearer token，而是“服务端允许的 Host”和“反向代理实际转发的 Host”不一致。
+
+补充要求：
+
+- 先用本机直连验证上游应用是否接受目标 `Host`，再决定是否继续查 Nginx。
+- 对需要 lifespan 的 ASGI 组件，做进程内请求验证时必须显式进入 `app.router.lifespan_context(app)`。
+- 给 Nginx 建议时，必须先确认白名单匹配的是 `host` 还是 `host:port`；Host 白名单场景不要随意把 `$http_host` 改成 `$host`。
+- 记录结论时，只保留真正的根因和稳定规则，不要把整段误判过程写进 skill。
+
 ## 目标结构准则
 
 - 入口装配层独立：主入口只负责创建 app、挂载 router、初始化依赖
