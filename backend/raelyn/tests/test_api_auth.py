@@ -17,6 +17,7 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn import config
+from raelyn.api.auth import is_valid_bearer_token
 
 
 class _DummySession:
@@ -86,6 +87,9 @@ class ApiAuthHttpTests(unittest.IsolatedAsyncioTestCase):
                 cookie_system = await client.get("/api/system")
 
         self.assertEqual(cookie_system.status_code, 200)
+
+    def test_is_valid_bearer_token_rejects_non_ascii_without_raising(self) -> None:
+        self.assertFalse(is_valid_bearer_token("你怀疑的API token", "testtoken"))
 
 
 class ApiAuthWebSocketTests(unittest.TestCase):

@@ -10,6 +10,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 API_AUTH_COOKIE_NAME = "raelyn_api_token"
 
 
+def _safe_compare_token(provided: str, expected: str) -> bool:
+    try:
+        return secrets.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+    except UnicodeEncodeError:
+        return False
+
+
 def normalize_bearer_token(value: str | None) -> str:
     return str(value or "").strip()
 
@@ -52,7 +59,7 @@ def is_valid_bearer_token(provided: str | None, expected: str | None) -> bool:
     candidate = str(provided or "").strip()
     if not candidate:
         return False
-    return secrets.compare_digest(candidate, required)
+    return _safe_compare_token(candidate, required)
 
 
 class OptionalBearerTokenAuthMiddleware(BaseHTTPMiddleware):

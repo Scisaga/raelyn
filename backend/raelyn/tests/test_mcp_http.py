@@ -18,6 +18,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from raelyn import config
+from raelyn.mcp.auth import _safe_compare_token
 
 
 class _DummySession:
@@ -71,6 +72,9 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unauthorized.status_code, 401)
         self.assertEqual(unauthorized.headers.get("WWW-Authenticate"), "Bearer")
         self.assertEqual(unauthorized_api.status_code, 401)
+
+    def test_safe_compare_token_rejects_non_ascii_without_raising(self) -> None:
+        self.assertFalse(_safe_compare_token("你怀疑的MCP token", "testtoken"))
 
     async def test_mcp_is_not_mounted_when_token_disabled(self) -> None:
         with ExitStack() as stack:

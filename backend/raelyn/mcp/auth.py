@@ -7,6 +7,13 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
+def _safe_compare_token(provided: str, expected: str) -> bool:
+    try:
+        return secrets.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+    except UnicodeEncodeError:
+        return False
+
+
 def normalize_mount_path(value: str | None, *, default: str = "/mcp") -> str:
     raw = str(value or default).strip()
     if not raw:
@@ -50,7 +57,7 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
 
         header = request.headers.get("authorization", "")
         scheme, _, provided = header.partition(" ")
-        if scheme.lower() != "bearer" or not provided or not secrets.compare_digest(provided.strip(), self._token):
+        if scheme.lower() != "bearer" or not provided or not _safe_compare_token(provided.strip(), self._token):
             return JSONResponse(
                 status_code=401,
                 content={"ok": False, "detail": "unauthorized"},
