@@ -83,7 +83,29 @@ export function createPlayerModule() {
       if (!keepPageVideoId) this.playerPageVideoId = "";
     },
 
+    _playerStopMediaElement() {
+      const el = this.$refs && this.$refs.playerVideoEl ? this.$refs.playerVideoEl : null;
+      if (!el) return;
+
+      try {
+        if (typeof el.pause === "function") el.pause();
+      } catch {
+        // ignore
+      }
+      try {
+        el.removeAttribute("src");
+      } catch {
+        // ignore
+      }
+      try {
+        if (typeof el.load === "function") el.load();
+      } catch {
+        // ignore
+      }
+    },
+
     leaveVideoPage() {
+      this._playerStopMediaElement();
       this._playerResetState();
     },
 

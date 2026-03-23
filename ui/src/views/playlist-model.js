@@ -39,6 +39,8 @@ export function createPlaylistViewMethods() {
   return {
     async loadPlaylistPage() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const pageLoadToken = Number(this.playlistLoadToken || 0) + 1;
+      this.playlistLoadToken = pageLoadToken;
       this._playlistSyncBriefSpeechSupport();
       this.playlistStopBriefSpeech({ clearError: true });
       if (!pid) {
@@ -82,6 +84,10 @@ export function createPlaylistViewMethods() {
         this.playlistPlayerNeedsDownload = false;
 
         const detail = await this.api(`/playlists/${encodeURIComponent(pid)}/detail`);
+        if (Number(this.playlistLoadToken || 0) !== pageLoadToken) return;
+        if (this.activeView !== "playlist") return;
+        const currentPid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+        if (currentPid !== pid) return;
         this.playlistDetail = detail || null;
         this.pageTitle = (detail && detail.name) || "播放列表页";
         this._abortCtrl("_playlistCountsAbortCtrl");
@@ -121,6 +127,8 @@ export function createPlaylistViewMethods() {
         this.playlistCalendarEnsureVisible();
         this.playlistPrefetchCalendarCounts();
         this.playlistEditResetFromDetail();
+        if (Number(this.playlistLoadToken || 0) !== pageLoadToken) return;
+        if (this.activeView !== "playlist") return;
         await this.playlistLoadDay(this.playlistSelectedDate, { autoPlay: false });
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
@@ -1208,6 +1216,15 @@ export function createPlaylistViewMethods() {
     },
 
     leavePlaylistPage() {
+      this.playlistLoadToken = Number(this.playlistLoadToken || 0) + 1;
+      this.playlistPeriodCountsToken = Number(this.playlistPeriodCountsToken || 0) + 1;
+      this._abortCtrl("_playlistCountsAbortCtrl");
+      this._abortCtrl("_playlistDayAbortCtrl");
+      this._abortCtrl("_playlistBriefAbortCtrl");
+      this._abortCtrl("_playlistBriefMdAbortCtrl");
+      this._abortCtrl("_playlistPlayableProbeAbortCtrl");
+      this._abortCtrl("_playlistSelectAbortCtrl");
+      this._abortCtrl("_playlistTranscriptVariantAbortCtrl");
       try {
         if (typeof this.playlistStopBriefSpeech === "function") {
           this.playlistStopBriefSpeech({ clearError: true });
@@ -1215,6 +1232,26 @@ export function createPlaylistViewMethods() {
       } catch {
         // ignore
       }
+      this.playlistPendingAutoPlayId = "";
+      this.playlistPlayerVideoUrl = "";
+      this.playlistPlayerAudioUrl = "";
+      this.playlistPlayerError = "";
+      this.playlistPlayerNeedsDownload = false;
+      this.playlistCurrentVideo = null;
+      this.playlistDayVideosLoading = false;
+      this.playlistTranscriptLoading = false;
+      this.playlistTranscriptError = "";
+      this.playlistTranscriptLanguage = "";
+      this.playlistTranscriptSource = "";
+      this.playlistTranscriptActiveSource = "";
+      this.playlistTranscriptVariant = "";
+      this.playlistTranscriptSelectedVariant = "";
+      this.playlistTranscriptAvailableVariants = emptyPlaylistTranscriptVariants();
+      this.playlistTranscriptUpdatedAt = "";
+      this.playlistTranscriptSwitching = false;
+      this.playlistMediaDurationSec = 0;
+      this.playlistMediaCurrentTimeSec = 0;
+      this.playlistMediaPlaying = false;
       try {
         if (typeof this.playlistMediaPause === "function") this.playlistMediaPause();
       } catch {
