@@ -14,7 +14,8 @@ MCP 作为主 API 的子应用挂载，但它直接复用现有 DB / model / ser
 
 ## 安全边界
 
-- `MCP_BEARER_TOKEN` 非空时才会挂载 MCP；为空时主 API 仍可正常启动，但 `/mcp` 不可用。
+- `API_BEARER_TOKEN` 非空时才会挂载 MCP；为空时主 API 仍可正常启动，但 `/mcp` 不可用。
+- `/api` 与 `/mcp` 复用同一个 Bearer Token；浏览器 cookie 只服务 `/api`，MCP 仍只接受 `Authorization: Bearer <token>`。
 - `/mcp/health` 允许匿名访问。
 - `/mcp` 下的所有请求都要求 `Authorization: Bearer <token>`。
 - MCP 与主 API 共用同一个监听端口，不额外占用独立端口。
@@ -64,10 +65,13 @@ MCP 没有复制 API 路由逻辑，而是复用了抽出的共享 helper：
 - `get_playlist_videos`
 - `list_briefs`
 - `get_brief`
+- `get_playlist_brief`
+- `get_playlist_latest_brief`
+- `list_latest_briefs`
 - `list_jobs`
 - `get_job`
 - `get_video_context`
-- `get_playlist_context`
+- `get_playlist_summary`
 - `sync_media`
 - `download_video`
 - `retranscribe_video`
@@ -89,7 +93,10 @@ MCP 没有复制 API 路由逻辑，而是复用了抽出的共享 helper：
 - `raelyn://video/{video_id}/transcript/chunks/{chunk_index}`
 - `raelyn://video/{video_id}/assets`
 - `raelyn://playlist/{playlist_id}`
-- `raelyn://brief/{playlist_id}/{granularity}/{date_in_period}`
+- `raelyn://brief/{brief_id}`
+- `raelyn://brief/{brief_id}/body`
+- `raelyn://playlist/{playlist_id}/briefs/by-date/{date}`
+- `raelyn://playlist/{playlist_id}/briefs/by-date/{date}/body`
 - `raelyn://job/{job_id}`
 
 设计约束：
@@ -149,7 +156,7 @@ MCP transcript 输出字段固定包含：
 
 适合“这个视频是否已经可分析”“先拿上下文再决定是否继续深入读取”。
 
-### `get_playlist_context`
+### `get_playlist_summary`
 
 返回：
 
@@ -160,7 +167,16 @@ MCP transcript 输出字段固定包含：
 - 可选 transcript 首块
 - 对应 brief 状态
 
-适合“总结这个播放列表某一天/周/月内容”。
+适合“总结这个播放列表某一天所在周期的内容”。
+
+### Brief 读取语义
+
+- `get_brief(brief_id)`：真正按 `brief_id` 读取简报对象。
+- `get_playlist_brief(playlist_id, date)`：按播放列表当前 `brief_granularity`，定位“包含该日期的那个周期”的简报。
+- `get_playlist_latest_brief(playlist_id)`：读取该播放列表当前粒度下最新可定位周期的简报。
+- `list_latest_briefs`：按播放列表维度返回 latest brief 列表。
+- brief JSON 会显式返回 `body_readable`、`body_resource_uri`、`body_mime_type`，正文内联字段统一为 `body_markdown`。
+- 简报正文资源优先走 `raelyn://brief/{brief_id}/body` 或 `raelyn://playlist/{playlist_id}/briefs/by-date/{date}/body`，资源类型固定为 `text/markdown`。
 
 ## 与现有 REST 的关系
 
@@ -196,7 +212,7 @@ MCP 与 REST 的关系不是一比一镜像，而是：
 - [backend/raelyn/main.py](../../backend/raelyn/main.py)
 - [scripts/dev/devctl.sh](../../scripts/dev/devctl.sh)
 
-`devctl.sh start` 只启动 API/worker/scheduler；如果 `MCP_BEARER_TOKEN` 非空，MCP 会随 API 一起挂载到 `/mcp`。如果为空，则 `/mcp` 与 `/mcp/health` 返回 `404`。
+`devctl.sh start` 只启动 API/worker/scheduler；如果 `API_BEARER_TOKEN` 非空，MCP 会随 API 一起挂载到 `/mcp`。如果为空，则 `/mcp` 与 `/mcp/health` 返回 `404`。
 
 ## 测试覆盖
 
@@ -205,7 +221,7 @@ MCP 与 REST 的关系不是一比一镜像，而是：
 - 周期计算 helper
 - transcript 选择顺序与 chunking
 - 下载 / 重转写任务投递分支
-- `get_brief` / `get_video_context` / `get_playlist_context`
+- `get_brief` / `get_playlist_brief` / `get_playlist_latest_brief` / `get_video_context` / `get_playlist_summary`
 - `/health` 和 Bearer 鉴权
 - `Streamable HTTP` 协议最小链路：`list_tools`、`call_tool`、`read_resource`
 

@@ -165,7 +165,7 @@ source ./scripts/dev/load-env.sh
 
 说明：
 - `devctl.sh start/restart` 会先执行一次 UI 构建（等价于 `./scripts/dev/build-ui.sh`）。如需跳过可设置 `SKIP_UI_BUILD=1`。
-- 只有在 `.env` 里配置了 `MCP_BEARER_TOKEN` 时，主 API 进程才会额外挂载 `/mcp`；否则 `/mcp` 与 `/mcp/health` 返回 `404`。
+- 只有在 `.env` 里配置了 `API_BEARER_TOKEN` 时，主 API 进程才会额外挂载 `/mcp`；否则 `/mcp` 与 `/mcp/health` 返回 `404`。
 
 ---
 
@@ -219,7 +219,7 @@ WSL 提示：如果你的 `npm` 指向 Windows 安装路径（如 `/mnt/c/Progra
 - API 健康检查：`GET /api/health`
 - UI 首页：`GET /`
 - MCP 健康检查：`GET http://127.0.0.1:8000/mcp/health`
-- MCP endpoint：`http://127.0.0.1:8000/mcp`（需要 `Authorization: Bearer <MCP_BEARER_TOKEN>`）
+- MCP endpoint：`http://127.0.0.1:8000/mcp`（需要 `Authorization: Bearer <API_BEARER_TOKEN>`）
 
 ---
 

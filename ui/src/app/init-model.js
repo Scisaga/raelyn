@@ -34,14 +34,21 @@ export function createAppInitMethods() {
       this._syncUrl({ push: false });
     },
 
-    async _refreshHealthStatus() {
-      const health = await this.api(`/health`);
-      this.healthOk = !!health.ok;
-      this.services.db = health.db || this.services.db;
-      this.services.s3 = health.s3 || this.services.s3;
-      this.services.asr = health.asr || this.services.asr;
-      this.services.llm = health.llm || this.services.llm;
-      this.globalStatus = health.deps_ok ? "" : "部分依赖不可用";
+    async _refreshHealthStatus({ payload = null, silent = false, throwOnError = false } = {}) {
+      try {
+        const health = payload || (await this.api(`/health`));
+        this.healthOk = !!health.ok;
+        this.services.db = health.db || this.services.db;
+        this.services.s3 = health.s3 || this.services.s3;
+        this.services.asr = health.asr || this.services.asr;
+        this.services.llm = health.llm || this.services.llm;
+        this.globalStatus = health.deps_ok ? "" : "部分依赖不可用";
+        return health;
+      } catch (e) {
+        if (!silent) this.globalStatus = `error: ${e.message}`;
+        if (throwOnError) throw e;
+        return null;
+      }
     },
 
     _resumeProtectedRealtime() {
@@ -58,26 +65,44 @@ export function createAppInitMethods() {
       }
     },
 
-    async _refreshProtectedData() {
+    async _refreshProtectedData({ statsReady = false } = {}) {
       this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
       if (typeof this._syncMediaDeleteTrackingFromList === "function") this._syncMediaDeleteTrackingFromList(this.mediaIndex);
-      await this.refreshActive();
-      await this.loadStats();
+      if (this.activeView !== "overview") {
+        await this.refreshActive();
+        if (!statsReady) await this.loadStats();
+        return;
+      }
+      if (!statsReady) await this.loadStats();
     },
 
-    async _finishInitAfterStartupGate() {
+    async _prepareOverviewStartupGate() {
+      this.startupGateStage = "overview-data";
+      const [health, stats] = await Promise.all([
+        this._refreshHealthStatus({ silent: true, throwOnError: true }),
+        this.loadStats({ silent: true, throwOnError: true }),
+      ]);
+      this.startupGateStage = "overview-images";
+      await this.preloadOverviewStartupAssets(stats);
+      return {
+        healthReady: !!health,
+        statsReady: !!stats,
+      };
+    },
+
+    async _finishInitAfterStartupGate({ healthReady = false, statsReady = false } = {}) {
       await this.initPwa();
       this.initMediaSession();
-      await this._refreshHealthStatus();
+      if (!healthReady) await this._refreshHealthStatus();
       this._resumeProtectedRealtime();
-      await this._refreshProtectedData();
+      await this._refreshProtectedData({ statsReady });
     },
 
-    async _resumeAfterApiReauth() {
+    async _resumeAfterApiReauth({ healthReady = false, statsReady = false } = {}) {
       this.initMediaSession();
-      await this._refreshHealthStatus();
+      if (!healthReady) await this._refreshHealthStatus();
       this._resumeProtectedRealtime();
-      await this._refreshProtectedData();
+      await this._refreshProtectedData({ statsReady });
     },
 
     async _continueStartupSequence({ resume = false } = {}) {
@@ -86,18 +111,30 @@ export function createAppInitMethods() {
 
       this._startupSequenceRunning = true;
       try {
+        let healthReady = false;
+        let statsReady = false;
         this.apiAuthError = "";
         this._syncApiAuthTokenFromCookie();
+        if (this.startupGateVisible) this.startupGateStage = "system";
         await this.loadSystemStatus({ silent: true, throwOnError: true });
         this.apiAuthRequired = false;
         this.apiAuthPromptVisible = false;
+        if (this.startupGateVisible) this.startupGateStage = "asset-delivery";
         await this.initAssetDelivery();
-        this.startupGateVisible = false;
+        if (this.startupGateVisible && this.activeView === "overview") {
+          const ready = await this._prepareOverviewStartupGate();
+          healthReady = ready.healthReady;
+          statsReady = ready.statsReady;
+        }
+        if (this.startupGateVisible) {
+          this.startupGateStage = "ready";
+          this._closeStartupGate();
+        }
 
         if (resume) {
-          await this._resumeAfterApiReauth();
+          await this._resumeAfterApiReauth({ healthReady, statsReady });
         } else {
-          await this._finishInitAfterStartupGate();
+          await this._finishInitAfterStartupGate({ healthReady, statsReady });
           this._startupSequenceComplete = true;
         }
         return true;
@@ -114,7 +151,7 @@ export function createAppInitMethods() {
         }
         this.healthOk = false;
         this.globalStatus = `error: ${msg}`;
-        this.startupGateVisible = false;
+        this._closeStartupGate();
         return false;
       } finally {
         this._startupSequenceRunning = false;
@@ -143,13 +180,15 @@ export function createAppInitMethods() {
       try {
         this._initShellListeners();
         this._initShellRouteState();
-        await this.initPwa();
-        await this.waitForStartupGatePaint();
+        if (this.startupGateVisible) {
+          this._markStartupGateSeenInSession();
+          await this.waitForStartupGatePaint();
+        }
         await this._continueStartupSequence();
       } catch (e) {
         this.healthOk = false;
         this.globalStatus = `error: ${e.message}`;
-        this.startupGateVisible = false;
+        this._closeStartupGate();
       }
     },
   };

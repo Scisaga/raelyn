@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-import secrets
 from collections.abc import Iterable
 
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-
-def _safe_compare_token(provided: str, expected: str) -> bool:
-    try:
-        return secrets.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
-    except UnicodeEncodeError:
-        return False
+from raelyn.api.auth import is_valid_bearer_token, normalize_bearer_token
 
 
 def normalize_mount_path(value: str | None, *, default: str = "/mcp") -> str:
@@ -23,10 +17,10 @@ def normalize_mount_path(value: str | None, *, default: str = "/mcp") -> str:
     return path or "/"
 
 
-def require_mcp_token(token: str | None) -> str:
-    value = str(token or "").strip()
+def require_bearer_token(token: str | None, *, label: str = "API_BEARER_TOKEN") -> str:
+    value = normalize_bearer_token(token)
     if not value:
-        raise RuntimeError("MCP_BEARER_TOKEN is required for MCP HTTP server")
+        raise RuntimeError(f"{label} is required for MCP HTTP server")
     return value
 
 
@@ -40,7 +34,7 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
         public_paths: Iterable[str] | None = None,
     ) -> None:
         super().__init__(app)
-        self._token = require_mcp_token(token)
+        self._token = require_bearer_token(token)
         self._protected_prefix = normalize_mount_path(protected_prefix)
         self._public_paths = {
             normalize_mount_path(path, default="/")
@@ -57,7 +51,7 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
 
         header = request.headers.get("authorization", "")
         scheme, _, provided = header.partition(" ")
-        if scheme.lower() != "bearer" or not provided or not _safe_compare_token(provided.strip(), self._token):
+        if scheme.lower() != "bearer" or not is_valid_bearer_token(provided.strip(), self._token):
             return JSONResponse(
                 status_code=401,
                 content={"ok": False, "detail": "unauthorized"},

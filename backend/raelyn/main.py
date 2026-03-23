@@ -42,9 +42,9 @@ def _static_root_file(filename: str, *, media_type: str) -> FileResponse:
 
 
 def create_app() -> FastAPI:
-    mcp_token = str(settings.mcp_bearer_token or "").strip()
+    shared_bearer_token = str(settings.api_bearer_token or "").strip()
     mcp_base_path = normalize_mount_path(settings.mcp_base_path)
-    mcp_mount = create_mcp_http_mount(token=mcp_token) if mcp_token else None
+    mcp_mount = create_mcp_http_mount(token=shared_bearer_token) if shared_bearer_token else None
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -72,7 +72,7 @@ def create_app() -> FastAPI:
     if mcp_mount is not None:
         app.add_middleware(
             BearerTokenAuthMiddleware,
-            token=mcp_token,
+            token=shared_bearer_token,
             protected_prefix=mcp_base_path,
             public_paths={f"{mcp_base_path}/health"},
         )

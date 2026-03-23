@@ -32,7 +32,6 @@ def _fake_health_session_scope():
 
 def _load_app(stack: ExitStack, *, token: str):
     stack.enter_context(patch.object(config.settings, "api_bearer_token", token))
-    stack.enter_context(patch.object(config.settings, "mcp_bearer_token", ""))
     stack.enter_context(patch("raelyn.db.init_db"))
     stack.enter_context(patch("raelyn.services.s3.s3_ensure_bucket"))
     stack.enter_context(patch("raelyn.recover_orphan_jobs.recover"))

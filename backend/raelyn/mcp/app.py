@@ -7,7 +7,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.server import StreamableHTTPASGIApp
 from mcp.server.transport_security import TransportSecuritySettings
 from raelyn.config import settings
-from raelyn.mcp.auth import require_mcp_token
+from raelyn.mcp.auth import require_bearer_token
 from raelyn.mcp.resources import register_resources
 from raelyn.mcp.tools import register_tools
 
@@ -37,7 +37,7 @@ class McpHttpMount:
 
 
 def create_mcp_http_mount(*, token: str) -> McpHttpMount:
-    require_mcp_token(token)
+    require_bearer_token(token)
     mcp = create_mcp_server()
     mcp.streamable_http_app()
     transport_app = StreamableHTTPASGIApp(mcp.session_manager)

@@ -11,6 +11,8 @@ def _raise_resource_error(exc: Exception) -> None:
         raise ResourceError(f"not_found: {exc}") from exc
     if isinstance(exc, ValueError):
         raise ResourceError(f"invalid_argument: {exc}") from exc
+    if isinstance(exc, RuntimeError):
+        raise ResourceError(f"not_ready: {exc}") from exc
     raise ResourceError(str(exc)) from exc
 
 
@@ -57,10 +59,31 @@ def register_resources(mcp: FastMCP) -> None:
         except Exception as exc:
             _raise_resource_error(exc)
 
-    @mcp.resource("raelyn://brief/{playlist_id}/{granularity}/{date_in_period}", mime_type="application/json")
-    def brief_resource(playlist_id: str, granularity: str, date_in_period: str):
+    @mcp.resource("raelyn://brief/{brief_id}", mime_type="application/json")
+    def brief_resource(brief_id: str):
         try:
-            return queries.get_brief(playlist_id, granularity=granularity, date_in_period=date_in_period)
+            return queries.get_brief(brief_id, include_body=False)
+        except Exception as exc:
+            _raise_resource_error(exc)
+
+    @mcp.resource("raelyn://brief/{brief_id}/body", mime_type="text/markdown")
+    def brief_body_resource(brief_id: str):
+        try:
+            return queries.read_brief_body(brief_id)
+        except Exception as exc:
+            _raise_resource_error(exc)
+
+    @mcp.resource("raelyn://playlist/{playlist_id}/briefs/by-date/{date}", mime_type="application/json")
+    def playlist_brief_resource(playlist_id: str, date: str):
+        try:
+            return queries.get_playlist_brief(playlist_id, date=date, include_body=False)
+        except Exception as exc:
+            _raise_resource_error(exc)
+
+    @mcp.resource("raelyn://playlist/{playlist_id}/briefs/by-date/{date}/body", mime_type="text/markdown")
+    def playlist_brief_body_resource(playlist_id: str, date: str):
+        try:
+            return queries.read_playlist_brief_body(playlist_id, date=date)
         except Exception as exc:
             _raise_resource_error(exc)
 

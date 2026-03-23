@@ -25,6 +25,7 @@ const SIDEBAR_COLLAPSED_KEY = "raelyn.ui.sidebarCollapsed";
 const SIDEBAR_HIDDEN_KEY = "raelyn.ui.sidebarHidden";
 const PWA_INSTALL_HINT_DISMISSED_KEY = "raelyn.ui.pwaInstallHintDismissed";
 const API_TOKEN_COOKIE_KEY = "raelyn_api_token";
+const STARTUP_GATE_SEEN_SESSION_KEY = "raelyn.ui.startupGateSeen";
 
 export function createAppModel() {
   return mergeModelSegments(
@@ -34,6 +35,7 @@ export function createAppModel() {
         apiTokenCookieKey: API_TOKEN_COOKIE_KEY,
         sidebarCollapsedKey: SIDEBAR_COLLAPSED_KEY,
         sidebarHiddenKey: SIDEBAR_HIDDEN_KEY,
+        startupGateSeenSessionKey: STARTUP_GATE_SEEN_SESSION_KEY,
       }),
     },
     { name: "toast", value: createToastModule() },

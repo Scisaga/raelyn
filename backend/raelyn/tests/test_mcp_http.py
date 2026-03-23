@@ -18,7 +18,6 @@ if str(_BACKEND_DIR) not in sys.path:
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from raelyn import config
-from raelyn.mcp.auth import _safe_compare_token
 
 
 class _DummySession:
@@ -40,7 +39,6 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
         mcp_allowed_origins: str = "",
     ):
         stack.enter_context(patch.object(config.settings, "api_bearer_token", "apitoken"))
-        stack.enter_context(patch.object(config.settings, "mcp_bearer_token", "testtoken"))
         stack.enter_context(patch.object(config.settings, "mcp_base_path", "/mcp"))
         stack.enter_context(patch.object(config.settings, "mcp_dns_rebinding_protection_enabled", True))
         stack.enter_context(patch.object(config.settings, "mcp_allowed_hosts", mcp_allowed_hosts))
@@ -56,7 +54,6 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
 
     def _load_app_without_mcp(self, stack: ExitStack):
         stack.enter_context(patch.object(config.settings, "api_bearer_token", ""))
-        stack.enter_context(patch.object(config.settings, "mcp_bearer_token", ""))
         stack.enter_context(patch.object(config.settings, "mcp_base_path", "/mcp"))
         stack.enter_context(patch.object(config.settings, "mcp_dns_rebinding_protection_enabled", True))
         stack.enter_context(patch.object(config.settings, "mcp_allowed_hosts", ""))
@@ -84,9 +81,6 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unauthorized.status_code, 401)
         self.assertEqual(unauthorized.headers.get("WWW-Authenticate"), "Bearer")
         self.assertEqual(unauthorized_api.status_code, 401)
-
-    def test_safe_compare_token_rejects_non_ascii_without_raising(self) -> None:
-        self.assertFalse(_safe_compare_token("你怀疑的MCP token", "testtoken"))
 
     async def test_mcp_is_not_mounted_when_token_disabled(self) -> None:
         with ExitStack() as stack:
@@ -137,6 +131,13 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
             )
+            stack.enter_context(
+                patch.object(
+                    queries,
+                    "read_brief_body",
+                    return_value="# Demo Brief",
+                )
+            )
             transport = ASGITransport(app=app)
 
             async with app.router.lifespan_context(app):
@@ -144,7 +145,7 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
                     transport=transport,
                     base_url="http://127.0.0.1:8000",
                     follow_redirects=True,
-                    headers={"Authorization": "Bearer testtoken"},
+                    headers={"Authorization": "Bearer apitoken"},
                 ) as http_client:
                     async with streamable_http_client(
                         "http://127.0.0.1:8000/mcp",
@@ -156,6 +157,7 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
                             await session.initialize()
                             tools = await session.list_tools()
                             tool_names = {tool.name for tool in tools.tools}
+                            get_brief_tool = next(tool for tool in tools.tools if tool.name == "get_brief")
                             tool_result = await session.call_tool(
                                 "get_video",
                                 {"video_id": "00000000-0000-0000-0000-000000000001"},
@@ -163,9 +165,17 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
                             resource_result = await session.read_resource(
                                 "raelyn://video/00000000-0000-0000-0000-000000000001/transcript/chunks/0"
                             )
+                            brief_body_resource = await session.read_resource(
+                                "raelyn://brief/00000000-0000-0000-0000-000000000003/body"
+                            )
 
         self.assertIn("get_video", tool_names)
         self.assertIn("get_video_context", tool_names)
+        self.assertIn("get_playlist_summary", tool_names)
+        self.assertIn("get_playlist_latest_brief", tool_names)
+        self.assertIn("list_latest_briefs", tool_names)
+        self.assertNotIn("get_playlist_context", tool_names)
+        self.assertEqual(set(get_brief_tool.inputSchema["properties"]), {"brief_id", "include_body"})
         self.assertEqual(
             tool_result.structuredContent,
             {"id": "00000000-0000-0000-0000-000000000001", "title": "Demo"},
@@ -174,6 +184,7 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
         resource_payload = json.loads(resource_result.contents[0].text)
         self.assertEqual(resource_payload["text"], "hello")
         self.assertEqual(resource_payload["chunk_index"], 0)
+        self.assertEqual(brief_body_resource.contents[0].text, "# Demo Brief")
 
     async def test_public_host_can_be_allowed_via_config(self) -> None:
         with ExitStack() as stack:
@@ -188,7 +199,7 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
                 async with AsyncClient(
                     transport=transport,
                     base_url="https://scisaga.cc:234",
-                    headers={"Authorization": "Bearer testtoken"},
+                    headers={"Authorization": "Bearer apitoken"},
                 ) as client:
                     response = await client.post(
                         "/mcp",

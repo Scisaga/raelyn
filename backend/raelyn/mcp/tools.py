@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from datetime import date
+from datetime import date as dt_date
 import uuid
 
 from mcp.server.fastmcp import FastMCP
@@ -103,9 +103,9 @@ def register_tools(mcp: FastMCP) -> None:
             _raise_tool_error(exc)
 
     @mcp.tool(name="get_playlist_videos", structured_output=True)
-    def get_playlist_videos(playlist_id: str, date_in_period: str, granularity: str = "day", limit: int = 50) -> list[dict[str, Any]]:
+    def get_playlist_videos(playlist_id: str, date: str, limit: int = 50) -> list[dict[str, Any]]:
         try:
-            return queries.get_playlist_videos(playlist_id, granularity=granularity, date_in_period=date_in_period, limit=limit)
+            return queries.get_playlist_videos(playlist_id, date=date, limit=limit)
         except Exception as exc:
             _raise_tool_error(exc)
 
@@ -115,16 +115,44 @@ def register_tools(mcp: FastMCP) -> None:
         granularity: str | None = None,
         limit: int = 20,
         offset: int = 0,
+        include_body: bool = False,
     ) -> list[dict[str, Any]]:
         try:
-            return queries.list_briefs(playlist_id=playlist_id, granularity=granularity, limit=limit, offset=offset)
+            return queries.list_briefs(
+                playlist_id=playlist_id,
+                granularity=granularity,
+                limit=limit,
+                offset=offset,
+                include_body=include_body,
+            )
         except Exception as exc:
             _raise_tool_error(exc)
 
     @mcp.tool(name="get_brief", structured_output=True)
-    def get_brief(playlist_id: str, granularity: str, date_in_period: str) -> dict[str, Any]:
+    def get_brief(brief_id: str, include_body: bool = True) -> dict[str, Any]:
         try:
-            return queries.get_brief(playlist_id, granularity=granularity, date_in_period=date_in_period)
+            return queries.get_brief(brief_id, include_body=include_body)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_playlist_brief", structured_output=True)
+    def get_playlist_brief(playlist_id: str, date: str, include_body: bool = True) -> dict[str, Any]:
+        try:
+            return queries.get_playlist_brief(playlist_id, date=date, include_body=include_body)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_playlist_latest_brief", structured_output=True)
+    def get_playlist_latest_brief(playlist_id: str, include_body: bool = False) -> dict[str, Any]:
+        try:
+            return queries.get_playlist_latest_brief(playlist_id, include_body=include_body)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="list_latest_briefs", structured_output=True)
+    def list_latest_briefs(limit: int = 20, offset: int = 0, include_body: bool = False) -> list[dict[str, Any]]:
+        try:
+            return queries.list_latest_briefs(limit=limit, offset=offset, include_body=include_body)
         except Exception as exc:
             _raise_tool_error(exc)
 
@@ -155,19 +183,17 @@ def register_tools(mcp: FastMCP) -> None:
         except Exception as exc:
             _raise_tool_error(exc)
 
-    @mcp.tool(name="get_playlist_context", structured_output=True)
-    def get_playlist_context(
+    @mcp.tool(name="get_playlist_summary", structured_output=True)
+    def get_playlist_summary(
         playlist_id: str,
-        date_in_period: str,
-        granularity: str = "day",
+        date: str,
         include_transcript: bool = False,
         limit: int = 50,
     ) -> dict[str, Any]:
         try:
-            return queries.get_playlist_context(
+            return queries.get_playlist_summary(
                 playlist_id,
-                granularity=granularity,
-                date_in_period=date_in_period,
+                date=date,
                 include_transcript=include_transcript,
                 limit=limit,
             )
@@ -196,8 +222,8 @@ def register_tools(mcp: FastMCP) -> None:
             _raise_tool_error(exc)
 
     @mcp.tool(name="generate_brief", structured_output=True)
-    def generate_brief(playlist_id: str, granularity: str, date_in_period: str) -> dict[str, Any]:
+    def generate_brief(playlist_id: str, granularity: str, date: str) -> dict[str, Any]:
         try:
-            return actions.generate_brief(uuid.UUID(playlist_id), granularity=granularity, date_in_period=date.fromisoformat(date_in_period))
+            return actions.generate_brief(uuid.UUID(playlist_id), granularity=granularity, date_in_period=dt_date.fromisoformat(date))
         except Exception as exc:
             _raise_tool_error(exc)

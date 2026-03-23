@@ -8,6 +8,22 @@ function readStoredBool(key) {
   }
 }
 
+function readSessionBool(key) {
+  try {
+    return sessionStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeSessionBool(key, value) {
+  try {
+    sessionStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    // ignore
+  }
+}
+
 function readCookieValue(key) {
   try {
     const prefix = `${encodeURIComponent(String(key || "").trim())}=`;
@@ -33,7 +49,8 @@ function clearCookieValue(key) {
   document.cookie = `${encodedKey}=; Path=/; Max-Age=0; SameSite=Lax`;
 }
 
-export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, sidebarHiddenKey }) {
+export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, sidebarHiddenKey, startupGateSeenSessionKey }) {
+  const startupGateSeenInSession = readSessionBool(startupGateSeenSessionKey);
   return {
     sidebarCollapsed: readStoredBool(sidebarCollapsedKey),
     sidebarHidden: readStoredBool(sidebarHiddenKey),
@@ -50,7 +67,9 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
     apiAuthError: "",
     _startupSequenceRunning: false,
     _startupSequenceComplete: false,
-    startupGateVisible: true,
+    startupGateSeenInSession,
+    startupGateVisible: !startupGateSeenInSession,
+    startupGateStage: startupGateSeenInSession ? "idle" : "boot",
     pause: { paused: false, reason: null, message: null, set_at: null },
     providerPauses: {},
     assetDelivery: {
@@ -230,12 +249,23 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
       }
     },
 
+    _markStartupGateSeenInSession() {
+      this.startupGateSeenInSession = true;
+      writeSessionBool(startupGateSeenSessionKey, true);
+    },
+
+    _closeStartupGate() {
+      this.startupGateVisible = false;
+      this.startupGateStage = "idle";
+    },
+
     _openApiAuthGate({ message = "", preserveDraft = false } = {}) {
       this._clearApiAuthToken();
       this.apiAuthRequired = true;
       this.apiAuthPromptVisible = true;
       this.apiAuthSubmitting = false;
       this.startupGateVisible = true;
+      this.startupGateStage = "auth";
       this.apiAuthError = String(message || "").trim();
       if (!preserveDraft) this.apiAuthTokenDraft = "";
       this._suspendApiAuthProtectedRealtime();
@@ -252,15 +282,19 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
       this._openApiAuthGate({ message, preserveDraft: keepDraft });
     },
 
-    startupGateTitle() {
-      if (this.apiAuthPromptVisible) return "请输入访问令牌";
-      return this.assetDelivery && this.assetDelivery.probed ? "正在载入控制台…" : "正在检测资源通道…";
+    startupGateMessage() {
+      if (this.apiAuthPromptVisible) return "输入访问令牌";
+      if (this.startupGateStage === "system") return "正在建立连接…";
+      if (this.startupGateStage === "asset-delivery") return "正在检测资源通道…";
+      if (this.startupGateStage === "overview-data") return "正在载入概览…";
+      if (this.startupGateStage === "overview-images") return "正在加载图片…";
+      if (this.startupGateStage === "ready") return "即将完成…";
+      return "Loading…";
     },
 
-    startupGateHint() {
-      if (this.apiAuthPromptVisible) return "主站 API 已启用 token 保护，输入后按回车继续。";
-      if (this.assetDelivery && this.assetDelivery.probed) return "探针已完成，正在准备页面…";
-      return "启动探针完成后显示控制台";
+    startupGateAriaLabel() {
+      if (this.apiAuthPromptVisible) return "请输入访问令牌";
+      return this.startupGateMessage();
     },
 
     async waitForStartupGatePaint() {
@@ -275,6 +309,65 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
 
     startupGateAuthMessage() {
       return String(this.apiAuthError || "").trim() || "主站 API 已启用 token 保护，输入后按回车继续。";
+    },
+
+    _collectOverviewStartupAssets(statsPayload = null) {
+      const payload = statsPayload && typeof statsPayload === "object" ? statsPayload : {};
+      const recentMedia = Array.isArray(payload.recent_media) ? payload.recent_media : this.stats.recentMedia;
+      const recentPlaylists = Array.isArray(payload.recent_playlists) ? payload.recent_playlists : this.stats.recentPlaylists;
+      const out = [];
+      const seen = new Set();
+      const pushAsset = (asset) => {
+        const id = String((asset && asset.id) || "").trim();
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+        out.push(asset);
+      };
+
+      for (const media of Array.isArray(recentMedia) ? recentMedia : []) {
+        pushAsset(media && media.avatar_asset);
+      }
+      for (const playlist of Array.isArray(recentPlaylists) ? recentPlaylists : []) {
+        pushAsset(playlist && playlist.avatar_asset);
+        for (const media of Array.isArray(playlist && playlist.media_preview) ? playlist.media_preview : []) {
+          pushAsset(media && media.avatar_asset);
+        }
+      }
+      return out;
+    },
+
+    _preloadImageUrl(url) {
+      const src = String(url || "").trim();
+      if (!src) return Promise.resolve();
+      if (typeof Image === "undefined") return Promise.resolve();
+
+      return new Promise((resolve) => {
+        const img = new Image();
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          img.onload = null;
+          img.onerror = null;
+          resolve();
+        };
+        img.onload = done;
+        img.onerror = done;
+        img.decoding = "async";
+        img.src = src;
+        if (img.complete) done();
+      });
+    },
+
+    async preloadOverviewStartupAssets(statsPayload = null) {
+      const assets = this._collectOverviewStartupAssets(statsPayload);
+      if (!assets.length) return;
+      await Promise.all(
+        assets.map((asset) => {
+          const url = this.assetContentUrl(asset);
+          return this._preloadImageUrl(url);
+        })
+      );
     },
 
     async loadSystemStatus({ silent = true, throwOnError = false } = {}) {

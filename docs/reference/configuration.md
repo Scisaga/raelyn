@@ -16,6 +16,7 @@
   - 为空时不启用主站 API 鉴权。
   - 非空时 `/api/*` 需要 `Authorization: Bearer <token>` 或 `raelyn_api_token` cookie。
   - `/api/ws/*` 需要 query `token=<token>`。
+  - 非空时主 API 进程也会额外挂载 `/mcp`，MCP HTTP 复用同一个 Bearer Token。
 
 ### 数据与对象存储
 
@@ -98,8 +99,6 @@
 ### MCP HTTP
 
 - `MCP_BASE_PATH`
-- `MCP_BEARER_TOKEN`
-  - 非空时主 API 进程会挂载 `/mcp`；为空时 `/mcp` 与 `/mcp/health` 返回 `404`。
 - `MCP_ALLOWED_HOSTS`
   - 逗号分隔的 Host 白名单，用于 MCP SDK 的 DNS rebinding 防护。
   - 反向代理公网访问时，需要把外部 Host 加进去，例如 `scisaga.cc:234`。

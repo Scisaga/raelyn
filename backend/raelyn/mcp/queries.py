@@ -23,6 +23,7 @@ from .serialize import serialize_for_mcp
 
 _PUBLISHED_AT_BACKFILLED = False
 _PRESIGNED_EXPIRES_SECONDS = 3600
+_BRIEF_BODY_MIME_TYPE = "text/markdown"
 
 
 def _parse_uuid(value: str | uuid.UUID, field: str) -> uuid.UUID:
@@ -375,56 +376,168 @@ def _video_transcript_payload(session: Session, video_id: uuid.UUID, *, chunk_in
     return _build_transcript_chunk_payload(video_id, asset, chunk_index=chunk_index, chunk_size=normalize_chunk_size(chunk_size))
 
 
-def _brief_payload(session: Session, playlist_id: uuid.UUID, *, granularity: str, date_in_period: date, include_markdown: bool) -> dict[str, Any]:
+def _brief_body_uri_for_brief(brief_id: uuid.UUID) -> str:
+    return f"raelyn://brief/{brief_id}/body"
+
+
+def _brief_body_uri_for_playlist_date(playlist_id: uuid.UUID, target_date: date) -> str:
+    return f"raelyn://playlist/{playlist_id}/briefs/by-date/{target_date.isoformat()}/body"
+
+
+def _read_brief_body(asset: Asset | None) -> tuple[bool, str]:
+    if not asset:
+        return False, ""
+    try:
+        body = s3_get_bytes(bucket=asset.s3_bucket, key=asset.s3_key).decode("utf-8", errors="ignore")
+    except Exception:
+        return False, ""
+    return True, body
+
+
+def _brief_asset_ref(asset: Asset | None) -> dict[str, Any] | None:
+    if not asset:
+        return None
+    return serialize_for_mcp(build_asset_ref(asset, expires_seconds=_PRESIGNED_EXPIRES_SECONDS).model_dump())
+
+
+def resolve_playlist_brief_target(session: Session, playlist_id: uuid.UUID, target_date: date) -> tuple[Playlist, str, date, date]:
     playlist = session.get(Playlist, playlist_id)
     if not playlist:
         raise LookupError("playlist not found")
+    granularity = normalize_granularity(getattr(playlist, "brief_granularity", None) or "day")
+    period_start_value = period_start(target_date, granularity)
+    period_end_value = period_end_inclusive(period_start_value, granularity)
+    return playlist, granularity, period_start_value, period_end_value
 
-    g = normalize_granularity(granularity)
-    period_start_value = period_start(date_in_period, g)
-    period_end_value = period_end_inclusive(period_start_value, g)
-    brief = session.execute(
-        select(Brief).where(Brief.playlist_id == playlist_id, Brief.granularity == g, Brief.period_start == period_start_value)
+
+def _find_brief(session: Session, *, playlist_id: uuid.UUID, granularity: str, period_start_value: date) -> Brief | None:
+    return session.execute(
+        select(Brief).where(Brief.playlist_id == playlist_id, Brief.granularity == granularity, Brief.period_start == period_start_value)
     ).scalar_one_or_none()
+
+
+def _playlist_latest_date(session: Session, playlist_id: uuid.UUID) -> date | None:
+    max_published_at = session.execute(
+        select(func.max(Video.published_at))
+        .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
+        .where(PlaylistMedia.playlist_id == playlist_id)
+    ).scalar_one_or_none()
+    if max_published_at:
+        return local_date(max_published_at)
+    max_created_at = session.execute(
+        select(func.max(Video.created_at))
+        .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
+        .where(PlaylistMedia.playlist_id == playlist_id)
+    ).scalar_one_or_none()
+    return local_date(max_created_at)
+
+
+def resolve_latest_brief_target(session: Session, playlist: Playlist) -> tuple[str, date, date, date] | None:
+    granularity = normalize_granularity(getattr(playlist, "brief_granularity", None) or "day")
+    latest_date_value = _playlist_latest_date(session, playlist.id)
+    if latest_date_value is None:
+        return None
+    period_start_value = period_start(latest_date_value, granularity)
+    period_end_value = period_end_inclusive(period_start_value, granularity)
+    return granularity, latest_date_value, period_start_value, period_end_value
+
+
+def build_brief_payload(
+    session: Session,
+    brief: Brief | None,
+    *,
+    playlist_id: uuid.UUID,
+    granularity: str,
+    period_start_value: date | None,
+    period_end_value: date | None,
+    include_body: bool,
+    body_resource_uri: str | None,
+) -> dict[str, Any]:
     if not brief:
         return {
             "ok": False,
             "status": "not_ready",
+            "brief_id": None,
             "playlist_id": str(playlist_id),
-            "granularity": g,
+            "granularity": granularity,
             "period_start": period_start_value,
             "period_end": period_end_value,
-            "brief_id": None,
             "markdown_asset": None,
-            "markdown": "",
+            "body_readable": False,
+            "body_resource_uri": None,
+            "body_mime_type": _BRIEF_BODY_MIME_TYPE,
+            "body_markdown": "",
+            "error_message": None,
+            "created_at": None,
+            "updated_at": None,
         }
+
+    asset = session.get(Asset, brief.markdown_asset_id) if brief.markdown_asset_id else None
+    asset_ref = _brief_asset_ref(asset)
+    body_readable = False
+    body_markdown = ""
+    if brief.status == "ready" and asset is not None:
+        body_readable, body_text = _read_brief_body(asset)
+        if include_body and body_readable:
+            body_markdown = body_text
 
     payload = {
         "ok": brief.status == "ready",
         "status": brief.status,
         "brief_id": str(brief.id),
         "playlist_id": str(playlist_id),
-        "granularity": g,
+        "granularity": granularity,
         "period_start": period_start_value,
         "period_end": period_end_value,
-        "markdown_asset": None,
-        "markdown": "",
+        "markdown_asset": asset_ref,
+        "body_readable": body_readable,
+        "body_resource_uri": body_resource_uri if body_readable else None,
+        "body_mime_type": _BRIEF_BODY_MIME_TYPE,
+        "body_markdown": body_markdown,
         "error_message": brief.error_message,
         "created_at": brief.created_at,
         "updated_at": brief.updated_at,
     }
-    if brief.markdown_asset_id:
-        asset = session.get(Asset, brief.markdown_asset_id)
-        if asset:
-            payload["markdown_asset"] = serialize_for_mcp(build_asset_ref(asset, expires_seconds=_PRESIGNED_EXPIRES_SECONDS).model_dump())
-            payload["expires_in_seconds"] = _PRESIGNED_EXPIRES_SECONDS
-            payload["temporary_url"] = True
-            if include_markdown:
-                try:
-                    payload["markdown"] = s3_get_bytes(bucket=asset.s3_bucket, key=asset.s3_key).decode("utf-8", errors="ignore")
-                except Exception:
-                    payload["markdown"] = ""
+    if asset_ref:
+        payload["expires_in_seconds"] = _PRESIGNED_EXPIRES_SECONDS
+        payload["temporary_url"] = True
     return payload
+
+
+def _read_brief_body_by_id(session: Session, brief_id: uuid.UUID) -> str:
+    brief = session.get(Brief, brief_id)
+    if not brief:
+        raise LookupError("brief not found")
+    asset = session.get(Asset, brief.markdown_asset_id) if brief.markdown_asset_id else None
+    body_readable, body_markdown = _read_brief_body(asset)
+    if not body_readable:
+        raise RuntimeError("brief body not readable")
+    return body_markdown
+
+
+def _read_playlist_brief_body_by_date(session: Session, playlist_id: uuid.UUID, target_date: date) -> str:
+    _playlist, granularity, period_start_value, _period_end_value = resolve_playlist_brief_target(session, playlist_id, target_date)
+    brief = _find_brief(session, playlist_id=playlist_id, granularity=granularity, period_start_value=period_start_value)
+    if not brief:
+        raise RuntimeError("brief body not readable")
+    asset = session.get(Asset, brief.markdown_asset_id) if brief.markdown_asset_id else None
+    body_readable, body_markdown = _read_brief_body(asset)
+    if not body_readable:
+        raise RuntimeError("brief body not readable")
+    return body_markdown
+
+
+def read_brief_body(brief_id: str | uuid.UUID) -> str:
+    brief_uuid = _parse_uuid(brief_id, "brief_id")
+    with session_scope() as session:
+        return _read_brief_body_by_id(session, brief_uuid)
+
+
+def read_playlist_brief_body(playlist_id: str | uuid.UUID, *, date: str | date) -> str:
+    playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
+    target_date = _parse_date(date, "date")
+    with session_scope() as session:
+        return _read_playlist_brief_body_by_date(session, playlist_uuid, target_date)
 
 
 def _parse_csv(value: str | None) -> list[str]:
@@ -698,16 +811,11 @@ def _playlist_videos(
     playlist_uuid: uuid.UUID,
     *,
     granularity: str,
-    date_in_period: date,
+    period_start_value: date,
     limit: int,
 ) -> list[dict[str, Any]]:
-    playlist = session.get(Playlist, playlist_uuid)
-    if not playlist:
-        raise LookupError("playlist not found")
-
     g = normalize_granularity(granularity)
-    start_value = period_start(date_in_period, g)
-    start_utc, end_utc = period_bounds_utc(start_value, g)
+    start_utc, end_utc = period_bounds_utc(period_start_value, g)
     rows = (
         session.execute(
             select(Video, Media)
@@ -730,15 +838,23 @@ def _playlist_videos(
 def get_playlist_videos(
     playlist_id: str | uuid.UUID,
     *,
-    granularity: str = "day",
-    date_in_period: str | date,
+    date: str | date,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
-    target_date = _parse_date(date_in_period, "date")
+    target_date = _parse_date(date, "date")
     limit_value = _clamp_limit(limit, default=50, maximum=200)
     with session_scope() as session:
-        return serialize_for_mcp(_playlist_videos(session, playlist_uuid, granularity=granularity, date_in_period=target_date, limit=limit_value))
+        _playlist, granularity, period_start_value, _period_end_value = resolve_playlist_brief_target(session, playlist_uuid, target_date)
+        return serialize_for_mcp(
+            _playlist_videos(
+                session,
+                playlist_uuid,
+                granularity=granularity,
+                period_start_value=period_start_value,
+                limit=limit_value,
+            )
+        )
 
 
 def list_briefs(
@@ -747,6 +863,7 @@ def list_briefs(
     granularity: str | None = None,
     limit: int = 20,
     offset: int = 0,
+    include_body: bool = False,
 ) -> list[dict[str, Any]]:
     with session_scope() as session:
         limit_value = _clamp_limit(limit, default=20, maximum=100)
@@ -762,36 +879,142 @@ def list_briefs(
         briefs = session.execute(stmt.order_by(Brief.period_start.desc()).limit(limit_value).offset(offset_value)).scalars().all()
         items = []
         for brief in briefs:
-            payload = {
-                "ok": brief.status == "ready",
-                "status": brief.status,
-                "brief_id": str(brief.id),
-                "playlist_id": str(brief.playlist_id),
-                "granularity": brief.granularity,
-                "period_start": brief.period_start,
-                "period_end": period_end_inclusive(brief.period_start, brief.granularity),
-                "markdown_asset": None,
-                "error_message": brief.error_message,
-                "created_at": brief.created_at,
-                "updated_at": brief.updated_at,
-            }
-            if brief.markdown_asset_id:
-                asset = session.get(Asset, brief.markdown_asset_id)
-                if asset:
-                    payload["markdown_asset"] = serialize_for_mcp(
-                        build_asset_ref(asset, expires_seconds=_PRESIGNED_EXPIRES_SECONDS).model_dump()
-                    )
-                    payload["expires_in_seconds"] = _PRESIGNED_EXPIRES_SECONDS
-                    payload["temporary_url"] = True
-            items.append(payload)
+            items.append(
+                build_brief_payload(
+                    session,
+                    brief,
+                    playlist_id=brief.playlist_id,
+                    granularity=brief.granularity,
+                    period_start_value=brief.period_start,
+                    period_end_value=period_end_inclusive(brief.period_start, brief.granularity),
+                    include_body=include_body,
+                    body_resource_uri=_brief_body_uri_for_brief(brief.id),
+                )
+            )
         return serialize_for_mcp(items)
 
 
-def get_brief(playlist_id: str | uuid.UUID, *, granularity: str, date_in_period: str | date) -> dict[str, Any]:
-    playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
-    target_date = _parse_date(date_in_period, "date")
+def get_brief(brief_id: str | uuid.UUID, *, include_body: bool = True) -> dict[str, Any]:
+    brief_uuid = _parse_uuid(brief_id, "brief_id")
     with session_scope() as session:
-        return serialize_for_mcp(_brief_payload(session, playlist_uuid, granularity=granularity, date_in_period=target_date, include_markdown=True))
+        brief = session.get(Brief, brief_uuid)
+        if not brief:
+            raise LookupError("brief not found")
+        return serialize_for_mcp(
+            build_brief_payload(
+                session,
+                brief,
+                playlist_id=brief.playlist_id,
+                granularity=brief.granularity,
+                period_start_value=brief.period_start,
+                period_end_value=period_end_inclusive(brief.period_start, brief.granularity),
+                include_body=include_body,
+                body_resource_uri=_brief_body_uri_for_brief(brief.id),
+            )
+        )
+
+
+def get_playlist_brief(playlist_id: str | uuid.UUID, *, date: str | date, include_body: bool = True) -> dict[str, Any]:
+    playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
+    target_date = _parse_date(date, "date")
+    with session_scope() as session:
+        _playlist, granularity, period_start_value, period_end_value = resolve_playlist_brief_target(session, playlist_uuid, target_date)
+        brief = _find_brief(session, playlist_id=playlist_uuid, granularity=granularity, period_start_value=period_start_value)
+        return serialize_for_mcp(
+            build_brief_payload(
+                session,
+                brief,
+                playlist_id=playlist_uuid,
+                granularity=granularity,
+                period_start_value=period_start_value,
+                period_end_value=period_end_value,
+                include_body=include_body,
+                body_resource_uri=_brief_body_uri_for_playlist_date(playlist_uuid, target_date),
+            )
+        )
+
+
+def get_playlist_latest_brief(playlist_id: str | uuid.UUID, *, include_body: bool = False) -> dict[str, Any]:
+    playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
+    with session_scope() as session:
+        playlist = session.get(Playlist, playlist_uuid)
+        if not playlist:
+            raise LookupError("playlist not found")
+        target = resolve_latest_brief_target(session, playlist)
+        if target is None:
+            granularity = normalize_granularity(getattr(playlist, "brief_granularity", None) or "day")
+            return serialize_for_mcp(
+                build_brief_payload(
+                    session,
+                    None,
+                    playlist_id=playlist_uuid,
+                    granularity=granularity,
+                    period_start_value=None,
+                    period_end_value=None,
+                    include_body=include_body,
+                    body_resource_uri=None,
+                )
+            )
+
+        granularity, _latest_date_value, period_start_value, period_end_value = target
+        brief = _find_brief(session, playlist_id=playlist_uuid, granularity=granularity, period_start_value=period_start_value)
+        body_resource_uri = _brief_body_uri_for_brief(brief.id) if brief else None
+        return serialize_for_mcp(
+            build_brief_payload(
+                session,
+                brief,
+                playlist_id=playlist_uuid,
+                granularity=granularity,
+                period_start_value=period_start_value,
+                period_end_value=period_end_value,
+                include_body=include_body,
+                body_resource_uri=body_resource_uri,
+            )
+        )
+
+
+def list_latest_briefs(*, limit: int = 20, offset: int = 0, include_body: bool = False) -> list[dict[str, Any]]:
+    with session_scope() as session:
+        limit_value = _clamp_limit(limit, default=20, maximum=100)
+        offset_value = _clamp_offset(offset)
+        playlists = session.execute(
+            select(Playlist).order_by(Playlist.updated_at.desc()).limit(limit_value).offset(offset_value)
+        ).scalars().all()
+        items: list[dict[str, Any]] = []
+        for playlist in playlists:
+            target = resolve_latest_brief_target(session, playlist)
+            if target is None:
+                granularity = normalize_granularity(getattr(playlist, "brief_granularity", None) or "day")
+                items.append(
+                    build_brief_payload(
+                        session,
+                        None,
+                        playlist_id=playlist.id,
+                        granularity=granularity,
+                        period_start_value=None,
+                        period_end_value=None,
+                        include_body=include_body,
+                        body_resource_uri=None,
+                    )
+                )
+                continue
+
+            granularity, _latest_date_value, period_start_value, period_end_value = target
+            brief = _find_brief(session, playlist_id=playlist.id, granularity=granularity, period_start_value=period_start_value)
+            body_resource_uri = _brief_body_uri_for_brief(brief.id) if brief else None
+            items.append(
+                build_brief_payload(
+                    session,
+                    brief,
+                    playlist_id=playlist.id,
+                    granularity=granularity,
+                    period_start_value=period_start_value,
+                    period_end_value=period_end_value,
+                    include_body=include_body,
+                    body_resource_uri=body_resource_uri,
+                )
+            )
+        return serialize_for_mcp(items)
 
 
 def list_jobs(
@@ -864,26 +1087,25 @@ def get_video_context(video_id: str | uuid.UUID) -> dict[str, Any]:
         )
 
 
-def get_playlist_context(
+def get_playlist_summary(
     playlist_id: str | uuid.UUID,
     *,
-    granularity: str = "day",
-    date_in_period: str | date,
+    date: str | date,
     include_transcript: bool = False,
     limit: int = 50,
 ) -> dict[str, Any]:
     playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
-    target_date = _parse_date(date_in_period, "date")
+    target_date = _parse_date(date, "date")
     limit_value = _clamp_limit(limit, default=50, maximum=200)
     with session_scope() as session:
-        playlist = session.get(Playlist, playlist_uuid)
-        if not playlist:
-            raise LookupError("playlist not found")
-
-        g = normalize_granularity(granularity)
-        start_value = period_start(target_date, g)
-        end_value = period_end_inclusive(start_value, g)
-        videos = _playlist_videos(session, playlist_uuid, granularity=g, date_in_period=target_date, limit=limit_value)
+        playlist, granularity, period_start_value, period_end_value = resolve_playlist_brief_target(session, playlist_uuid, target_date)
+        videos = _playlist_videos(
+            session,
+            playlist_uuid,
+            granularity=granularity,
+            period_start_value=period_start_value,
+            limit=limit_value,
+        )
         transcript_ready_count = 0
         note_ready_count = 0
         for item in videos:
@@ -900,14 +1122,23 @@ def get_playlist_context(
                 note_ready_count += 1
             if include_transcript and transcript_asset:
                 item["transcript"] = _build_transcript_chunk_payload(video_uuid, transcript_asset, chunk_index=0, chunk_size=4_000)
-        brief = _brief_payload(session, playlist_uuid, granularity=g, date_in_period=target_date, include_markdown=True)
+        brief = build_brief_payload(
+            session,
+            _find_brief(session, playlist_id=playlist_uuid, granularity=granularity, period_start_value=period_start_value),
+            playlist_id=playlist_uuid,
+            granularity=granularity,
+            period_start_value=period_start_value,
+            period_end_value=period_end_value,
+            include_body=True,
+            body_resource_uri=_brief_body_uri_for_playlist_date(playlist_uuid, target_date),
+        )
         return serialize_for_mcp(
             {
                 "playlist": _playlist_summary_payload(session, playlist),
-                "granularity": g,
+                "granularity": granularity,
                 "date": target_date,
-                "period_start": start_value,
-                "period_end": end_value,
+                "period_start": period_start_value,
+                "period_end": period_end_value,
                 "video_count": len(videos),
                 "transcript_ready_count": transcript_ready_count,
                 "note_ready_count": note_ready_count,

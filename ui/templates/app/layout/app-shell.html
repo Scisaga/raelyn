@@ -19,37 +19,64 @@
         x-transition.opacity.duration.300ms
         :role="apiAuthPromptVisible ? 'dialog' : 'status'"
         aria-live="polite"
-        :aria-label="apiAuthPromptVisible ? '请输入访问令牌' : '正在检测资源通道'"
+        :aria-label="startupGateAriaLabel()"
       >
+        <svg class="pointer-events-none absolute h-0 w-0" aria-hidden="true" focusable="false">
+          <defs>
+            <filter id="raelyn-startup-goo">
+              <feGaussianBlur in="SourceGraphic" stdDeviation="10" result="blur"></feGaussianBlur>
+              <feColorMatrix
+                in="blur"
+                mode="matrix"
+                values="1 0 0 0 0
+                        0 1 0 0 0
+                        0 0 1 0 0
+                        0 0 0 22 -10"
+                result="goo"
+              ></feColorMatrix>
+              <feComposite in="SourceGraphic" in2="goo" operator="atop"></feComposite>
+            </filter>
+          </defs>
+        </svg>
+
         <div class="absolute inset-0 raelyn-startup-mesh"></div>
         <div class="absolute raelyn-startup-glow raelyn-startup-glow-a"></div>
         <div class="absolute raelyn-startup-glow raelyn-startup-glow-b"></div>
         <div class="absolute raelyn-startup-glow raelyn-startup-glow-c"></div>
 
         <div class="relative flex min-h-screen items-center justify-center px-6">
-          <div class="w-full max-w-sm -translate-y-3 md:-translate-y-4 rounded-[1rem] border border-slate-800/80 bg-slate-950/35 px-8 pt-8 pb-6 shadow-[0_30px_120px_rgba(0,0,0,0.55)] backdrop-blur-xl">
-            <div class="relative mx-auto h-44 w-44" aria-hidden="true">
-              <div class="raelyn-startup-ring raelyn-startup-ring-outer"></div>
-              <div class="raelyn-startup-ring raelyn-startup-ring-middle"></div>
-              <div class="raelyn-startup-ring raelyn-startup-ring-inner"></div>
-              <div class="raelyn-startup-core"></div>
+          <div class="raelyn-startup-stage w-full max-w-md">
+            <div class="raelyn-startup-blob-scene" aria-hidden="true">
+              <div class="raelyn-startup-wave raelyn-startup-wave-a"></div>
+              <div class="raelyn-startup-wave raelyn-startup-wave-b"></div>
+              <div class="raelyn-startup-orbit"></div>
+              <div class="raelyn-startup-halo"></div>
+              <div class="raelyn-startup-liquid">
+                <div class="raelyn-startup-blob raelyn-startup-blob-a"></div>
+                <div class="raelyn-startup-blob raelyn-startup-blob-b"></div>
+                <div class="raelyn-startup-blob raelyn-startup-blob-c"></div>
+                <div class="raelyn-startup-blob raelyn-startup-blob-d"></div>
+                <div class="raelyn-startup-caustic"></div>
+              </div>
+              <div class="raelyn-startup-blob-highlight"></div>
               <div class="raelyn-startup-logo">
                 <img src="/static/brand/logo.png" alt="" class="raelyn-startup-logo-image" loading="eager" decoding="async" />
               </div>
-              <div class="raelyn-startup-bars">
-                <span></span>
-                <span></span>
-                <span></span>
-                <span></span>
-                <span></span>
-              </div>
+              <div class="raelyn-startup-spec"></div>
             </div>
 
-            <div class="mt-6 text-center text-[11px] font-semibold uppercase tracking-[0.42em] text-emerald-300/80">RAELYN</div>
-            <div class="mt-2.5 text-center text-xl font-semibold text-slate-100" x-text="startupGateTitle()"></div>
-            <div class="mt-2 text-center text-sm leading-6 text-slate-400" x-text="startupGateHint()"></div>
+            <div class="mt-8 text-center">
+              <div class="text-[11px] font-semibold uppercase tracking-[0.48em] text-slate-500">RAELYN</div>
+              <div class="mt-4 text-lg font-medium tracking-[0.01em] text-slate-100" x-text="startupGateMessage()"></div>
+            </div>
 
-            <div class="mt-6" x-show="apiAuthPromptVisible" x-transition.opacity.duration.200ms>
+            <div class="raelyn-startup-dots mt-5" x-show="!apiAuthPromptVisible" x-transition.opacity.duration.200ms aria-hidden="true">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+
+            <div class="mt-6 w-full max-w-sm mx-auto" x-show="apiAuthPromptVisible" x-transition.opacity.duration.200ms>
               <div class="flex items-stretch gap-2">
                 <input
                   x-ref="startupTokenInput"
