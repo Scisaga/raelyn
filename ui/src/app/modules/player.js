@@ -182,6 +182,9 @@ export function createPlayerModule() {
       this.modals.addMedia = false;
       this.modals.createPlaylist = false;
       this.modals.mediaImport = false;
+      if (typeof this._stopDocumentMediaPlayback === "function") {
+        this._stopDocumentMediaPlayback({ clearSources: true });
+      }
 
       const nextId = String(video.id || "").trim();
       const currentUrl = `${window.location.pathname || "/"}${window.location.search || ""}`;

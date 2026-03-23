@@ -17,6 +17,9 @@ export function createAppInitMethods() {
         if (this.activeView === "playlist" && viewKey !== "playlist" && typeof this.leavePlaylistPage === "function") {
           this.leavePlaylistPage();
         }
+        if (this.activeView !== viewKey && typeof this._stopDocumentMediaPlayback === "function") {
+          this._stopDocumentMediaPlayback({ clearSources: true });
+        }
         this.activeView = viewKey;
         const item = this.navItems.find((nav) => nav.key === viewKey);
         this.pageTitle = item ? item.label : viewKey;

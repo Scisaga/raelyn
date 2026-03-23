@@ -46,6 +46,9 @@ export function createPlaylistsViewMethods() {
       this.modals.addMedia = false;
       this.modals.createPlaylist = false;
       this.modals.mediaImport = false;
+      if (typeof this._stopDocumentMediaPlayback === "function") {
+        this._stopDocumentMediaPlayback({ clearSources: true });
+      }
       if (typeof this.leaveVideoPage === "function") this.leaveVideoPage();
       this.playlistNameEditing = false;
       this.playlistNameDraft = "";

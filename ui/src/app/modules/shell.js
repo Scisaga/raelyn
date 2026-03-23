@@ -221,6 +221,41 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
       this[name] = null;
     },
 
+    _stopDocumentMediaPlayback({ clearSources = false } = {}) {
+      let elements = [];
+      try {
+        elements = Array.from(document.querySelectorAll("video, audio"));
+      } catch {
+        elements = [];
+      }
+
+      for (const el of elements) {
+        if (!el) continue;
+        try {
+          if (typeof el.pause === "function") el.pause();
+        } catch {
+          // ignore
+        }
+        if (!clearSources) continue;
+        try {
+          el.removeAttribute("src");
+        } catch {
+          // ignore
+        }
+        try {
+          const sources = el.querySelectorAll ? Array.from(el.querySelectorAll("source")) : [];
+          for (const source of sources) source.removeAttribute("src");
+        } catch {
+          // ignore
+        }
+        try {
+          if (typeof el.load === "function") el.load();
+        } catch {
+          // ignore
+        }
+      }
+    },
+
     _suspendApiAuthProtectedRealtime() {
       try {
         if (typeof this._disconnectJobStatsWs === "function") this._disconnectJobStatsWs();
