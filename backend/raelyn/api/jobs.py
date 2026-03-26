@@ -42,6 +42,7 @@ class JobListOut(OrmModel):
     video_title: str | None = None
     video_published_at: Any | None = None
     video_provider_video_id: str | None = None
+    video_url: str | None = None
 
 
 class JobOut(JobListOut):
@@ -97,9 +98,11 @@ def _job_context_maps(
     video_context_by_id: dict[str, dict[str, Any]] = {}
     if video_ids:
         rows = session.execute(
-            select(Video.id, Video.media_id, Video.title, Video.published_at, Video.provider_video_id).where(Video.id.in_(video_ids))
+            select(Video.id, Video.media_id, Video.title, Video.published_at, Video.provider_video_id, Video.url).where(
+                Video.id.in_(video_ids)
+            )
         ).all()
-        for video_id, media_id, title, published_at, provider_video_id in rows:
+        for video_id, media_id, title, published_at, provider_video_id, url in rows:
             video_context_by_id[str(video_id)] = {
                 "media_id": str(media_id) if media_id else None,
                 "title": str(title).strip() if isinstance(title, str) and title.strip() else None,
@@ -109,6 +112,7 @@ def _job_context_maps(
                     if isinstance(provider_video_id, str) and str(provider_video_id).strip()
                     else None
                 ),
+                "url": str(url).strip() if isinstance(url, str) and str(url).strip() else None,
             }
             if media_id:
                 media_ids.append(media_id)
@@ -163,7 +167,7 @@ def list_jobs(
         if statuses and status_set.issubset(active):
             stmt = stmt.order_by(
                 case((Job.status == "running", 0), else_=1),
-                Job.started_at.desc().nullslast(),
+                Job.started_at.asc().nullslast(),
                 Job.scheduled_for.asc(),
                 Job.created_at.asc(),
             )
@@ -189,6 +193,7 @@ def list_jobs(
                     payload["video_title"] = video_ctx.get("title")
                     payload["video_published_at"] = video_ctx.get("published_at")
                     payload["video_provider_video_id"] = video_ctx.get("provider_video_id")
+                    payload["video_url"] = video_ctx.get("url")
             except Exception:
                 pass
             out.append(JobListOut(**payload))
@@ -309,6 +314,7 @@ def get_job(job_id: uuid.UUID) -> JobOut:
                 payload["video_title"] = video_ctx.get("title")
                 payload["video_published_at"] = video_ctx.get("published_at")
                 payload["video_provider_video_id"] = video_ctx.get("provider_video_id")
+                payload["video_url"] = video_ctx.get("url")
         except Exception:
             pass
         return JobOut(**payload)

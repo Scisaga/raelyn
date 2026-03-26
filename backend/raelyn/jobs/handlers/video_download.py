@@ -37,10 +37,46 @@ def _infer_language_from_filename(name: str) -> str | None:
 
 
 _CJK_RE = re.compile(r"[\u3400-\u9FFF]")
+_JOB_PROGRESS_TOTAL = 10000
+_JOB_PROGRESS_FINISHING = 9900
 
 
 def _contains_cjk(text: str) -> bool:
     return bool(_CJK_RE.search(str(text or "")))
+
+
+def _scaled_progress(value: float, *, cap: int = _JOB_PROGRESS_FINISHING) -> int:
+    try:
+        pct = int(round(float(value) * float(_JOB_PROGRESS_TOTAL)))
+    except Exception:
+        return 0
+    return max(0, min(cap, pct))
+
+
+def _job_progress_from_ytdlp_hook(data: dict[str, Any]) -> tuple[int, int] | None:
+    status = str(data.get("status") or "").strip().lower()
+    if status == "finished":
+        return (_JOB_PROGRESS_FINISHING, _JOB_PROGRESS_TOTAL)
+    if status != "downloading":
+        return None
+
+    downloaded = data.get("downloaded_bytes")
+    total = data.get("total_bytes") or data.get("total_bytes_estimate")
+    if isinstance(downloaded, (int, float)) and isinstance(total, (int, float)) and float(total) > 0:
+        return (_scaled_progress(float(downloaded) / float(total)), _JOB_PROGRESS_TOTAL)
+
+    fragment_index = data.get("fragment_index")
+    fragment_count = data.get("fragment_count")
+    if isinstance(fragment_index, (int, float)) and isinstance(fragment_count, (int, float)) and float(fragment_count) > 0:
+        return (_scaled_progress(float(fragment_index) / float(fragment_count)), _JOB_PROGRESS_TOTAL)
+
+    percent_str = str(data.get("_percent_str") or "").strip().rstrip("%")
+    if percent_str:
+        try:
+            return (_scaled_progress(float(percent_str) / 100.0), _JOB_PROGRESS_TOTAL)
+        except Exception:
+            return None
+    return None
 
 
 @registry.register("video.download")
@@ -79,38 +115,27 @@ def video_download(session: Session, job: Job) -> dict | None:
         with job_workdir(job.id) as wd:
             info: dict[str, Any] | None = None
             subtitle_download_failed = False
-            set_job_progress(job_id=job.id, current=0, total=10000)
+            set_job_progress(job_id=job.id, current=0, total=_JOB_PROGRESS_TOTAL)
             last_progress_at = 0.0
 
             def _hook(data: dict[str, Any]) -> None:
                 nonlocal last_progress_at
-                if (data.get("status") or "") != "downloading":
+                progress = _job_progress_from_ytdlp_hook(data)
+                if progress is None:
                     return
+                status = str(data.get("status") or "").strip().lower()
                 now = time.monotonic()
-                if now - last_progress_at < 0.5:
+                if status == "downloading" and now - last_progress_at < 0.5:
                     return
                 last_progress_at = now
-
-                downloaded = data.get("downloaded_bytes") or 0
-                total = data.get("total_bytes") or data.get("total_bytes_estimate")
-                if isinstance(downloaded, (int, float)) and isinstance(total, (int, float)) and total:
-                    pct = int(float(downloaded) * 10000.0 / float(total))
-                    set_job_progress(job_id=job.id, current=max(0, min(10000, pct)), total=10000)
-                    return
-
-                percent_str = str(data.get("_percent_str") or "").strip().rstrip("%")
-                try:
-                    pct = int(float(percent_str) * 100)
-                except Exception:
-                    return
-                set_job_progress(job_id=job.id, current=max(0, min(10000, pct)), total=10000)
+                current, total = progress
+                set_job_progress(job_id=job.id, current=current, total=total)
 
             try:
                 download_target = video.url or video.provider_video_id
                 if video.provider == "bilibili":
                     download_target = _normalize_bilibili_video_url(download_target)
                 info = ytdlp_download(url=download_target, provider=video.provider, out_dir=wd, progress_hook=_hook)
-                set_job_progress(job_id=job.id, current=10000, total=10000)
             except YtdlpCookiesInvalidError as e:
                 _pause_all_jobs_for_cookies(session, job=job, err=e)
                 raise
@@ -163,12 +188,8 @@ def video_download(session: Session, job: Job) -> dict | None:
                     write_auto_subtitles=False,
                     progress_hook=_hook,
                 )
-                set_job_progress(job_id=job.id, current=10000, total=10000)
                 candidates = [path for path in wd.glob("*") if path.is_file()]
                 video_file = _pick_video_file(candidates)
-
-            if video_file:
-                set_job_progress(job_id=job.id, current=10000, total=10000)
 
             raw_info = None
             if info and info.get("id"):

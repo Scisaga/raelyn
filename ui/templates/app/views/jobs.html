@@ -263,7 +263,21 @@
 	                              <span>媒体: <span class="text-slate-300" x-text="jobMediaLabel(j)"></span></span>
 	                            </template>
 	                            <template x-if="jobVideoLabel(j)">
-	                              <span>视频: <span class="text-slate-300" x-text="jobVideoLabel(j)"></span></span>
+	                              <span>
+	                                视频:
+	                                <template x-if="jobVideoUrl(j)">
+	                                  <a
+	                                    class="text-slate-300 underline decoration-slate-600 underline-offset-2 transition hover:text-emerald-200 hover:decoration-emerald-500"
+	                                    :href="jobVideoUrl(j)"
+	                                    target="_blank"
+	                                    rel="noopener noreferrer"
+	                                    x-text="jobVideoLabel(j)"
+	                                  ></a>
+	                                </template>
+	                                <template x-if="!jobVideoUrl(j)">
+	                                  <span class="text-slate-300" x-text="jobVideoLabel(j)"></span>
+	                                </template>
+	                              </span>
 	                            </template>
 	                            <template x-if="jobVideoPublishedAt(j)">
 	                              <span>发布时间: <span class="text-slate-300" x-text="formatTsShort(jobVideoPublishedAt(j))"></span></span>
@@ -320,7 +334,21 @@
 		                                <span>媒体: <span class="text-slate-300" x-text="jobMediaLabel(j)"></span></span>
 		                              </template>
 		                              <template x-if="jobVideoLabel(j)">
-		                                <span>视频: <span class="text-slate-300" x-text="jobVideoLabel(j)"></span></span>
+		                                <span>
+		                                  视频:
+		                                  <template x-if="jobVideoUrl(j)">
+		                                    <a
+		                                      class="text-slate-300 underline decoration-slate-600 underline-offset-2 transition hover:text-emerald-200 hover:decoration-emerald-500"
+		                                      :href="jobVideoUrl(j)"
+		                                      target="_blank"
+		                                      rel="noopener noreferrer"
+		                                      x-text="jobVideoLabel(j)"
+		                                    ></a>
+		                                  </template>
+		                                  <template x-if="!jobVideoUrl(j)">
+		                                    <span class="text-slate-300" x-text="jobVideoLabel(j)"></span>
+		                                  </template>
+		                                </span>
 		                              </template>
 		                              <template x-if="jobVideoPublishedAt(j)">
 		                                <span>发布时间: <span class="text-slate-300" x-text="formatTsShort(jobVideoPublishedAt(j))"></span></span>

@@ -58,7 +58,7 @@ def _query_jobs(
         if status_set.issubset(active):
             stmt = stmt.order_by(
                 case((Job.status == "running", 0), else_=1),
-                Job.started_at.desc().nullslast(),
+                Job.started_at.asc().nullslast(),
                 Job.scheduled_for.asc(),
                 Job.created_at.asc(),
             )
@@ -87,9 +87,11 @@ def _query_jobs(
         video_context_by_id: dict[str, dict[str, Any]] = {}
         if video_ids:
             rows = session.execute(
-                select(Video.id, Video.media_id, Video.title, Video.published_at, Video.provider_video_id).where(Video.id.in_(video_ids))
+                select(Video.id, Video.media_id, Video.title, Video.published_at, Video.provider_video_id, Video.url).where(
+                    Video.id.in_(video_ids)
+                )
             ).all()
-            for video_id, media_id, title, published_at, provider_video_id in rows:
+            for video_id, media_id, title, published_at, provider_video_id, url in rows:
                 video_context_by_id[str(video_id)] = {
                     "media_id": str(media_id) if media_id else None,
                     "title": str(title).strip() if isinstance(title, str) and title.strip() else None,
@@ -99,6 +101,7 @@ def _query_jobs(
                         if isinstance(provider_video_id, str) and str(provider_video_id).strip()
                         else None
                     ),
+                    "url": str(url).strip() if isinstance(url, str) and str(url).strip() else None,
                 }
                 if media_id:
                     media_ids.append(media_id)
@@ -117,6 +120,7 @@ def _query_jobs(
             video_title = None
             video_published_at = None
             video_provider_video_id = None
+            video_url = None
             try:
                 mid = (j.params or {}).get("media_id")
                 video_id = (j.params or {}).get("video_id")
@@ -128,6 +132,7 @@ def _query_jobs(
                     video_title = video_ctx.get("title")
                     video_published_at = _iso(video_ctx.get("published_at"))
                     video_provider_video_id = video_ctx.get("provider_video_id")
+                    video_url = video_ctx.get("url")
             except Exception:
                 media_name = None
             out.append(
@@ -153,6 +158,7 @@ def _query_jobs(
                     "video_title": video_title,
                     "video_published_at": video_published_at,
                     "video_provider_video_id": video_provider_video_id,
+                    "video_url": video_url,
                 }
             )
         return out

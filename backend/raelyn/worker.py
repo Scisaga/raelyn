@@ -244,6 +244,13 @@ def run_loop() -> None:
                         continue
 
                     job.result = result
+                    if (
+                        isinstance(job.progress_current, int)
+                        and isinstance(job.progress_total, int)
+                        and job.progress_total > 0
+                        and job.progress_current < job.progress_total
+                    ):
+                        job.progress_current = job.progress_total
                     job.status = "succeeded"
                     job.error_message = None
                     job.error_stack = None

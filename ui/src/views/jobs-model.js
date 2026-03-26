@@ -890,6 +890,15 @@ export function createJobsViewMethods() {
       return this._shortId(videoId);
     },
 
+    jobVideoUrl(job) {
+      if (!job || typeof job !== "object") return "";
+      if (job.video_url) return String(job.video_url || "").trim();
+      const videoId = this.jobVideoId(job);
+      if (!videoId) return "";
+      const video = this.jobVideoById && this.jobVideoById[videoId] ? this.jobVideoById[videoId] : null;
+      return video && video.url ? String(video.url).trim() : "";
+    },
+
     jobVideoPublishedAt(job) {
       if (!job || typeof job !== "object") return "";
       if (job.video_published_at) return String(job.video_published_at || "");
