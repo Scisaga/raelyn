@@ -27,6 +27,7 @@
 ## 交付与运行
 
 - [MVP 路线图与当前状态](roadmap/mvp.md)
+- [运行与部署](reference/run-and-deploy.md)
 - [配置项说明](reference/configuration.md)
 
 ## 未来约定
