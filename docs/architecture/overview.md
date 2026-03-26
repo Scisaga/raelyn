@@ -56,6 +56,8 @@
 
 - 入口是 [backend/raelyn/worker.py](../../backend/raelyn/worker.py)。
 - 支持按 `WORKER_ROLE` 或 `WORKER_TYPES` 拆分角色，例如 `download_youtube`、`download_bilibili`、`audio`、`process`、`asr`、`sync`、`ai`。
+- `download_youtube` / `download_bilibili` 是 provider 专属下载执行面；其 worker 进程数默认与 `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 强绑定，用来兑现真实下载并发语义。
+- provider 下载 handler 内仍保留 advisory lock 作为最终并发上限保护；它是内部实现，不是对外配置语义。
 - 负责任务领取、心跳、孤儿任务回收、失败退避与实际处理逻辑执行。
 
 ### Scheduler 进程

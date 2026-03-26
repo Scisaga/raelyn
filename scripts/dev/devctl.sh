@@ -10,10 +10,12 @@ fi
 
 PID_DIR="tmp/pids"
 LOG_DIR="tmp/logs"
+YOUTUBE_DOWNLOAD_CONCURRENCY_DEFAULT=2
+BILIBILI_DOWNLOAD_CONCURRENCY_DEFAULT=2
+DOWNLOAD_CONCURRENCY_MIN=1
+DOWNLOAD_CONCURRENCY_MAX=10
 
 API_PID_FILE="${PID_DIR}/api.pid"
-WORKER_YT_DL_PID_FILE="${PID_DIR}/worker-download-youtube.pid"
-WORKER_BILI_DL_PID_FILE="${PID_DIR}/worker-download-bilibili.pid"
 WORKER_AUDIO_PID_FILE="${PID_DIR}/worker-audio.pid"
 WORKER_PROCESS_PID_FILE="${PID_DIR}/worker-process.pid"
 WORKER_ASR_PID_FILE="${PID_DIR}/worker-asr.pid"
@@ -22,8 +24,6 @@ WORKER_AI_PID_FILE="${PID_DIR}/worker-ai.pid"
 SCHED_PID_FILE="${PID_DIR}/scheduler.pid"
 
 API_LOG="${LOG_DIR}/api.log"
-WORKER_YT_DL_LOG="${LOG_DIR}/worker-download-youtube.log"
-WORKER_BILI_DL_LOG="${LOG_DIR}/worker-download-bilibili.log"
 WORKER_AUDIO_LOG="${LOG_DIR}/worker-audio.log"
 WORKER_PROCESS_LOG="${LOG_DIR}/worker-process.log"
 WORKER_ASR_LOG="${LOG_DIR}/worker-asr.log"
@@ -43,6 +43,129 @@ ensure_ui_built() {
   fi
   echo "[ui] building ui (static/index.html, css, vendor)…"
   bash scripts/dev/build-ui.sh
+}
+
+clamp_download_concurrency() {
+  local raw="${1:-}"
+  local default_value="${2:-1}"
+  local value
+  if [[ -z "${raw}" ]] || ! [[ "${raw}" =~ ^-?[0-9]+$ ]]; then
+    value="${default_value}"
+  else
+    value="${raw}"
+  fi
+  if (( value < DOWNLOAD_CONCURRENCY_MIN )); then
+    value="${DOWNLOAD_CONCURRENCY_MIN}"
+  fi
+  if (( value > DOWNLOAD_CONCURRENCY_MAX )); then
+    value="${DOWNLOAD_CONCURRENCY_MAX}"
+  fi
+  echo "${value}"
+}
+
+download_worker_count() {
+  local provider="$1"
+  case "$provider" in
+    youtube)
+      clamp_download_concurrency "${YOUTUBE_DOWNLOAD_CONCURRENCY:-}" "${YOUTUBE_DOWNLOAD_CONCURRENCY_DEFAULT}"
+      ;;
+    bilibili)
+      clamp_download_concurrency "${BILIBILI_DOWNLOAD_CONCURRENCY:-}" "${BILIBILI_DOWNLOAD_CONCURRENCY_DEFAULT}"
+      ;;
+    *)
+      echo "1"
+      ;;
+  esac
+}
+
+download_worker_role() {
+  local provider="$1"
+  case "$provider" in
+    youtube) echo "download_youtube" ;;
+    bilibili) echo "download_bilibili" ;;
+    *) return 1 ;;
+  esac
+}
+
+download_worker_name() {
+  local provider="$1"
+  local index="$2"
+  echo "worker-download-${provider}-${index}"
+}
+
+download_worker_pid_file() {
+  local provider="$1"
+  local index="$2"
+  echo "${PID_DIR}/worker-download-${provider}-${index}.pid"
+}
+
+download_worker_log_file() {
+  local provider="$1"
+  local index="$2"
+  echo "${LOG_DIR}/worker-download-${provider}-${index}.log"
+}
+
+download_worker_legacy_pid_file() {
+  local provider="$1"
+  echo "${PID_DIR}/worker-download-${provider}.pid"
+}
+
+download_worker_legacy_log_file() {
+  local provider="$1"
+  echo "${LOG_DIR}/worker-download-${provider}.log"
+}
+
+download_worker_indices() {
+  local provider="$1"
+  local count
+  count="$(download_worker_count "$provider")"
+  local values=()
+  local i
+  for ((i=1; i<=count; i++)); do
+    values+=( "$i" )
+  done
+  local path
+  for path in "${PID_DIR}/worker-download-${provider}-"*.pid; do
+    [[ -e "$path" ]] || continue
+    local name="${path##*/}"
+    local idx="${name#worker-download-${provider}-}"
+    idx="${idx%.pid}"
+    if [[ "$idx" =~ ^[0-9]+$ ]]; then
+      values+=( "$idx" )
+    fi
+  done
+  if [[ -f "$(download_worker_legacy_pid_file "$provider")" ]]; then
+    values+=( "legacy" )
+  fi
+
+  local uniq=()
+  local seen=" "
+  local item
+  for item in "${values[@]}"; do
+    if [[ "$seen" == *" ${item} "* ]]; then
+      continue
+    fi
+    uniq+=( "$item" )
+    seen+=" ${item} "
+  done
+
+  local numeric=()
+  local has_legacy=0
+  for item in "${uniq[@]}"; do
+    if [[ "$item" == "legacy" ]]; then
+      has_legacy=1
+    else
+      numeric+=( "$item" )
+    fi
+  done
+  if [[ "${#numeric[@]}" -gt 0 ]]; then
+    IFS=$'\n' numeric=($(printf '%s\n' "${numeric[@]}" | sort -n))
+    unset IFS
+    printf '%s\n' "${numeric[@]}"
+  fi
+  if (( has_legacy )); then
+    echo "legacy"
+  fi
 }
 
 usage() {
@@ -157,6 +280,29 @@ start_worker_role() {
   start_one "$name" "$pid_file" "$log_file" bash scripts/dev/run-worker.sh "$role"
 }
 
+start_download_workers() {
+  local provider="$1"
+  local role
+  role="$(download_worker_role "$provider")"
+  local count
+  count="$(download_worker_count "$provider")"
+  local legacy_pid_file legacy_pid
+  legacy_pid_file="$(download_worker_legacy_pid_file "$provider")"
+  legacy_pid="$(read_pid "$legacy_pid_file")"
+  local i
+  for ((i=1; i<=count; i++)); do
+    if (( i == 1 )) && is_running "$legacy_pid"; then
+      echo "[start] $(download_worker_name "$provider" "$i"): legacy instance already running (pid=${legacy_pid})"
+      continue
+    fi
+    start_worker_role \
+      "$(download_worker_name "$provider" "$i")" \
+      "$(download_worker_pid_file "$provider" "$i")" \
+      "$(download_worker_log_file "$provider" "$i")" \
+      "$role"
+  done
+}
+
 stop_one() {
   local name="$1"
   local pid_file="$2"
@@ -188,6 +334,23 @@ stop_one() {
   kill -9 "$pid" >/dev/null 2>&1 || true
   kill -9 "-${pid}" >/dev/null 2>&1 || true
   rm -f "$pid_file" >/dev/null 2>&1 || true
+}
+
+stop_download_workers() {
+  local provider="$1"
+  local index
+  while IFS= read -r index; do
+    [[ -n "${index:-}" ]] || continue
+    if [[ "$index" == "legacy" ]]; then
+      stop_one \
+        "worker-download-${provider}" \
+        "$(download_worker_legacy_pid_file "$provider")"
+    else
+      stop_one \
+        "$(download_worker_name "$provider" "$index")" \
+        "$(download_worker_pid_file "$provider" "$index")"
+    fi
+  done < <(download_worker_indices "$provider")
 }
 
 kill_strays() {
@@ -225,10 +388,8 @@ kill_strays() {
 }
 
 do_status() {
-  local api_pid yt_dl_pid bili_dl_pid audio_pid process_pid asr_pid sync_pid ai_pid sched_pid
+  local api_pid audio_pid process_pid asr_pid sync_pid ai_pid sched_pid
   api_pid="$(read_pid "$API_PID_FILE")"
-  yt_dl_pid="$(read_pid "$WORKER_YT_DL_PID_FILE")"
-  bili_dl_pid="$(read_pid "$WORKER_BILI_DL_PID_FILE")"
   audio_pid="$(read_pid "$WORKER_AUDIO_PID_FILE")"
   process_pid="$(read_pid "$WORKER_PROCESS_PID_FILE")"
   asr_pid="$(read_pid "$WORKER_ASR_PID_FILE")"
@@ -242,17 +403,30 @@ do_status() {
     echo "[status] api: stopped"
   fi
 
-  if is_running "$yt_dl_pid"; then
-    echo "[status] worker-download-youtube: running pid=${yt_dl_pid} log=${WORKER_YT_DL_LOG}"
-  else
-    echo "[status] worker-download-youtube: stopped"
-  fi
-
-  if is_running "$bili_dl_pid"; then
-    echo "[status] worker-download-bilibili: running pid=${bili_dl_pid} log=${WORKER_BILI_DL_LOG}"
-  else
-    echo "[status] worker-download-bilibili: stopped"
-  fi
+  local provider index pid pid_file log_file name role count
+  for provider in youtube bilibili; do
+    count="$(download_worker_count "$provider")"
+    role="$(download_worker_role "$provider")"
+    echo "[status] ${role}: configured_concurrency=${count}"
+    while IFS= read -r index; do
+      [[ -n "${index:-}" ]] || continue
+      if [[ "$index" == "legacy" ]]; then
+        name="worker-download-${provider}"
+        pid_file="$(download_worker_legacy_pid_file "$provider")"
+        log_file="$(download_worker_legacy_log_file "$provider")"
+      else
+        name="$(download_worker_name "$provider" "$index")"
+        pid_file="$(download_worker_pid_file "$provider" "$index")"
+        log_file="$(download_worker_log_file "$provider" "$index")"
+      fi
+      pid="$(read_pid "$pid_file")"
+      if is_running "$pid"; then
+        echo "[status] ${name}: running pid=${pid} log=${log_file}"
+      else
+        echo "[status] ${name}: stopped"
+      fi
+    done < <(download_worker_indices "$provider")
+  done
 
   if is_running "$audio_pid"; then
     echo "[status] worker-audio: running pid=${audio_pid} log=${WORKER_AUDIO_LOG}"
@@ -304,8 +478,8 @@ case "$cmd" in
       do_status
       exit 1
     fi
-    start_worker_role "worker-download-youtube" "$WORKER_YT_DL_PID_FILE" "$WORKER_YT_DL_LOG" "download_youtube"
-    start_worker_role "worker-download-bilibili" "$WORKER_BILI_DL_PID_FILE" "$WORKER_BILI_DL_LOG" "download_bilibili"
+    start_download_workers "youtube"
+    start_download_workers "bilibili"
     start_worker_role "worker-audio" "$WORKER_AUDIO_PID_FILE" "$WORKER_AUDIO_LOG" "audio"
     start_worker_role "worker-process" "$WORKER_PROCESS_PID_FILE" "$WORKER_PROCESS_LOG" "process"
     start_worker_role "worker-asr" "$WORKER_ASR_PID_FILE" "$WORKER_ASR_LOG" "asr"
@@ -321,8 +495,8 @@ case "$cmd" in
     stop_one "worker-asr" "$WORKER_ASR_PID_FILE"
     stop_one "worker-process" "$WORKER_PROCESS_PID_FILE"
     stop_one "worker-audio" "$WORKER_AUDIO_PID_FILE"
-    stop_one "worker-download-bilibili" "$WORKER_BILI_DL_PID_FILE"
-    stop_one "worker-download-youtube" "$WORKER_YT_DL_PID_FILE"
+    stop_download_workers "bilibili"
+    stop_download_workers "youtube"
     stop_one "api" "$API_PID_FILE"
     kill_strays
     do_status
@@ -343,8 +517,21 @@ case "$cmd" in
     do_status
     ;;
   logs)
-    echo "[logs] tail -f ${API_LOG} ${WORKER_YT_DL_LOG} ${WORKER_BILI_DL_LOG} ${WORKER_AUDIO_LOG} ${WORKER_PROCESS_LOG} ${WORKER_ASR_LOG} ${WORKER_SYNC_LOG} ${WORKER_AI_LOG} ${SCHED_LOG}"
-    tail -n 200 -f "$API_LOG" "$WORKER_YT_DL_LOG" "$WORKER_BILI_DL_LOG" "$WORKER_AUDIO_LOG" "$WORKER_PROCESS_LOG" "$WORKER_ASR_LOG" "$WORKER_SYNC_LOG" "$WORKER_AI_LOG" "$SCHED_LOG"
+    log_files=("$API_LOG")
+    for provider in youtube bilibili; do
+      while IFS= read -r index; do
+        [[ -n "${index:-}" ]] || continue
+        if [[ "$index" == "legacy" ]]; then
+          log_files+=("$(download_worker_legacy_log_file "$provider")")
+        else
+          log_files+=("$(download_worker_log_file "$provider" "$index")")
+        fi
+      done < <(download_worker_indices "$provider")
+    done
+    log_files+=("$WORKER_AUDIO_LOG" "$WORKER_PROCESS_LOG" "$WORKER_ASR_LOG" "$WORKER_SYNC_LOG" "$WORKER_AI_LOG" "$SCHED_LOG")
+    touch "${log_files[@]}"
+    echo "[logs] tail -f ${log_files[*]}"
+    tail -n 200 -f "${log_files[@]}"
     ;;
   -h|--help|help|"")
     usage

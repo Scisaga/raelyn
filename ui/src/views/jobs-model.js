@@ -839,9 +839,17 @@ export function createJobsViewMethods() {
         const playlistLabel = playlistId ? this.jobPlaylistLabel(job) : "";
         return [playlistLabel, dateStr].filter(Boolean).join(" · ");
       }
+      return "";
+    },
+
+    jobMediaLabel(job) {
+      if (!job || typeof job !== "object") return "";
       if (job.media_name) return String(job.media_name || "");
-      const mediaId = job.params && job.params.media_id ? String(job.params.media_id) : "";
+      const mediaId = this.jobMediaId(job);
       if (!mediaId) return "";
+      const videoId = this.jobVideoId(job);
+      const video = videoId && this.jobVideoById && this.jobVideoById[videoId] ? this.jobVideoById[videoId] : null;
+      if (video && video.media_name) return String(video.media_name || "");
       const media = (this.mediaIndex || []).find((item) => String(item.id) === mediaId);
       return media ? this.mediaDisplayName(media) : "";
     },
@@ -870,14 +878,44 @@ export function createJobsViewMethods() {
     },
 
     jobVideoLabel(job) {
+      if (job && job.video_title) return String(job.video_title || "").trim();
       const videoId = this.jobVideoId(job);
       if (!videoId) return "";
       const video = this.jobVideoById && this.jobVideoById[videoId] ? this.jobVideoById[videoId] : null;
       const title = video && video.title ? String(video.title).trim() : "";
       if (title) return title;
+      if (job && job.video_provider_video_id) return String(job.video_provider_video_id || "").trim();
       const providerVideoId = video && video.provider_video_id ? String(video.provider_video_id).trim() : "";
       if (providerVideoId) return providerVideoId;
       return this._shortId(videoId);
+    },
+
+    jobVideoPublishedAt(job) {
+      if (!job || typeof job !== "object") return "";
+      if (job.video_published_at) return String(job.video_published_at || "");
+      const videoId = this.jobVideoId(job);
+      if (!videoId) return "";
+      const video = this.jobVideoById && this.jobVideoById[videoId] ? this.jobVideoById[videoId] : null;
+      return video && video.published_at ? String(video.published_at) : "";
+    },
+
+    jobCompletedSeconds(job) {
+      if (!job || typeof job !== "object" || !job.started_at || !job.finished_at) return null;
+      try {
+        const started = new Date(job.started_at).getTime();
+        const finished = new Date(job.finished_at).getTime();
+        if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) return null;
+        return Math.round(((finished - started) / 1000) * 10) / 10;
+      } catch {
+        return null;
+      }
+    },
+
+    jobCompletedSecondsLabel(job) {
+      const seconds = this.jobCompletedSeconds(job);
+      if (seconds == null) return "";
+      if (Number.isInteger(seconds)) return `${seconds} 秒完成`;
+      return `${seconds.toFixed(1)} 秒完成`;
     },
 
     jobPlaylistLabel(job) {

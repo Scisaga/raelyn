@@ -1,6 +1,6 @@
 ---
 name: python-web-refactor
-description: Use this skill when refactoring, straightening, or reviewing a messy Python web service or API project, especially FastAPI-first and Flask-compatible cases involving module boundaries, entrypoint cleanup, configuration governance, async job separation, test strategy, documentation, and platform collaboration rules.
+description: Use this skill when refactoring, straightening, or reviewing a messy Python web service or API project into a FastAPI-first architecture, including module boundaries, entrypoint cleanup, configuration governance, Alpine SPA integration, async job separation, test strategy, documentation, and platform collaboration rules.
 ---
 
 # Python Web Refactor
@@ -10,7 +10,8 @@ description: Use this skill when refactoring, straightening, or reviewing a mess
 在以下场景优先使用这个 skill：
 
 - 重构混乱的 Python Web 项目
-- 整理 FastAPI / Flask 服务的目录、入口和模块边界
+- 整理 FastAPI 服务的目录、入口和模块边界
+- 把旧 Web 服务收敛到 `FastAPI + Alpine SPA` 架构，不保留 Flask/Jinja 双栈兼容目标
 - 收敛“路由里塞业务、脚本里塞流程、配置散落各处”的服务
 - 设计 API / worker / scheduler 的职责拆分
 - 统一配置治理、启动脚本、测试和文档入口
@@ -22,8 +23,18 @@ description: Use this skill when refactoring, straightening, or reviewing a mess
 - 先区分事实/证据与推断/建议，不凭经验猜项目行为
 - 先把进程边界和模块职责拉直，再谈局部实现优化
 - 默认优先简单、可验证、可迁移的重构路径，不先引入复杂框架
+- 后端目标框架固定为 `FastAPI`，不要为 Flask / WSGI 保留兼容层、双入口或模板渲染兜底
+- 若存在页面前端，默认目标形态是 `Alpine SPA + TailwindCSS utility-first`，不要回到 Jinja SSR，也不要堆大量自定义样式
 - 若项目没有异步重任务，不强推 `worker / scheduler`
 - 方案输出要覆盖代码结构，也覆盖配置、测试、文档和协作治理
+
+## 前端形态约束
+
+- 服务端 Web 框架固定为 `FastAPI`，页面交互默认走 `static/` 下的 `Alpine SPA`
+- 模板技术不再保留 `Jinja` 作为目标实现；若现状是 Flask/Jinja，只把它当迁移输入，不当目标状态
+- 样式默认使用 `TailwindCSS` utility class 直接表达布局、间距、颜色和状态
+- 只允许保留少量有明确边界的自定义样式，例如第三方组件覆盖、字体声明、少量基础层修正；不要重新堆一套手写设计系统
+- 若任务明确涉及 `static/` 目录下页面、Tailwind、Alpine 组件实现，实施时同步遵守 `skills/static-ui/SKILL.md`
 
 ## 工作流
 
@@ -35,6 +46,8 @@ description: Use this skill when refactoring, straightening, or reviewing a mess
    - 边界混乱：`router/model/script` 混写业务，入口和配置分散
 3. 先收敛目标形态
    - 需要几个进程
+   - `FastAPI` 入口如何单一化
+   - 前端是否收敛为 `Alpine SPA`
    - 目录如何分层
    - 配置如何分级
    - 接口、测试、文档各放在哪里
@@ -129,11 +142,13 @@ description: Use this skill when refactoring, straightening, or reviewing a mess
 ## 目标结构准则
 
 - 入口装配层独立：主入口只负责创建 app、挂载 router、初始化依赖
+- 服务端技术栈收敛：对外 Web 服务统一使用 `FastAPI` / ASGI，不保留 Flask / WSGI 双轨
 - 路由层只做协议适配：参数解析、鉴权、响应组装，不承载核心业务
 - 服务层承载业务编排：把跨模型、跨依赖的流程从路由和脚本里抽出
 - 异步执行层独立：只有真实重任务时才引入 job/worker/scheduler
 - 工具脚本独立：开发脚本、迁移脚本、运维脚本不要混到业务模块
 - 配置分层清晰：环境变量负责进程级配置，运行时配置负责行为开关
+- 前端技术栈收敛：管理端 / 页面端默认使用 `Alpine SPA + TailwindCSS utility-first`，避免 Jinja 模板与大段自定义 CSS
 - 文档有入口：愿景、架构、接口、配置、运维说明分开维护
 - 测试围绕链路：优先真实集成，再补必要的局部单测
 
@@ -148,11 +163,13 @@ description: Use this skill when refactoring, straightening, or reviewing a mess
 ## 验收清单
 
 - 入口是否单一且可运行
+- Web 入口是否已统一到 `FastAPI`
 - 路由层是否只做协议适配
 - 业务逻辑是否从 `router/model/script` 拉回服务层
 - 配置是否可枚举、可分层、可说明
 - 重任务是否已脱离请求线程
 - 没有异步需求时，是否避免过度设计
+- 页面前端是否已收敛为 `Alpine SPA + TailwindCSS utility`，且没有继续堆 Jinja / 大量自定义样式
 - 测试是否围绕真实运行链路
 - 文档是否能支撑后续维护与交接
 

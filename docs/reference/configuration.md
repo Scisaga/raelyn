@@ -66,7 +66,13 @@
 - `YOUTUBE_SYNC_CONCURRENCY`
 - `BILIBILI_SYNC_CONCURRENCY`
 - `YOUTUBE_DOWNLOAD_CONCURRENCY`
+  - 表示 YouTube 的真实最大下载并发数，不只是内部 provider 槽位数。
+  - 当值为 `N` 且 `N > 1` 时，运行层默认应启动至少 `N` 个 `download_youtube` worker 进程。
+  - handler 内仍会使用 provider advisory lock 做最终上限保护；该锁是内部实现细节，不改变本配置的公开语义。
 - `BILIBILI_DOWNLOAD_CONCURRENCY`
+  - 表示 B 站的真实最大下载并发数，不只是内部 provider 槽位数。
+  - 当值为 `N` 且 `N > 1` 时，运行层默认应启动至少 `N` 个 `download_bilibili` worker 进程。
+  - handler 内仍会使用 provider advisory lock 做最终上限保护；该锁是内部实现细节，不改变本配置的公开语义。
 
 ### Worker 心跳与孤儿任务回收
 

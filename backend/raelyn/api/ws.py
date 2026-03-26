@@ -13,7 +13,7 @@ from sqlalchemy import case, func, select
 from raelyn.api.auth import api_ws_authorized, close_api_ws_unauthorized
 from raelyn.config import settings
 from raelyn.db import session_scope
-from raelyn.models import Job, Media
+from raelyn.models import Job, Media, Video
 from raelyn.timeutil import utcnow
 
 
@@ -68,13 +68,41 @@ def _query_jobs(
         items = session.execute(stmt.limit(limit)).scalars().all()
 
         media_ids: list[uuid.UUID] = []
+        video_ids: list[uuid.UUID] = []
         for j in items:
             try:
                 mid = (j.params or {}).get("media_id")
                 if mid:
                     media_ids.append(uuid.UUID(str(mid)))
             except Exception:
-                continue
+                pass
+            try:
+                video_id = (j.params or {}).get("video_id")
+                if video_id:
+                    video_ids.append(uuid.UUID(str(video_id)))
+            except Exception:
+                pass
+
+        video_ids = list(dict.fromkeys(video_ids))
+        video_context_by_id: dict[str, dict[str, Any]] = {}
+        if video_ids:
+            rows = session.execute(
+                select(Video.id, Video.media_id, Video.title, Video.published_at, Video.provider_video_id).where(Video.id.in_(video_ids))
+            ).all()
+            for video_id, media_id, title, published_at, provider_video_id in rows:
+                video_context_by_id[str(video_id)] = {
+                    "media_id": str(media_id) if media_id else None,
+                    "title": str(title).strip() if isinstance(title, str) and title.strip() else None,
+                    "published_at": published_at,
+                    "provider_video_id": (
+                        str(provider_video_id).strip()
+                        if isinstance(provider_video_id, str) and str(provider_video_id).strip()
+                        else None
+                    ),
+                }
+                if media_id:
+                    media_ids.append(media_id)
+
         media_ids = list(dict.fromkeys(media_ids))
         media_name_by_id: dict[str, str] = {}
         if media_ids:
@@ -86,10 +114,20 @@ def _query_jobs(
         out: list[dict[str, Any]] = []
         for j in items:
             media_name = None
+            video_title = None
+            video_published_at = None
+            video_provider_video_id = None
             try:
                 mid = (j.params or {}).get("media_id")
-                if mid:
-                    media_name = media_name_by_id.get(str(mid))
+                video_id = (j.params or {}).get("video_id")
+                video_ctx = video_context_by_id.get(str(video_id)) if video_id else None
+                effective_media_id = str(mid) if mid else (video_ctx.get("media_id") if isinstance(video_ctx, dict) else None)
+                if effective_media_id:
+                    media_name = media_name_by_id.get(str(effective_media_id))
+                if isinstance(video_ctx, dict):
+                    video_title = video_ctx.get("title")
+                    video_published_at = _iso(video_ctx.get("published_at"))
+                    video_provider_video_id = video_ctx.get("provider_video_id")
             except Exception:
                 media_name = None
             out.append(
@@ -112,6 +150,9 @@ def _query_jobs(
                     "worker_id": j.worker_id,
                     "parent_job_id": str(j.parent_job_id) if j.parent_job_id else None,
                     "media_name": media_name,
+                    "video_title": video_title,
+                    "video_published_at": video_published_at,
+                    "video_provider_video_id": video_provider_video_id,
                 }
             )
         return out

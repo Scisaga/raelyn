@@ -57,6 +57,12 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - Provider 级并发：如 YouTube 同时下载数、B 站同时下载数
 - Media 级并发：同一媒体同一时刻只允许 1 个同步 / 下载任务
 
+当前项目对下载并发采用“强绑定语义”：
+
+- `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 的公开语义是对应 provider 的真实最大下载并发数
+- 当 `*_DOWNLOAD_CONCURRENCY = N` 时，运行层默认会拉起至少 `N` 个对应的 `download_*` worker 进程
+- provider advisory lock / guard slot 只负责做最终上限保护和防风控，不作为对外配置语义
+
 实现方式可从易到难演进：
 
 1. 进程内信号量（适用于单 worker）

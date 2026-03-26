@@ -151,6 +151,10 @@ source ./scripts/dev/load-env.sh
 ./scripts/dev/run-scheduler.sh
 ```
 
+说明：
+- `./scripts/dev/run-worker.sh download_youtube` / `download_bilibili` 每执行一次，只会启动 1 个对应 provider 的下载 worker 实例。
+- 若你手动多终端启动，并且希望兑现 `YOUTUBE_DOWNLOAD_CONCURRENCY=N` / `BILIBILI_DOWNLOAD_CONCURRENCY=N` 的真实下载并发，需要把对应 `download_*` worker 命令至少启动 `N` 次。
+
 打开 UI：`http://127.0.0.1:8000/`
 
 也可以用一个脚本统一管理（后台启动/停止/重启），默认会启动多个 worker：
@@ -165,6 +169,7 @@ source ./scripts/dev/load-env.sh
 
 说明：
 - `devctl.sh start/restart` 会先执行一次 UI 构建（等价于 `./scripts/dev/build-ui.sh`）。如需跳过可设置 `SKIP_UI_BUILD=1`。
+- `devctl.sh start/restart` 会按 `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 自动扩展对应 provider 的下载 worker 数。
 - 只有在 `.env` 里配置了 `API_BEARER_TOKEN` 时，主 API 进程才会额外挂载 `/mcp`；否则 `/mcp` 与 `/mcp/health` 返回 `404`。
 
 ---

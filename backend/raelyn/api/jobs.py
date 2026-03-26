@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 
 from raelyn.api.orm import OrmModel
 from raelyn.db import session_scope
-from raelyn.models import Job, JobEvent, Media
+from raelyn.models import Job, JobEvent, Media, Video
 from raelyn.services.job_cancellation import request_job_cancel
 from raelyn.timeutil import utcnow
 
@@ -39,6 +39,9 @@ class JobListOut(OrmModel):
     worker_id: str | None = None
     parent_job_id: uuid.UUID | None = None
     media_name: str | None = None
+    video_title: str | None = None
+    video_published_at: Any | None = None
+    video_provider_video_id: str | None = None
 
 
 class JobOut(JobListOut):
@@ -70,25 +73,56 @@ def _parse_csv(value: str | None) -> list[str]:
     return [s.strip() for s in str(value).split(",") if s.strip()]
 
 
-def _media_name_map(session, jobs: list[Job]) -> dict[str, str]:
+def _job_context_maps(
+    session,
+    jobs: list[Job],
+) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
     media_ids: list[uuid.UUID] = []
+    video_ids: list[uuid.UUID] = []
     for j in jobs:
         try:
             mid = (j.params or {}).get("media_id")
             if mid:
                 media_ids.append(uuid.UUID(str(mid)))
         except Exception:
-            continue
+            pass
+        try:
+            video_id = (j.params or {}).get("video_id")
+            if video_id:
+                video_ids.append(uuid.UUID(str(video_id)))
+        except Exception:
+            pass
+
+    video_ids = list(dict.fromkeys(video_ids))
+    video_context_by_id: dict[str, dict[str, Any]] = {}
+    if video_ids:
+        rows = session.execute(
+            select(Video.id, Video.media_id, Video.title, Video.published_at, Video.provider_video_id).where(Video.id.in_(video_ids))
+        ).all()
+        for video_id, media_id, title, published_at, provider_video_id in rows:
+            video_context_by_id[str(video_id)] = {
+                "media_id": str(media_id) if media_id else None,
+                "title": str(title).strip() if isinstance(title, str) and title.strip() else None,
+                "published_at": published_at,
+                "provider_video_id": (
+                    str(provider_video_id).strip()
+                    if isinstance(provider_video_id, str) and str(provider_video_id).strip()
+                    else None
+                ),
+            }
+            if media_id:
+                media_ids.append(media_id)
+
     media_ids = list(dict.fromkeys(media_ids))
     if not media_ids:
-        return {}
+        return {}, video_context_by_id
 
     rows = session.execute(select(Media.id, Media.name, Media.provider_media_id).where(Media.id.in_(media_ids))).all()
     out: dict[str, str] = {}
     for mid, name, provider_media_id in rows:
         label = (name or provider_media_id or str(mid)) if mid else ""
         out[str(mid)] = label
-    return out
+    return out, video_context_by_id
 
 
 @router.get("/jobs", response_model=list[JobListOut])
@@ -140,14 +174,21 @@ def list_jobs(
 
         stmt = stmt.limit(limit).offset(offset)
         items = session.execute(stmt).scalars().all()
-        media_name_by_id = _media_name_map(session, items)
+        media_name_by_id, video_context_by_id = _job_context_maps(session, items)
         out: list[JobListOut] = []
         for j in items:
             payload = JobListOut.model_validate(j).model_dump()
             try:
                 mid = (j.params or {}).get("media_id")
-                if mid:
-                    payload["media_name"] = media_name_by_id.get(str(mid))
+                video_id = (j.params or {}).get("video_id")
+                video_ctx = video_context_by_id.get(str(video_id)) if video_id else None
+                effective_media_id = str(mid) if mid else (video_ctx.get("media_id") if isinstance(video_ctx, dict) else None)
+                if effective_media_id:
+                    payload["media_name"] = media_name_by_id.get(str(effective_media_id))
+                if isinstance(video_ctx, dict):
+                    payload["video_title"] = video_ctx.get("title")
+                    payload["video_published_at"] = video_ctx.get("published_at")
+                    payload["video_provider_video_id"] = video_ctx.get("provider_video_id")
             except Exception:
                 pass
             out.append(JobListOut(**payload))
@@ -255,7 +296,22 @@ def get_job(job_id: uuid.UUID) -> JobOut:
         job = session.get(Job, job_id)
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
-        return JobOut.model_validate(job)
+        payload = JobOut.model_validate(job).model_dump()
+        media_name_by_id, video_context_by_id = _job_context_maps(session, [job])
+        try:
+            mid = (job.params or {}).get("media_id")
+            video_id = (job.params or {}).get("video_id")
+            video_ctx = video_context_by_id.get(str(video_id)) if video_id else None
+            effective_media_id = str(mid) if mid else (video_ctx.get("media_id") if isinstance(video_ctx, dict) else None)
+            if effective_media_id:
+                payload["media_name"] = media_name_by_id.get(str(effective_media_id))
+            if isinstance(video_ctx, dict):
+                payload["video_title"] = video_ctx.get("title")
+                payload["video_published_at"] = video_ctx.get("published_at")
+                payload["video_provider_video_id"] = video_ctx.get("provider_video_id")
+        except Exception:
+            pass
+        return JobOut(**payload)
 
 
 @router.get("/jobs/{job_id:uuid}/events", response_model=list[JobEventOut])
