@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 from raelyn.models import Job, JobEvent, WorkerHeartbeat
 from raelyn.services.provider_pause import is_provider_paused, job_provider
 from raelyn.services.system_pause import is_paused
+from raelyn.services.worker_role_pause import is_worker_role_paused
+from raelyn.services.worker_roles import worker_role_for_job
 from raelyn.timeutil import utcnow
 
 
@@ -200,6 +202,9 @@ def claim_next_job(
         for candidate in rows:
             provider = job_provider(session, candidate)
             if provider and is_provider_paused(session, provider):
+                continue
+            role = worker_role_for_job(session, candidate)
+            if role and is_worker_role_paused(session, role):
                 continue
             job = candidate
             break

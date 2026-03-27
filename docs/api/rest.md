@@ -38,7 +38,25 @@
 
 ### `GET /api/workers`
 
-- 返回 worker 在线状态、角色分布、最近心跳时间。
+- 返回 worker 在线状态、角色分布、最近心跳时间，以及 worker 角色暂停信息。
+- `roles[*]` 额外包含：
+  - `paused`
+  - `pause_reason`
+  - `pause_message`
+  - `pause_set_at`
+  - `controllable`
+
+### `POST /api/workers/roles/{role}/pause`
+
+- body：`{ "reason"?: "...", "message"?: "..." }`
+- 人工暂停某个具体 worker 角色继续领取新任务。
+- 只影响新的 claim；已经 `running` 的任务继续执行。
+- `role=all` 或未知角色返回 `400`。
+
+### `POST /api/workers/roles/{role}/resume`
+
+- 恢复某个具体 worker 角色继续领取新任务。
+- `role=all` 或未知角色返回 `400`。
 
 ### `GET /api/stats`
 

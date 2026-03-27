@@ -37,6 +37,7 @@ export function createJobsModule() {
     _workersStaleAfterSeconds: 20,
     _workersWindowSeconds: 0,
     _workersPollId: null,
+    workerRoleActionInFlight: {},
     jobActionInFlight: {},
     jobErrorDetailsOpen: {},
     jobErrorDetailsById: {},

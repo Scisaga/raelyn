@@ -72,7 +72,8 @@
 当前能力：
 
 - `/api/system` 返回系统暂停状态、provider 暂停状态和资产分发策略。
-- `/api/workers` 返回 worker 在线情况、角色分布和最后心跳时间。
+- `/api/workers` 返回 worker 在线情况、角色分布、最后心跳时间，以及 worker 角色暂停状态。
+- `/api/workers/roles/{role}/pause|resume` 支持人工暂停 / 恢复具体 worker 角色继续领取新任务。
 - `/api/stats` 返回概览页统计、最近媒体 / 视频 / 播放列表，以及 ASR / LLM 使用量。
 - `/api/jobs` 与 `/api/ws/*` 提供任务列表、事件、时序统计和实时刷新能力。
 - `/api/cleanup/stale-videos` 用于扫描 / 清理“已停用监控、仍处于 discovered、且没有有效下载任务或视频资产”的遗留视频记录。
@@ -80,5 +81,6 @@
 实现要点：
 
 - worker 启动时会写入心跳，并回收孤儿 `running` 任务。
+- worker 角色暂停只影响后续 claim，不影响已经 `running` 的任务，也不代替进程启停。
 - 主站 API Bearer Token 开启后，`/api/*` 需要 `Authorization` 或 `raelyn_api_token` cookie，`/api/ws/*` 需要 query `token`。
 - 系统 / provider 暂停主要用于 Cookies 失效、平台风控或人工运维时的保护性停机。

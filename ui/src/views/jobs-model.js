@@ -415,6 +415,14 @@ export function createJobsViewMethods() {
       return labels[value] || value || "unknown";
     },
 
+    workerRoleControllable(roleInfo) {
+      return !!(roleInfo && roleInfo.controllable);
+    },
+
+    workerRolePaused(roleInfo) {
+      return !!(roleInfo && roleInfo.paused);
+    },
+
     workersRoleStatusList() {
       const roles = Array.isArray(this.workersRoles) ? this.workersRoles : [];
       const byRole = new Map();
@@ -439,6 +447,7 @@ export function createJobsViewMethods() {
     },
 
     workerRolePillClass(roleInfo) {
+      if (this.workerRolePaused(roleInfo)) return "border-amber-500/25 bg-amber-500/15 text-amber-200";
       const online = Number((roleInfo && roleInfo.online) || 0);
       const total = Number((roleInfo && roleInfo.total) || 0);
       if (!total || total <= 0) return "border-slate-700 bg-slate-950/20 text-slate-400";
@@ -447,10 +456,19 @@ export function createJobsViewMethods() {
     },
 
     workerRoleDotClass(roleInfo) {
+      if (this.workerRolePaused(roleInfo)) return "bg-amber-400";
       const online = Number((roleInfo && roleInfo.online) || 0);
       const total = Number((roleInfo && roleInfo.total) || 0);
       if (!total || total <= 0) return "bg-slate-500";
       return online > 0 ? "bg-emerald-400" : "bg-rose-400";
+    },
+
+    workerRoleActionLabel(roleInfo) {
+      const role = roleInfo && roleInfo.role ? String(roleInfo.role) : "";
+      const inFlight = this.workerRoleActionInFlight && role ? this.workerRoleActionInFlight[role] : "";
+      if (inFlight === "pause") return "暂停中…";
+      if (inFlight === "resume") return "启动中…";
+      return this.workerRolePaused(roleInfo) ? "启动" : "暂停";
     },
 
     workerRoleTitle(roleInfo) {
@@ -461,8 +479,12 @@ export function createJobsViewMethods() {
       const stale = Number(this._workersStaleAfterSeconds || 20);
       const windowSec = Number(this._workersWindowSeconds || 0);
       const parts = [`role=${role || "unknown"}`, `online=${online}/${total}`, `stale_after=${stale}s`];
+      parts.push(`paused=${this.workerRolePaused(roleInfo) ? "true" : "false"}`);
+      parts.push(`controllable=${this.workerRoleControllable(roleInfo) ? "true" : "false"}`);
       if (windowSec > 0) parts.push(`window=${windowSec}s`);
       if (lastSeen) parts.push(`last_seen_at=${lastSeen}`);
+      if (roleInfo && roleInfo.pause_message) parts.push(`pause_message=${String(roleInfo.pause_message)}`);
+      if (this.workerRoleControllable(roleInfo)) parts.push("note=仅阻止新任务领取，运行中任务不受影响");
       return parts.join("  ");
     },
 
@@ -486,6 +508,53 @@ export function createJobsViewMethods() {
         this.workersError = e && e.message ? e.message : String(e);
       } finally {
         this.workersLoading = false;
+      }
+    },
+
+    async toggleWorkerRolePause(roleInfo) {
+      const role = roleInfo && roleInfo.role ? String(roleInfo.role).trim() : "";
+      if (!role || !this.workerRoleControllable(roleInfo)) return;
+      if (!this.workerRoleActionInFlight) this.workerRoleActionInFlight = {};
+      if (this.workerRoleActionInFlight[role]) return;
+
+      const paused = this.workerRolePaused(roleInfo);
+      const action = paused ? "resume" : "pause";
+      const label = this.workerRoleLabel(role);
+      this.workerRoleActionInFlight[role] = action;
+
+      try {
+        if (action === "pause") {
+          await this.api(`/workers/roles/${encodeURIComponent(role)}/pause`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              reason: "manual_worker_role_pause",
+              message: `已暂停 ${label} worker 领取新任务；运行中任务不受影响。`,
+            }),
+          });
+          this.globalStatus = `已暂停 ${label} worker 领取新任务`;
+          this.toastSuccess(`已暂停 ${label} worker 领取新任务`);
+        } else {
+          await this.api(`/workers/roles/${encodeURIComponent(role)}/resume`, { method: "POST" });
+          this.globalStatus = `已启动 ${label} worker 领取新任务`;
+          this.toastSuccess(`已启动 ${label} worker 领取新任务`);
+        }
+
+        await Promise.all([
+          this.refreshWorkers({ force: true }),
+          this._fetchJobsActiveSnapshot({ force: true }),
+          this.refreshJobsActiveCount({ force: true }),
+        ]);
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.globalStatus = `error: ${msg}`;
+        this.toastError(`${label} worker 操作失败：${msg}`);
+      } finally {
+        try {
+          delete this.workerRoleActionInFlight[role];
+        } catch {
+          // ignore
+        }
       }
     },
 

@@ -23,6 +23,7 @@ from raelyn.models import Job
 from raelyn.services.job_cancellation import JobCancelRequested, finalize_canceled_job, job_cancel_requested
 from raelyn.services.log_timestamps import install_if_needed
 from raelyn.services.s3 import s3_ensure_bucket
+from raelyn.services.worker_roles import is_known_worker_role, normalize_worker_role, worker_role_types
 from raelyn.timeutil import utcnow
 
 
@@ -40,17 +41,6 @@ def _parse_csv(value: str | None) -> list[str]:
     return [s.strip() for s in value.split(",") if s.strip()]
 
 
-_ROLE_TYPES: dict[str, list[str]] = {
-    "download_youtube": ["video.download.youtube"],
-    "download_bilibili": ["video.download.bilibili"],
-    "audio": ["video.extract_audio"],
-    "process": ["video.normalize_subtitle"],
-    "asr": ["video.asr_transcribe"],
-    "sync": ["media.sync_profile", "media.sync_videos", "media.delete"],
-    "ai": ["video.polish_transcript", "video.generate_note", "brief.generate_daily", "brief.generate_period"],
-}
-
-
 def _effective_max_attempts(job_type: str, current: int) -> int:
     # Reduce retries for provider-facing jobs to avoid repeated blocks.
     if job_type in {"media.sync_profile", "media.sync_videos", "media.delete", "video.download", "video.download.youtube", "video.download.bilibili"}:
@@ -64,12 +54,12 @@ def _resolve_worker_types() -> list[str] | None:
         types = _parse_csv(types_env)
         return types or None
 
-    role = os.getenv("WORKER_ROLE", "").strip().lower()
-    if not role or role in {"all", "default"}:
+    role = normalize_worker_role(os.getenv("WORKER_ROLE", ""))
+    types = worker_role_types(role)
+    if types is not None:
+        return types
+    if is_known_worker_role(role):
         return None
-
-    if role in _ROLE_TYPES:
-        return list(_ROLE_TYPES[role])
 
     print(f"[worker] unknown WORKER_ROLE={role!r}; running in all-types mode")
     return None
@@ -164,7 +154,7 @@ def run_loop() -> None:
     s3_ensure_bucket()
     worker_id = _worker_id()
     type_in = _resolve_worker_types()
-    role = os.getenv("WORKER_ROLE", "").strip() or "all"
+    role = normalize_worker_role(os.getenv("WORKER_ROLE", ""))
     if type_in:
         print(f"[worker] started id={worker_id} role={role} types={','.join(type_in)}")
     else:

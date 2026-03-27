@@ -131,15 +131,33 @@
                       <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400" x-show="jobsTab==='active'">
                         <span class="text-slate-500">Workers:</span>
 	                        <template x-for="r in workersRoleStatusList()" :key="r.role">
-	                          <span
-	                            class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border"
-	                            :class="workerRolePillClass(r)"
-	                            :title="workerRoleTitle(r)"
-	                          >
-	                            <span class="w-1.5 h-1.5 rounded-full" :class="workerRoleDotClass(r)"></span>
-	                            <span x-text="workerRoleLabel(r.role)"></span>
-	                            <span class="tabular-nums text-[11px]" x-text="String(Number(r.online||0)) + '/' + String(Number(r.total||0))"></span>
-	                          </span>
+                            <template x-if="workerRoleControllable(r)">
+	                            <button
+                                type="button"
+	                              class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+	                              :class="workerRolePillClass(r)"
+	                              :title="workerRoleTitle(r)"
+                                :disabled="!!(workerRoleActionInFlight && workerRoleActionInFlight[String(r.role)])"
+                                @click="toggleWorkerRolePause(r)"
+	                            >
+	                              <span class="w-1.5 h-1.5 rounded-full" :class="workerRoleDotClass(r)"></span>
+	                              <span x-text="workerRoleLabel(r.role)"></span>
+	                              <span class="tabular-nums text-[11px]" x-text="String(Number(r.online||0)) + '/' + String(Number(r.total||0))"></span>
+                                <span x-show="r.paused" class="text-[11px] font-medium">已暂停</span>
+                                <span class="ml-1 text-[11px] font-medium underline underline-offset-2" x-text="workerRoleActionLabel(r)"></span>
+	                            </button>
+                            </template>
+                            <template x-if="!workerRoleControllable(r)">
+	                            <span
+	                              class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border"
+	                              :class="workerRolePillClass(r)"
+	                              :title="workerRoleTitle(r)"
+	                            >
+	                              <span class="w-1.5 h-1.5 rounded-full" :class="workerRoleDotClass(r)"></span>
+	                              <span x-text="workerRoleLabel(r.role)"></span>
+	                              <span class="tabular-nums text-[11px]" x-text="String(Number(r.online||0)) + '/' + String(Number(r.total||0))"></span>
+	                            </span>
+                            </template>
 	                        </template>
                         <span x-show="workersLoading" class="text-[11px] text-slate-500">刷新中…</span>
                         <span x-show="workersError" class="text-[11px] text-rose-300 truncate" x-text="workersError"></span>

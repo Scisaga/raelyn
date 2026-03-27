@@ -3,12 +3,23 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.models import WorkerHeartbeat
+from raelyn.services.worker_role_pause import (
+    clear_worker_role_pause,
+    get_worker_role_pauses,
+    set_worker_role_paused,
+)
+from raelyn.services.worker_roles import (
+    is_controllable_worker_role,
+    known_worker_roles,
+    normalize_worker_role,
+)
 from raelyn.timeutil import utcnow
 
 
@@ -37,6 +48,11 @@ def _parse_worker_id(worker_id: str) -> dict[str, Any]:
     return {"host": host, "pid": pid, "nonce": nonce}
 
 
+class WorkerRolePauseRequest(BaseModel):
+    reason: str | None = None
+    message: str | None = None
+
+
 @router.get("/workers")
 def list_workers() -> dict[str, Any]:
     now = utcnow()
@@ -48,6 +64,7 @@ def list_workers() -> dict[str, Any]:
     window_before = now - timedelta(seconds=window_seconds)
 
     with session_scope() as session:
+        pauses = get_worker_role_pauses(session)
         rows = (
             session.execute(
                 select(WorkerHeartbeat)
@@ -60,9 +77,22 @@ def list_workers() -> dict[str, Any]:
 
         workers: list[dict[str, Any]] = []
         roles: dict[str, dict[str, Any]] = {}
+        for role in known_worker_roles():
+            pause = pauses.get(role) or {}
+            roles[role] = {
+                "role": role,
+                "online": 0,
+                "total": 0,
+                "last_seen_at": None,
+                "paused": bool(pause.get("paused")),
+                "pause_reason": pause.get("reason"),
+                "pause_message": pause.get("message"),
+                "pause_set_at": pause.get("set_at"),
+                "controllable": is_controllable_worker_role(role),
+            }
         for hb in rows:
             wid = str(getattr(hb, "worker_id", "") or "")
-            role = str(getattr(hb, "role", "") or "").strip() or "all"
+            role = normalize_worker_role(getattr(hb, "role", ""))
             updated_at = getattr(hb, "updated_at", None)
             online = bool(updated_at and updated_at >= stale_before)
             parsed = _parse_worker_id(wid)
@@ -77,7 +107,18 @@ def list_workers() -> dict[str, Any]:
 
             r = roles.get(role)
             if not r:
-                r = {"role": role, "online": 0, "total": 0, "last_seen_at": None}
+                pause = pauses.get(role) or {}
+                r = {
+                    "role": role,
+                    "online": 0,
+                    "total": 0,
+                    "last_seen_at": None,
+                    "paused": bool(pause.get("paused")),
+                    "pause_reason": pause.get("reason"),
+                    "pause_message": pause.get("message"),
+                    "pause_set_at": pause.get("set_at"),
+                    "controllable": is_controllable_worker_role(role),
+                }
                 roles[role] = r
             r["total"] = int(r["total"]) + 1
             if online:
@@ -94,3 +135,30 @@ def list_workers() -> dict[str, Any]:
             "workers": workers,
             "roles": sorted(list(roles.values()), key=lambda x: str(x.get("role") or "")),
         }
+
+
+@router.post("/workers/roles/{role}/pause")
+def pause_worker_role(role: str, payload: WorkerRolePauseRequest) -> dict[str, Any]:
+    normalized = normalize_worker_role(role)
+    if not is_controllable_worker_role(normalized):
+        raise HTTPException(status_code=400, detail=f"invalid controllable worker role: {role}")
+
+    reason = str(payload.reason or "").strip() or "manual_worker_role_pause"
+    message = (
+        str(payload.message or "").strip()
+        or f"已暂停 {normalized} worker 领取新任务；运行中任务不受影响。"
+    )
+    with session_scope() as session:
+        pause = set_worker_role_paused(session, role=normalized, reason=reason, message=message)
+        return {"ok": True, "role": normalized, "pause": pause}
+
+
+@router.post("/workers/roles/{role}/resume")
+def resume_worker_role(role: str) -> dict[str, Any]:
+    normalized = normalize_worker_role(role)
+    if not is_controllable_worker_role(normalized):
+        raise HTTPException(status_code=400, detail=f"invalid controllable worker role: {role}")
+
+    with session_scope() as session:
+        pause = clear_worker_role_pause(session, role=normalized)
+        return {"ok": True, "role": normalized, "pause": pause}

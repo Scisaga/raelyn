@@ -42,6 +42,13 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
   - `status=running AND lease_expires_at < now()` 视为失联，转回 `pending` 或标记为 `failed`
   - 回收动作应记录原因，便于后续排障
 
+## Worker 角色暂停（Claim Gate）
+
+- worker 角色暂停的事实源落在 `app_config.worker_role_pause`
+- 该开关只阻止对应角色继续 claim 新任务，不会直接停止 OS 进程
+- 已经 `running` 的任务保持原样，继续执行到正常结束或走现有协作式取消语义
+- `ALL` worker 也必须遵守角色暂停门控，不能绕过已暂停的具体角色
+
 ## 幂等策略（At-least-once 友好）
 
 - 数据写入侧通过唯一键 + upsert 保证重复任务不会重复产出
