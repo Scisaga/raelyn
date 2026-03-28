@@ -136,15 +136,53 @@
                                 type="button"
 	                              class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
 	                              :class="workerRolePillClass(r)"
-	                              :title="workerRoleTitle(r)"
+	                              :title="workerRoleTitle(r) + '  action=' + workerRoleActionLabel(r)"
                                 :disabled="!!(workerRoleActionInFlight && workerRoleActionInFlight[String(r.role)])"
                                 @click="toggleWorkerRolePause(r)"
 	                            >
 	                              <span class="w-1.5 h-1.5 rounded-full" :class="workerRoleDotClass(r)"></span>
 	                              <span x-text="workerRoleLabel(r.role)"></span>
 	                              <span class="tabular-nums text-[11px]" x-text="String(Number(r.online||0)) + '/' + String(Number(r.total||0))"></span>
-                                <span x-show="r.paused" class="text-[11px] font-medium">已暂停</span>
-                                <span class="ml-1 text-[11px] font-medium underline underline-offset-2" x-text="workerRoleActionLabel(r)"></span>
+                                <span class="ml-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-white/10 bg-slate-950/25">
+                                  <svg
+                                    x-show="!(workerRoleActionInFlight && workerRoleActionInFlight[String(r.role)]) && !r.paused"
+                                    viewBox="0 0 24 24"
+                                    width="10"
+                                    height="10"
+                                    fill="currentColor"
+                                    aria-hidden="true"
+                                  >
+                                    <rect x="6" y="5" width="4" height="14" rx="1"></rect>
+                                    <rect x="14" y="5" width="4" height="14" rx="1"></rect>
+                                  </svg>
+                                  <svg
+                                    x-show="!(workerRoleActionInFlight && workerRoleActionInFlight[String(r.role)]) && r.paused"
+                                    viewBox="0 0 24 24"
+                                    width="10"
+                                    height="10"
+                                    fill="currentColor"
+                                    aria-hidden="true"
+                                  >
+                                    <path d="M8 6.5v11l9-5.5z"></path>
+                                  </svg>
+                                  <svg
+                                    x-show="workerRoleActionInFlight && workerRoleActionInFlight[String(r.role)]"
+                                    viewBox="0 0 24 24"
+                                    width="10"
+                                    height="10"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    class="animate-spin"
+                                    aria-hidden="true"
+                                  >
+                                    <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+                                    <path d="M21 3v6h-6"></path>
+                                  </svg>
+                                </span>
+                                <span class="sr-only" x-text="workerRoleActionLabel(r)"></span>
 	                            </button>
                             </template>
                             <template x-if="!workerRoleControllable(r)">

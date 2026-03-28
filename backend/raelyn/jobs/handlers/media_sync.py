@@ -47,6 +47,7 @@ def _enqueue_existing_discovered_downloads(
     *,
     media: Media,
     allow_members_only_download: bool,
+    download_priority: int,
 ) -> int:
     eligible_statuses = ["discovered"]
     if allow_members_only_download:
@@ -74,7 +75,7 @@ def _enqueue_existing_discovered_downloads(
     )
     enqueued = 0
     for video_id in video_ids:
-        schedule_video_download(session, video_id)
+        schedule_video_download(session, video_id, priority=download_priority)
         enqueued += 1
     return enqueued
 
@@ -319,6 +320,7 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                 session,
                 media=media,
                 allow_members_only_download=allow_members_only_download,
+                download_priority=download_priority,
             )
             enqueued_downloads += existing_downloads
 

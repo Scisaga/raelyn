@@ -42,11 +42,17 @@ def _find_active_download_job(session: Session, *, video_id: uuid.UUID) -> Job |
     ).scalar_one_or_none()
 
 
-def schedule_video_download(session: Session, video_id: uuid.UUID) -> dict[str, Any]:
+def schedule_video_download(
+    session: Session,
+    video_id: uuid.UUID,
+    *,
+    priority: int | None = None,
+) -> dict[str, Any]:
     video = session.get(Video, video_id)
     if not video:
         raise LookupError("video not found")
     ensure_media_not_deleting(session, video.media_id)
+    desired_priority = _DOWNLOAD_JOB_PRIORITY if priority is None else int(priority)
 
     if (video.status or "") == "members_only":
         item = session.get(AppConfig, "ytdlp_members_only")
@@ -59,8 +65,8 @@ def schedule_video_download(session: Session, video_id: uuid.UUID) -> dict[str, 
     active = _find_active_download_job(session, video_id=video.id)
     if active:
         previous_priority = int(active.priority or 0)
-        if active.status == "pending" and previous_priority < _DOWNLOAD_JOB_PRIORITY:
-            active.priority = _DOWNLOAD_JOB_PRIORITY
+        if active.status == "pending" and previous_priority < desired_priority:
+            active.priority = desired_priority
             session.add(
                 JobEvent(
                     job_id=active.id,
@@ -68,7 +74,7 @@ def schedule_video_download(session: Session, video_id: uuid.UUID) -> dict[str, 
                     message="download priority promoted",
                     data={
                         "video_id": str(video.id),
-                        "priority": _DOWNLOAD_JOB_PRIORITY,
+                        "priority": desired_priority,
                         "previous_priority": previous_priority,
                     },
                 )
@@ -89,7 +95,7 @@ def schedule_video_download(session: Session, video_id: uuid.UUID) -> dict[str, 
             "reused": True,
         }
 
-    job_id = enqueue_job(session, type_=job_type, params={"video_id": str(video.id)}, priority=_DOWNLOAD_JOB_PRIORITY)
+    job_id = enqueue_job(session, type_=job_type, params={"video_id": str(video.id)}, priority=desired_priority)
     return {
         "ok": True,
         "status": "accepted",
@@ -97,7 +103,7 @@ def schedule_video_download(session: Session, video_id: uuid.UUID) -> dict[str, 
         "video_id": str(video.id),
         "job_id": str(job_id),
         "job_type": job_type,
-        "priority": _DOWNLOAD_JOB_PRIORITY,
+        "priority": desired_priority,
         "reused": False,
     }
 

@@ -151,6 +151,48 @@ class VideoActionsTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 schedule_video_download(session, video.id)
 
+    def test_schedule_video_download_uses_override_priority(self) -> None:
+        video = Video(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_video_id="abc123",
+            media_id=uuid.uuid4(),
+            url="https://example.com/watch?v=abc123",
+            status="ready",
+        )
+        session = Mock()
+        session.get.return_value = video
+        job_id = uuid.uuid4()
+
+        with patch("raelyn.services.video_actions.ensure_media_not_deleting"):
+            with patch("raelyn.services.video_actions._find_active_download_job", return_value=None):
+                with patch("raelyn.services.video_actions.enqueue_job", return_value=job_id) as enqueue_job:
+                    result = schedule_video_download(session, video.id, priority=5)
+
+        self.assertEqual(result["priority"], 5)
+        self.assertEqual(enqueue_job.call_args.kwargs["priority"], 5)
+
+    def test_schedule_video_download_reuses_pending_job_without_demoting_priority(self) -> None:
+        video = Video(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_video_id="abc123",
+            media_id=uuid.uuid4(),
+            url="https://example.com/watch?v=abc123",
+            status="ready",
+        )
+        active = Mock(status="pending", priority=7, id=uuid.uuid4(), type="video.download.youtube")
+        session = Mock()
+        session.get.return_value = video
+
+        with patch("raelyn.services.video_actions.ensure_media_not_deleting"):
+            with patch("raelyn.services.video_actions._find_active_download_job", return_value=active):
+                result = schedule_video_download(session, video.id, priority=5)
+
+        self.assertEqual(result["priority"], 7)
+        self.assertEqual(active.priority, 7)
+        session.add.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

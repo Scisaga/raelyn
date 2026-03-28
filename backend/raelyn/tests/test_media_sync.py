@@ -135,7 +135,7 @@ class MediaSyncVideoOrderingTests(unittest.TestCase):
         job = Job(
             id=uuid.uuid4(),
             type="media.sync_videos",
-            params={"media_id": str(media.id), "max_entries": 0, "enqueue_existing_downloads": True},
+            params={"media_id": str(media.id), "max_entries": 0, "enqueue_existing_downloads": True, "download_priority": 5},
             priority=1,
             status="pending",
         )
@@ -162,6 +162,7 @@ class MediaSyncVideoOrderingTests(unittest.TestCase):
             [call.args[1] for call in schedule_video_download.call_args_list],
             existing_video_ids,
         )
+        self.assertTrue(all(call.kwargs["priority"] == 5 for call in schedule_video_download.call_args_list))
 
 
 if __name__ == "__main__":
