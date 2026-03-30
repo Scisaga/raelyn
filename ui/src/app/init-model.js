@@ -45,6 +45,7 @@ export function createAppInitMethods() {
         this.services.s3 = health.s3 || this.services.s3;
         this.services.asr = health.asr || this.services.asr;
         this.services.llm = health.llm || this.services.llm;
+        this.inference = health.inference || this.inference;
         this.globalStatus = health.deps_ok ? "" : "部分依赖不可用";
         return health;
       } catch (e) {

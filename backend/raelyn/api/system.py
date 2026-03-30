@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from raelyn.config import settings
 from raelyn.db import session_scope
+from raelyn.services.inference import build_inference_status
 from raelyn.services.provider_pause import get_provider_pauses
 from raelyn.services.system_pause import clear_pause, get_pause, set_paused
 
@@ -19,6 +20,7 @@ def system_status() -> dict:
         return {
             "pause": get_pause(session),
             "provider_pauses": get_provider_pauses(session),
+            "inference": build_inference_status(session),
             "asset_delivery": {
                 "strategy": "startup_probe",
                 "direct_probe_url": probe_url,

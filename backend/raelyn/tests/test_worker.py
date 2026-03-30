@@ -126,6 +126,7 @@ class WorkerRecoveryMergeTests(unittest.TestCase):
             priority=2,
             dedupe_key=dedupe_key,
             scheduled_for=datetime(2026, 3, 20, 2, 0, tzinfo=timezone.utc),
+            started_at=datetime(2026, 3, 20, 0, 1, tzinfo=timezone.utc),
             error_message="old",
             error_stack="old",
         )
@@ -145,6 +146,8 @@ class WorkerRecoveryMergeTests(unittest.TestCase):
         self.assertEqual(pending_job.priority, 1007)
         self.assertIsNone(pending_job.error_message)
         self.assertIsNone(pending_job.error_stack)
+        self.assertIsNone(pending_job.started_at)
+        self.assertIsNone(pending_job.finished_at)
         self.assertEqual(running_job.status, "failed")
         self.assertEqual(running_job.finished_at, now)
         self.assertIsNone(running_job.worker_id)
@@ -167,6 +170,8 @@ class WorkerRecoveryMergeTests(unittest.TestCase):
             priority=100,
             dedupe_key=dedupe_key,
             scheduled_for=datetime(2026, 3, 20, 3, 0, tzinfo=timezone.utc),
+            started_at=datetime(2026, 3, 20, 0, 3, tzinfo=timezone.utc),
+            finished_at=datetime(2026, 3, 20, 0, 4, tzinfo=timezone.utc),
         )
         now = datetime(2026, 3, 20, 0, 22, 11, tzinfo=timezone.utc)
 
@@ -183,6 +188,8 @@ class WorkerRecoveryMergeTests(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertEqual(pending_job.scheduled_for, now)
         self.assertEqual(pending_job.priority, 1050)
+        self.assertIsNone(pending_job.started_at)
+        self.assertIsNone(pending_job.finished_at)
         self.assertEqual(running_job.status, "failed")
         self.assertEqual(running_job.finished_at, now)
         self.assertIsNone(running_job.worker_id)

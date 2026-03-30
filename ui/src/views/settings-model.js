@@ -70,12 +70,115 @@ export function createSettingsViewMethods({ ytdlpFormatPreset1080, ytdlpFormatPr
     },
 
     async loadSettings({ force = false } = {}) {
+      await this.loadInferenceSettings({ force });
       await this.loadYtdlpCookies({ force });
       await this.loadYtdlpSubtitles({ force });
       await this.loadYtdlpMembersOnly({ force });
       await this.loadYtdlpFormat({ force });
       await this.loadLlmPolishPrompt({ force });
       await this.loadStaleVideosCleanup({ force });
+    },
+
+    inferenceModeSourceText(source) {
+      const key = String(source || "").trim().toLowerCase();
+      if (key === "app_config") return "运行时配置";
+      if (key === "request") return "当前草稿";
+      return "环境变量";
+    },
+
+    applyInferenceConfigPayload(payload) {
+      const inference = payload && typeof payload === "object" ? payload : {};
+      const volcengine = inference.volcengine && typeof inference.volcengine === "object" ? inference.volcengine : {};
+      this.inferenceMode = String(inference.mode || "local").trim().toLowerCase() === "volcengine" ? "volcengine" : "local";
+      this.inferenceModeSource = String(inference.mode_source || "env").trim().toLowerCase() || "env";
+      this.volcengineApiKeyMasked = String(volcengine.api_key_masked || "");
+      this.volcengineApiKeyPresent = !!volcengine.api_key_present;
+      this.volcengineLlmModel = String(volcengine.llm_model || "");
+      this.volcengineAsrModel = String(volcengine.asr_model || "");
+      this.volcengineAsrAppKeyMasked = String(volcengine.asr_app_key_masked || "");
+      this.volcengineAsrAppKeyPresent = !!volcengine.asr_app_key_present;
+      this.volcengineAsrAccessKeyMasked = String(volcengine.asr_access_key_masked || "");
+      this.volcengineAsrAccessKeyPresent = !!volcengine.asr_access_key_present;
+      this.volcengineLlmTimeoutSeconds = Number(volcengine.llm_timeout_seconds || 600) || 600;
+      this.volcengineAsrTimeoutSeconds = Number(volcengine.asr_timeout_seconds || 600) || 600;
+    },
+
+    async loadInferenceSettings({ force = false } = {}) {
+      try {
+        if (this.inferenceLoaded && !force) return;
+        this.inferenceLoading = true;
+        this.inferenceError = "";
+        const payload = await this.api(`/config/inference`);
+        this.applyInferenceConfigPayload(payload);
+        this.volcengineApiKey = "";
+        this.volcengineAsrAppKey = "";
+        this.volcengineAsrAccessKey = "";
+        this.inferenceLoaded = true;
+      } catch (e) {
+        this.inferenceError = e && e.message ? e.message : String(e);
+      } finally {
+        this.inferenceLoading = false;
+      }
+    },
+
+    buildInferenceDraftPayload() {
+      return {
+        mode: this.inferenceMode === "volcengine" ? "volcengine" : "local",
+        volcengine: {
+          api_key: String(this.volcengineApiKey || ""),
+          llm_model: String(this.volcengineLlmModel || "").trim(),
+          asr_model: String(this.volcengineAsrModel || "").trim(),
+          asr_app_key: String(this.volcengineAsrAppKey || ""),
+          asr_access_key: String(this.volcengineAsrAccessKey || ""),
+          llm_timeout_seconds: Number(this.volcengineLlmTimeoutSeconds || 600) || 600,
+          asr_timeout_seconds: Number(this.volcengineAsrTimeoutSeconds || 600) || 600,
+        },
+      };
+    },
+
+    async saveInferenceSettings() {
+      try {
+        this.inferenceSaving = true;
+        this.inferenceError = "";
+        this.inferenceTestResult = null;
+        const payload = this.buildInferenceDraftPayload();
+        await this.api(`/config/inference`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        await this.loadInferenceSettings({ force: true });
+        await this._refreshHealthStatus({ silent: true });
+        await this.loadSystemStatus({ silent: true });
+        this.globalStatus = this.inferenceMode === "volcengine" ? "已保存火山模式推理配置" : "已切换到本地模式";
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.inferenceError = msg;
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.inferenceSaving = false;
+      }
+    },
+
+    async testInferenceSettings() {
+      try {
+        this.inferenceTesting = true;
+        this.inferenceError = "";
+        const payload = this.buildInferenceDraftPayload();
+        const result = await this.api(`/config/inference/test`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        this.inferenceTestResult = result;
+        this.globalStatus = result && result.ok ? "推理连接测试通过" : "推理连接测试失败";
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.inferenceError = msg;
+        this.globalStatus = `error: ${msg}`;
+      } finally {
+        this.inferenceTesting = false;
+      }
     },
 
     async loadYtdlpCookies({ force = false } = {}) {

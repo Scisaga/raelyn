@@ -12,24 +12,17 @@
                   </button>
                   <button
                     class="px-3 py-1.5 rounded-md border text-sm"
-                    :class="settingsTab==='subtitles' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-slate-700 bg-slate-950/20 text-slate-200 hover:bg-slate-800/60'"
-                    @click="setSettingsTab('subtitles')"
+                    :class="settingsTab==='download' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-slate-700 bg-slate-950/20 text-slate-200 hover:bg-slate-800/60'"
+                    @click="setSettingsTab('download')"
                   >
-                    字幕
+                    下载
                   </button>
                   <button
                     class="px-3 py-1.5 rounded-md border text-sm"
-                    :class="settingsTab==='members' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-slate-700 bg-slate-950/20 text-slate-200 hover:bg-slate-800/60'"
-                    @click="setSettingsTab('members')"
+                    :class="settingsTab==='inference' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-slate-700 bg-slate-950/20 text-slate-200 hover:bg-slate-800/60'"
+                    @click="setSettingsTab('inference')"
                   >
-                    会员
-                  </button>
-                  <button
-                    class="px-3 py-1.5 rounded-md border text-sm"
-                    :class="settingsTab==='format' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-slate-700 bg-slate-950/20 text-slate-200 hover:bg-slate-800/60'"
-                    @click="setSettingsTab('format')"
-                  >
-                    画质
+                    AI 接入
                   </button>
                   <button
                     class="px-3 py-1.5 rounded-md border text-sm"
@@ -178,154 +171,363 @@
                         </div>
                       </div>
                     </div>
-	                </div>
-
-                <div x-show="settingsTab==='subtitles'" class="h-full overflow-auto raelyn-scrollbar">
-                <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
-                  <div>
-                    <div class="text-sm font-semibold text-slate-100">下载字幕（Subtitles）</div>
-                    <div class="text-xs text-slate-400 mt-1">
-                      下载字幕通常需要 Cookies，且更容易触发风控/限流（例如 HTTP 429）。建议默认关闭。
-                    </div>
-                  </div>
-                  <div class="shrink-0 flex items-center gap-2">
-                    <button
-                      class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
-                      @click="loadYtdlpSubtitles({force:true})"
-                      :disabled="ytdlpSubtitlesSaving"
-                    >
-                      重新加载
-                    </button>
-                    <button
-                      class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
-                      @click="saveYtdlpSubtitles()"
-                      :disabled="ytdlpSubtitlesSaving"
-                    >
-                      保存
-                    </button>
-                  </div>
-                </div>
-                <div class="p-4 space-y-3">
-                  <label class="inline-flex items-center gap-3 select-none">
-                    <input
-                      type="checkbox"
-                      class="h-4 w-4 rounded border-slate-700 bg-slate-950/30 text-emerald-500 focus:ring-emerald-500/30"
-                      x-model="ytdlpSubtitlesEnabled"
-                    />
-                    <span class="text-sm text-slate-200">下载字幕（含自动字幕）</span>
-                    <span class="text-xs text-slate-500">（对新下载任务生效）</span>
-                  </label>
-                  <div class="text-xs text-rose-200" x-show="ytdlpSubtitlesError" x-text="ytdlpSubtitlesError"></div>
-                  <div class="text-[11px] text-slate-500">
-                    提示：开启字幕下载后，建议同时在上方配置 <code class="text-slate-200">YTDLP_COOKIES_YOUTUBE</code>，否则更容易失败/被风控。
-                  </div>
-                </div>
                 </div>
 
-                <div x-show="settingsTab==='members'" class="h-full overflow-auto raelyn-scrollbar">
-                <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
-                  <div>
-                    <div class="text-sm font-semibold text-slate-100">会员视频（Members-only）</div>
-                    <div class="text-xs text-slate-400 mt-1">
-                      是否尝试下载 YouTube 会员专享视频（需要账号具备权限且 Cookies 有效）。默认关闭。
-                    </div>
+                <div x-show="settingsTab==='download'" class="h-full flex flex-col min-h-0">
+                  <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar divide-y divide-slate-800">
+                    <section class="px-4 py-4 space-y-4">
+                      <div class="flex flex-wrap items-start justify-between gap-3">
+                        <div class="space-y-2">
+                          <div class="flex items-center gap-2">
+                            <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/40 px-2 py-0.5 text-[11px] text-slate-400">01</span>
+                            <div class="text-sm font-semibold text-slate-100">字幕下载</div>
+                          </div>
+                          <div class="max-w-3xl text-xs leading-6 text-slate-400">
+                            下载字幕通常依赖 Cookies，也更容易触发风控或限流。建议只在确实需要保留官方字幕时开启。
+                          </div>
+                        </div>
+                        <div class="shrink-0 flex items-center gap-2">
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="loadYtdlpSubtitles({force:true})"
+                            :disabled="ytdlpSubtitlesSaving"
+                          >
+                            重新加载
+                          </button>
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="saveYtdlpSubtitles()"
+                            :disabled="ytdlpSubtitlesSaving"
+                          >
+                            保存
+                          </button>
+                        </div>
+                      </div>
+                      <div class="rounded-lg border border-slate-800 bg-slate-950/20 overflow-hidden">
+                        <div class="px-4 py-4 border-b border-slate-800">
+                          <label class="inline-flex items-center gap-3 select-none">
+                            <input
+                              type="checkbox"
+                              class="h-4 w-4 rounded border-slate-700 bg-slate-950/30 text-emerald-500 focus:ring-emerald-500/30"
+                              x-model="ytdlpSubtitlesEnabled"
+                            />
+                            <span class="text-sm text-slate-200">下载字幕（含自动字幕）</span>
+                            <span class="text-xs text-slate-500">（对新下载任务生效）</span>
+                          </label>
+                        </div>
+                        <div class="px-4 py-3 space-y-2">
+                          <div class="text-xs text-rose-200" x-show="ytdlpSubtitlesError" x-text="ytdlpSubtitlesError"></div>
+                          <div class="text-[11px] leading-5 text-slate-500">
+                            提示：开启后，建议同时在 Cookies 页面配置 <code class="text-slate-200">YTDLP_COOKIES_YOUTUBE</code>，否则更容易失败或被风控。
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section class="px-4 py-4 space-y-4">
+                      <div class="flex flex-wrap items-start justify-between gap-3">
+                        <div class="space-y-2">
+                          <div class="flex items-center gap-2">
+                            <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/40 px-2 py-0.5 text-[11px] text-slate-400">02</span>
+                            <div class="text-sm font-semibold text-slate-100">会员视频</div>
+                          </div>
+                          <div class="max-w-3xl text-xs leading-6 text-slate-400">
+                            控制是否尝试下载 YouTube 会员专享内容。打开后仍会受账号权限和 Cookies 有效性约束。
+                          </div>
+                        </div>
+                        <div class="shrink-0 flex items-center gap-2">
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="loadYtdlpMembersOnly({force:true})"
+                            :disabled="ytdlpMembersOnlySaving"
+                          >
+                            重新加载
+                          </button>
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="saveYtdlpMembersOnly()"
+                            :disabled="ytdlpMembersOnlySaving"
+                          >
+                            保存
+                          </button>
+                        </div>
+                      </div>
+                      <div class="rounded-lg border border-slate-800 bg-slate-950/20 overflow-hidden">
+                        <div class="px-4 py-4 border-b border-slate-800">
+                          <label class="inline-flex items-center gap-3 select-none">
+                            <input
+                              type="checkbox"
+                              class="h-4 w-4 rounded border-slate-700 bg-slate-950/30 text-emerald-500 focus:ring-emerald-500/30"
+                              x-model="ytdlpMembersOnlyEnabled"
+                            />
+                            <span class="text-sm text-slate-200">下载会员视频</span>
+                            <span class="text-xs text-slate-500">（对新同步/新下载任务生效）</span>
+                          </label>
+                        </div>
+                        <div class="px-4 py-3 space-y-2">
+                          <div class="text-xs text-rose-200" x-show="ytdlpMembersOnlyError" x-text="ytdlpMembersOnlyError"></div>
+                          <div class="text-[11px] leading-5 text-slate-500">
+                            提示：关闭时，识别为会员专享的视频不会创建下载任务；开启后会尝试下载，无权限时仍会自动跳过。
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section class="px-4 py-4 space-y-4">
+                      <div class="flex flex-wrap items-start justify-between gap-3">
+                        <div class="space-y-2">
+                          <div class="flex items-center gap-2">
+                            <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/40 px-2 py-0.5 text-[11px] text-slate-400">03</span>
+                            <div class="text-sm font-semibold text-slate-100">下载画质</div>
+                          </div>
+                          <div class="max-w-3xl text-xs leading-6 text-slate-400">
+                            配置 yt-dlp 的 <code class="text-slate-200">--format</code> 策略。默认提供 1080p / 720p 上限，自定义模式可以直接填写 format selector。
+                          </div>
+                        </div>
+                        <div class="shrink-0 flex items-center gap-2">
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="loadYtdlpFormat({force:true})"
+                            :disabled="ytdlpFormatSaving"
+                          >
+                            重新加载
+                          </button>
+                          <button
+                            class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="saveYtdlpFormat()"
+                            :disabled="ytdlpFormatSaving"
+                          >
+                            保存
+                          </button>
+                        </div>
+                      </div>
+                      <div class="rounded-lg border border-slate-800 bg-slate-950/20 overflow-hidden">
+                        <div class="px-4 py-4 grid gap-4 lg:grid-cols-[240px_minmax(0,1fr)]">
+                          <label class="block">
+                            <div class="text-xs text-slate-300 mb-1.5">预设</div>
+                            <select
+                              class="w-full rounded-md border border-slate-800 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                              x-model="ytdlpFormatPreset"
+                            >
+                              <option value="1080">1080p cap</option>
+                              <option value="720">720p cap</option>
+                              <option value="custom">自定义</option>
+                            </select>
+                            <div class="mt-2 text-[11px] leading-5 text-slate-500">非自定义时仅展示实际生效的 selector，自定义时才允许编辑。</div>
+                          </label>
+
+                          <label class="block">
+                            <div class="text-xs text-slate-300 mb-1.5">Format selector</div>
+                            <textarea
+                              class="w-full h-32 rounded-lg border px-3 py-2 text-xs font-mono focus:outline-none whitespace-pre raelyn-multiline-input"
+                              :readonly="ytdlpFormatPreset!=='custom'"
+                              :value="ytdlpFormatPreset==='custom' ? (ytdlpFormatCustomText || '') : ytdlpFormatEffectiveText()"
+                              @input="if (ytdlpFormatPreset==='custom') ytdlpFormatCustomText=$event.target.value"
+                              :placeholder="ytdlpFormatPreset==='custom' ? '填入 yt-dlp format selector，例如：bv*[height<=1080]+ba/b' : ''"
+                              spellcheck="false"
+                            ></textarea>
+                          </label>
+                        </div>
+                        <div class="px-4 py-3 border-t border-slate-800 space-y-2">
+                          <div class="text-xs text-rose-200" x-show="ytdlpFormatError" x-text="ytdlpFormatError"></div>
+                          <div class="text-[11px] leading-5 text-slate-500">
+                            提示：该配置会保存在数据库配置中（<code class="text-slate-200">/api/config</code>），并在下载时直接作为 yt-dlp 的
+                            <code class="text-slate-200">--format</code> 使用，无需重启即可生效。
+                          </div>
+                        </div>
+                      </div>
+                    </section>
                   </div>
-                  <div class="shrink-0 flex items-center gap-2">
-                    <button
-                      class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
-                      @click="loadYtdlpMembersOnly({force:true})"
-                      :disabled="ytdlpMembersOnlySaving"
-                    >
-                      重新加载
-                    </button>
-                    <button
-                      class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
-                      @click="saveYtdlpMembersOnly()"
-                      :disabled="ytdlpMembersOnlySaving"
-                    >
-                      保存
-                    </button>
-                  </div>
-                </div>
-                <div class="p-4 space-y-3">
-                  <label class="inline-flex items-center gap-3 select-none">
-                    <input
-                      type="checkbox"
-                      class="h-4 w-4 rounded border-slate-700 bg-slate-950/30 text-emerald-500 focus:ring-emerald-500/30"
-                      x-model="ytdlpMembersOnlyEnabled"
-                    />
-                    <span class="text-sm text-slate-200">下载会员视频</span>
-                    <span class="text-xs text-slate-500">（对新同步/新下载任务生效）</span>
-                  </label>
-                  <div class="text-xs text-rose-200" x-show="ytdlpMembersOnlyError" x-text="ytdlpMembersOnlyError"></div>
-                  <div class="text-[11px] text-slate-500">
-                    提示：关闭时，识别为会员专享的视频不会创建下载任务；打开后会尝试下载，若无权限则仍会跳过。
-                  </div>
-                </div>
                 </div>
 
-                <div x-show="settingsTab==='format'" class="h-full overflow-auto raelyn-scrollbar">
-                <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
-                  <div>
-                    <div class="text-sm font-semibold text-slate-100">YTDLP_FORMAT（下载画质）</div>
-                    <div class="text-xs text-slate-400 mt-1">
-                      配置 yt-dlp <code class="text-slate-200">--format</code>（format selector）。可选 1080p/720p 上限或自定义。
+                <div x-show="settingsTab==='inference'" class="h-full overflow-auto raelyn-scrollbar">
+                  <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
+                    <div>
+                      <div class="text-sm font-semibold text-slate-100">AI 接入方式</div>
+                      <div class="text-xs text-slate-400 mt-1">
+                        普通用户推荐使用火山引擎；高级用户继续通过 <code class="text-slate-200">.env</code> 维护本地自托管配置。
+                      </div>
+                    </div>
+                    <div class="shrink-0 flex items-center gap-2">
+                      <button
+                        class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
+                        @click="testInferenceSettings()"
+                        :disabled="inferenceLoading || inferenceSaving || inferenceTesting"
+                      >
+                        <span x-show="!inferenceTesting">测试连接</span>
+                        <span x-show="inferenceTesting">测试中…</span>
+                      </button>
+                      <button
+                        class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
+                        @click="saveInferenceSettings()"
+                        :disabled="inferenceLoading || inferenceSaving || inferenceTesting"
+                      >
+                        <span x-show="!inferenceSaving">保存</span>
+                        <span x-show="inferenceSaving">保存中…</span>
+                      </button>
                     </div>
                   </div>
-                  <div class="shrink-0 flex items-center gap-2">
-                    <button
-                      class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-950/20 text-xs text-slate-200 hover:bg-slate-800/60 disabled:opacity-60 disabled:cursor-not-allowed"
-                      @click="loadYtdlpFormat({force:true})"
-                      :disabled="ytdlpFormatSaving"
-                    >
-                      重新加载
-                    </button>
-                    <button
-                      class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
-                      @click="saveYtdlpFormat()"
-                      :disabled="ytdlpFormatSaving"
-                    >
-                      保存
-                    </button>
-                  </div>
-                </div>
-                <div class="p-4 space-y-3">
-                  <div class="flex flex-col gap-3">
-                    <div class="flex items-end gap-3 flex-wrap">
-                      <label class="block">
-                        <div class="text-xs text-slate-300 mb-1">预设</div>
-                        <select
-                          class="w-56 max-w-full rounded-md border border-slate-800 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
-                          x-model="ytdlpFormatPreset"
+                  <div class="px-4 py-4 space-y-5">
+                    <div class="flex flex-wrap items-center gap-3 border-b border-slate-800 pb-4">
+                      <div class="inline-flex items-center gap-1 rounded-xl border border-slate-800 bg-slate-950/50 p-1">
+                        <button
+                          class="rounded-lg px-3 py-1.5 text-sm font-semibold transition-all"
+                          :class="inferenceMode==='local' ? 'bg-emerald-500/12 text-emerald-200 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.24)]' : 'text-slate-300 hover:bg-slate-800/70 hover:text-slate-100'"
+                          @click="inferenceMode='local'"
                         >
-                          <option value="1080">1080p cap</option>
-                          <option value="720">720p cap</option>
-                          <option value="custom">自定义</option>
-                        </select>
-                      </label>
-                      <div class="text-[11px] text-slate-500 pb-2">
-                        非自定义：只读展示；自定义：可编辑
+                          本地服务
+                        </button>
+                        <button
+                          class="rounded-lg px-3 py-1.5 text-sm font-semibold transition-all"
+                          :class="inferenceMode==='volcengine' ? 'bg-emerald-500/12 text-emerald-200 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.24)]' : 'text-slate-300 hover:bg-slate-800/70 hover:text-slate-100'"
+                          @click="inferenceMode='volcengine'"
+                        >
+                          火山引擎
+                        </button>
+                      </div>
+                      <div class="text-[11px] text-slate-500">当前生效来源：<span class="text-slate-300" x-text="inferenceModeSourceText(inferenceModeSource)"></span></div>
+                    </div>
+
+                    <div x-show="inferenceMode==='local'" class="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)] items-start">
+                      <div class="space-y-2">
+                        <div class="text-sm font-semibold text-slate-100">本地自托管</div>
+                        <div class="text-xs leading-6 text-slate-400">
+                          本地服务直接读取服务启动时的 <code class="text-slate-200">.env</code> 与本地推理服务配置。保存后不会修改 <code class="text-slate-200">.env</code>，只会把当前模式切回本地。
+                        </div>
+                      </div>
+                      <div class="grid gap-3 md:grid-cols-2">
+                        <div class="rounded-lg border border-slate-800 bg-slate-950/20 p-3">
+                          <div class="flex items-center justify-between gap-2">
+                            <div class="text-sm text-slate-100">ASR</div>
+                            <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.asr.ok)" x-text="serviceText(services.asr)"></span>
+                          </div>
+                          <div class="mt-2 text-[11px] text-slate-500">provider: <span class="text-slate-300" x-text="services.asr.provider || 'local'"></span></div>
+                          <div class="mt-1 text-[11px] text-slate-500">source: <span class="text-slate-300" x-text="inferenceModeSourceText(services.asr.source || 'env')"></span></div>
+                        </div>
+                        <div class="rounded-lg border border-slate-800 bg-slate-950/20 p-3">
+                          <div class="flex items-center justify-between gap-2">
+                            <div class="text-sm text-slate-100">LLM</div>
+                            <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.llm.ok)" x-text="serviceText(services.llm)"></span>
+                          </div>
+                          <div class="mt-2 text-[11px] text-slate-500">provider: <span class="text-slate-300" x-text="services.llm.provider || 'local'"></span></div>
+                          <div class="mt-1 text-[11px] text-slate-500">source: <span class="text-slate-300" x-text="inferenceModeSourceText(services.llm.source || 'env')"></span></div>
+                        </div>
                       </div>
                     </div>
 
-	                    <label class="block">
-	                      <div class="text-xs text-slate-300 mb-1">Format selector</div>
-	                      <textarea
-	                        class="w-full h-28 rounded-lg border px-3 py-2 text-xs font-mono focus:outline-none whitespace-pre raelyn-multiline-input"
-	                        :readonly="ytdlpFormatPreset!=='custom'"
-	                        :value="ytdlpFormatPreset==='custom' ? (ytdlpFormatCustomText || '') : ytdlpFormatEffectiveText()"
-	                        @input="if (ytdlpFormatPreset==='custom') ytdlpFormatCustomText=$event.target.value"
-	                        :placeholder="ytdlpFormatPreset==='custom' ? '填入 yt-dlp format selector，例如：bv*[height<=1080]+ba/b' : ''"
-                        spellcheck="false"
-                      ></textarea>
-                    </label>
+                    <div x-show="inferenceMode==='volcengine'" class="grid gap-5 lg:grid-cols-[280px_minmax(0,1fr)] items-start">
+                      <div class="rounded-xl border border-orange-500/20 bg-[linear-gradient(180deg,rgba(249,115,22,0.12),rgba(15,23,42,0.35))] p-4">
+                        <div class="flex items-start gap-3">
+                          <div class="flex h-14 w-14 items-center justify-center">
+                            <img
+                              src="/static/brand/official/volcengine.png"
+                              alt="火山引擎"
+                              class="h-11 w-11 object-contain drop-shadow-[0_12px_24px_rgba(59,130,246,0.28)]"
+                              loading="lazy"
+                            />
+                          </div>
+                          <div class="min-w-0">
+                            <div class="text-sm font-semibold text-orange-50">火山引擎方舟</div>
+                            <div class="mt-1 text-[11px] leading-5 text-orange-100/70">
+                              托管 LLM 与 ASR provider。后端会统一封装 endpoint、鉴权头和请求细节。
+                            </div>
+                          </div>
+                        </div>
+                        <a
+                          href="https://www.volcengine.com/"
+                          target="_blank"
+                          rel="noreferrer"
+                          class="mt-4 inline-flex items-center gap-2 rounded-full border border-orange-400/20 bg-slate-950/35 px-3 py-1.5 text-[11px] font-semibold text-orange-100 hover:bg-slate-950/55"
+                        >
+                          <svg viewBox="0 0 20 20" class="h-3.5 w-3.5" aria-hidden="true">
+                            <path d="M11 4h5v5h-1.5V6.56l-5.97 5.97-1.06-1.06 5.97-5.97H11V4ZM5 5h4v1.5H6.5v7h7V11H15v4H5V5Z" fill="currentColor" />
+                          </svg>
+                          官网
+                        </a>
+                      </div>
+
+                      <div class="space-y-4">
+                        <div class="grid gap-4 lg:grid-cols-2">
+                          <label class="block">
+                            <div class="text-xs text-slate-300 mb-1">方舟 API Key</div>
+                            <input
+                              type="password"
+                              autocomplete="new-password"
+                              class="w-full rounded-md border border-slate-800 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                              :placeholder="volcengineApiKeyMasked || '输入火山方舟 API Key'"
+                              x-model="volcengineApiKey"
+                            />
+                            <div class="mt-1 text-[11px] text-slate-500" x-show="volcengineApiKeyPresent && !volcengineApiKey">
+                              已保存：<span class="text-slate-300" x-text="volcengineApiKeyMasked"></span>
+                            </div>
+                          </label>
+                          <label class="block">
+                            <div class="text-xs text-slate-300 mb-1">LLM 模型</div>
+                            <input
+                              type="text"
+                              class="w-full rounded-md border border-slate-800 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                              placeholder="如 doubao-seed-1-6-thinking-250715"
+                              x-model="volcengineLlmModel"
+                            />
+                          </label>
+                          <label class="block">
+                            <div class="text-xs text-slate-300 mb-1">ASR App Key</div>
+                            <input
+                              type="password"
+                              autocomplete="new-password"
+                              class="w-full rounded-md border border-slate-800 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                              :placeholder="volcengineAsrAppKeyMasked || '输入 ASR App Key'"
+                              x-model="volcengineAsrAppKey"
+                            />
+                            <div class="mt-1 text-[11px] text-slate-500" x-show="volcengineAsrAppKeyPresent && !volcengineAsrAppKey">
+                              已保存：<span class="text-slate-300" x-text="volcengineAsrAppKeyMasked"></span>
+                            </div>
+                          </label>
+                          <label class="block">
+                            <div class="text-xs text-slate-300 mb-1">ASR Access Key</div>
+                            <input
+                              type="password"
+                              autocomplete="new-password"
+                              class="w-full rounded-md border border-slate-800 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                              :placeholder="volcengineAsrAccessKeyMasked || '输入 ASR Access Key'"
+                              x-model="volcengineAsrAccessKey"
+                            />
+                            <div class="mt-1 text-[11px] text-slate-500" x-show="volcengineAsrAccessKeyPresent && !volcengineAsrAccessKey">
+                              已保存：<span class="text-slate-300" x-text="volcengineAsrAccessKeyMasked"></span>
+                            </div>
+                          </label>
+                          <label class="block lg:col-span-2">
+                            <div class="text-xs text-slate-300 mb-1">ASR 模型</div>
+                            <input
+                              type="text"
+                              class="w-full rounded-md border border-slate-800 bg-slate-950/40 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
+                              placeholder="默认 bigmodel"
+                              x-model="volcengineAsrModel"
+                            />
+                          </label>
+                        </div>
+                        <div class="text-[11px] leading-6 text-slate-500">
+                          火山引擎会同时接管转写与文本生成。为保持界面简洁，endpoint 与请求头等实现细节都由后端封装；留空的密钥字段在保存时会保留已存值。
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="text-xs text-rose-200" x-show="inferenceError" x-text="inferenceError"></div>
+                    <div class="rounded-lg border border-slate-800 bg-slate-950/20 p-4 space-y-2" x-show="inferenceTestResult">
+                      <div class="flex items-center justify-between gap-2">
+                        <div class="text-sm font-semibold text-slate-100">测试结果</div>
+                        <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="inferenceTestResult && inferenceTestResult.ok ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200' : 'border-rose-500/20 bg-rose-500/10 text-rose-200'">
+                          <span x-text="inferenceTestResult && inferenceTestResult.ok ? 'OK' : 'Failed'"></span>
+                        </span>
+                      </div>
+                      <div class="text-[11px] text-slate-500">
+                        LLM：<span class="text-slate-300" x-text="inferenceTestResult && inferenceTestResult.llm && inferenceTestResult.llm.ok ? '可用' : ((inferenceTestResult && inferenceTestResult.llm && inferenceTestResult.llm.error) || '未通过')"></span>
+                      </div>
+                      <div class="text-[11px] text-slate-500">
+                        ASR：<span class="text-slate-300" x-text="inferenceTestResult && inferenceTestResult.asr && inferenceTestResult.asr.ok ? '可用' : ((inferenceTestResult && inferenceTestResult.asr && inferenceTestResult.asr.error) || '未通过')"></span>
+                      </div>
+                    </div>
                   </div>
-                  <div class="text-xs text-rose-200" x-show="ytdlpFormatError" x-text="ytdlpFormatError"></div>
-                  <div class="text-[11px] text-slate-500">
-                    提示：该配置会保存在数据库配置中（<code class="text-slate-200">/api/config</code>），并在下载时作为 yt-dlp 的
-                    <code class="text-slate-200">--format</code> 使用（无需重启即可生效）。
-                  </div>
-                </div>
                 </div>
 
                 <div x-show="settingsTab==='llm'" class="h-full flex flex-col min-h-0 overflow-auto raelyn-scrollbar">

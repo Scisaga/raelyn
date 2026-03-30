@@ -10,8 +10,10 @@ _BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-from raelyn.api.config_api import _validate_llm_transcript_polish_prompt_value
 from raelyn.api.config_api import _validate_brief_generation_policy_value
+from raelyn.api.config_api import _validate_inference_mode_value
+from raelyn.api.config_api import _validate_llm_transcript_polish_prompt_value
+from raelyn.api.config_api import _validate_volcengine_inference_config_value
 from raelyn.services.provider_cookies import looks_like_netscape_cookie_file
 
 
@@ -44,6 +46,31 @@ class ConfigApiValidationTests(unittest.TestCase):
     def test_looks_like_netscape_cookie_file_rejects_invalid_line(self) -> None:
         text = "SID=abc123; Domain=.youtube.com"
         self.assertFalse(looks_like_netscape_cookie_file(text))
+
+    def test_inference_mode_accepts_local_and_volcengine(self) -> None:
+        _validate_inference_mode_value({"value": "local"})
+        _validate_inference_mode_value({"value": "volcengine"})
+
+    def test_inference_mode_rejects_unknown_value(self) -> None:
+        with self.assertRaises(HTTPException):
+            _validate_inference_mode_value({"value": "other"})
+
+    def test_volcengine_inference_config_accepts_strings_and_timeouts(self) -> None:
+        _validate_volcengine_inference_config_value(
+            {
+                "api_key": "ark-key",
+                "llm_model": "doubao-seed",
+                "asr_model": "bigmodel",
+                "asr_app_key": "app",
+                "asr_access_key": "access",
+                "llm_timeout_seconds": 30,
+                "asr_timeout_seconds": "45",
+            }
+        )
+
+    def test_volcengine_inference_config_rejects_invalid_timeout(self) -> None:
+        with self.assertRaises(HTTPException):
+            _validate_volcengine_inference_config_value({"llm_timeout_seconds": 0})
 
 
 if __name__ == "__main__":

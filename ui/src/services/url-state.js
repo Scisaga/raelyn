@@ -64,7 +64,9 @@ export function createUrlStateMethods({ settingsTabs }) {
       }
       if (viewKey === "settings") {
         const legacyInstallPath = ((window.location.pathname || "").replace(/\/+$/, "") || "/") === "/install";
-        const tab = (legacyInstallPath ? "install" : (searchParams.get("tab") || this.settingsTab || "cookies")).trim();
+        const rawTab = (legacyInstallPath ? "install" : (searchParams.get("tab") || this.settingsTab || "cookies")).trim();
+        const legacyDownloadTabs = ["subtitles", "members", "format"];
+        const tab = legacyDownloadTabs.includes(rawTab) ? "download" : rawTab;
         this.settingsTab = settingsTabs.includes(tab) ? tab : "cookies";
         if (this.settingsTab === "cookies") {
           const cookieTab = (searchParams.get("cookie_tab") || this.settingsCookiesTab || "youtube").trim().toLowerCase();

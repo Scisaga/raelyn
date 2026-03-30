@@ -14,6 +14,9 @@ const cssOut = resolve(root, "static/css/tailwind.min.css");
 const vendorDir = resolve(root, "static/vendor");
 const pwaDir = resolve(root, "static/pwa");
 const pwaGlyphColor = [2, 6, 23];
+const pwaGlyphScaleAny = 0.6;
+const pwaGlyphScaleMaskable = 0.5;
+const pwaGlyphScaleAppleTouch = 0.56;
 
 mkdirSync(resolve(root, "static/css"), { recursive: true });
 mkdirSync(vendorDir, { recursive: true });
@@ -340,28 +343,28 @@ function buildPwaAssets() {
     icon192,
     192,
     192,
-    renderPwaIcon({ gradient, glyphAlpha, sourceSize, outputSize: 192, glyphScale: 0.8 })
+    renderPwaIcon({ gradient, glyphAlpha, sourceSize, outputSize: 192, glyphScale: pwaGlyphScaleAny })
   );
   writePngRgba(
     ffmpegBin,
     icon512,
     512,
     512,
-    renderPwaIcon({ gradient, glyphAlpha, sourceSize, outputSize: 512, glyphScale: 0.8 })
+    renderPwaIcon({ gradient, glyphAlpha, sourceSize, outputSize: 512, glyphScale: pwaGlyphScaleAny })
   );
   writePngRgba(
     ffmpegBin,
     iconMaskable512,
     512,
     512,
-    renderPwaIcon({ gradient, glyphAlpha, sourceSize, outputSize: 512, glyphScale: 0.68 })
+    renderPwaIcon({ gradient, glyphAlpha, sourceSize, outputSize: 512, glyphScale: pwaGlyphScaleMaskable })
   );
   writePngRgba(
     ffmpegBin,
     appleTouch,
     180,
     180,
-    renderPwaIcon({ gradient, glyphAlpha, sourceSize, outputSize: 180, glyphScale: 0.78 })
+    renderPwaIcon({ gradient, glyphAlpha, sourceSize, outputSize: 180, glyphScale: pwaGlyphScaleAppleTouch })
   );
 
   copyFileSync(resolve(uiDir, "pwa/manifest.webmanifest"), resolve(root, "static/manifest.webmanifest"));

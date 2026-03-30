@@ -992,8 +992,8 @@ export function createJobsViewMethods() {
     jobCompletedSecondsLabel(job) {
       const seconds = this.jobCompletedSeconds(job);
       if (seconds == null) return "";
-      if (Number.isInteger(seconds)) return `${seconds} 秒完成`;
-      return `${seconds.toFixed(1)} 秒完成`;
+      if (Number.isInteger(seconds)) return `本次尝试 ${seconds} 秒`;
+      return `本次尝试 ${seconds.toFixed(1)} 秒`;
     },
 
     jobPlaylistLabel(job) {

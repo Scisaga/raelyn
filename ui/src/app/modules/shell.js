@@ -82,6 +82,21 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
       probed: false,
       probeError: "",
     },
+    inference: {
+      mode: "local",
+      modeSource: "env",
+      volcengine: {
+        source: "env",
+        apiKeyPresent: false,
+        apiKeyMasked: "",
+        llmModel: "",
+        asrModel: "",
+        asrAppKeyPresent: false,
+        asrAppKeyMasked: "",
+        asrAccessKeyPresent: false,
+        asrAccessKeyMasked: "",
+      },
+    },
     _pausePollId: null,
     services: {
       db: { ok: false, url: "", error: null },
@@ -446,6 +461,25 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
             mode: this.assetDelivery && this.assetDelivery.mode ? this.assetDelivery.mode : "proxy",
             probed: this.assetDelivery && this.assetDelivery.probed ? this.assetDelivery.probed : false,
             probeError: "",
+          };
+        }
+        const inference = payload && payload.inference ? payload.inference : null;
+        if (inference && typeof inference === "object") {
+          const volcengine = inference.volcengine && typeof inference.volcengine === "object" ? inference.volcengine : {};
+          this.inference = {
+            mode: String(inference.mode || "local"),
+            modeSource: String(inference.mode_source || "env"),
+            volcengine: {
+              source: String(volcengine.source || "env"),
+              apiKeyPresent: !!volcengine.api_key_present,
+              apiKeyMasked: String(volcengine.api_key_masked || ""),
+              llmModel: String(volcengine.llm_model || ""),
+              asrModel: String(volcengine.asr_model || ""),
+              asrAppKeyPresent: !!volcengine.asr_app_key_present,
+              asrAppKeyMasked: String(volcengine.asr_app_key_masked || ""),
+              asrAccessKeyPresent: !!volcengine.asr_access_key_present,
+              asrAccessKeyMasked: String(volcengine.asr_access_key_masked || ""),
+            },
           };
         }
       } catch (e) {

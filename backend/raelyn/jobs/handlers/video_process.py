@@ -180,7 +180,7 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
     with job_workdir(job.id) as wd:
         local_audio = wd / f"audio.{audio_asset.format}"
         s3_download_file(bucket=audio_asset.s3_bucket, key=audio_asset.s3_key, local_path=local_audio)
-        resp = asr_transcribe(audio_path=local_audio, language="zh")
+        resp = asr_transcribe(audio_path=local_audio, language="zh", media_duration_seconds=video.duration_sec)
 
         segments_path = wd / "segments.json"
         plain_path = wd / "plain.txt"

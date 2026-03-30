@@ -53,6 +53,8 @@ def _merge_requeue_into_existing_pending_job(
         pending.priority = max(previous_priority, int(desired_priority or 0))
     pending.error_message = None
     pending.error_stack = None
+    pending.started_at = None
+    pending.finished_at = None
 
     job.status = "failed"
     job.finished_at = utcnow()
@@ -105,6 +107,8 @@ def requeue_expired_running_jobs(session: Session) -> int:
         job.worker_id = None
         job.lease_expires_at = None
         session.add(JobEvent(job_id=job.id, level="warn", message="lease expired; requeued"))
+        job.started_at = None
+        job.finished_at = None
     return len(jobs)
 
 
@@ -162,6 +166,8 @@ def requeue_orphan_running_jobs(
         job.progress_current = None
         job.progress_total = None
         job.priority = desired_priority
+        job.started_at = None
+        job.finished_at = None
         session.add(JobEvent(job_id=job.id, level="warn", message="worker stale; requeued (promoted)"))
 
     return len(jobs)

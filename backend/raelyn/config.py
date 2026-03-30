@@ -101,6 +101,20 @@ class Settings(BaseSettings):
     llm_headers_json: str = ""
     llm_timeout_seconds: int = 600
 
+    # --- Volcengine managed inference defaults (used when inference_mode=volcengine) ---
+    volcengine_llm_url: str = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+    volcengine_llm_model: str = ""
+    volcengine_llm_api_key: str = ""
+    volcengine_llm_timeout_seconds: int = 600
+
+    # Doubao Speech 极速版固定接口；高级用户可通过 .env 隐式覆盖，但 UI 不暴露这些细节。
+    volcengine_asr_url: str = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
+    volcengine_asr_model: str = "bigmodel"
+    volcengine_asr_app_key: str = ""
+    volcengine_asr_access_key: str = ""
+    volcengine_asr_resource_id: str = "volc.bigasr.auc_turbo"
+    volcengine_asr_timeout_seconds: int = 600
+
     def mcp_allowed_host_values(self) -> list[str]:
         values = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
         values.extend(_split_csv_values(self.mcp_allowed_hosts))

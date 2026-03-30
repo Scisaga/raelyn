@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from raelyn.config import settings
+from raelyn.services.inference import get_effective_llm_config
 
 
 def _as_int(value: Any) -> int:
@@ -19,7 +19,7 @@ def _as_int(value: Any) -> int:
 
 
 def llm_enabled() -> bool:
-    return bool(settings.llm_url.strip())
+    return bool(get_effective_llm_config().configured)
 
 
 def _llm_mode(url: str) -> Literal["ollama_generate", "openai_chat", "openai_completions"]:
@@ -50,13 +50,14 @@ def _is_private_host(url: str) -> bool:
 
 
 def _headers() -> dict[str, str]:
+    cfg = get_effective_llm_config()
     headers: dict[str, str] = {}
 
-    api_key = settings.llm_api_key.strip()
+    api_key = cfg.api_key.strip()
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    raw = settings.llm_headers_json.strip()
+    raw = cfg.headers_json.strip()
     if raw:
         try:
             extra = json.loads(raw)
@@ -163,10 +164,11 @@ def llm_generate(*, prompt: str, think: bool | str | None = None) -> dict[str, A
     if not llm_enabled():
         raise RuntimeError("llm is not configured")
 
-    url = settings.llm_url.strip()
+    cfg = get_effective_llm_config()
+    url = cfg.url.strip()
     mode = _llm_mode(url)
-    timeout = httpx.Timeout(settings.llm_timeout_seconds)
-    model = settings.llm_model.strip()
+    timeout = httpx.Timeout(cfg.timeout_seconds)
+    model = cfg.model.strip()
 
     if mode == "ollama_generate":
         payload: dict[str, Any] = {"model": model or "qwen2.5:7b", "prompt": prompt, "stream": False}

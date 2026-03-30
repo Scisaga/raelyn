@@ -82,6 +82,8 @@
 
 ### ASR / LLM
 
+本地模式：
+
 - `ASR_URL`
 - `ASR_ENDPOINT`
 - `ASR_MODEL`
@@ -94,6 +96,25 @@
 - `LLM_API_KEY`
 - `LLM_HEADERS_JSON`
 - `LLM_TIMEOUT_SECONDS`
+
+火山模式默认值：
+
+- `VOLCENGINE_LLM_URL`
+- `VOLCENGINE_LLM_MODEL`
+- `VOLCENGINE_LLM_API_KEY`
+- `VOLCENGINE_LLM_TIMEOUT_SECONDS`
+- `VOLCENGINE_ASR_URL`
+- `VOLCENGINE_ASR_MODEL`
+- `VOLCENGINE_ASR_APP_KEY`
+- `VOLCENGINE_ASR_ACCESS_KEY`
+- `VOLCENGINE_ASR_RESOURCE_ID`
+- `VOLCENGINE_ASR_TIMEOUT_SECONDS`
+
+说明：
+
+- `local` 模式只读取本地 `.env` 与自托管推理服务配置。
+- `volcengine` 模式优先读取运行时配置 `app_config`；若某些字段未配置，则回退到对应的 `VOLCENGINE_*` 环境变量默认值。
+- UI 不直接修改 `.env`；保存设置后只影响新任务，不会中断正在运行的任务。
 
 ### Worker 进程选择
 
@@ -193,6 +214,36 @@
 
 - 控制最新周期的冷却时间与历史周期批处理时间。
 - 默认值可通过 `GET /api/config/defaults` 获取。
+
+### 推理模式
+
+- `inference_mode`
+- `volcengine_inference_config`
+
+值结构：
+
+```json
+{ "value": "local" }
+```
+
+```json
+{
+  "api_key": "<ark api key>",
+  "llm_model": "doubao-seed-1-6-thinking-250715",
+  "asr_model": "bigmodel",
+  "asr_app_key": "<app key>",
+  "asr_access_key": "<access key>",
+  "llm_timeout_seconds": 600,
+  "asr_timeout_seconds": 600
+}
+```
+
+说明：
+
+- 通过 `GET /api/config/inference`、`PUT /api/config/inference`、`POST /api/config/inference/test` 管理。
+- 运行时优先级固定为 `app_config > .env`。
+- 返回给前端的密钥字段会被脱敏，前端留空保存时会保留已存密钥。
+- v1 只公开 `local` / `volcengine` 两种模式；底层仍保持 ASR / LLM 适配层解耦。
 
 ## 当前配置边界
 

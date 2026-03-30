@@ -92,6 +92,8 @@ def _merge_retry_into_existing_pending_job(
     pending.priority = max(previous_priority, int(job.priority or 0))
     pending.error_message = None
     pending.error_stack = None
+    pending.started_at = None
+    pending.finished_at = None
 
     job.status = "failed"
     job.finished_at = utcnow()
@@ -272,6 +274,7 @@ def run_loop() -> None:
                     job.worker_id = None
                     job.progress_current = None
                     job.progress_total = None
+                    job.started_at = None
                     job.finished_at = None
                     job_log(session, job, f"rescheduled: {e.reason}", level="warn", data={"delay_seconds": e.delay_seconds})
                 except Exception as e:
@@ -318,6 +321,8 @@ def run_loop() -> None:
                             continue
                         job.status = "pending"
                         job.scheduled_for = retry_at
+                        job.started_at = None
+                        job.finished_at = None
                         job_log(session, job, f"failed; retry in {backoff}s", level="warn", data={"attempt": job.attempt})
                     else:
                         job.status = "failed"
