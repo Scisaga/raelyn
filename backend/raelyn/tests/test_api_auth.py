@@ -91,6 +91,34 @@ class ApiAuthHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(is_valid_bearer_token("你怀疑的API token", "testtoken"))
 
 
+class ApiAuthStaticRouteTests(unittest.TestCase):
+    def test_pwa_entrypoints_are_registered_with_static_files(self) -> None:
+        with ExitStack() as stack:
+            app = _load_app(stack, token="testtoken")
+            sys.modules.pop("raelyn.main", None)
+            module = importlib.import_module("raelyn.main")
+
+        routes = {getattr(route, "path", ""): route for route in app.routes}
+        self.assertIn("/", routes)
+        self.assertIn("/manifest.webmanifest", routes)
+        self.assertIn("/sw.js", routes)
+
+        index = routes["/"].endpoint()
+        manifest = routes["/manifest.webmanifest"].endpoint()
+        service_worker = routes["/sw.js"].endpoint()
+
+        self.assertTrue(str(index.path).endswith("static/index.html"))
+        self.assertTrue(str(manifest.path).endswith("static/manifest.webmanifest"))
+        self.assertTrue(str(service_worker.path).endswith("static/sw.js"))
+        self.assertEqual(manifest.media_type, "application/manifest+json")
+        self.assertEqual(service_worker.media_type, "application/javascript")
+        self.assertEqual(manifest.headers.get("Cache-Control"), "no-cache")
+        self.assertEqual(service_worker.headers.get("Cache-Control"), "no-cache")
+        self.assertTrue((module.static_dir / "pwa" / "icon-192.png").exists())
+        self.assertTrue((module.static_dir / "pwa" / "icon-512.png").exists())
+        self.assertTrue((module.static_dir / "pwa" / "icon-maskable-512.png").exists())
+
+
 class ApiAuthWebSocketTests(unittest.TestCase):
     def test_ws_is_public_when_token_disabled(self) -> None:
         with ExitStack() as stack:
