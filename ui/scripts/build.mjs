@@ -15,7 +15,7 @@ const vendorDir = resolve(root, "static/vendor");
 const pwaDir = resolve(root, "static/pwa");
 const pwaGlyphColor = [2, 6, 23];
 const pwaGlyphScaleAny = 0.6;
-const pwaGlyphScaleMaskable = 0.5;
+const pwaGlyphScaleMaskable = pwaGlyphScaleAny;
 const pwaGlyphScaleAppleTouch = 0.56;
 
 mkdirSync(resolve(root, "static/css"), { recursive: true });
