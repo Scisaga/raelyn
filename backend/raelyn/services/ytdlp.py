@@ -38,6 +38,9 @@ class YtdlpCookiesInvalidError(RuntimeError):
         super().__init__(str(message or "").strip() or "yt-dlp cookies invalid")
 
 
+YTDLP_RETRY_WITHOUT_COOKIES_PARAM = "_download_without_cookies"
+
+
 class _YtdlpCaptureLogger:
     def __init__(self) -> None:
         self.warnings: list[str] = []
@@ -334,7 +337,13 @@ def _bilibili_risk_control_hint() -> str:
     return bilibili_provider_pause_message()
 
 
-def _apply_common_ytdlp_opts(opts: dict[str, Any], *, url: str | None = None, provider: str | None = None) -> None:
+def _apply_common_ytdlp_opts(
+    opts: dict[str, Any],
+    *,
+    url: str | None = None,
+    provider: str | None = None,
+    use_provider_cookies: bool = True,
+) -> None:
     # Force project-local ffmpeg when available so post-processing is consistent across hosts.
     try:
         p = Path(settings.ffmpeg_bin)
@@ -346,11 +355,12 @@ def _apply_common_ytdlp_opts(opts: dict[str, Any], *, url: str | None = None, pr
         opts["remote_components"] = remote_components
 
     cookie_provider = cookie_provider_for_target(url, provider)
-    persisted = load_provider_cookie_text(cookie_provider)
-    if (persisted or "").strip():
-        cookie_path = _ensure_ytdlp_cookies_file(persisted, provider=cookie_provider)
-        if cookie_path and cookie_path.exists() and cookie_path.is_file():
-            opts["cookiefile"] = str(cookie_path)
+    if use_provider_cookies:
+        persisted = load_provider_cookie_text(cookie_provider)
+        if (persisted or "").strip():
+            cookie_path = _ensure_ytdlp_cookies_file(persisted, provider=cookie_provider)
+            if cookie_path and cookie_path.exists() and cookie_path.is_file():
+                opts["cookiefile"] = str(cookie_path)
 
     # Some providers are sensitive to UA / referer; set conservative defaults.
     # Keep it minimal to avoid interfering with providers that don't require these headers.
@@ -486,6 +496,7 @@ def ytdlp_download(
     url: str,
     out_dir: Path,
     provider: str | None = None,
+    use_provider_cookies: bool = True,
     write_subtitles: bool = True,
     write_auto_subtitles: bool = True,
     subtitles_langs: list[str] | None = None,
@@ -587,7 +598,7 @@ def ytdlp_download(
     tried_progressive_mp4 = False
     for idx, (label, fmt, merge) in enumerate(format_attempts, start=1):
         opts = dict(base_opts)
-        _apply_common_ytdlp_opts(opts, url=url, provider=cookie_provider)
+        _apply_common_ytdlp_opts(opts, url=url, provider=cookie_provider, use_provider_cookies=use_provider_cookies)
         opts["format"] = fmt
         if merge:
             opts["merge_output_format"] = merge
@@ -630,7 +641,12 @@ def ytdlp_download(
             if (not tried_progressive_mp4) and is_ffmpeg_segfault(joined):
                 tried_progressive_mp4 = True
                 prog_opts = dict(base_opts)
-                _apply_common_ytdlp_opts(prog_opts, url=url, provider=cookie_provider)
+                _apply_common_ytdlp_opts(
+                    prog_opts,
+                    url=url,
+                    provider=cookie_provider,
+                    use_provider_cookies=use_provider_cookies,
+                )
                 prog_opts["format"] = "best[ext=mp4][height<=720]/best[ext=mp4]/b"
                 prog_opts.pop("merge_output_format", None)
                 print("[ytdlp] ffmpeg crash detected; retrying with progressive mp4 (<=720p) to avoid merge", flush=True)

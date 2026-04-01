@@ -19,11 +19,12 @@ import raelyn.jobs.handlers  # noqa: F401  注册 handlers
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
 from raelyn.jobs.reschedule import JobReschedule
-from raelyn.models import Job
+from raelyn.models import Job, Video
 from raelyn.services.job_cancellation import JobCancelRequested, finalize_canceled_job, job_cancel_requested
 from raelyn.services.log_timestamps import install_if_needed
 from raelyn.services.s3 import s3_ensure_bucket
 from raelyn.services.worker_roles import is_known_worker_role, normalize_worker_role, worker_role_types
+from raelyn.services.ytdlp import YTDLP_RETRY_WITHOUT_COOKIES_PARAM
 from raelyn.timeutil import utcnow
 
 
@@ -63,6 +64,44 @@ def _resolve_worker_types() -> list[str] | None:
 
     print(f"[worker] unknown WORKER_ROLE={role!r}; running in all-types mode")
     return None
+
+
+_DOWNLOAD_JOB_TYPES = {"video.download", "video.download.youtube", "video.download.bilibili"}
+
+
+def _mark_download_video_terminal_failure(session, *, job: Job) -> None:
+    if str(getattr(job, "type", "") or "").strip() not in _DOWNLOAD_JOB_TYPES:
+        return
+
+    try:
+        raw_video_id = (job.params or {}).get("video_id")
+        video_id = uuid.UUID(str(raw_video_id))
+    except Exception:
+        return
+
+    video = session.get(Video, video_id)
+    if not video:
+        return
+
+    if str(getattr(video, "status", "") or "").strip() == "downloading":
+        video.status = "failed"
+    if getattr(job, "error_message", None):
+        video.error_message = job.error_message
+
+
+def _update_download_retry_params(job: Job) -> None:
+    params = dict(getattr(job, "params", None) or {})
+    msg = str(getattr(job, "error_message", "") or "").lower()
+    should_disable_cookies = (
+        str(getattr(job, "type", "") or "").strip() in _DOWNLOAD_JOB_TYPES
+        and "http error 403" in msg
+        and "forbidden" in msg
+    )
+    if should_disable_cookies:
+        params[YTDLP_RETRY_WITHOUT_COOKIES_PARAM] = True
+    else:
+        params.pop(YTDLP_RETRY_WITHOUT_COOKIES_PARAM, None)
+    job.params = params
 
 
 def _merge_retry_into_existing_pending_job(
@@ -311,6 +350,7 @@ def run_loop() -> None:
                     if job.attempt < job.max_attempts:
                         backoff = min(600, 10 * (2 ** (job.attempt - 1)))
                         retry_at = utcnow() + timedelta(seconds=backoff)
+                        _update_download_retry_params(job)
                         if _merge_retry_into_existing_pending_job(
                             session,
                             job=job,
@@ -327,6 +367,7 @@ def run_loop() -> None:
                     else:
                         job.status = "failed"
                         job.finished_at = utcnow()
+                        _mark_download_video_terminal_failure(session, job=job)
                         job_log(session, job, "failed; no more retries", level="error", data={"attempt": job.attempt})
 
         time.sleep(1)

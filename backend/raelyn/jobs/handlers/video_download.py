@@ -19,7 +19,12 @@ from raelyn.services.pg_lock import advisory_lock_any
 from raelyn.services.provider_pause import ProviderPauseRequestError
 from raelyn.services.video_meta import parse_published_at
 from raelyn.services.workdir import job_workdir
-from raelyn.services.ytdlp import YtdlpCookiesInvalidError, load_info_json, ytdlp_download
+from raelyn.services.ytdlp import (
+    YTDLP_RETRY_WITHOUT_COOKIES_PARAM,
+    YtdlpCookiesInvalidError,
+    load_info_json,
+    ytdlp_download,
+)
 
 from .common import (
     _normalize_bilibili_video_url,
@@ -111,6 +116,7 @@ def video_download(session: Session, job: Job) -> dict | None:
             enqueue_in(session, seconds=30, type_=job.type, params=job.params, priority=job.priority)
             return {"rescheduled": True}
 
+        use_provider_cookies = not bool((job.params or {}).get(YTDLP_RETRY_WITHOUT_COOKIES_PARAM))
         video.status = "downloading"
         with job_workdir(job.id) as wd:
             info: dict[str, Any] | None = None
@@ -135,7 +141,13 @@ def video_download(session: Session, job: Job) -> dict | None:
                 download_target = video.url or video.provider_video_id
                 if video.provider == "bilibili":
                     download_target = _normalize_bilibili_video_url(download_target)
-                info = ytdlp_download(url=download_target, provider=video.provider, out_dir=wd, progress_hook=_hook)
+                info = ytdlp_download(
+                    url=download_target,
+                    provider=video.provider,
+                    out_dir=wd,
+                    use_provider_cookies=use_provider_cookies,
+                    progress_hook=_hook,
+                )
             except YtdlpCookiesInvalidError as e:
                 _pause_all_jobs_for_cookies(session, job=job, err=e)
                 raise
@@ -184,6 +196,7 @@ def video_download(session: Session, job: Job) -> dict | None:
                     url=download_target,
                     provider=video.provider,
                     out_dir=wd,
+                    use_provider_cookies=use_provider_cookies,
                     write_subtitles=False,
                     write_auto_subtitles=False,
                     progress_hook=_hook,

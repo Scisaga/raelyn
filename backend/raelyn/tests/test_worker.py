@@ -12,8 +12,9 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn.jobs import claim
-from raelyn.models import Job
+from raelyn.models import Job, Video
 from raelyn import worker
+from raelyn.services.ytdlp import YTDLP_RETRY_WITHOUT_COOKIES_PARAM
 
 
 def _scalar_one_or_none(value):
@@ -193,6 +194,82 @@ class WorkerRecoveryMergeTests(unittest.TestCase):
         self.assertEqual(running_job.status, "failed")
         self.assertEqual(running_job.finished_at, now)
         self.assertIsNone(running_job.worker_id)
+
+
+class WorkerDownloadFailureStateTests(unittest.TestCase):
+    def test_mark_download_video_terminal_failure_updates_stuck_downloading_video(self) -> None:
+        video = Video(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_video_id="abc123",
+            media_id=uuid.uuid4(),
+            url="https://www.youtube.com/watch?v=abc123",
+            status="downloading",
+            error_message=None,
+        )
+        job = Job(
+            id=uuid.uuid4(),
+            type="video.download.youtube",
+            status="failed",
+            params={"video_id": str(video.id)},
+            error_message="ERROR: unable to download video data: HTTP Error 403: Forbidden",
+        )
+        session = Mock()
+        session.get.side_effect = lambda model, key: video if model is Video and key == video.id else None
+
+        worker._mark_download_video_terminal_failure(session, job=job)
+
+        self.assertEqual(video.status, "failed")
+        self.assertEqual(video.error_message, job.error_message)
+
+    def test_mark_download_video_terminal_failure_ignores_non_downloading_video_status(self) -> None:
+        video = Video(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_video_id="abc123",
+            media_id=uuid.uuid4(),
+            url="https://www.youtube.com/watch?v=abc123",
+            status="ready",
+            error_message="old error",
+        )
+        job = Job(
+            id=uuid.uuid4(),
+            type="video.download.youtube",
+            status="failed",
+            params={"video_id": str(video.id)},
+            error_message="new error",
+        )
+        session = Mock()
+        session.get.side_effect = lambda model, key: video if model is Video and key == video.id else None
+
+        worker._mark_download_video_terminal_failure(session, job=job)
+
+        self.assertEqual(video.status, "ready")
+        self.assertEqual(video.error_message, "new error")
+
+    def test_update_download_retry_params_disables_cookies_for_403_retry(self) -> None:
+        job = Job(
+            id=uuid.uuid4(),
+            type="video.download.youtube",
+            params={"video_id": "video-1"},
+            error_message="ERROR: unable to download video data: HTTP Error 403: Forbidden",
+        )
+
+        worker._update_download_retry_params(job)
+
+        self.assertTrue(job.params[YTDLP_RETRY_WITHOUT_COOKIES_PARAM])
+
+    def test_update_download_retry_params_clears_cookie_bypass_for_non_403(self) -> None:
+        job = Job(
+            id=uuid.uuid4(),
+            type="video.download.youtube",
+            params={"video_id": "video-1", YTDLP_RETRY_WITHOUT_COOKIES_PARAM: True},
+            error_message="yt-dlp extraction returned no result",
+        )
+
+        worker._update_download_retry_params(job)
+
+        self.assertNotIn(YTDLP_RETRY_WITHOUT_COOKIES_PARAM, job.params)
 
 
 if __name__ == "__main__":

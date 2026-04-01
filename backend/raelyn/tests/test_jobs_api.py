@@ -16,6 +16,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from raelyn.api import jobs as jobs_api
 from raelyn.models import Job
 from raelyn.models import JobEvent
+from raelyn.services.ytdlp import YTDLP_RETRY_WITHOUT_COOKIES_PARAM
 
 
 @contextmanager
@@ -107,7 +108,7 @@ class JobsApiTests(unittest.TestCase):
             type="video.download.youtube",
             status="failed",
             priority=8,
-            params={"video_id": "video-1"},
+            params={"video_id": "video-1", YTDLP_RETRY_WITHOUT_COOKIES_PARAM: True},
             result={"ok": False},
             progress_current=3,
             progress_total=10,
@@ -130,6 +131,7 @@ class JobsApiTests(unittest.TestCase):
         self.assertEqual(job.status, "pending")
         self.assertEqual(job.attempt, 0)
         self.assertEqual(job.scheduled_for, retry_at)
+        self.assertNotIn(YTDLP_RETRY_WITHOUT_COOKIES_PARAM, job.params)
         self.assertIsNone(job.result)
         self.assertIsNone(job.progress_current)
         self.assertIsNone(job.progress_total)

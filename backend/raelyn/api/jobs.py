@@ -14,6 +14,7 @@ from raelyn.api.orm import OrmModel
 from raelyn.db import session_scope
 from raelyn.models import Job, JobEvent, Media, Video
 from raelyn.services.job_cancellation import request_job_cancel
+from raelyn.services.ytdlp import YTDLP_RETRY_WITHOUT_COOKIES_PARAM
 from raelyn.timeutil import utcnow
 
 
@@ -353,6 +354,9 @@ def retry_job(job_id: uuid.UUID) -> dict:
         previous_attempt = int(job.attempt or 0)
         job.status = "pending"
         job.attempt = 0
+        params = dict(job.params or {})
+        params.pop(YTDLP_RETRY_WITHOUT_COOKIES_PARAM, None)
+        job.params = params
         job.result = None
         job.progress_current = None
         job.progress_total = None
