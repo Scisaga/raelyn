@@ -16,6 +16,10 @@ class YtdlpRetryAndLiveTests(unittest.TestCase):
         s = "ERROR: [youtube] aG_5tUwbn8g: 33分钟后直播!"
         self.assertEqual(parse_upcoming_live_delay_seconds(s), 33 * 60)
 
+    def test_parse_upcoming_live_delay_seconds_cn_premiere_minutes(self) -> None:
+        s = "ERROR: [youtube] aG_5tUwbn8g: 33分钟后首播！"
+        self.assertEqual(parse_upcoming_live_delay_seconds(s), 33 * 60)
+
     def test_parse_upcoming_live_delay_seconds_cn_hours(self) -> None:
         s = "ERROR: [youtube] xxx: 2小时后直播!"
         self.assertEqual(parse_upcoming_live_delay_seconds(s), 2 * 3600)

@@ -35,13 +35,15 @@ def parse_upcoming_live_delay_seconds(msg: str) -> int | None:
         return None
 
     # Chinese (minutes/hours)
-    m = re.search(r"(\d+)\s*(分钟|分鐘)\s*(后|後)\s*直播", s)
+    # YouTube 会同时出现“直播”“首播”等倒计时文案。
+    cn_event = r"(直播|首播|首映)"
+    m = re.search(rf"(\d+)\s*(分钟|分鐘)\s*(后|後)\s*{cn_event}", s)
     if m:
         try:
             return int(m.group(1)) * 60
         except Exception:
             return None
-    m = re.search(r"(\d+)\s*(小时|小時)\s*(后|後)\s*直播", s)
+    m = re.search(rf"(\d+)\s*(小时|小時)\s*(后|後)\s*{cn_event}", s)
     if m:
         try:
             return int(m.group(1)) * 3600
@@ -72,4 +74,3 @@ def parse_upcoming_live_delay_seconds(msg: str) -> int | None:
         except Exception:
             return None
     return None
-
