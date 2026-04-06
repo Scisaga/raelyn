@@ -149,54 +149,40 @@
 
       .raelyn-startup-screen {
         background:
-          radial-gradient(circle at 50% -10%, rgba(14, 165, 233, 0.16), transparent 34%),
-          radial-gradient(circle at 24% 22%, rgba(16, 185, 129, 0.12), transparent 28%),
-          radial-gradient(circle at 78% 74%, rgba(59, 130, 246, 0.16), transparent 28%),
-          linear-gradient(180deg, rgba(2, 6, 23, 1) 0%, rgba(2, 6, 23, 0.98) 42%, rgba(1, 3, 12, 1) 100%);
+          radial-gradient(circle at 50% -10%, rgba(14, 165, 233, 0.22), transparent 30%),
+          radial-gradient(circle at 20% 22%, rgba(16, 185, 129, 0.14), transparent 24%),
+          radial-gradient(circle at 82% 78%, rgba(59, 130, 246, 0.16), transparent 28%),
+          linear-gradient(180deg, rgba(2, 6, 23, 1) 0%, rgba(2, 6, 23, 0.98) 38%, rgba(1, 3, 12, 1) 100%);
       }
 
-      .raelyn-startup-mesh {
+      .raelyn-startup-screen::before,
+      .raelyn-startup-overlay {
+        content: "";
+        position: absolute;
         inset: 0;
-        background-image:
-          linear-gradient(rgba(148, 163, 184, 0.03) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(148, 163, 184, 0.03) 1px, transparent 1px);
-        background-size: 56px 56px;
-        mask-image: radial-gradient(circle at center, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0.22) 58%, transparent 88%);
-        opacity: 0.42;
+        pointer-events: none;
       }
 
-      .raelyn-startup-glow {
-        border-radius: 9999px;
-        filter: blur(96px);
-        opacity: 0.75;
-        animation: raelyn-startup-glow-drift 12s ease-in-out infinite;
+      .raelyn-startup-screen::before {
+        background:
+          radial-gradient(circle at center, rgba(2, 6, 23, 0) 0%, rgba(2, 6, 23, 0.24) 56%, rgba(2, 6, 23, 0.72) 100%),
+          linear-gradient(180deg, rgba(2, 6, 23, 0.08), rgba(2, 6, 23, 0.32));
       }
 
-      .raelyn-startup-glow-a {
-        top: 12%;
-        left: 10%;
-        width: 24rem;
-        height: 24rem;
-        background: rgba(45, 212, 191, 0.2);
+      .raelyn-startup-overlay {
+        background:
+          linear-gradient(180deg, rgba(2, 6, 23, 0.18), rgba(2, 6, 23, 0.52)),
+          radial-gradient(circle at center, rgba(2, 6, 23, 0) 0%, rgba(2, 6, 23, 0.24) 68%, rgba(2, 6, 23, 0.74) 100%);
       }
 
-      .raelyn-startup-glow-b {
-        right: 8%;
-        bottom: 14%;
-        width: 28rem;
-        height: 28rem;
-        background: rgba(59, 130, 246, 0.18);
-        animation-delay: -4s;
+      .raelyn-startup-canvas {
+        display: block;
+        opacity: 0;
+        transition: opacity 220ms ease;
       }
 
-      .raelyn-startup-glow-c {
-        left: 50%;
-        top: 42%;
-        width: 18rem;
-        height: 18rem;
-        background: rgba(125, 211, 252, 0.14);
-        transform: translate(-50%, -50%);
-        animation-delay: -6s;
+      .raelyn-startup-screen-fluid .raelyn-startup-canvas {
+        opacity: 1;
       }
 
       .raelyn-startup-stage {
@@ -204,263 +190,35 @@
         display: flex;
         flex-direction: column;
         align-items: center;
-        transform: translateY(-0.6rem);
+        text-shadow:
+          0 10px 28px rgba(2, 6, 23, 0.42),
+          0 2px 8px rgba(2, 6, 23, 0.38);
       }
 
-      .raelyn-startup-blob-scene {
-        position: relative;
-        width: min(58vw, 22rem);
-        height: min(58vw, 22rem);
-        min-width: 16rem;
-        min-height: 16rem;
-        isolation: isolate;
-      }
-
-      .raelyn-startup-liquid {
-        position: absolute;
-        inset: 13.5%;
-        border-radius: 50%;
-        overflow: hidden;
-        filter: url(#raelyn-startup-goo);
-        box-shadow:
-          0 0 0 1px rgba(125, 211, 252, 0.08),
-          0 0 34px rgba(8, 98, 148, 0.16),
-          0 0 86px rgba(14, 165, 233, 0.08);
-      }
-
-      .raelyn-startup-liquid::before {
-        content: "";
-        position: absolute;
-        inset: 0;
-        border-radius: 50%;
-        background:
-          radial-gradient(circle at 34% 26%, rgba(219, 234, 254, 0.16), rgba(255, 255, 255, 0) 20%),
-          linear-gradient(155deg, rgba(4, 34, 68, 0.58), rgba(4, 92, 128, 0.42) 42%, rgba(14, 86, 150, 0.36));
-        box-shadow:
-          inset -18px -16px 36px rgba(2, 6, 23, 0.22),
-          inset 0 0 0 1px rgba(191, 219, 254, 0.06),
-          0 0 56px rgba(10, 102, 156, 0.16);
-        opacity: 0.54;
-      }
-
-      .raelyn-startup-liquid::after {
-        content: "";
-        position: absolute;
-        inset: 4%;
-        border-radius: 50%;
-        background:
-          repeating-radial-gradient(
-            circle at center,
-            rgba(191, 219, 254, 0.06) 0 1.15px,
-            rgba(255, 255, 255, 0) 1.15px 11px
-          ),
-          radial-gradient(circle at 26% 24%, rgba(94, 234, 212, 0.1), rgba(255, 255, 255, 0) 16%),
-          radial-gradient(circle at 72% 68%, rgba(56, 189, 248, 0.08), rgba(255, 255, 255, 0) 19%),
-          conic-gradient(
-            from 210deg,
-            rgba(255, 255, 255, 0) 0deg,
-            rgba(125, 211, 252, 0.08) 54deg,
-            rgba(45, 212, 191, 0.06) 112deg,
-            rgba(255, 255, 255, 0) 188deg,
-            rgba(56, 189, 248, 0.06) 246deg,
-            rgba(255, 255, 255, 0) 360deg
-          );
-        mix-blend-mode: screen;
-        filter: blur(0.5px);
-        opacity: 0.5;
-        animation: raelyn-startup-liquid-groove 12s linear infinite;
-        pointer-events: none;
-      }
-
-      .raelyn-startup-blob {
-        position: absolute;
-        inset: 0;
-        border-radius: 50%;
-        opacity: 0.62;
-        mix-blend-mode: screen;
-        transform-origin: center;
-      }
-
-      .raelyn-startup-blob-a {
-        background:
-          radial-gradient(circle at 30% 28%, rgba(219, 234, 254, 0.22), rgba(255, 255, 255, 0) 22%),
-          linear-gradient(155deg, rgba(4, 36, 72, 0.82), rgba(4, 96, 134, 0.66) 40%, rgba(16, 92, 160, 0.58));
-        box-shadow:
-          inset -18px -16px 36px rgba(2, 6, 23, 0.3),
-          0 0 64px rgba(10, 102, 156, 0.3);
-        animation: raelyn-startup-blob-a 8.2s ease-in-out infinite;
-      }
-
-      .raelyn-startup-blob-b {
-        inset: 18% 15% 10% 20%;
-        background:
-          radial-gradient(circle at 34% 28%, rgba(219, 234, 254, 0.16), rgba(255, 255, 255, 0) 18%),
-          linear-gradient(140deg, rgba(6, 18, 28, 0.64), rgba(4, 102, 132, 0.4) 42%, rgba(12, 84, 144, 0.34));
-        box-shadow:
-          inset -14px -18px 28px rgba(2, 6, 23, 0.24),
-          0 0 56px rgba(14, 165, 233, 0.18);
-        animation: raelyn-startup-blob-b 9.8s ease-in-out infinite;
-      }
-
-      .raelyn-startup-blob-c {
-        inset: 14%;
-        background:
-          radial-gradient(circle at 56% 24%, rgba(219, 234, 254, 0.14), rgba(255, 255, 255, 0) 18%),
-          radial-gradient(circle at 34% 74%, rgba(56, 189, 248, 0.1), rgba(255, 255, 255, 0) 24%),
-          linear-gradient(175deg, rgba(6, 20, 34, 0.48), rgba(7, 46, 78, 0.24), rgba(10, 62, 114, 0.18));
-        box-shadow:
-          inset 0 0 34px rgba(2, 6, 23, 0.16),
-          0 0 48px rgba(10, 102, 156, 0.18);
-        animation: raelyn-startup-blob-c 11.6s ease-in-out infinite;
-      }
-
-      .raelyn-startup-blob-d {
-        inset: 22%;
-        background:
-          radial-gradient(circle at 42% 38%, rgba(219, 234, 254, 0.12), rgba(255, 255, 255, 0) 18%),
-          conic-gradient(
-            from 220deg,
-            rgba(30, 41, 59, 0) 0deg,
-            rgba(10, 102, 156, 0.28) 90deg,
-            rgba(56, 189, 248, 0.18) 168deg,
-            rgba(15, 23, 42, 0) 360deg
-          );
-        opacity: 0.36;
-        filter: blur(10px);
-        animation: raelyn-startup-blob-d 7.2s ease-in-out infinite;
-      }
-
-      .raelyn-startup-caustic {
-        position: absolute;
-        inset: 20%;
-        border-radius: 50%;
-        background:
-          conic-gradient(
-            from 0deg,
-            rgba(255, 255, 255, 0) 0deg,
-            rgba(191, 219, 254, 0.12) 54deg,
-            rgba(56, 189, 248, 0) 126deg,
-            rgba(14, 165, 233, 0.12) 210deg,
-            rgba(255, 255, 255, 0) 360deg
-          );
-        mix-blend-mode: screen;
-        filter: blur(22px);
-        opacity: 0.32;
-        animation: raelyn-startup-caustic 10s linear infinite;
-      }
-
-      .raelyn-startup-wave,
-      .raelyn-startup-orbit,
-      .raelyn-startup-halo {
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        border-radius: 9999px;
-        transform: translate(-50%, -50%);
-      }
-
-      .raelyn-startup-wave {
-        width: 76%;
-        height: 76%;
-        border: 0.5px solid rgba(125, 211, 252, 0.2);
-        box-shadow:
-          0 0 20px rgba(56, 189, 248, 0.16),
-          inset 0 0 14px rgba(125, 211, 252, 0.06);
-        opacity: 0.62;
-      }
-
-      .raelyn-startup-wave-a {
-        animation: raelyn-startup-wave-a 6.4s ease-in-out infinite;
-      }
-
-      .raelyn-startup-wave-b {
-        width: 86%;
-        height: 86%;
-        border-color: rgba(94, 234, 212, 0.14);
-        box-shadow:
-          0 0 26px rgba(45, 212, 191, 0.14),
-          inset 0 0 16px rgba(59, 130, 246, 0.06);
-        opacity: 0.38;
-        animation: raelyn-startup-wave-b 8.8s ease-in-out infinite;
-      }
-
-      .raelyn-startup-orbit {
-        width: 112%;
-        height: 112%;
-        border: 0.5px solid rgba(125, 211, 252, 0.06);
-        box-shadow:
-          0 0 38px rgba(59, 130, 246, 0.1),
-          inset 0 0 24px rgba(255, 255, 255, 0.03);
-        opacity: 0.42;
-        animation: raelyn-startup-orbit 12s linear infinite;
-      }
-
-      .raelyn-startup-halo {
-        width: 74%;
-        height: 74%;
-        background:
-          radial-gradient(circle at center, rgba(8, 98, 148, 0.42), rgba(22, 163, 184, 0.16) 28%, rgba(110, 231, 183, 0.08) 42%, rgba(15, 23, 42, 0) 72%);
-        filter: blur(18px);
-        box-shadow:
-          0 0 72px rgba(14, 165, 233, 0.12),
-          0 0 120px rgba(45, 212, 191, 0.06);
-        opacity: 1;
-        animation: raelyn-startup-halo 5.8s ease-in-out infinite;
-      }
-
-      .raelyn-startup-blob-highlight {
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        width: 56%;
-        height: 56%;
-        border-radius: 9999px;
-        background:
-          radial-gradient(circle at 42% 38%, rgba(191, 219, 254, 0.12), rgba(167, 243, 208, 0.05) 22%, rgba(15, 23, 42, 0) 72%);
-        box-shadow:
-          0 0 52px rgba(8, 98, 148, 0.2),
-          0 0 96px rgba(14, 165, 233, 0.12),
-          inset 0 0 18px rgba(255, 255, 255, 0.04);
-        transform: translate(-50%, -50%);
-        animation: raelyn-startup-highlight 6s ease-in-out infinite;
-      }
-
-      .raelyn-startup-spec {
-        position: absolute;
-        left: 64%;
-        top: 30%;
-        z-index: 3;
-        width: 0.4rem;
-        height: 0.4rem;
-        border-radius: 9999px;
-        background: rgba(255, 255, 255, 0.92);
-        box-shadow:
-          0 0 12px rgba(255, 255, 255, 0.8),
-          0 0 24px rgba(125, 211, 252, 0.46);
-        animation: raelyn-startup-spec 4.2s ease-in-out infinite;
+      .raelyn-startup-panel {
+        width: 100%;
+        padding: 1.25rem 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
       }
 
       .raelyn-startup-logo {
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        z-index: 2;
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 5.5rem;
-        height: 5.5rem;
+        width: 5.25rem;
+        height: 5.25rem;
+        margin: 0 auto;
         border-radius: 9999px;
         background:
-          radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.06) 34%, rgba(2, 6, 23, 0.14) 100%),
-          linear-gradient(180deg, rgba(15, 23, 42, 0.64), rgba(2, 6, 23, 0.26));
+          radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.06) 34%, rgba(2, 6, 23, 0.12) 100%),
+          linear-gradient(180deg, rgba(15, 23, 42, 0.72), rgba(2, 6, 23, 0.36));
         box-shadow:
-          0 0 0 1px rgba(191, 219, 254, 0.14),
+          0 0 0 1px rgba(191, 219, 254, 0.16),
           0 18px 48px rgba(2, 6, 23, 0.42),
           inset 0 0 28px rgba(255, 255, 255, 0.08);
-        backdrop-filter: blur(10px);
-        transform: translate(-50%, -50%);
-        animation: raelyn-startup-logo 4.6s ease-in-out infinite;
+        backdrop-filter: blur(12px);
       }
 
       .raelyn-startup-logo-image {
@@ -496,210 +254,6 @@
         animation-delay: -0.36s;
       }
 
-      @keyframes raelyn-startup-glow-drift {
-        0%,
-        100% {
-          transform: translate3d(0, 0, 0) scale(1);
-        }
-        50% {
-          transform: translate3d(0, -18px, 0) scale(1.08);
-        }
-      }
-
-      @keyframes raelyn-startup-liquid-groove {
-        0%,
-        100% {
-          transform: rotate(0deg) scale(1);
-          opacity: 0.44;
-        }
-        50% {
-          transform: rotate(18deg) scale(1.015);
-          opacity: 0.6;
-        }
-      }
-
-      @keyframes raelyn-startup-blob-a {
-        0%,
-        100% {
-          transform: translate3d(-3%, -1%, 0) rotate(0deg) scale(1);
-        }
-        32% {
-          transform: translate3d(4%, -4%, 0) rotate(16deg) scale(1.09);
-        }
-        50% {
-          transform: translate3d(5%, -2%, 0) rotate(22deg) scale(1.12);
-        }
-        78% {
-          transform: translate3d(-1%, 4%, 0) rotate(8deg) scale(0.98);
-        }
-      }
-
-      @keyframes raelyn-startup-blob-b {
-        0%,
-        100% {
-          transform: translate3d(2%, 1%, 0) rotate(0deg) scale(0.94);
-        }
-        40% {
-          transform: translate3d(-5%, 4%, 0) rotate(-14deg) scale(1.1);
-        }
-        50% {
-          transform: translate3d(-4%, 4%, 0) rotate(-16deg) scale(1.07);
-        }
-        72% {
-          transform: translate3d(3%, -3%, 0) rotate(-8deg) scale(0.98);
-        }
-      }
-
-      @keyframes raelyn-startup-blob-c {
-        0%,
-        100% {
-          transform: translate3d(0, 0, 0) rotate(0deg) scale(0.9);
-          opacity: 0.68;
-        }
-        38% {
-          transform: translate3d(3%, -3%, 0) rotate(14deg) scale(1.02);
-          opacity: 0.82;
-        }
-        50% {
-          transform: translate3d(2%, -2%, 0) rotate(10deg) scale(1.04);
-          opacity: 0.86;
-        }
-        82% {
-          transform: translate3d(-2%, 3%, 0) rotate(4deg) scale(0.94);
-          opacity: 0.74;
-        }
-      }
-
-      @keyframes raelyn-startup-blob-d {
-        0%,
-        100% {
-          transform: translate3d(0, 0, 0) rotate(0deg) scale(0.92);
-          opacity: 0.42;
-        }
-        50% {
-          transform: translate3d(1%, -1%, 0) rotate(180deg) scale(1.08);
-          opacity: 0.86;
-        }
-      }
-
-      @keyframes raelyn-startup-caustic {
-        from {
-          transform: rotate(0deg) scale(0.94);
-        }
-        50% {
-          transform: rotate(180deg) scale(1.04);
-        }
-        to {
-          transform: rotate(360deg) scale(0.94);
-        }
-      }
-
-      @keyframes raelyn-startup-wave-a {
-        0%,
-        100% {
-          transform: translate(-50%, -50%) scale(0.92);
-          border-radius: 40% 60% 54% 46% / 40% 56% 44% 60%;
-          opacity: 0.68;
-        }
-        32% {
-          transform: translate(-50%, -50%) scale(1.02);
-          border-radius: 64% 36% 48% 52% / 34% 66% 38% 62%;
-          opacity: 0.88;
-        }
-        50% {
-          transform: translate(-50%, -50%) scale(1.12);
-          border-radius: 62% 38% 42% 58% / 62% 38% 60% 40%;
-          opacity: 1;
-        }
-        74% {
-          transform: translate(-50%, -50%) scale(0.96);
-          border-radius: 34% 66% 58% 42% / 56% 38% 62% 44%;
-          opacity: 0.82;
-        }
-      }
-
-      @keyframes raelyn-startup-wave-b {
-        0%,
-        100% {
-          transform: translate(-50%, -50%) scale(0.88) rotate(0deg);
-          border-radius: 58% 42% 64% 36% / 42% 62% 38% 58%;
-          opacity: 0.42;
-        }
-        30% {
-          transform: translate(-50%, -50%) scale(1) rotate(96deg);
-          border-radius: 34% 66% 42% 58% / 62% 36% 64% 38%;
-          opacity: 0.58;
-        }
-        50% {
-          transform: translate(-50%, -50%) scale(1.14) rotate(180deg);
-          border-radius: 30% 70% 40% 60% / 64% 34% 66% 36%;
-          opacity: 0.82;
-        }
-        72% {
-          transform: translate(-50%, -50%) scale(0.94) rotate(252deg);
-          border-radius: 62% 38% 34% 66% / 40% 60% 36% 64%;
-          opacity: 0.56;
-        }
-      }
-
-      @keyframes raelyn-startup-orbit {
-        from {
-          transform: translate(-50%, -50%) rotate(0deg) scale(0.98);
-        }
-        50% {
-          transform: translate(-50%, -50%) rotate(180deg) scale(1.03);
-        }
-        to {
-          transform: translate(-50%, -50%) rotate(360deg) scale(0.98);
-        }
-      }
-
-      @keyframes raelyn-startup-halo {
-        0%,
-        100% {
-          transform: translate(-50%, -50%) scale(0.92);
-          opacity: 0.72;
-        }
-        50% {
-          transform: translate(-50%, -50%) scale(1.1);
-          opacity: 1;
-        }
-      }
-
-      @keyframes raelyn-startup-highlight {
-        0%,
-        100% {
-          transform: translate(-50%, -50%) scale(0.92);
-          opacity: 0.58;
-        }
-        50% {
-          transform: translate(-50%, -50%) scale(1.04);
-          opacity: 0.92;
-        }
-      }
-
-      @keyframes raelyn-startup-spec {
-        0%,
-        100% {
-          transform: translate3d(0, 0, 0) scale(0.84);
-          opacity: 0.54;
-        }
-        50% {
-          transform: translate3d(-0.1rem, -0.22rem, 0) scale(1.15);
-          opacity: 1;
-        }
-      }
-
-      @keyframes raelyn-startup-logo {
-        0%,
-        100% {
-          transform: translate(-50%, -50%) scale(0.98) translateZ(0);
-        }
-        50% {
-          transform: translate(-50%, -50%) scale(1.05) translateZ(0);
-        }
-      }
-
       @keyframes raelyn-startup-dot {
         0%,
         100% {
@@ -722,19 +276,13 @@
         .raelyn-startup-shell {
           transition: none;
         }
-        .raelyn-startup-liquid::after,
-        .raelyn-startup-mesh,
-        .raelyn-startup-glow,
-        .raelyn-startup-blob,
-        .raelyn-startup-caustic,
-        .raelyn-startup-wave,
-        .raelyn-startup-orbit,
-        .raelyn-startup-halo,
-        .raelyn-startup-blob-highlight,
-        .raelyn-startup-logo,
-        .raelyn-startup-spec,
+        .raelyn-startup-canvas,
         .raelyn-startup-dots span {
           animation: none !important;
+          transition: none !important;
+        }
+        .raelyn-startup-screen-fluid .raelyn-startup-canvas {
+          opacity: 0;
         }
       }
 

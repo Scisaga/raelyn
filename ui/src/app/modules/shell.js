@@ -1,4 +1,5 @@
 import { createApiDocLinks, createNavItems } from "../navigation.js";
+import { mountStartupFluid } from "../startup-fluid/adapter.js";
 
 function readStoredBool(key) {
   try {
@@ -70,6 +71,8 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
     startupGateSeenInSession,
     startupGateVisible: !startupGateSeenInSession,
     startupGateStage: startupGateSeenInSession ? "idle" : "boot",
+    startupFluidActive: false,
+    _startupFluidHandle: null,
     pause: { paused: false, reason: null, message: null, set_at: null },
     providerPauses: {},
     assetDelivery: {
@@ -304,7 +307,34 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
       writeSessionBool(startupGateSeenSessionKey, true);
     },
 
+    _destroyStartupFluid() {
+      try {
+        const handle = this._startupFluidHandle;
+        if (handle && typeof handle.destroy === "function") handle.destroy();
+      } catch {
+        // ignore
+      }
+      this._startupFluidHandle = null;
+      this.startupFluidActive = false;
+    },
+
+    _mountStartupFluid() {
+      this._destroyStartupFluid();
+      try {
+        const canvas = this.$refs && this.$refs.startupFluidCanvas ? this.$refs.startupFluidCanvas : null;
+        if (!canvas) return;
+        const handle = mountStartupFluid({ canvas, interactive: true });
+        if (!handle || typeof handle.destroy !== "function") return;
+        this._startupFluidHandle = handle;
+        this.startupFluidActive = handle.active !== false;
+      } catch {
+        this._startupFluidHandle = null;
+        this.startupFluidActive = false;
+      }
+    },
+
     _closeStartupGate() {
+      this._destroyStartupFluid();
       this.startupGateVisible = false;
       this.startupGateStage = "idle";
     },
@@ -320,9 +350,17 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
       if (!preserveDraft) this.apiAuthTokenDraft = "";
       this._suspendApiAuthProtectedRealtime();
       try {
-        if (this.$nextTick) this.$nextTick(() => this.focusStartupTokenInput());
+        if (this.$nextTick) {
+          this.$nextTick(() => {
+            this._mountStartupFluid();
+            this.focusStartupTokenInput();
+          });
+        }
       } catch {
-        setTimeout(() => this.focusStartupTokenInput(), 0);
+        setTimeout(() => {
+          this._mountStartupFluid();
+          this.focusStartupTokenInput();
+        }, 0);
       }
     },
 

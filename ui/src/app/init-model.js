@@ -187,6 +187,7 @@ export function createAppInitMethods() {
         if (this.startupGateVisible) {
           this._markStartupGateSeenInSession();
           await this.waitForStartupGatePaint();
+          this._mountStartupFluid();
         }
         await this._continueStartupSequence();
       } catch (e) {
