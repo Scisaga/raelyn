@@ -7,6 +7,7 @@
 ## 协作约定
 
 - [通用协作与编码细则](agent-rules/general.md)
+- [skills 说明](../skills/README.md)
 
 ## 架构
 

@@ -6,6 +6,7 @@
 ## 通用规则
 - 默认使用中文回复；代码注释、代码示例使用中文。
 - 先读接口说明与业务逻辑，再写代码；没有文档、抓包、日志或代码依据时，不得凭经验猜接口行为。
+- 分析时先回答用户当前真正要解决的问题，再进入抽象范式讨论；禁止用架构分层、概念分类或通用方法论替代对当前需求的直接结论。
 - 代码结构优先直线化与可读性；避免过度抽象、过深嵌套、复杂控制流。
 - 数据任务默认优先“简单、可验证的全量实现”；只有观测到真实瓶颈后，再引入分片、并行、流水线等复杂优化。
 - 修复 bug 必须定位根因；禁止用绕路方案代替根因修复。
@@ -21,7 +22,7 @@
 
 - 必须区分“事实/证据”和“推断/猜测”；证据不足时先澄清问题。
 - 方案与选项输出遵守帕累托/支配关系，默认只给最优集合。若保留非 dominant 方案，必须同时写清保留原因、适用边界、以及它为何在该场景仍可能最优。
-- 在 PLAN 输出方案时，通过 API 创建 GitLab Issue。Issue 常规至少包含：背景、目标、范围边界、接口依据、任务拆分、验收标准、风险，以及需要用户确认的问题；若涉及数据模型，再补充表结构。
+- 在 PLAN 输出方案时，通过 API 创建 GitLab Issue。Issue 常规至少包含：背景、目标、范围边界、接口依据、任务拆分、验收标准、风险，以及需要用户确认的问题；若涉及数据模型，再补充表结构。标签遵循 [skills/gitlab-issue/SKILL.md](skills/gitlab-issue/SKILL.md) 中的“优先级 + 主题”约定。
 
 ## 文档协作约定
 
@@ -46,14 +47,18 @@
 
 * Skills 入口
   - 项目内 skill 统一放在 [skills/](skills/) 目录。
+  - GitLab issue 协作相关 skill 入口是 [skills/gitlab-issue/SKILL.md](skills/gitlab-issue/SKILL.md)。
   - 任务系统相关 skill 入口是 [skills/job-system-design/SKILL.md](skills/job-system-design/SKILL.md)。
   - 静态 UI 相关 skill 入口是 [skills/static-ui/SKILL.md](skills/static-ui/SKILL.md)。
   - Python Web 服务重构相关 skill 入口是 [skills/python-web-refactor/SKILL.md](skills/python-web-refactor/SKILL.md)。
+  - skills 总览与适用边界见 [skills/README.md](skills/README.md)。
 
 * 触发场景
+  - 涉及当前仓库对应 GitLab 项目的 issue 创建、读取、列表、更新、评论、删除，或需要从 `git origin + .env` 推导 GitLab 项目/凭证时，优先使用 [skills/gitlab-issue/SKILL.md](skills/gitlab-issue/SKILL.md)。
   - 涉及任务系统设计、worker、scheduler、job observability、retry、lease、claim、parent-child 编排等工作时，优先使用 [skills/job-system-design/SKILL.md](skills/job-system-design/SKILL.md)。
   - 涉及静态 UI、页面设计、Tailwind/Alpine 前端实现、`static/` 目录下界面维护与扩展等工作时，优先使用 [skills/static-ui/SKILL.md](skills/static-ui/SKILL.md)。
   - 涉及 Python Web 服务重构、FastAPI 服务整理、旧 Web 服务向 FastAPI + Alpine SPA 迁移、入口收敛、目录治理、配置治理、测试与文档补齐、异步执行边界梳理等工作时，优先使用 [skills/python-web-refactor/SKILL.md](skills/python-web-refactor/SKILL.md)。
 
 *  维护边界
   - `docs` 承载项目文档与规则索引，`skills` 承载专项执行方法；避免全文重复维护。
+  - 仅供某个 skill 内部使用的辅助脚本，放在对应 `skills/<skill>/scripts/`；不要放到项目根目录伪装成项目级 CLI。
