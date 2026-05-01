@@ -7,6 +7,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from raelyn.models import Video
+from raelyn.services.playlist_analysis import mark_playlists_analysis_dirty_for_video
 
 
 def parse_published_at(info: dict[str, Any] | None) -> datetime | None:
@@ -59,8 +60,10 @@ def backfill_video_published_at(session: Session, *, limit: int = 5000) -> int:
         published_at = parse_published_at(video.raw_info)
         if not published_at:
             continue
-        video.published_at = published_at
-        updated += 1
+        if video.published_at != published_at:
+            video.published_at = published_at
+            mark_playlists_analysis_dirty_for_video(session, video.id)
+            updated += 1
     if updated:
         session.flush()
     return updated

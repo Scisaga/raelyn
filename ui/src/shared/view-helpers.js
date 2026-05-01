@@ -23,6 +23,29 @@ function isMixedContentDirectUrl(url) {
 
 export function createCommonViewMethods() {
   return {
+    async ensureLightweightCharts() {
+      if (window.LightweightCharts && typeof window.LightweightCharts.createChart === "function") return window.LightweightCharts;
+      if (this._lightweightChartsLoadingPromise) return this._lightweightChartsLoadingPromise;
+      this._lightweightChartsLoadingPromise = new Promise((resolve, reject) => {
+        const existing = document.querySelector('script[data-raelyn-vendor="lightweight-charts"]');
+        if (existing) {
+          existing.addEventListener("load", () => resolve(window.LightweightCharts), { once: true });
+          existing.addEventListener("error", () => reject(new Error("lightweight-charts load failed")), { once: true });
+          return;
+        }
+        const script = document.createElement("script");
+        script.src = "/static/vendor/lightweight-charts.min.js";
+        script.defer = true;
+        script.dataset.raelynVendor = "lightweight-charts";
+        script.onload = () => resolve(window.LightweightCharts);
+        script.onerror = () => reject(new Error("lightweight-charts load failed"));
+        document.head.appendChild(script);
+      }).finally(() => {
+        this._lightweightChartsLoadingPromise = null;
+      });
+      return this._lightweightChartsLoadingPromise;
+    },
+
     mediaDisplayName(media) {
       return (media && (media.name || media.provider_media_id || media.url)) || "";
     },

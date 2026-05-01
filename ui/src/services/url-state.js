@@ -60,7 +60,7 @@ export function createUrlStateMethods({ settingsTabs }) {
         this.playlistSelectedDate = searchParams.get("date") || this.playlistSelectedDate || "";
         if (!this.playlistSelectedDate) this.playlistSelectedDate = todayIsoLocal();
         const subview = (searchParams.get("subview") || this.playlistSubview || "main").trim();
-        this.playlistSubview = ["main", "settings"].includes(subview) ? subview : "main";
+        this.playlistSubview = ["main", "analysis", "settings"].includes(subview) ? subview : "main";
       }
       if (viewKey === "settings") {
         const legacyInstallPath = ((window.location.pathname || "").replace(/\/+$/, "") || "/") === "/install";

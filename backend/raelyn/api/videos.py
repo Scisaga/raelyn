@@ -11,12 +11,8 @@ from sqlalchemy import select
 from raelyn.api.asset_refs import AssetRef, build_asset_ref
 from raelyn.api.orm import OrmModel
 from raelyn.db import session_scope
-from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Asset, Media, Video
 from raelyn.services.downloads import build_download_filename, content_disposition_attachment
-from raelyn.services.llm import llm_enabled
-from raelyn.services.media_deletion import ensure_media_not_deleting
-from raelyn.services.s3 import s3_get_bytes
 from raelyn.services.transcripts import TRANSCRIPT_VARIANT_SET, build_transcript_payload
 from raelyn.services.video_actions import schedule_video_download, schedule_video_retranscribe
 from raelyn.services.video_meta import backfill_video_published_at, parse_published_at
@@ -58,6 +54,8 @@ class VideoListOut(BaseModel):
     duration_sec: int | None = None
     status: str
     error_message: str | None = None
+
+
 @router.get("/videos", response_model=list[VideoListOut])
 def list_videos(
     provider: str | None = None,
@@ -207,48 +205,6 @@ def get_video_transcript(
             variant=variant_value,
             source=source_value,
         )
-
-
-@router.get("/videos/{video_id}/note")
-def get_video_note(video_id: uuid.UUID, max_chars: int = 200_000) -> dict:
-    with session_scope() as session:
-        video = session.get(Video, video_id)
-        if not video:
-            raise HTTPException(status_code=404, detail="video not found")
-        asset = session.execute(
-            select(Asset)
-            .where(
-                Asset.video_id == video_id,
-                Asset.type == "note",
-                Asset.format == "md",
-                Asset.source.in_(["llm", "ollama"]),
-                Asset.variant == "summary",
-            )
-            .order_by(Asset.created_at.desc())
-        ).scalar_one_or_none()
-        if not asset:
-            return {"ok": False, "reason": "no note", "text": ""}
-        raw = s3_get_bytes(bucket=asset.s3_bucket, key=asset.s3_key)
-        text = raw.decode("utf-8", errors="ignore")
-        if max_chars and len(text) > max_chars:
-            text = text[:max_chars] + "\n…(truncated)…\n"
-        return {"ok": True, "asset_id": str(asset.id), "text": text}
-
-
-@router.post("/videos/{video_id}/note")
-def generate_video_note(video_id: uuid.UUID) -> dict:
-    if not llm_enabled():
-        raise HTTPException(status_code=400, detail="llm not configured")
-    with session_scope() as session:
-        video = session.get(Video, video_id)
-        if not video:
-            raise HTTPException(status_code=404, detail="video not found")
-        try:
-            ensure_media_not_deleting(session, video.media_id)
-        except RuntimeError as e:
-            raise HTTPException(status_code=409, detail=str(e)) from e
-        enqueue_job(session, type_="video.generate_note", params={"video_id": str(video.id)}, priority=2)
-    return {"ok": True}
 
 
 @router.post("/videos/{video_id}/transcript/retranscribe")

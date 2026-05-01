@@ -187,6 +187,76 @@ def _format_bytes(num: int) -> str:
         value /= 1024.0
 
 
+def _create_job_query_indexes(conn) -> None:
+    if conn.dialect.name == "postgresql":
+        statements = [
+            (
+                "create index if not exists job_pending_type_schedule_idx "
+                "on job(type, scheduled_for, priority desc, created_at desc, id desc) "
+                "where status = 'pending'"
+            ),
+            (
+                "create index if not exists job_pending_schedule_idx "
+                "on job(scheduled_for, priority desc, created_at desc, id desc) "
+                "where status = 'pending'"
+            ),
+            (
+                "create index if not exists job_pending_claim_order_idx "
+                "on job("
+                "priority desc, "
+                "(case "
+                "when ((type)::text = 'video.asr_transcribe'::text) then 0 "
+                "when ((type)::text = 'video.normalize_subtitle'::text) then 1 "
+                "when ((type)::text = 'video.extract_audio'::text) then 2 "
+                "else 10 end), "
+                "scheduled_for asc, created_at desc, id desc"
+                ") "
+                "where status = 'pending'"
+            ),
+            (
+                "create index if not exists job_active_list_order_idx "
+                "on job("
+                "(case when ((status)::text = 'running'::text) then 0 else 1 end), "
+                "started_at asc nulls last, scheduled_for asc, created_at asc"
+                ") "
+                "where status in ('pending', 'running')"
+            ),
+            "create index if not exists job_status_type_idx on job(status, type)",
+            (
+                "create index if not exists job_finished_status_finished_at_idx "
+                "on job(status, finished_at desc, created_at desc) "
+                "where finished_at is not null"
+            ),
+            (
+                "create index if not exists job_running_lease_idx "
+                "on job(lease_expires_at) "
+                "where status = 'running' and lease_expires_at is not null"
+            ),
+            (
+                "create index if not exists job_running_worker_idx "
+                "on job(worker_id) "
+                "where status = 'running' and worker_id is not null"
+            ),
+        ]
+    else:
+        statements = [
+            "create index if not exists job_pending_type_schedule_idx on job(status, type, scheduled_for, priority, created_at, id)",
+            "create index if not exists job_pending_schedule_idx on job(status, scheduled_for, priority, created_at, id)",
+            "create index if not exists job_pending_claim_order_idx on job(status, priority, scheduled_for, created_at, id)",
+            "create index if not exists job_active_list_order_idx on job(status, started_at, scheduled_for, created_at)",
+            "create index if not exists job_status_type_idx on job(status, type)",
+            "create index if not exists job_finished_status_finished_at_idx on job(status, finished_at, created_at)",
+            "create index if not exists job_running_lease_idx on job(status, lease_expires_at)",
+            "create index if not exists job_running_worker_idx on job(status, worker_id)",
+        ]
+
+    for statement in statements:
+        try:
+            conn.execute(text(statement))
+        except Exception:
+            pass
+
+
 def _migrate_schema(conn) -> None:
     """
     Copied from backend/raelyn/db.py::_migrate_schema to avoid importing raelyn.db (which binds to .env at import).
@@ -323,6 +393,7 @@ where job.type = 'video.download'
         except Exception:
             # Best-effort: some dialects/versions may not support partial indexes.
             pass
+        _create_job_query_indexes(conn)
 
     # Query performance indexes (best-effort).
     if "video" in tables:

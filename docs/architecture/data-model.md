@@ -94,6 +94,51 @@
 - `brief`：`(playlist_id, granularity, period_start)` 唯一。
 - `daily_brief`：`(playlist_id, brief_date)` 唯一。
 
+### `video_embedding`
+
+当前职责：
+
+- 保存视频 transcript 的 embedding 状态、向量、文本校验值与跳过原因。
+
+关键字段：
+
+- `transcript_variant` / `embedding_model` / `embedding_dim`：embedding 口径。
+- `status`：`ready`、`failed`、`skipped_over_budget` 等。
+- `vector`：ready 状态下的向量。
+- `text_checksum`：判断 transcript 是否需要刷新 embedding。
+
+约束：
+
+- `(video_id, transcript_variant, embedding_model, embedding_dim)` 唯一。
+
+### `playlist_analysis_run` / `playlist_analysis_signal` / `playlist_analysis_candidate`
+
+当前职责：
+
+- `playlist_analysis_run` 保存一次播放列表分析快照的状态、embedding 口径与覆盖率。
+- `playlist_analysis_signal` 保存多尺度连续信号面板，供 UI 与 quant-lab 读取。
+- `playlist_analysis_candidate` 保存事件序列和人工确认状态。
+- `playlist_analysis_period` 保留日级兼容视图，用于旧接口读取。
+- 新快照成功后，只保留当前 `last_ready_run` 与仍在 `pending/running` 的 run；同播放列表其它旧 run 会连同关联 period / signal / candidate 级联清理。
+
+关键字段：
+
+- `playlist_analysis_signal.granularity`：`day | week | month`。
+- `drift_score`、`drift_rolling_mean/std/z`：语义中心漂移及其 rolling z。
+- `dispersion_mean/std/p25/p75`：同一 period 内部 embedding 分散度，用作不确定性。
+- `projection_id/method/x/y/z/explained_variance_ratio`：PCA 解释层投影，不作为事件分数来源。
+- `linked_event_id`：该 signal period 命中的候选事件。
+- `playlist_analysis_candidate.candidate_date` / `event_start` / `event_end` / `peak_date`：事件日期与区间。
+- `event_type`：`burst | transition | regime`。
+- `score` / `confidence` / `uncertainty`：事件强度、置信度与不确定性；新口径中 `score` 使用断点两侧 centroid drift 的 `boundary_z`。
+- `summary` / `top_terms` / `evidence_video_ids` / `evidence_json`：事件解释与证据视频；新口径检测元数据写入 `evidence_json.detection`，包含 `two_window_centroid_drift_v1` 的断点日期、前后窗口、`boundary_score`、`boundary_z` 与支持粒度。
+- `available_at`：事件信号可被下游观察到的时间，供回测避免未来函数。
+
+约束：
+
+- `playlist_analysis_signal`：`(analysis_run_id, granularity, period_date, rolling_window)` 唯一。
+- `playlist_analysis_candidate`：`(analysis_run_id, candidate_date)` 唯一。
+
 ### `job` / `job_event`
 
 当前职责：
@@ -168,7 +213,7 @@ playlist/{playlist_id}/background.{ext}
 - `video(provider, provider_video_id)` 唯一：视频发现幂等。
 - `asset(...)` 唯一：产物写入幂等。
 - `brief(...)` / `daily_brief(...)` 唯一：避免重复简报记录。
-- `job` 依赖 `status + scheduled_for + priority` 和 `lease_expires_at` 路径支撑任务领取与回收。
+- `job` 依赖状态 / 类型聚合、活动列表排序、`pending` claim 顺序、`finished_at` 时间窗、`running` 租约 / worker 回收等索引支撑任务页实时刷新和 worker 执行面。
 
 ## 与代码的对应关系
 

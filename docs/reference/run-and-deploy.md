@@ -123,9 +123,11 @@ source ./scripts/dev/load-env.sh
 
 说明：`load-env.sh` 会导出 `.env` 里的变量，并将 `./bin` 放到 `PATH` 最前（优先使用下载到 `./bin/` 的 `ffmpeg` / `node` 等）。
 
-#### 可选：配置平台 Cookies（YouTube / bilibili，推荐）
+#### 可选：配置平台 Cookies（YouTube / bilibili）
 
-很多 429、风控、年龄验证、登录态相关的问题，用 cookies 可以显著改善（B 站常见报错：352 风控拦截）。
+B 站常见 352 风控、年龄验证、会员或私有内容等登录态相关问题，可以通过 cookies 改善。近期 B 站 412 还可能由浏览器 JS 验证、数据中心出口 IP 风控，或 yt-dlp B 站提取器尚未发布的 `playinfo` 参数修复触发；如果更新 B 站 cookies 后仍然 412，优先降低 `BILIBILI_SYNC_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY`、更换更接近真实浏览器访问的网络，或等待 yt-dlp 官方发布包含修复的版本。不要在生产默认依赖中直接切到未合并的第三方 fork，除非只是在隔离环境做临时验证。
+
+YouTube cookies 不适合作为公开频道 `media.sync_videos` 的长期主方案；完整判断与排障步骤见 [YouTube yt-dlp 同步与 Cookies 策略](youtube-ytdlp-strategy.md)。
 
 1. 在浏览器里登录对应平台（YouTube / bilibili，建议用单独账号）
 2. 导出 Netscape 格式 `cookies.txt`（Chrome / Firefox 常用扩展：`Get cookies.txt`）
@@ -145,6 +147,8 @@ source ./scripts/dev/load-env.sh
 ./scripts/dev/run-worker.sh process
 ./scripts/dev/run-worker.sh asr
 ./scripts/dev/run-worker.sh sync
+./scripts/dev/run-worker.sh embedding
+./scripts/dev/run-worker.sh analysis
 ./scripts/dev/run-worker.sh ai
 ./scripts/dev/run-scheduler.sh
 ```
@@ -153,6 +157,9 @@ source ./scripts/dev/load-env.sh
 
 - `./scripts/dev/run-worker.sh download_youtube` / `download_bilibili` 每执行一次，只会启动 1 个对应 provider 的下载 worker 实例。
 - 若你手动多终端启动，并且希望兑现 `YOUTUBE_DOWNLOAD_CONCURRENCY=N` / `BILIBILI_DOWNLOAD_CONCURRENCY=N` 的真实下载并发，需要把对应 `download_*` worker 命令至少启动 `N` 次。
+- 若你手动多终端启动，并且希望兑现 `ASR_WORKER_CONCURRENCY=N` 的 ASR 请求并发，需要把 `./scripts/dev/run-worker.sh asr` 至少启动 `N` 次。
+- `embedding` worker 负责 `video.embed_transcript` 与 `playlist.backfill_embeddings`；历史补算只扫描缺失/失败/无向量的候选项，按 transcript 预取 + embedding HTTP batch 的有限流水线处理，空 transcript 会跳过。
+- `analysis` worker 负责 `playlist.build_analysis_snapshot`，默认单进程串行，避免多个重聚合任务同时压数据库和 CPU；快照成功后会自动清理旧 run；生产环境建议给该 worker 单独配置 systemd / cgroup `MemoryMax=6G`，与应用内 `ANALYSIS_MAX_RSS_BYTES` 保持一致。
 
 打开 UI：`http://127.0.0.1:8000/`
 
@@ -170,6 +177,7 @@ source ./scripts/dev/load-env.sh
 
 - `devctl.sh start/restart` 会先执行一次 UI 构建（等价于 `./scripts/dev/build-ui.sh`）。如需跳过可设置 `SKIP_UI_BUILD=1`。
 - `devctl.sh start/restart` 会按 `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 自动扩展对应 provider 的下载 worker 数。
+- `devctl.sh start/restart` 会按 `ASR_WORKER_CONCURRENCY` / `EMBEDDING_WORKER_CONCURRENCY` / `ANALYSIS_WORKER_CONCURRENCY` 自动扩展 asr / embedding / analysis worker 数，默认均为 `1`；其中 `EMBEDDING_WORKER_CONCURRENCY=0` / `ANALYSIS_WORKER_CONCURRENCY=0` 表示当前节点不启动对应 worker。
 - 只有在 `.env` 里配置了 `API_BEARER_TOKEN` 时，主 API 进程才会额外挂载 `/mcp`；否则 `/mcp` 与 `/mcp/health` 返回 `404`。
 
 ## UI 构建（离线/无 CDN）

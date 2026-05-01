@@ -13,7 +13,11 @@ export function createVideosViewMethods() {
         this.videoLoadingList = true;
         this._syncUrl({ push: false });
         if (!this.mediaIndex || this.mediaIndex.length === 0) {
-          this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
+          if (typeof this.loadMediaIndex === "function") {
+            await this.loadMediaIndex({ lightweight: true });
+          } else {
+            this.mediaIndex = await this.api(`/media/options?limit=500&offset=0`);
+          }
         }
         this.videoOffset = 0;
         this.videoHasMore = true;

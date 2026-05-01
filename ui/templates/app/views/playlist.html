@@ -19,9 +19,22 @@
               <div class="relative flex flex-col h-full min-h-0 divide-y divide-slate-800">
 	                <!-- Row 1: Playlist Info (fixed height) -->
 	                <div class="relative h-20 overflow-hidden bg-slate-950/20">
-	                  <div class="absolute right-0 top-1/2 -translate-y-1/2 flex">
+	                  <div class="absolute right-0 top-1/2 -translate-y-1/2 flex rounded-l-xl overflow-hidden ring-1 ring-inset ring-slate-700/60">
 	                    <button
-	                      class="p-2 border-l border-slate-800 bg-slate-800/70 lg:bg-slate-800/40 backdrop-blur text-slate-200 hover:bg-slate-700/80 rounded-l-xl ring-1 ring-inset ring-slate-700/60 hover:ring-slate-600/70"
+	                      class="p-2 border-l border-slate-800 bg-slate-800/70 lg:bg-slate-800/40 backdrop-blur text-slate-200 hover:bg-slate-700/80"
+	                      @click="playlistSetSubview(playlistSubview==='analysis' ? 'main' : 'analysis')"
+	                      :disabled="!playlistDetail"
+	                      :class="playlistSubview==='analysis' ? 'text-emerald-200 bg-emerald-500/10' : ''"
+	                      title="分析界面"
+	                      aria-label="分析界面"
+                      >
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <path d="M3 3v18h18"></path>
+                          <path d="M7 15l4-4 3 3 5-7"></path>
+                        </svg>
+	                    </button>
+	                    <button
+	                      class="p-2 border-l border-slate-800 bg-slate-800/70 lg:bg-slate-800/40 backdrop-blur text-slate-200 hover:bg-slate-700/80"
 	                      @click="playlistToggleSubview()"
 	                      :disabled="!playlistDetail"
 	                      :class="playlistDetail ? '' : 'opacity-60 cursor-not-allowed'"
@@ -102,7 +115,7 @@
                                 aria-label="编辑包含媒体"
                               >
                                 <div class="flex items-center -space-x-2">
-                                  <template x-for="m in (((playlistDetail && Array.isArray(playlistDetail.media)) ? playlistDetail.media : [])).slice(0,5)" :key="m.id">
+                                  <template x-for="m in ((playlistDetail && Array.isArray(playlistDetail.media_preview)) ? playlistDetail.media_preview : []).slice(0,5)" :key="m.id">
                                     <div class="w-6 h-6 rounded-full ring-2 ring-slate-900/80 bg-slate-800 overflow-hidden">
                                       <template x-if="m.avatar_asset">
                                         <img class="w-6 h-6 object-cover" :src="assetContentUrl(m.avatar_asset)" alt="" loading="lazy" @error="clearAssetRef(m, 'avatar_asset')" />
@@ -114,12 +127,12 @@
                                       </template>
                                     </div>
                                   </template>
-                                  <template x-if="playlistDetail && Array.isArray(playlistDetail.media) && playlistDetail.media.length > 5">
+                                  <template x-if="playlistDetail && (playlistDetail.media_count||0) > 5">
                                     <div class="w-6 h-6 rounded-full ring-2 ring-slate-900/80 bg-slate-950/40 border border-slate-700 flex items-center justify-center text-[10px] font-semibold text-slate-200">
-                                      <span x-text="`+${(playlistDetail.media.length||0)-5}`"></span>
+                                      <span x-text="`+${(playlistDetail.media_count||0)-5}`"></span>
                                     </div>
                                   </template>
-                                  <template x-if="!playlistDetail || !Array.isArray(playlistDetail.media) || playlistDetail.media.length===0">
+                                  <template x-if="!playlistDetail || !(playlistDetail.media_count||0)">
                                     <div class="w-6 h-6 rounded-full ring-2 ring-slate-900/80 bg-slate-950/40 border border-slate-700 flex items-center justify-center text-slate-200">
                                       <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                         <path d="M16 18a4 4 0 0 0-8 0"></path>
@@ -693,6 +706,476 @@
                         ></div>
                       </div>
                     </div>
+                  </div>
+                </div>
+
+                <!-- Playlist Analysis (subview) -->
+                <div class="flex-1 min-h-0 flex flex-col bg-slate-950/10" x-show="playlistSubview==='analysis'" x-transition.opacity>
+                  <div class="shrink-0 border-b border-slate-800 bg-slate-950/35">
+                    <div class="px-4 py-2.5 grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+                      <div class="min-w-0 flex flex-wrap items-center gap-x-3 gap-y-2">
+                        <span class="text-sm font-semibold text-slate-100">Embedding / Regime 分析</span>
+                        <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="playlistAnalysisSummaryBadgeClass()">
+                          <span x-text="playlistAnalysisSummary && playlistAnalysisSummary.running ? '重建中' : ((playlistAnalysisSummary && playlistAnalysisSummary.analysis_dirty) ? '待刷新' : '已就绪')"></span>
+                        </span>
+                        <span class="h-4 w-px bg-slate-800 hidden sm:inline-block"></span>
+                        <span class="inline-flex items-center gap-1 text-xs text-slate-400">
+                          <span>覆盖率</span>
+                          <span class="font-mono tabular-nums text-slate-200" x-text="playlistAnalysisSummary ? `${playlistAnalysisSummary.video_embedded}/${playlistAnalysisSummary.video_total}` : '0/0'"></span>
+                        </span>
+                        <span class="inline-flex items-center gap-1 text-xs text-slate-400" title="文本超过 embedding 服务上下文预算时会标记为跳过。">
+                          <span>跳过</span>
+                          <span class="font-mono tabular-nums text-slate-200" x-text="playlistAnalysisSummary ? playlistAnalysisSummary.video_skipped : 0"></span>
+                        </span>
+                        <span class="inline-flex items-center gap-1 text-xs text-slate-400" title="失败表示该视频的 video_embedding 状态为 failed，通常来自 embedding 服务调用异常；可在 Jobs 页查看对应 video.embed_transcript 或 playlist.backfill_embeddings 错误。">
+                          <span>失败</span>
+                          <span class="font-mono tabular-nums text-rose-200" x-text="playlistAnalysisSummary ? playlistAnalysisSummary.video_failed : 0"></span>
+                        </span>
+                        <span class="h-4 w-px bg-slate-800 hidden md:inline-block"></span>
+                        <div class="inline-flex shrink-0 rounded-md border border-slate-800 bg-slate-950/30 p-0.5">
+                          <button type="button" class="rounded border px-2.5 py-1 text-xs whitespace-nowrap" :class="playlistAnalysisTabClass('trend')" @click="playlistAnalysisSetTab('trend')">趋势</button>
+                          <button type="button" class="rounded border px-2.5 py-1 text-xs whitespace-nowrap" :class="playlistAnalysisTabClass('events')" @click="playlistAnalysisSetTab('events')">事件</button>
+                        </div>
+                        <span class="min-w-0 max-w-full basis-full text-xs text-slate-500 sm:basis-auto sm:truncate" x-text="playlistAnalysisHeaderContextLabel()"></span>
+                      </div>
+                      <div class="flex flex-wrap items-center gap-2 xl:justify-end">
+                        <button
+                          class="px-3 py-1.5 rounded-md border border-cyan-500/30 bg-cyan-500/10 text-xs text-cyan-100 hover:bg-cyan-500/15 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
+                          @click="playlistAnalysisBackfillEmbeddings()"
+                          :disabled="playlistAnalysisBackfillSubmitting || playlistAnalysisActiveBackfillJob() || !playlistDetail"
+                          title="只补算当前播放列表里缺失、失败、跳过或 checksum 变化的视频 embedding；已就绪且 checksum 一致的视频会复用。"
+                        >
+                          <span x-show="!playlistAnalysisBackfillSubmitting">补算历史 embedding</span>
+                          <span x-show="playlistAnalysisBackfillSubmitting">投递中…</span>
+                        </button>
+                        <button
+                          class="px-3 py-1.5 rounded-md border border-rose-500/30 bg-rose-500/10 text-xs text-rose-100 hover:bg-rose-500/15 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
+                          x-show="playlistAnalysisActiveBackfillJob()"
+                          @click="playlistAnalysisCancelBackfill()"
+                          :disabled="playlistAnalysisBackfillCanceling || (playlistAnalysisActiveBackfillJob() && playlistAnalysisActiveBackfillJob().cancel_requested_at)"
+                          title="停止当前历史 embedding 补算任务；任务会在下一个取消检查点退出。"
+                        >
+                          <span x-show="!playlistAnalysisBackfillCanceling">停止补算任务</span>
+                          <span x-show="playlistAnalysisBackfillCanceling">停止中…</span>
+                        </button>
+                        <button
+                          class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-900/60 text-xs text-slate-200 hover:bg-slate-800/70 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
+                          @click="playlistAnalysisRebuild()"
+                          :disabled="playlistAnalysisRebuilding || !playlistDetail"
+                        >
+                          <span x-show="!playlistAnalysisRebuilding">重建分析</span>
+                          <span x-show="playlistAnalysisRebuilding">重建中…</span>
+                        </button>
+                        <button
+                          class="px-3 py-1.5 rounded-md bg-emerald-500 text-xs font-medium text-slate-950 hover:bg-emerald-400 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
+                          @click="playlistAnalysisOpenExport()"
+                          :disabled="!playlistDetail"
+                        >
+                          导出事件序列
+                        </button>
+                      </div>
+                    </div>
+                    <div class="border-t border-amber-500/20 bg-amber-500/10 px-4 py-2 text-xs text-amber-200" x-show="playlistAnalysisSummary && playlistAnalysisSummary.running">基于旧快照浏览，后台重建中。</div>
+                    <div class="border-t border-cyan-500/20 bg-cyan-500/10 px-4 py-2 flex flex-wrap items-center gap-2 text-xs text-cyan-200" x-show="playlistAnalysisActiveBackfillJob()">
+                      <span x-text="playlistAnalysisBackfillJobText()"></span>
+                      <span class="text-cyan-300/70">新补算需要先停止当前任务，或等待当前任务结束。</span>
+                    </div>
+                    <div class="border-t border-rose-500/20 bg-rose-500/10 px-4 py-2 text-xs text-rose-200" x-show="playlistAnalysisError" x-text="playlistAnalysisError"></div>
+                  </div>
+
+                  <div class="flex-1 min-h-0 flex flex-col" x-show="playlistAnalysisTab==='trend'">
+                    <div class="shrink-0 px-4 py-2.5 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
+                      <div class="text-xs text-slate-400">
+                        <span>显示曲线</span>
+                        <span class="ml-2 font-mono tabular-nums text-slate-500" x-text="playlistAnalysisHeaderContextLabel()"></span>
+                      </div>
+                      <div class="flex flex-wrap items-center gap-2 text-xs">
+                        <template x-for="metric in playlistAnalysisMetricDefs()" :key="metric.key">
+                          <button type="button" class="rounded-md border px-2.5 py-1.5" :class="playlistAnalysisVisibleMetrics[metric.key] ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100' : 'border-slate-700 bg-slate-950/20 text-slate-400'" :title="metric.description || metric.title" @click="playlistAnalysisToggleMetric(metric.key)" x-text="metric.title"></button>
+                        </template>
+                      </div>
+                    </div>
+
+                    <div class="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[minmax(0,1.1fr)_minmax(360px,0.9fr)] divide-y xl:divide-y-0 xl:divide-x divide-slate-800">
+                      <section class="min-h-[22rem] flex flex-col">
+                        <div class="shrink-0 px-4 py-3 flex items-start justify-between gap-3">
+                          <div class="min-w-0">
+                            <div class="text-sm font-semibold text-slate-100">多尺度时间趋势</div>
+                            <div class="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                              <span>按统一时间轴展示多尺度语义漂移 z 与不确定性。</span>
+                              <span class="inline-flex items-center gap-1 text-rose-200/80">
+                                <span class="h-3 border-l border-dashed border-rose-300/70"></span>
+                                <span>候选断点</span>
+                              </span>
+                            </div>
+                          </div>
+                          <div class="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                            <div class="inline-flex rounded-md border border-slate-800 bg-slate-950/30 p-0.5 text-[11px]" aria-label="候选断点显示模式">
+                              <template x-for="mode in playlistAnalysisBreakpointDisplayModeOptions()" :key="mode.key">
+                                <button
+                                  type="button"
+                                  class="h-7 rounded px-2 transition"
+                                  :class="playlistAnalysisBreakpointDisplayModeClass(mode.key)"
+                                  @click="playlistAnalysisSetBreakpointDisplayMode(mode.key)"
+                                  :title="`候选断点：${mode.label}`"
+                                  x-text="mode.label"
+                                ></button>
+                              </template>
+                            </div>
+                            <div class="inline-flex rounded-md border border-slate-800 bg-slate-950/30 p-0.5 text-[11px]" aria-label="PCA 焦点窗口长度">
+                              <template x-for="option in playlistAnalysisProjectionWindowOptions()" :key="option.months">
+                                <button
+                                  type="button"
+                                  class="h-7 rounded px-2 font-mono tabular-nums transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                  :class="playlistAnalysisProjectionWindowOptionClass(option.months)"
+                                  :disabled="!playlistAnalysisSelectedTimelineMonths().length"
+                                  @click="playlistAnalysisSetProjectionWindowMonths(option.months)"
+                                  :title="`PCA 焦点窗口：${option.label}`"
+                                  x-text="option.label"
+                                ></button>
+                              </template>
+                            </div>
+                            <button
+                              type="button"
+                              class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-700 bg-slate-950/40 text-slate-200 hover:bg-slate-900/70 disabled:opacity-50 disabled:cursor-not-allowed"
+                              :class="playlistAnalysisProjectionPlaying ? 'border-sky-500/40 bg-sky-500/20 text-sky-100' : ''"
+                              :disabled="!playlistAnalysisProjectionCanPlay()"
+                              @click="playlistAnalysisToggleProjectionPlayback()"
+                              :title="playlistAnalysisProjectionPlaying ? '暂停投影播放' : '播放投影焦点窗口'"
+                              :aria-label="playlistAnalysisProjectionPlaying ? '暂停投影播放' : '播放投影焦点窗口'"
+                            >
+                              <svg x-show="!playlistAnalysisProjectionPlaying" viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true">
+                                <path d="M8 5v14l11-7z"></path>
+                              </svg>
+                              <svg x-show="playlistAnalysisProjectionPlaying" viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true">
+                                <path d="M7 5h4v14H7z"></path>
+                                <path d="M13 5h4v14h-4z"></path>
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                        <div class="flex-1 min-h-0 px-4 pb-4">
+                          <div x-ref="playlistAnalysisTrendChartFrame" class="relative h-full min-h-72 w-full">
+                            <div x-ref="playlistAnalysisTrendChart" class="h-full min-h-72 w-full"></div>
+                            <div class="pointer-events-none absolute inset-y-0 left-0 right-14 z-[8]" x-show="playlistAnalysisBreakpointDisplayItems().length">
+                              <template x-for="item in playlistAnalysisHoveredBreakpointDisplayClusters()" :key="`${item.displayId}:range`">
+                                <div
+                                  class="absolute bottom-7 top-4 rounded-md border border-rose-300/20 bg-rose-500/10"
+                                  :style="playlistAnalysisBreakpointClusterRangeStyle(item)"
+                                ></div>
+                              </template>
+                              <template x-for="item in playlistAnalysisBreakpointDisplayItems()" :key="item.displayId">
+                                <button
+                                  type="button"
+                                  class="pointer-events-auto absolute outline-none"
+                                  :class="playlistAnalysisBreakpointDisplayItemClass(item)"
+                                  :style="playlistAnalysisBreakpointDisplayItemStyle(item)"
+                                  :title="playlistAnalysisBreakpointDisplayItemTitle(item)"
+                                  @click="playlistAnalysisSelectBreakpointDisplayItem(item)"
+                                  @mouseenter="playlistAnalysisHoverBreakpointDisplayItem(item)"
+                                  @mouseleave="playlistAnalysisHoverBreakpointDisplayItem(null)"
+                                  @focus="playlistAnalysisHoverBreakpointDisplayItem(item)"
+                                  @blur="playlistAnalysisHoverBreakpointDisplayItem(null)"
+                                >
+                                  <span x-show="item.kind === 'cluster'" class="absolute left-1/2 top-0 -translate-x-1/2 border-l border-dashed" :style="playlistAnalysisBreakpointClusterLineStyle(item)"></span>
+                                  <span x-show="item.kind === 'cluster'" class="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 rounded-full border border-rose-100/75" :style="playlistAnalysisBreakpointClusterDotStyle(item)"></span>
+                                  <span x-show="item.kind === 'cluster' && item.count > 1" class="absolute left-1/2 top-3 -translate-x-1/2 rounded-sm border border-rose-300/20 bg-slate-950/70 px-1 py-0.5 text-[10px] font-mono tabular-nums text-rose-100" x-text="playlistAnalysisBreakpointClusterCountLabel(item)"></span>
+                                  <span x-show="item.kind === 'single'" class="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 rounded-full border border-rose-100/80" :style="playlistAnalysisBreakpointDotStyle(item)"></span>
+                                  <span x-show="item.kind === 'single' && playlistAnalysisBreakpointShowLabel(item)" class="absolute left-1/2 top-3 -translate-x-1/2 rounded-sm border border-rose-300/30 bg-slate-950/75 px-1.5 py-0.5 text-[10px] font-mono tabular-nums text-rose-100 shadow-sm" :style="playlistAnalysisBreakpointLabelStyle(item)" x-text="playlistAnalysisBreakpointShortLabel(item)"></span>
+                                </button>
+                              </template>
+                            </div>
+                            <div x-ref="playlistAnalysisProjectionWindowLayer" class="pointer-events-none absolute inset-y-0 left-0 right-14 z-10" x-show="playlistAnalysisProjectionWindowStart && playlistAnalysisProjectionWindowEnd">
+                              <button
+                                type="button"
+                                class="pointer-events-auto absolute bottom-7 top-4 min-w-7 rounded-md border outline-none transition touch-none focus:ring-2 focus:ring-sky-300/40"
+                                :class="playlistAnalysisProjectionWindowDragClass()"
+                                :style="playlistAnalysisProjectionChartWindowStyle()"
+                                :disabled="!playlistAnalysisProjectionCanPlay()"
+                                @pointerdown="playlistAnalysisStartProjectionWindowDrag($event)"
+                                @keydown="playlistAnalysisProjectionWindowKeydown($event)"
+                                role="slider"
+                                aria-label="拖动 PCA 投影焦点窗口"
+                                :aria-valuemin="playlistAnalysisTimelineStartIndex()"
+                                :aria-valuemax="playlistAnalysisTimelineEndIndex()"
+                                :aria-valuenow="playlistAnalysisTimelineMonthIndex(playlistAnalysisProjectionWindowStart)"
+                                :aria-valuetext="playlistAnalysisProjectionRangeLabel()"
+                                title="拖动 PCA 投影焦点窗口"
+                              >
+                                <span class="sr-only" x-text="playlistAnalysisProjectionRangeLabel()"></span>
+                                <span class="absolute left-1/2 top-1/2 h-12 -translate-x-1/2 -translate-y-1/2 border-l border-sky-100/45"></span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </section>
+
+                      <section class="min-h-[22rem] flex flex-col">
+                        <div class="shrink-0 px-4 py-3">
+                          <div class="min-w-0">
+                            <div class="text-sm font-semibold text-slate-100">焦点窗口日级语义分布</div>
+                            <div class="text-xs text-slate-400 mt-1">
+                              <span x-text="playlistAnalysisProjectionRangeLabel()"></span>
+                              <span class="ml-2">PCA 解释日级语义分布，不是 rolling z 散点图。</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="flex-1 min-h-0 px-4 pb-4">
+                          <div class="relative h-full min-h-72 w-full overflow-hidden border border-slate-800/70 bg-slate-950/15">
+                            <div class="absolute inset-x-8 top-1/2 border-t border-slate-800/70"></div>
+                            <div class="absolute inset-y-8 left-1/2 border-l border-slate-800/70"></div>
+                            <template x-if="playlistAnalysisProjectionCentroids()">
+                              <div class="pointer-events-none absolute inset-0 z-[3]">
+                                <svg class="absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                                  <defs>
+                                    <marker id="playlist-analysis-centroid-arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto" markerUnits="strokeWidth">
+                                      <path d="M0,0 L8,4 L0,8 Z" fill="rgba(125,211,252,0.75)"></path>
+                                    </marker>
+                                  </defs>
+                                  <line
+                                    x-show="playlistAnalysisProjectionCentroids().arrowVisible"
+                                    :x1="playlistAnalysisProjectionCentroids().arrowStart ? playlistAnalysisProjectionCentroids().arrowStart.x : 0"
+                                    :y1="playlistAnalysisProjectionCentroids().arrowStart ? playlistAnalysisProjectionCentroids().arrowStart.y : 0"
+                                    :x2="playlistAnalysisProjectionCentroids().arrowEnd ? playlistAnalysisProjectionCentroids().arrowEnd.x : 0"
+                                    :y2="playlistAnalysisProjectionCentroids().arrowEnd ? playlistAnalysisProjectionCentroids().arrowEnd.y : 0"
+                                    stroke="rgba(125,211,252,0.75)"
+                                    stroke-width="0.65"
+                                    stroke-dasharray="2 1.5"
+                                    marker-end="url(#playlist-analysis-centroid-arrow)"
+                                  ></line>
+                                  <text
+                                    x-show="!playlistAnalysisProjectionCentroids().arrowVisible"
+                                    :x="playlistAnalysisProjectionCentroids().midpoint.x"
+                                    :y="playlistAnalysisProjectionCentroids().midpoint.y - 3"
+                                    text-anchor="middle"
+                                    fill="rgba(148,163,184,0.8)"
+                                    font-size="3"
+                                  >位移较小</text>
+                                </svg>
+                                <div class="absolute h-3 w-3 rounded-full border border-sky-200/80 bg-sky-400/85 shadow-[0_0_12px_rgba(56,189,248,0.32)]" :style="playlistAnalysisProjectionCentroidStyle(playlistAnalysisProjectionCentroids().before)">
+                                  <span class="absolute left-1/2 top-full mt-1 -translate-x-1/2 rounded-sm bg-slate-950/75 px-1 py-0.5 text-[10px] text-sky-100">前</span>
+                                </div>
+                                <div class="absolute h-3 w-3 rounded-full border border-emerald-200/80 bg-emerald-400/85 shadow-[0_0_12px_rgba(52,211,153,0.32)]" :style="playlistAnalysisProjectionCentroidStyle(playlistAnalysisProjectionCentroids().after)">
+                                  <span class="absolute left-1/2 top-full mt-1 -translate-x-1/2 rounded-sm bg-slate-950/75 px-1 py-0.5 text-[10px] text-emerald-100">后</span>
+                                </div>
+                              </div>
+                            </template>
+                            <template x-for="point in playlistAnalysisProjectionPoints()" :key="point.id">
+                              <button
+                                type="button"
+                                class="absolute rounded-full border transition-opacity hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
+                                :style="playlistAnalysisProjectionPointStyle(point)"
+                                :title="`${point.period_date} · 视频 ${point.video_count || 0} · 不确定性 ${point.dispersion_mean != null ? Number(point.dispersion_mean).toFixed(4) : '-'}`"
+                                @click="playlistAnalysisSelectEventFromDate(point.period_date)"
+                              ></button>
+                            </template>
+                            <div class="absolute bottom-3 left-3 flex items-center gap-2 rounded-md border border-slate-800/80 bg-slate-950/55 px-2 py-1 text-[11px] text-slate-400">
+                              <span>颜色表示不确定性</span>
+                              <span class="inline-flex items-center gap-1">
+                                <span class="h-2 w-2 rounded-full border border-emerald-200/50" style="background:hsl(160 78% 58% / 0.88);"></span>
+                                <span>低</span>
+                              </span>
+                              <span class="inline-flex items-center gap-1">
+                                <span class="h-2 w-2 rounded-full border border-amber-200/50" style="background:hsl(35 78% 58% / 0.88);"></span>
+                                <span>高</span>
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </section>
+                    </div>
+
+                    <div class="shrink-0 border-t border-slate-800 bg-slate-950/35 px-4 py-2">
+                      <div class="flex flex-col gap-2">
+                        <div x-show="playlistAnalysisTimelineMonths().length">
+                          <div class="relative h-14 overflow-hidden rounded-md border border-slate-800 bg-slate-950/20 px-3">
+                            <div x-ref="playlistAnalysisTimelineTrack" class="absolute inset-x-3 top-5 h-7 -translate-y-1/2">
+                              <div class="absolute inset-0 opacity-60" :style="playlistAnalysisTimelineTickStyle()"></div>
+                              <div class="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-slate-800/80">
+                                <div class="absolute inset-y-0 rounded-full bg-emerald-400/80 shadow-[0_0_18px_rgba(16,185,129,0.18)]" :style="playlistAnalysisTimelineSelectionStyle()"></div>
+                              </div>
+                              <div class="absolute inset-x-0 top-1/2 z-10 h-7 -translate-y-1/2">
+                                <button
+                                  type="button"
+                                  class="absolute inset-y-1 rounded-md border border-transparent transition"
+                                  :class="playlistAnalysisTimelineSelectionDragClass()"
+                                  :style="playlistAnalysisTimelineSelectionStyle()"
+                                  :disabled="!playlistAnalysisTimelineRangeCanMove()"
+                                  @pointerdown="playlistAnalysisStartRangeDrag($event)"
+                                  aria-label="拖动已选时间范围"
+                                  title="拖动已选时间范围"
+                                ></button>
+                              </div>
+                              <div class="pointer-events-none absolute inset-x-0 top-1/2 z-20 h-7 -translate-y-1/2">
+                                <button
+                                  type="button"
+                                  class="pointer-events-auto absolute top-1/2 h-5 w-5 -translate-y-1/2 rounded-sm border transition focus:outline-none focus:ring-2 focus:ring-emerald-400/30"
+                                  :class="playlistAnalysisTimelineHandleClass('start')"
+                                  :style="playlistAnalysisTimelineHandleStyle('start')"
+                                  @pointerdown="playlistAnalysisStartTimelineHandleDrag('start', $event)"
+                                  @keydown="playlistAnalysisTimelineHandleKeydown('start', $event)"
+                                  role="slider"
+                                  aria-label="调整起始月份"
+                                  :aria-valuemin="0"
+                                  :aria-valuemax="Math.max(0, playlistAnalysisTimelineMonths().length - 1)"
+                                  :aria-valuenow="playlistAnalysisTimelineStartIndex()"
+                                  :aria-valuetext="playlistAnalysisRangeStart || playlistAnalysisFullRangeStart || ''"
+                                  title="拖动调整起始月份"
+                                >
+                                  <span class="absolute left-1.5 top-1/2 h-3 -translate-y-1/2 border-l border-slate-300/60"></span>
+                                  <span class="absolute right-1.5 top-1/2 h-3 -translate-y-1/2 border-l border-slate-300/45"></span>
+                                </button>
+                                <button
+                                  type="button"
+                                  class="pointer-events-auto absolute top-1/2 h-5 w-5 -translate-y-1/2 rounded-sm border transition focus:outline-none focus:ring-2 focus:ring-emerald-400/30"
+                                  :class="playlistAnalysisTimelineHandleClass('end')"
+                                  :style="playlistAnalysisTimelineHandleStyle('end')"
+                                  @pointerdown="playlistAnalysisStartTimelineHandleDrag('end', $event)"
+                                  @keydown="playlistAnalysisTimelineHandleKeydown('end', $event)"
+                                  role="slider"
+                                  aria-label="调整结束月份"
+                                  :aria-valuemin="0"
+                                  :aria-valuemax="Math.max(0, playlistAnalysisTimelineMonths().length - 1)"
+                                  :aria-valuenow="playlistAnalysisTimelineEndIndex()"
+                                  :aria-valuetext="playlistAnalysisRangeEnd || playlistAnalysisFullRangeEnd || ''"
+                                  title="拖动调整结束月份"
+                                >
+                                  <span class="absolute left-1.5 top-1/2 h-3 -translate-y-1/2 border-l border-slate-300/60"></span>
+                                  <span class="absolute right-1.5 top-1/2 h-3 -translate-y-1/2 border-l border-slate-300/45"></span>
+                                </button>
+                              </div>
+                            </div>
+                            <div class="absolute inset-x-3 bottom-1 h-4 text-[10px] tabular-nums text-slate-500">
+                              <template x-for="mark in playlistAnalysisTimelineYearMarks()" :key="mark.key">
+                                <span class="absolute top-0 whitespace-nowrap" :style="playlistAnalysisTimelineYearMarkStyle(mark)" x-text="mark.label"></span>
+                              </template>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="rounded-md border border-slate-800 bg-slate-950/20 px-3 py-2 text-xs text-slate-500" x-show="!playlistAnalysisTimelineMonths().length">暂无可选时间轴。</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[minmax(320px,0.9fr)_minmax(0,1.1fr)] divide-y xl:divide-y-0 xl:divide-x divide-slate-800" x-show="playlistAnalysisTab==='events'">
+                    <div class="min-h-0 flex flex-col divide-y divide-slate-800">
+                      <div class="shrink-0 px-4 py-3">
+                        <div class="text-sm font-semibold text-slate-100">事件序列</div>
+                        <div class="text-xs text-slate-400 mt-1">人工确认后进入 quant-lab 事件读取口径。</div>
+                      </div>
+                      <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar divide-y divide-slate-800">
+                        <template x-for="item in playlistAnalysisCandidates" :key="item.id">
+                          <button
+                            type="button"
+                            class="w-full text-left px-4 py-3 transition hover:bg-slate-900/50"
+                            :class="String(playlistAnalysisSelectedCandidateId||'')===String(item.id) ? 'bg-emerald-500/10' : ''"
+                            @click="playlistSelectAnalysisCandidate(item.id)"
+                          >
+                            <div class="flex items-start justify-between gap-3">
+                              <div class="min-w-0">
+                                <div class="flex flex-wrap items-center gap-2">
+                                  <span class="text-sm text-slate-100 truncate" x-text="item.event_date || item.candidate_date"></span>
+                                  <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="playlistAnalysisEventTypeClass(item.event_type)" x-text="playlistAnalysisEventTypeLabel(item.event_type)"></span>
+                                </div>
+                                <div class="text-[11px] text-slate-400 truncate mt-1" x-text="item.summary || item.evidence_preview || '暂无证据摘要'"></div>
+                              </div>
+                              <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="playlistAnalysisCandidateStatusClass(item.status)" x-text="item.status"></span>
+                            </div>
+                          </button>
+                        </template>
+                        <div class="px-4 py-3 text-xs text-slate-500" x-show="playlistAnalysisCandidatesLoading">事件加载中...</div>
+                        <div class="px-4 py-3 text-xs text-slate-500" x-show="!playlistAnalysisCandidatesLoading && playlistAnalysisCandidatesLoaded && playlistAnalysisCandidates.length===0">暂无候选事件。</div>
+                      </div>
+                    </div>
+
+                    <template x-if="playlistAnalysisCandidateDetail">
+                    <div class="min-h-0 overflow-auto raelyn-scrollbar">
+                      <div class="divide-y divide-slate-800">
+                        <div class="px-4 py-3 flex items-start justify-between gap-3">
+                          <div>
+                            <div class="flex flex-wrap items-center gap-2">
+                              <span class="text-sm font-semibold text-slate-100" x-text="playlistAnalysisCandidateDetail.event_date || playlistAnalysisCandidateDetail.candidate_date"></span>
+                              <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="playlistAnalysisEventTypeClass(playlistAnalysisCandidateDetail.event_type)" x-text="playlistAnalysisEventTypeLabel(playlistAnalysisCandidateDetail.event_type)"></span>
+                            </div>
+                            <div class="text-xs text-slate-400 mt-1">
+                              <span>区间 </span>
+                              <span x-text="playlistAnalysisCandidateDetail.event_start || '-'"></span>
+                              <span> ~ </span>
+                              <span x-text="playlistAnalysisCandidateDetail.event_end || '-'"></span>
+                              <span class="mx-1 text-slate-600">·</span>
+                              <span>生效交易日 </span>
+                              <span x-text="playlistAnalysisCandidateDetail.effective_trade_date || '-'"></span>
+                            </div>
+                          </div>
+                          <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="playlistAnalysisCandidateStatusClass(playlistAnalysisCandidateDetail && playlistAnalysisCandidateDetail.status)" x-text="playlistAnalysisCandidateDetail ? playlistAnalysisCandidateDetail.status : ''"></span>
+                        </div>
+
+                        <div class="grid grid-cols-2 md:grid-cols-4 divide-x divide-slate-800 text-xs">
+                          <div class="px-4 py-3">
+                            <div class="text-slate-500">score</div>
+                            <div class="text-slate-100 mt-1" x-text="playlistAnalysisCandidateDetail && playlistAnalysisCandidateDetail.score != null ? Number(playlistAnalysisCandidateDetail.score).toFixed(3) : '-'"></div>
+                          </div>
+                          <div class="px-4 py-3">
+                            <div class="text-slate-500">confidence</div>
+                            <div class="text-slate-100 mt-1" x-text="playlistAnalysisCandidateDetail && playlistAnalysisCandidateDetail.confidence != null ? Number(playlistAnalysisCandidateDetail.confidence).toFixed(2) : '-'"></div>
+                          </div>
+                          <div class="px-4 py-3">
+                            <div class="text-slate-500">uncertainty</div>
+                            <div class="text-slate-100 mt-1" x-text="playlistAnalysisCandidateDetail && playlistAnalysisCandidateDetail.uncertainty != null ? Number(playlistAnalysisCandidateDetail.uncertainty).toFixed(4) : '-'"></div>
+                          </div>
+                          <div class="px-4 py-3">
+                            <div class="text-slate-500">边界 z</div>
+                            <div class="text-slate-100 mt-1" x-text="playlistAnalysisCandidateDetail && (playlistAnalysisCandidateDetail.boundary_z ?? playlistAnalysisCandidateDetail.score) != null ? Number(playlistAnalysisCandidateDetail.boundary_z ?? playlistAnalysisCandidateDetail.score).toFixed(3) : '-'"></div>
+                          </div>
+                        </div>
+
+                        <div class="px-4 py-3 space-y-2">
+                          <div class="text-xs font-semibold text-slate-300">摘要</div>
+                          <div class="text-sm text-slate-300 leading-6" x-text="playlistAnalysisCandidateDetail.summary || playlistAnalysisCandidateDetail.evidence_preview || '暂无摘要'"></div>
+                          <div class="flex flex-wrap gap-2" x-show="(playlistAnalysisCandidateDetail.top_terms || []).length">
+                            <template x-for="term in playlistAnalysisCandidateDetail.top_terms" :key="term">
+                              <span class="rounded-full border border-slate-700 bg-slate-950/30 px-2 py-0.5 text-[11px] text-slate-300" x-text="term"></span>
+                            </template>
+                          </div>
+                        </div>
+
+                        <div class="px-4 py-3 space-y-2">
+                          <div class="text-xs font-semibold text-slate-300">证据视频</div>
+                          <div class="divide-y divide-slate-800 border border-slate-800/70">
+                            <template x-for="video in (((playlistAnalysisCandidateDetail||{}).evidence||{}).videos || [])" :key="video.video_id">
+                              <div class="px-3 py-2">
+                                <div class="text-sm text-slate-100 truncate" x-text="video.title || video.video_id"></div>
+                                <div class="text-[11px] text-slate-400 mt-1">
+                                  <span x-text="video.media_name || '-'"></span>
+                                  <span class="mx-1 text-slate-600">·</span>
+                                  <span x-text="video.published_at || '-'"></span>
+                                  <span class="mx-1 text-slate-600">·</span>
+                                  <span>贡献 </span>
+                                  <span x-text="video.shift_score != null ? Number(video.shift_score).toFixed(4) : '-'"></span>
+                                </div>
+                              </div>
+                            </template>
+                          </div>
+                        </div>
+
+                        <div class="px-4 py-3 flex flex-wrap items-center gap-2">
+                          <button class="px-3 py-1.5 rounded-md bg-emerald-500 text-xs font-medium text-slate-950 hover:bg-emerald-400" @click="playlistAnalysisConfirmCandidate()">确认</button>
+                          <button class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-900/50 text-xs text-slate-200 hover:bg-slate-800/70" @click="playlistAnalysisRejectCandidate()">拒绝</button>
+                        </div>
+                      </div>
+                    </div>
+                    </template>
+                  </div>
+
+                  <div x-show="playlistAnalysisExportOpen" class="shrink-0 border-t border-slate-800 bg-slate-950/25">
+                    <div class="px-4 py-3 flex items-center justify-between gap-3 border-b border-slate-800">
+                      <div>
+                        <div class="text-sm font-semibold text-slate-100">事件序列导出预览</div>
+                        <div class="text-xs text-slate-400 mt-1">quant-lab 按实验目标读取事件与 signals，不再由本页面提供训练窗口。</div>
+                      </div>
+                      <button class="px-3 py-1.5 rounded-md border border-slate-700 bg-slate-900/50 text-xs text-slate-200 hover:bg-slate-800/70" @click="playlistAnalysisExportOpen=false">关闭</button>
+                    </div>
+                    <pre class="max-h-56 overflow-auto p-4 text-xs text-slate-200" x-text="playlistAnalysisExportJson()"></pre>
                   </div>
                 </div>
 

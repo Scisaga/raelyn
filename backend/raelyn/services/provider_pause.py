@@ -31,8 +31,8 @@ def provider_display_name(provider: str) -> str:
 
 def bilibili_provider_pause_message() -> str:
     return (
-        "B站任务已暂停：请求被风控或登录态无效。请在 UI -> 设置 更新 YTDLP_COOKIES_BILIBILI；"
-        "必要时降低同步频率、稍后重试或更换网络。"
+        "B站任务已暂停：请求被风控、出口网络受限，或当前 yt-dlp 尚未包含 B站 412 提取器修复；"
+        "请先更新 YTDLP_COOKIES_BILIBILI，若仍 412，请降低同步/下载频率、稍后重试或等待 yt-dlp 官方版本更新。"
     )
 
 

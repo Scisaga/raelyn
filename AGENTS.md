@@ -17,6 +17,7 @@
 - 禁止执行会覆盖、删除工作区内容的操作，例如 `git restore .`、`git reset --hard`、`git clean -fd`。
 - 新增或调整测试时，默认优先真实集成测试，不默认使用 mock；只有用户明确要求时才使用 mock。
 - 集成测试输入优先复用上游真实任务产物；不要在测试里手工插入上游 domain 数据。若前置数据不存在，直接 `skip` 并说明生成方式。
+- 修改代码时必须同步检查并更新相关文档、配置示例、运行说明或文档索引；若判断无需更新文档，需在回复中说明依据。
 
 ## PLAN 规则
 
@@ -34,6 +35,7 @@
   - 专题文档入口与分类以 [docs/README.md](docs/README.md) 为准。
 
 * 维护原则
+  - 代码行为、配置项、API、任务流程、部署/运行方式发生变化时，必须同步更新对应文档；禁止只改代码不改文档。
   - 修改专题内容时，优先更新对应专题文档，而不是把信息堆回 [docs/architecture/overview.md](docs/architecture/overview.md)。
   - [docs/architecture/overview.md](docs/architecture/overview.md) 只保留高层概览与导航，不承载实现细节。
   - 若新增重要文档入口，需同步检查 [docs/README.md](docs/README.md) 的文档导航是否需要更新。

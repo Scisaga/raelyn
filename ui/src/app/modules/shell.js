@@ -602,11 +602,34 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
       return `${key || "Provider"}已暂停`;
     },
 
+    providerPauseMessage(provider) {
+      const key = String(provider || "").trim().toLowerCase();
+      const pause = this.providerPause(key);
+      const msg = String(pause.message || "").trim();
+      if (key === "bilibili") {
+        const staleRiskControlMessage = pause.reason === "bilibili_risk_control"
+          && msg.includes("YTDLP_COOKIES_BILIBILI")
+          && !msg.includes("412");
+        if (!msg || staleRiskControlMessage) {
+          return (
+            "B站任务已暂停：请求被风控、出口网络受限，或当前 yt-dlp 尚未包含 B站 412 提取器修复；"
+            + "请先更新 YTDLP_COOKIES_BILIBILI，若仍 412，请降低同步/下载频率、稍后重试或等待 yt-dlp 官方版本更新。"
+          );
+        }
+        return msg;
+      }
+      if (key === "youtube") {
+        return msg || "YouTube任务已暂停：登录态无效或触发人机验证，请更新 YTDLP_COOKIES_YOUTUBE。";
+      }
+      return msg || "任务已暂停：请检查配置与任务日志。";
+    },
+
     providerPauseHint(provider) {
       const key = String(provider || "").trim().toLowerCase();
-      if (key === "bilibili") return "请更新 YTDLP_COOKIES_BILIBILI";
-      if (key === "youtube") return "请更新 YTDLP_COOKIES_YOUTUBE";
-      return "请检查配置";
+      const msg = this.providerPauseMessage(key);
+      if (key === "bilibili") return msg.replace(/^B站任务已暂停[:：]\s*/, "");
+      if (key === "youtube") return msg.replace(/^YouTube任务已暂停[:：]\s*/, "");
+      return msg.replace(/^任务已暂停[:：]\s*/, "");
     },
 
     gotoCookiesSettings(provider = null) {
@@ -615,12 +638,12 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
       const key = String(provider || "").trim().toLowerCase();
       if (key === "bilibili") {
         if (typeof this.setSettingsCookiesTab === "function") this.setSettingsCookiesTab("bilibili");
-        this.globalStatus = "B站任务已暂停：请更新 YTDLP_COOKIES_BILIBILI 后重试";
+        this.globalStatus = this.providerPauseMessage("bilibili");
         return;
       }
       if (key === "youtube") {
         if (typeof this.setSettingsCookiesTab === "function") this.setSettingsCookiesTab("youtube");
-        this.globalStatus = "YouTube任务已暂停：请更新 YTDLP_COOKIES_YOUTUBE 后重试";
+        this.globalStatus = this.providerPauseMessage("youtube");
         return;
       }
       this.globalStatus = "系统已暂停：请检查对应平台 Cookies 配置";

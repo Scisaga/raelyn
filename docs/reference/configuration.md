@@ -26,6 +26,7 @@
 - `S3_SECRET_KEY`
 - `S3_REGION`
 - `S3_BUCKET`
+  - 应与 `asset.s3_bucket` 中的实际 bucket 保持一致；`/api/stats` 会在检测到配置 bucket 与唯一实际 bucket 不一致时回退统计实际 bucket，并返回 mismatch 标记。
 - `S3_USE_SSL`
 
 ### 资产分发策略
@@ -60,9 +61,15 @@
 ### 同步与并发
 
 - `SYNC_INTERVAL_MINUTES`
+- `SYNC_INTERVAL_JITTER_MINUTES`
+  - 频道自动同步在基础间隔之后，按媒体与上次同步时间稳定增加 `0..N` 分钟抖动，避免大量频道同一分钟集中请求。
 - `SYNC_BATCH_SIZE`
+  - `scheduler` 每分钟扫描到期媒体时，单次最多投递的 `media.sync_videos` 数量；`SYNC_INTERVAL_MINUTES` 约束的是单个媒体的同步间隔，不表示全站每小时只投递一个同步任务。
+  - 当前推荐值为 `2`，用于降低 YouTube / B 站同步请求波峰；媒体数量较多时，追赶积压会更慢，但更不容易触发平台风控。
 - `SYNC_MAX_ENTRIES`
 - `AUTO_DOWNLOAD_NEW_VIDEOS`
+- `STATS_CACHE_TTL_SECONDS`
+  - `/api/stats` 的进程内缓存 TTL，默认 `60` 秒；设置为 `0` 可关闭缓存。
 - `YOUTUBE_SYNC_CONCURRENCY`
 - `BILIBILI_SYNC_CONCURRENCY`
 - `YOUTUBE_DOWNLOAD_CONCURRENCY`
@@ -73,6 +80,37 @@
   - 表示 B 站的真实最大下载并发数，不只是内部 provider 槽位数。
   - 当值为 `N` 且 `N > 1` 时，运行层默认应启动至少 `N` 个 `download_bilibili` worker 进程。
   - handler 内仍会使用 provider advisory lock 做最终上限保护；该锁是内部实现细节，不改变本配置的公开语义。
+- `ASR_WORKER_CONCURRENCY`
+  - `devctl.sh` / Docker 单容器入口启动 `asr` worker 的进程数，默认 `1`。
+  - 每个 `asr` worker 同一时间只执行一个 `video.asr_transcribe`，因此该值决定 ASR 远端转写请求的进程级并发上限。
+  - 该配置只增加 worker 进程数，不改变 ASR 请求的认证、连接复用或缓存行为。
+- `EMBEDDING_WORKER_CONCURRENCY`
+  - `devctl.sh` / Docker 单容器入口启动 `embedding` worker 的进程数，默认 `1`。
+  - 可设为 `0`，表示当前节点不启动 `embedding` worker；历史 embedding 补算和新视频自动 embedding 任务会保留在 `pending`，直到有 embedding worker 可领取。
+- `ANALYSIS_WORKER_CONCURRENCY`
+  - `devctl.sh` / Docker 单容器入口启动 `analysis` worker 的进程数，默认 `1`。
+  - 可设为 `0`，表示当前节点不启动 `analysis` worker；播放列表分析快照任务会保留在 `pending`，直到有 analysis worker 可领取。
+- `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES`
+  - `playlist.build_analysis_snapshot` 开始和处理中允许继续执行的最低 `MemAvailable`，默认 `1073741824`。
+  - 低于该值时任务直接失败并记录原因，不进入重试队列。
+- `ANALYSIS_MAX_RSS_BYTES`
+  - `playlist.build_analysis_snapshot` 允许的最大 worker 进程 RSS，默认 `6442450944`（6 GiB）。
+  - 高于该值时任务直接失败并记录原因，不进入重试队列；生产环境仍建议用 systemd / cgroup 设置同等硬上限。
+- `ANALYSIS_STREAM_BATCH_SIZE`
+  - 分析快照构建分批读取 ready embedding 的批大小，默认 `500`。
+- `EMBEDDING_BATCH_SIZE`
+  - 历史 embedding 补算任务单次请求的默认文本条数，默认 `16`。
+- `EMBEDDING_BATCH_MAX_SIZE`
+  - API/job 参数允许的最大 embedding batch size，默认 `64`。
+- `EMBEDDING_BATCH_MAX_CHARS`
+  - 历史 embedding 补算任务单个 batch 的文本字符预算，默认 `60000`；与 `EMBEDDING_BATCH_SIZE` 同时生效，先触达任一阈值就发送 batch。
+- `EMBEDDING_TRANSCRIPT_PREFETCH_WORKERS`
+  - 历史 embedding 补算任务内部并发读取 transcript 的线程数，默认 `4`；用于减少 S3 读取等待，让 batch 更稳定地送到 embedding 服务。
+- `EMBEDDING_BACKFILL_HTTP_INFLIGHT`
+  - 单个历史 embedding 补算任务同时发送到远端 embedding 服务的 HTTP batch 数，默认 `1`；用于在 transcript 预取和远端推理之间做有限流水线，确认远端稳定后可调大。
+- `AUTO_EMBED_NEW_VIDEO_TRANSCRIPTS`
+  - 是否在新视频 transcript 生成后自动投递 `video.embed_transcript`，默认 `false`。
+  - 关闭时不会影响手动触发的 `playlist.backfill_embeddings` 历史补算。
 
 ### Worker 心跳与孤儿任务回收
 
@@ -97,6 +135,24 @@
 - `LLM_HEADERS_JSON`
 - `LLM_TIMEOUT_SECONDS`
 
+Embedding / 播放列表分析：
+
+- `EMBEDDING_URL`
+- `EMBEDDING_ENDPOINT`
+- `EMBEDDING_MODEL`
+- `EMBEDDING_DIM`
+- `EMBEDDING_TIMEOUT_SECONDS`
+- `EMBEDDING_TRANSCRIPT_VARIANT`
+- `EMBEDDING_BATCH_SIZE`
+- `EMBEDDING_BATCH_MAX_SIZE`
+- `EMBEDDING_BATCH_MAX_CHARS`
+- `EMBEDDING_TRANSCRIPT_PREFETCH_WORKERS`
+- `EMBEDDING_BACKFILL_HTTP_INFLIGHT`
+- `AUTO_EMBED_NEW_VIDEO_TRANSCRIPTS`
+- `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES`
+- `ANALYSIS_MAX_RSS_BYTES`
+- `ANALYSIS_STREAM_BATCH_SIZE`
+
 火山模式默认值：
 
 - `VOLCENGINE_LLM_URL`
@@ -119,7 +175,7 @@
 ### Worker 进程选择
 
 - `WORKER_ROLE`
-  - 支持 `download_youtube`、`download_bilibili`、`audio`、`process`、`asr`、`sync`、`ai`、`all`
+  - 支持 `download_youtube`、`download_bilibili`、`audio`、`process`、`asr`、`sync`、`embedding`、`analysis`、`ai`、`all`
 - `WORKER_TYPES`
   - 逗号分隔的 job type 列表，优先级高于 `WORKER_ROLE`
 
@@ -151,6 +207,7 @@
 - 通过 `/api/config/{key}` 写入。
 - 服务运行时会把内容写到 `tmp/ytdlp_cookies_*.txt` 供 yt-dlp / profile fetch 使用。
 - 更新后若系统是因为 Cookies 失效被自动暂停，会尝试自动恢复。
+- YouTube cookies / bot check / PO Token 的运行策略见 [YouTube yt-dlp 同步与 Cookies 策略](youtube-ytdlp-strategy.md)。
 
 ### 字幕与会员视频
 

@@ -102,6 +102,27 @@ def _raise_if_cookie_invalid_messages(msgs: list[str], *, provider: str | None =
         raise YtdlpCookiesInvalidError(reason, f"{cfg_name} 无效，请在 UI -> 设置 更新 {label} cookies.txt。", provider=p)
 
 
+def _raise_if_youtube_bot_check_messages(msgs: list[str], *, provider: str | None = None) -> None:
+    p = normalize_cookie_provider(provider)
+    if p and p != "youtube":
+        return
+    combined = "\n".join([str(msg or "") for msg in msgs if str(msg or "").strip()]).strip()
+    if not combined:
+        return
+    if _is_youtube_tab_authcheck_error(combined):
+        raise YtdlpCookiesInvalidError(
+            "ytdlp_cookies_expired",
+            "YTDLP_COOKIES_YOUTUBE 已失效：YouTube 频道/播放列表鉴权检查失败。请在 UI -> 设置 更新 YouTube cookies.txt。",
+            provider="youtube",
+        )
+    if _is_youtube_bot_check_error(RuntimeError(combined)):
+        raise YtdlpCookiesInvalidError(
+            "ytdlp_cookies_expired",
+            "YTDLP_COOKIES_YOUTUBE 已失效：YouTube 要求重新登录以确认不是机器人。请在 UI -> 设置 更新 YouTube cookies.txt。",
+            provider="youtube",
+        )
+
+
 def _raise_if_provider_pause_messages(msgs: list[str]) -> None:
     combined = "\n".join([str(msg or "") for msg in msgs if str(msg or "").strip()]).strip()
     if not combined:
@@ -261,6 +282,17 @@ def _is_youtube_bot_check_error(err: Exception) -> bool:
     return "sign in to confirm you're not a bot" in msg or "confirm you're not a bot" in msg
 
 
+def _is_youtube_tab_authcheck_error(msg: str) -> bool:
+    m = _normalize_msg(msg)
+    if not m:
+        return False
+    return (
+        "youtube:tab" in m
+        and "playlists that require authentication" in m
+        and "without a successful webpage download" in m
+    )
+
+
 def _is_youtube_js_challenge_failed_messages(msgs: list[str]) -> bool:
     for s in msgs:
         m = _normalize_msg(s)
@@ -378,6 +410,7 @@ def _apply_common_ytdlp_opts(
             ),
         )
         headers.setdefault("Referer", "https://www.bilibili.com/")
+        headers.setdefault("Origin", "https://www.bilibili.com")
         opts["http_headers"] = headers
         # 显式禁用代理；仅移除 opts["proxy"] 还不够，yt-dlp 会继续读取进程环境里的 HTTP(S)_PROXY。
         opts["proxy"] = ""
@@ -466,8 +499,10 @@ def ytdlp_extract_info(
         try:
             info = ydl.extract_info(url, download=False)
         except (DownloadError, ExtractorError) as e:
-            _raise_if_cookie_invalid_messages(logger.warnings + logger.errors + [str(e)], provider=cookie_provider)
-            _raise_if_provider_pause_messages(logger.warnings + logger.errors + [str(e)])
+            msgs = logger.warnings + logger.errors + [str(e)]
+            _raise_if_cookie_invalid_messages(msgs, provider=cookie_provider)
+            _raise_if_youtube_bot_check_messages(msgs, provider=cookie_provider)
+            _raise_if_provider_pause_messages(msgs)
             if _is_youtube_bot_check_error(e):
                 raise RuntimeError(_youtube_bot_check_hint()) from e
             if _is_youtube_js_challenge_failed_messages(logger.warnings + logger.errors + [str(e)]):
@@ -481,12 +516,15 @@ def ytdlp_extract_info(
         # With ignoreerrors=True, yt-dlp may return None (and report via logger.error). Treat as failure.
         if info is None:
             last = logger.errors[-1] if logger.errors else "yt-dlp extraction returned no result"
-            _raise_if_cookie_invalid_messages(logger.warnings + logger.errors + [last], provider=cookie_provider)
-            _raise_if_provider_pause_messages(logger.warnings + logger.errors + [last])
+            msgs = logger.warnings + logger.errors + [last]
+            _raise_if_cookie_invalid_messages(msgs, provider=cookie_provider)
+            _raise_if_youtube_bot_check_messages(msgs, provider=cookie_provider)
+            _raise_if_provider_pause_messages(msgs)
             if _is_bilibili_risk_control_error(RuntimeError(last)) or _is_bilibili_precondition_failed_error(RuntimeError(last)):
                 raise RuntimeError(_bilibili_risk_control_hint())
             raise RuntimeError(last)
         _raise_if_cookie_invalid_messages(logger.warnings + logger.errors, provider=cookie_provider)
+        _raise_if_youtube_bot_check_messages(logger.warnings + logger.errors, provider=cookie_provider)
         _raise_if_provider_pause_messages(logger.warnings + logger.errors)
         return info
 
@@ -618,6 +656,7 @@ def ytdlp_download(
             last_error = e
             joined = "\n".join([cookie_invalid_line or "", *captured_warnings[-12:], *captured_errors[-12:], str(e)]).strip()
             _raise_if_cookie_invalid_messages([joined], provider=cookie_provider)
+            _raise_if_youtube_bot_check_messages([joined], provider=cookie_provider)
             _raise_if_provider_pause_messages([joined])
             if _is_youtube_bot_check_error(e):
                 raise RuntimeError(_youtube_bot_check_hint()) from e
@@ -663,6 +702,7 @@ def ytdlp_download(
                         [cookie_invalid_line or "", *captured_warnings[-12:], *captured_errors[-12:], str(e2)]
                     ).strip()
                     _raise_if_cookie_invalid_messages([joined2], provider=cookie_provider)
+                    _raise_if_youtube_bot_check_messages([joined2], provider=cookie_provider)
                     _raise_if_provider_pause_messages([joined2])
                     # Fall through to raise a readable error below.
                     joined = joined2 or joined

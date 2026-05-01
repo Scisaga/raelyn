@@ -14,6 +14,13 @@ YOUTUBE_DOWNLOAD_CONCURRENCY_DEFAULT=2
 BILIBILI_DOWNLOAD_CONCURRENCY_DEFAULT=2
 DOWNLOAD_CONCURRENCY_MIN=1
 DOWNLOAD_CONCURRENCY_MAX=10
+EMBEDDING_WORKER_CONCURRENCY_DEFAULT=1
+ANALYSIS_WORKER_CONCURRENCY_DEFAULT=1
+ASR_WORKER_CONCURRENCY_DEFAULT=1
+ASR_WORKER_CONCURRENCY_MIN=1
+EMBEDDING_WORKER_CONCURRENCY_MIN=0
+ANALYSIS_WORKER_CONCURRENCY_MIN=0
+ROLE_WORKER_CONCURRENCY_MAX=10
 
 API_PID_FILE="${PID_DIR}/api.pid"
 WORKER_AUDIO_PID_FILE="${PID_DIR}/worker-audio.pid"
@@ -168,6 +175,113 @@ download_worker_indices() {
   fi
 }
 
+clamp_role_worker_concurrency() {
+  local raw="${1:-}"
+  local default_value="${2:-1}"
+  local min_value="${3:-0}"
+  local value
+  if [[ -z "${raw}" ]] || ! [[ "${raw}" =~ ^-?[0-9]+$ ]]; then
+    value="${default_value}"
+  else
+    value="${raw}"
+  fi
+  if (( value < min_value )); then
+    value="${min_value}"
+  fi
+  if (( value > ROLE_WORKER_CONCURRENCY_MAX )); then
+    value="${ROLE_WORKER_CONCURRENCY_MAX}"
+  fi
+  echo "${value}"
+}
+
+scaled_worker_count() {
+  local role="$1"
+  case "$role" in
+    asr)
+      clamp_role_worker_concurrency "${ASR_WORKER_CONCURRENCY:-}" "${ASR_WORKER_CONCURRENCY_DEFAULT}" "${ASR_WORKER_CONCURRENCY_MIN}"
+      ;;
+    embedding)
+      clamp_role_worker_concurrency "${EMBEDDING_WORKER_CONCURRENCY:-}" "${EMBEDDING_WORKER_CONCURRENCY_DEFAULT}" "${EMBEDDING_WORKER_CONCURRENCY_MIN}"
+      ;;
+    analysis)
+      clamp_role_worker_concurrency "${ANALYSIS_WORKER_CONCURRENCY:-}" "${ANALYSIS_WORKER_CONCURRENCY_DEFAULT}" "${ANALYSIS_WORKER_CONCURRENCY_MIN}"
+      ;;
+    *)
+      echo "1"
+      ;;
+  esac
+}
+
+scaled_worker_name() {
+  local role="$1"
+  local index="$2"
+  echo "worker-${role}-${index}"
+}
+
+scaled_worker_pid_file() {
+  local role="$1"
+  local index="$2"
+  echo "${PID_DIR}/worker-${role}-${index}.pid"
+}
+
+scaled_worker_log_file() {
+  local role="$1"
+  local index="$2"
+  echo "${LOG_DIR}/worker-${role}-${index}.log"
+}
+
+scaled_worker_indices() {
+  local role="$1"
+  local count
+  count="$(scaled_worker_count "$role")"
+  local values=()
+  local i
+  for ((i=1; i<=count; i++)); do
+    values+=( "$i" )
+  done
+  local path
+  for path in "${PID_DIR}/worker-${role}-"*.pid; do
+    [[ -e "$path" ]] || continue
+    local name="${path##*/}"
+    local idx="${name#worker-${role}-}"
+    idx="${idx%.pid}"
+    if [[ "$idx" =~ ^[0-9]+$ ]]; then
+      values+=( "$idx" )
+    fi
+  done
+  if [[ "$role" == "asr" ]] && [[ -f "$WORKER_ASR_PID_FILE" ]]; then
+    values+=( "legacy" )
+  fi
+
+  local uniq=()
+  local seen=" "
+  local item
+  for item in "${values[@]}"; do
+    if [[ "$seen" == *" ${item} "* ]]; then
+      continue
+    fi
+    uniq+=( "$item" )
+    seen+=" ${item} "
+  done
+  local numeric=()
+  local has_legacy=0
+  for item in "${uniq[@]}"; do
+    if [[ "$item" == "legacy" ]]; then
+      has_legacy=1
+    else
+      numeric+=( "$item" )
+    fi
+  done
+  if [[ "${#numeric[@]}" -gt 0 ]]; then
+    IFS=$'\n' numeric=($(printf '%s\n' "${numeric[@]}" | sort -n))
+    unset IFS
+    printf '%s\n' "${numeric[@]}"
+  fi
+  if (( has_legacy )); then
+    echo "legacy"
+  fi
+}
+
 usage() {
   cat <<'EOF'
 Usage: ./scripts/dev/devctl.sh <command>
@@ -190,6 +304,8 @@ Notes:
       scripts/dev/run-worker.sh process
       scripts/dev/run-worker.sh asr
       scripts/dev/run-worker.sh sync
+      scripts/dev/run-worker.sh embedding
+      scripts/dev/run-worker.sh analysis
       scripts/dev/run-worker.sh ai
       scripts/dev/run-scheduler.sh
   - Reset uses:
@@ -303,6 +419,28 @@ start_download_workers() {
   done
 }
 
+start_scaled_workers() {
+  local role="$1"
+  local count
+  count="$(scaled_worker_count "$role")"
+  local legacy_pid=""
+  if [[ "$role" == "asr" ]]; then
+    legacy_pid="$(read_pid "$WORKER_ASR_PID_FILE")"
+  fi
+  local i
+  for ((i=1; i<=count; i++)); do
+    if [[ "$role" == "asr" ]] && (( i == 1 )) && is_running "$legacy_pid"; then
+      echo "[start] $(scaled_worker_name "$role" "$i"): legacy instance already running (pid=${legacy_pid})"
+      continue
+    fi
+    start_worker_role \
+      "$(scaled_worker_name "$role" "$i")" \
+      "$(scaled_worker_pid_file "$role" "$i")" \
+      "$(scaled_worker_log_file "$role" "$i")" \
+      "$role"
+  done
+}
+
 stop_one() {
   local name="$1"
   local pid_file="$2"
@@ -353,6 +491,21 @@ stop_download_workers() {
   done < <(download_worker_indices "$provider")
 }
 
+stop_scaled_workers() {
+  local role="$1"
+  local index
+  while IFS= read -r index; do
+    [[ -n "${index:-}" ]] || continue
+    if [[ "$role" == "asr" && "$index" == "legacy" ]]; then
+      stop_one "worker-asr" "$WORKER_ASR_PID_FILE"
+    else
+      stop_one \
+        "$(scaled_worker_name "$role" "$index")" \
+        "$(scaled_worker_pid_file "$role" "$index")"
+    fi
+  done < <(scaled_worker_indices "$role")
+}
+
 kill_strays() {
   # Kill any leftover raelyn processes not managed by pidfiles.
   # This commonly happens if the user started servers manually.
@@ -388,11 +541,10 @@ kill_strays() {
 }
 
 do_status() {
-  local api_pid audio_pid process_pid asr_pid sync_pid ai_pid sched_pid
+  local api_pid audio_pid process_pid sync_pid ai_pid sched_pid
   api_pid="$(read_pid "$API_PID_FILE")"
   audio_pid="$(read_pid "$WORKER_AUDIO_PID_FILE")"
   process_pid="$(read_pid "$WORKER_PROCESS_PID_FILE")"
-  asr_pid="$(read_pid "$WORKER_ASR_PID_FILE")"
   sync_pid="$(read_pid "$WORKER_SYNC_PID_FILE")"
   ai_pid="$(read_pid "$WORKER_AI_PID_FILE")"
   sched_pid="$(read_pid "$SCHED_PID_FILE")"
@@ -440,17 +592,41 @@ do_status() {
     echo "[status] worker-process: stopped"
   fi
 
-  if is_running "$asr_pid"; then
-    echo "[status] worker-asr: running pid=${asr_pid} log=${WORKER_ASR_LOG}"
-  else
-    echo "[status] worker-asr: stopped"
-  fi
-
   if is_running "$sync_pid"; then
     echo "[status] worker-sync: running pid=${sync_pid} log=${WORKER_SYNC_LOG}"
   else
     echo "[status] worker-sync: stopped"
   fi
+
+  local scaled_role scaled_index scaled_pid scaled_pid_file scaled_log_file scaled_count
+  for scaled_role in asr embedding analysis; do
+    scaled_count="$(scaled_worker_count "$scaled_role")"
+    echo "[status] worker-${scaled_role}: configured_concurrency=${scaled_count}"
+    while IFS= read -r scaled_index; do
+      [[ -n "${scaled_index:-}" ]] || continue
+      if [[ "$scaled_role" == "asr" && "$scaled_index" == "legacy" ]]; then
+        scaled_pid_file="$WORKER_ASR_PID_FILE"
+        scaled_log_file="$WORKER_ASR_LOG"
+      else
+        scaled_pid_file="$(scaled_worker_pid_file "$scaled_role" "$scaled_index")"
+        scaled_log_file="$(scaled_worker_log_file "$scaled_role" "$scaled_index")"
+      fi
+      scaled_pid="$(read_pid "$scaled_pid_file")"
+      if is_running "$scaled_pid"; then
+        if [[ "$scaled_role" == "asr" && "$scaled_index" == "legacy" ]]; then
+          echo "[status] worker-asr: running pid=${scaled_pid} log=${scaled_log_file}"
+        else
+          echo "[status] $(scaled_worker_name "$scaled_role" "$scaled_index"): running pid=${scaled_pid} log=${scaled_log_file}"
+        fi
+      else
+        if [[ "$scaled_role" == "asr" && "$scaled_index" == "legacy" ]]; then
+          echo "[status] worker-asr: stopped"
+        else
+          echo "[status] $(scaled_worker_name "$scaled_role" "$scaled_index"): stopped"
+        fi
+      fi
+    done < <(scaled_worker_indices "$scaled_role")
+  done
 
   if is_running "$ai_pid"; then
     echo "[status] worker-ai: running pid=${ai_pid} log=${WORKER_AI_LOG}"
@@ -482,8 +658,10 @@ case "$cmd" in
     start_download_workers "bilibili"
     start_worker_role "worker-audio" "$WORKER_AUDIO_PID_FILE" "$WORKER_AUDIO_LOG" "audio"
     start_worker_role "worker-process" "$WORKER_PROCESS_PID_FILE" "$WORKER_PROCESS_LOG" "process"
-    start_worker_role "worker-asr" "$WORKER_ASR_PID_FILE" "$WORKER_ASR_LOG" "asr"
     start_worker_role "worker-sync" "$WORKER_SYNC_PID_FILE" "$WORKER_SYNC_LOG" "sync"
+    start_scaled_workers "asr"
+    start_scaled_workers "embedding"
+    start_scaled_workers "analysis"
     start_worker_role "worker-ai" "$WORKER_AI_PID_FILE" "$WORKER_AI_LOG" "ai"
     start_one "scheduler" "$SCHED_PID_FILE" "$SCHED_LOG" bash scripts/dev/run-scheduler.sh
     do_status
@@ -491,8 +669,10 @@ case "$cmd" in
   stop)
     stop_one "scheduler" "$SCHED_PID_FILE"
     stop_one "worker-ai" "$WORKER_AI_PID_FILE"
+    stop_scaled_workers "analysis"
+    stop_scaled_workers "embedding"
+    stop_scaled_workers "asr"
     stop_one "worker-sync" "$WORKER_SYNC_PID_FILE"
-    stop_one "worker-asr" "$WORKER_ASR_PID_FILE"
     stop_one "worker-process" "$WORKER_PROCESS_PID_FILE"
     stop_one "worker-audio" "$WORKER_AUDIO_PID_FILE"
     stop_download_workers "bilibili"
@@ -528,7 +708,17 @@ case "$cmd" in
         fi
       done < <(download_worker_indices "$provider")
     done
-    log_files+=("$WORKER_AUDIO_LOG" "$WORKER_PROCESS_LOG" "$WORKER_ASR_LOG" "$WORKER_SYNC_LOG" "$WORKER_AI_LOG" "$SCHED_LOG")
+    for scaled_role in asr embedding analysis; do
+      while IFS= read -r index; do
+        [[ -n "${index:-}" ]] || continue
+        if [[ "$scaled_role" == "asr" && "$index" == "legacy" ]]; then
+          log_files+=("$WORKER_ASR_LOG")
+        else
+          log_files+=("$(scaled_worker_log_file "$scaled_role" "$index")")
+        fi
+      done < <(scaled_worker_indices "$scaled_role")
+    done
+    log_files+=("$WORKER_AUDIO_LOG" "$WORKER_PROCESS_LOG" "$WORKER_SYNC_LOG" "$WORKER_AI_LOG" "$SCHED_LOG")
     touch "${log_files[@]}"
     echo "[logs] tail -f ${log_files[*]}"
     tail -n 200 -f "${log_files[@]}"

@@ -18,13 +18,15 @@ from raelyn.jobs.heartbeat import touch_worker_heartbeat
 import raelyn.jobs.handlers  # noqa: F401  注册 handlers
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
-from raelyn.jobs.reschedule import JobReschedule
+from raelyn.jobs.reschedule import JobReschedule, JobTerminalFailure
 from raelyn.models import Job, Video
 from raelyn.services.job_cancellation import JobCancelRequested, finalize_canceled_job, job_cancel_requested
 from raelyn.services.log_timestamps import install_if_needed
+from raelyn.services.provider_cookies import cookie_config_name, cookie_provider_label, normalize_cookie_provider
+from raelyn.services.provider_pause import ProviderPauseRequestError, job_provider, set_provider_paused
 from raelyn.services.s3 import s3_ensure_bucket
 from raelyn.services.worker_roles import is_known_worker_role, normalize_worker_role, worker_role_types
-from raelyn.services.ytdlp import YTDLP_RETRY_WITHOUT_COOKIES_PARAM
+from raelyn.services.ytdlp import YTDLP_RETRY_WITHOUT_COOKIES_PARAM, YtdlpCookiesInvalidError
 from raelyn.timeutil import utcnow
 
 
@@ -169,6 +171,43 @@ def _merge_retry_into_existing_pending_job(
     return True
 
 
+def _finalize_terminal_failure(session, *, job: Job, reason: str, stack: str | None = None) -> None:
+    job.attempt += 1
+    job.status = "failed"
+    job.error_message = str(reason or "").strip() or "terminal job failure"
+    job.error_stack = stack
+    job.lease_expires_at = None
+    job.worker_id = None
+    job.finished_at = utcnow()
+    _mark_download_video_terminal_failure(session, job=job)
+    job_log(session, job, "failed; no retry", level="error", data={"attempt": job.attempt, "terminal": True})
+
+
+def _persist_provider_pause_after_rollback(session, *, job: Job, err: Exception) -> None:
+    if isinstance(err, YtdlpCookiesInvalidError):
+        provider = normalize_cookie_provider(getattr(err, "provider", None)) or normalize_cookie_provider(job_provider(session, job))
+        if not provider:
+            return
+        reason = getattr(err, "reason", "") or "ytdlp_cookies_invalid"
+        msg = str(err) or "cookies invalid"
+        pause_msg = (
+            f"{cookie_provider_label(provider)}任务已暂停：{msg}"
+            f"（请在 UI -> 设置 更新 {cookie_config_name(provider)}）"
+        )
+        pause = set_provider_paused(session, provider=provider, reason=str(reason), message=pause_msg)
+        job_log(session, job, pause.get("message") or pause_msg, level="error")
+        return
+
+    if isinstance(err, ProviderPauseRequestError):
+        provider = getattr(err, "provider", "") or ""
+        if not provider:
+            return
+        reason = getattr(err, "reason", "") or "provider_pause_requested"
+        msg = str(err) or f"{provider} paused"
+        pause = set_provider_paused(session, provider=provider, reason=str(reason), message=msg)
+        job_log(session, job, pause.get("message") or msg, level="error")
+
+
 class _HeartbeatThread(threading.Thread):
     def __init__(self, *, worker_id: str, interval_seconds: int, role: str) -> None:
         super().__init__(daemon=True)
@@ -257,6 +296,8 @@ def run_loop() -> None:
                     finalize_canceled_job(session, job, message="canceled before run", reason="cancel_requested")
                     continue
 
+                job_id = job.id
+                job_type = job.type
                 try:
                     job_log(session, job, "running")
                     result = handler(session, job)
@@ -290,6 +331,22 @@ def run_loop() -> None:
                     job_log(session, job, "succeeded")
                 except JobCancelRequested:
                     finalize_canceled_job(session, job, message="canceled while running", reason="cancel_requested")
+                except JobTerminalFailure as e:
+                    try:
+                        session.refresh(job)
+                    except Exception:
+                        pass
+                    if job.status == "canceled":
+                        job.finished_at = job.finished_at or utcnow()
+                        job.lease_expires_at = None
+                        job.worker_id = None
+                        job_log(session, job, "canceled", level="warn")
+                        continue
+                    if job_cancel_requested(job):
+                        finalize_canceled_job(session, job, message="canceled after terminal failure", reason="cancel_requested")
+                        continue
+
+                    _finalize_terminal_failure(session, job=job, reason=e.reason)
                 except JobReschedule as e:
                     # Best-effort: if an operator canceled the job while it was running, keep status=canceled.
                     try:
@@ -317,6 +374,25 @@ def run_loop() -> None:
                     job.finished_at = None
                     job_log(session, job, f"rescheduled: {e.reason}", level="warn", data={"delay_seconds": e.delay_seconds})
                 except Exception as e:
+                    error_stack = traceback.format_exc()
+                    try:
+                        session.rollback()
+                    except Exception:
+                        pass
+                    try:
+                        job = session.get(Job, job_id)
+                    except Exception:
+                        job = None
+                    if job is None:
+                        try:
+                            print(
+                                f"[worker] job failed id={job_id} type={job_type} "
+                                f"err={str(e)}; job row unavailable after rollback",
+                                flush=True,
+                            )
+                        except Exception:
+                            pass
+                        continue
                     # If canceled while running, keep status=canceled and avoid retries.
                     try:
                         session.refresh(job)
@@ -332,10 +408,12 @@ def run_loop() -> None:
                         finalize_canceled_job(session, job, message="canceled after handler error", reason="cancel_requested")
                         continue
 
+                    _persist_provider_pause_after_rollback(session, job=job, err=e)
+
                     job.attempt += 1
                     job.max_attempts = _effective_max_attempts(job.type, job.max_attempts)
                     job.error_message = str(e)
-                    job.error_stack = traceback.format_exc()
+                    job.error_stack = error_stack
                     job.lease_expires_at = None
                     job.worker_id = None
                     try:

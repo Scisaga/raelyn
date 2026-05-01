@@ -277,34 +277,6 @@ def _playlist_summary_payload(session: Session, playlist: Playlist, *, preview: 
     }
 
 
-def _pick_note_asset(session: Session, video_id: uuid.UUID) -> Asset | None:
-    return session.execute(
-        select(Asset)
-        .where(
-            Asset.video_id == video_id,
-            Asset.type == "note",
-            Asset.format == "md",
-            Asset.source.in_(["llm", "ollama"]),
-            Asset.variant == "summary",
-        )
-        .order_by(Asset.created_at.desc())
-    ).scalar_one_or_none()
-
-
-def _note_payload(session: Session, video_id: uuid.UUID, *, max_chars: int = 12_000) -> dict[str, Any]:
-    asset = _pick_note_asset(session, video_id)
-    if not asset:
-        return {"ok": False, "status": "not_ready", "asset_id": None, "text": ""}
-    text, truncated = read_text_asset(asset, max_chars=max_chars)
-    return {
-        "ok": True,
-        "status": "ready",
-        "asset_id": str(asset.id),
-        "text": text,
-        "truncated": truncated,
-    }
-
-
 def _build_transcript_chunk_payload(video_id: uuid.UUID, asset: Asset, *, chunk_index: int, chunk_size: int) -> dict[str, Any]:
     full_text, _ = read_text_asset(asset)
     base = {
@@ -1074,7 +1046,6 @@ def get_video_context(video_id: str | uuid.UUID) -> dict[str, Any]:
             raise LookupError("video not found")
         video, media = row
         transcript = _video_transcript_payload(session, video.id, chunk_index=0, chunk_size=DEFAULT_TRANSCRIPT_CHUNK_SIZE)
-        note = _note_payload(session, video.id)
         assets = session.execute(select(Asset).where(Asset.video_id == video.id).order_by(Asset.created_at.asc())).scalars().all()
         return serialize_for_mcp(
             {
@@ -1082,7 +1053,6 @@ def get_video_context(video_id: str | uuid.UUID) -> dict[str, Any]:
                 "media": _media_payload(session, media),
                 "assets": [_asset_payload(asset, media=media, video=video) for asset in assets],
                 "transcript": transcript,
-                "note": note,
             }
         )
 
@@ -1107,19 +1077,13 @@ def get_playlist_summary(
             limit=limit_value,
         )
         transcript_ready_count = 0
-        note_ready_count = 0
         for item in videos:
             video_uuid = _parse_uuid(item["id"], "video_id")
             transcript_asset = pick_transcript_asset(session, video_uuid)
-            note_asset = _pick_note_asset(session, video_uuid)
             transcript_status = "ready" if transcript_asset else "not_ready"
-            note_status = "ready" if note_asset else "not_ready"
             item["transcript_status"] = transcript_status
-            item["note_status"] = note_status
             if transcript_asset:
                 transcript_ready_count += 1
-            if note_asset:
-                note_ready_count += 1
             if include_transcript and transcript_asset:
                 item["transcript"] = _build_transcript_chunk_payload(video_uuid, transcript_asset, chunk_index=0, chunk_size=4_000)
         brief = build_brief_payload(
@@ -1141,7 +1105,6 @@ def get_playlist_summary(
                 "period_end": period_end_value,
                 "video_count": len(videos),
                 "transcript_ready_count": transcript_ready_count,
-                "note_ready_count": note_ready_count,
                 "include_transcript": include_transcript,
                 "videos": videos,
                 "brief": brief,

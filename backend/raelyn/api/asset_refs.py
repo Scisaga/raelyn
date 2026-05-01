@@ -23,18 +23,20 @@ def build_asset_ref(
     filename: str | None = None,
     response_content_disposition: str | None = None,
     expires_seconds: int = 3600,
+    include_presigned: bool = True,
 ) -> AssetRef | None:
     if not asset:
         return None
 
     presigned_url = None
     download_presigned_url = None
-    try:
-        presigned_url = s3_presign_get(asset.s3_bucket, asset.s3_key, expires_seconds=expires_seconds)
-    except Exception:
-        presigned_url = None
+    if include_presigned:
+        try:
+            presigned_url = s3_presign_get(asset.s3_bucket, asset.s3_key, expires_seconds=expires_seconds)
+        except Exception:
+            presigned_url = None
 
-    if response_content_disposition:
+    if include_presigned and response_content_disposition:
         try:
             download_presigned_url = s3_presign_get(
                 asset.s3_bucket,

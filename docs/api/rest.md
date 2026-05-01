@@ -61,6 +61,9 @@
 ### `GET /api/stats`
 
 - 返回概览页统计数据、最近媒体 / 视频 / 播放列表，以及 ASR / LLM 使用量。
+- 默认使用短 TTL 缓存，避免普通页面刷新反复扫描 `job` / `asset` 等大表。
+- query：`refresh=true` 可绕过缓存重新计算。
+- 资产容量统计会优先使用配置的 `S3_BUCKET`；若资产表中没有该 bucket 且只存在一个实际 bucket，则返回实际 bucket 的统计，并通过 `s3_configured_bucket_mismatch` 标记配置漂移。
 
 ## Media
 
@@ -75,11 +78,19 @@
 
 ### `GET /api/media`
 
-- query：`provider`、`q`、`limit`、`offset`
-- 返回媒体列表与本地视频数。
+- query：`provider`、`q`、`limit`、`offset`、`presign`
+- 返回媒体列表与本地视频数；视频数只按当前分页返回的媒体 ID 统计，避免列表接口扫描整张视频表。
+- `presign=false` 时，`avatar_asset` 只返回资产标识等基础字段，不生成 S3 预签名 URL；前端代理模式会通过 `/api/assets/{asset_id}/content` 读取头像。
 - 每条媒体额外包含：
   - `deleting`：是否存在活跃 `media.delete` 任务
   - `deletion_job_id`：当前删除任务 ID，便于前端恢复轮询状态
+  - `disabled_reason` / `disabled_message` / `disabled_at`：系统自动停用媒体时的原因说明；例如 YouTube 频道返回 404 时会标记为 `source_unavailable`
+
+### `GET /api/media/options`
+
+- query：`provider`、`q`、`limit`、`offset`
+- 返回播放列表创建 / 编辑、视频筛选等选择器需要的轻量媒体选项。
+- 不计算本地视频数、不生成头像资产引用，也不扫描活跃删除任务。
 
 ### `GET /api/media/export`
 
@@ -93,6 +104,7 @@
 
 ### `GET /api/media/{media_id}`
 
+- query：`presign`
 - 返回单个媒体详情，字段同媒体列表。
 
 ### `PATCH /api/media/{media_id}`
@@ -173,16 +185,6 @@
 - 重新投递转写 / 处理链路。
 - 若所属媒体正在删除中，返回 `409`。
 
-### `GET /api/videos/{video_id}/note`
-
-- query：`max_chars`
-- 返回视频级 Markdown 笔记文本；若尚未生成，返回 `ok=false`。
-
-### `POST /api/videos/{video_id}/note`
-
-- 若已配置 LLM，则投递 `video.generate_note`。
-- 若所属媒体正在删除中，返回 `409`。
-
 ### `GET /api/videos/{video_id}/assets`
 
 - query：`presign`、`download`、`localize_title`
@@ -219,6 +221,16 @@
   - `created_since` / `created_until`
   - `finished_since` / `finished_until`
 - 响应示例：`{ "counts": { "pending": 12, "running": 3 }, "total": 15 }`
+
+### `GET /api/jobs/type_counts`
+
+- query：
+  - `status` / `status_in`
+  - `type` / `type_in`
+  - `created_since` / `created_until`
+  - `finished_since` / `finished_until`
+- 按任务类型聚合数量与占比；Jobs 活动页使用 `status_in=pending,running` 展示待处理 / 运行中任务构成。
+- 响应示例：`{ "counts": { "pending": 12, "running": 3 }, "total": 15, "items": [{ "type": "video.asr_transcribe", "count": 10, "counts": { "pending": 9, "running": 1 }, "percentage": 66.67 }] }`
 
 ### `GET /api/jobs/series`
 
@@ -283,6 +295,7 @@
 ### `GET /api/playlists/{playlist_id}/detail`
 
 - 返回完整详情，包括全部媒体列表和 `brief_prompt`。
+- `media_preview` 用于首屏头像预览；`media` 保留完整媒体列表的基础信息，不要求为每个媒体都生成头像预签名 URL。
 
 ### `PATCH /api/playlists/{playlist_id}`
 
@@ -337,6 +350,50 @@
 
 - query：`granularity`、`date`、`limit`
 - 返回某个周期内的可播放视频列表；仅包含已发布时间且已落视频资产的视频。
+
+### `GET /api/playlists/{playlist_id}/analysis/summary`
+
+- 返回播放列表分析覆盖率、快照状态与候选数量。
+- 若已有 ready 快照，覆盖率计数直接来自该 ready run 的快照统计，避免首屏为了展示 summary 重新扫描大播放列表的视频与 embedding。
+- 若存在 ready 快照，返回 `signal_start_date` / `signal_end_date`，表示 day 级分析信号的全量日期边界，供 UI 初始化时间轴与默认查询范围。
+- 若当前播放列表存在 `pending/running` 的 `playlist.backfill_embeddings`，返回 `backfill_job`，包含任务 ID、状态、扫描/写入/跳过数量与取消请求时间。
+- 该接口只读取状态并展示 `analysis_dirty`，不会自动创建分析任务。
+
+### `POST /api/playlists/{playlist_id}/analysis/backfill_embeddings`
+
+- 手动创建 `playlist.backfill_embeddings` 任务。
+- 同一播放列表已有 `pending/running` 的历史 embedding 补算时，不创建新任务；返回现有任务的 `job_id`、`created=false` 与 `backfill_job`。需要等待现有任务结束，或通过任务取消接口停止现有任务后再创建新任务。
+
+### `POST /api/playlists/{playlist_id}/analysis/rebuild`
+
+- 手动创建 `playlist.build_analysis_snapshot` 任务；只有显式调用该接口才会投递分析重建。
+- 分析 worker 会分批流式读取 ready embedding；可用内存低于 `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES` 或进程 RSS 高于 `ANALYSIS_MAX_RSS_BYTES` 时直接失败并记录原因。
+- 新快照成功后会自动清理同播放列表旧的非运行中 analysis run，只保留当前可读取的 `last_ready_run` 和仍在 `pending/running` 的 run。
+
+### `GET /api/playlists/{playlist_id}/analysis/signals`
+
+- query：可选 `granularity=day|week|month`、`since=YYYY-MM-DD`、`until=YYYY-MM-DD`。
+- 返回当前 ready 快照的连续多尺度信号面板。
+- 关键字段：`granularity`、`period_date`、`rolling_window`、`video_count`、`ready_embedding_count`、`drift_score`、`drift_rolling_mean/std/z`、`dispersion_mean/std/p25/p75`、`projection_id`、`projection_method`、`projection_x/y/z`、`projection_explained_variance_ratio`、`linked_event_id`。
+- `projection_*` 仅用于解释与 UI 可视化，不作为事件分数来源。
+
+### `GET /api/playlists/{playlist_id}/analysis/events`
+
+- 返回当前 ready 快照的事件序列，等价于候选事件的新主口径。
+- 关键字段：`event_id`、`event_date`、`peak_date`、`event_start`、`event_end`、`effective_trade_date`、`event_type`、`status`、`score`、`confidence`、`uncertainty`、`summary`、`top_terms`、`evidence_video_ids`、`available_at`。
+- 新口径事件会额外返回 `breakpoint_date`、`detection_method`、`detection_granularity`、`boundary_score`、`boundary_z`、`before_start`、`before_end`、`after_start`、`after_end`、`supporting_granularities`；旧 ready run 没有 detection 元数据时这些字段为 `null` 或空数组。
+- `score` 使用 `boundary_z`，`drift_score` 使用 `boundary_score`；`drift_rolling_z` 仅作为兼容字段保留，不再作为主事件分数解释。
+- 不包含 `train_start / train_end / valid_start / valid_end / test_start / test_end`；训练窗口、验证窗口与回测 horizon 由 quant-lab 按实验目标自行决定。
+
+### `GET /api/playlists/{playlist_id}/analysis/evidence`
+
+- query：可选 `event_id`。
+- 返回事件证据视频列表，包含 `event_id`、`video_id`、`media_id`、标题、媒体名、发布时间、到 period centroid 的距离与 shift score。
+
+### `GET /api/playlists/{playlist_id}/analysis/export/explicit-event-windows`
+
+- legacy 接口，返回 `{ "legacy": true, "window_mode": "explicit_event", "explicit_event_windows": [...] }`。
+- 仅用于兼容旧 quant-lab train planner 请求；新的主接口应使用 `analysis/events` 与 `analysis/signals`。
 
 ### `POST /api/briefs/generate`
 

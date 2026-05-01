@@ -228,9 +228,11 @@ export function createJobsViewMethods() {
       this.jobsWsError = "";
 
       ws.onopen = () => {
+        if (this.jobsWs !== ws) return;
         this.jobsWsConnected = true;
       };
       ws.onclose = (ev) => {
+        if (this.jobsWs !== ws) return;
         this.jobsWsConnected = false;
         this.jobsWs = null;
         if (Number(ev && ev.code) === 4401) {
@@ -242,10 +244,12 @@ export function createJobsViewMethods() {
         }
       };
       ws.onerror = () => {
+        if (this.jobsWs !== ws) return;
         this.jobsWsError = "WebSocket error";
       };
       ws.onmessage = (ev) => {
         try {
+          if (this.jobsWs !== ws) return;
           const msg = JSON.parse(ev.data || "{}");
           if (msg.type !== "jobs") return;
           const jobs = Array.isArray(msg.jobs) ? msg.jobs : [];
@@ -267,6 +271,8 @@ export function createJobsViewMethods() {
           this.ensureJobContextForList(filtered);
           this._cleanupJobsOptimisticActive();
           this.refreshJobsActiveCount();
+          this.refreshJobsActiveTypeStats();
+          this.refreshWorkers();
         } catch {
           // ignore
         }
@@ -280,12 +286,15 @@ export function createJobsViewMethods() {
         if (!force && this._jobsActiveLastFetchAt && now - this._jobsActiveLastFetchAt < 2500) return;
         this._jobsActiveLastFetchAt = now;
 
+        const typeFilter = String(this.jobsTypeFilter || "").trim();
         const qs = new URLSearchParams();
         qs.set("status_in", "pending,running");
         qs.set("limit", "200");
         qs.set("offset", "0");
-        if (this.jobsTypeFilter) qs.set("type", this.jobsTypeFilter);
+        if (typeFilter) qs.set("type", typeFilter);
         const items = await this.api(`/jobs?${qs.toString()}`);
+        if (this.activeView !== "jobs" || this.jobsTab !== "active") return;
+        if (String(this.jobsTypeFilter || "").trim() !== typeFilter) return;
         const jobs = Array.isArray(items) ? items : [];
 
         const prevServer = Number(this._jobsActiveServerCount || 0);
@@ -305,6 +314,7 @@ export function createJobsViewMethods() {
         this.jobListActive = filtered;
         this.ensureJobContextForList(filtered);
         this._cleanupJobsOptimisticActive();
+        this.refreshJobsActiveTypeStats();
       } catch {
         // ignore
       }
@@ -327,11 +337,75 @@ export function createJobsViewMethods() {
         qs.set("status_in", "pending,running");
         qs.set("type", typeFilter);
         const payload = await this.api(`/jobs/counts?${qs.toString()}`);
+        if (this.activeView !== "jobs" || this.jobsTab !== "active") return;
+        if (String(this.jobsTypeFilter || "").trim() !== typeFilter) return;
         const total = payload && typeof payload.total === "number" ? payload.total : null;
         this.jobsActiveFilteredTotal = total != null && Number.isFinite(Number(total)) ? Number(total) : 0;
       } catch {
         // ignore
       }
+    },
+
+    async refreshJobsActiveTypeStats({ force = false } = {}) {
+      try {
+        if (this.activeView !== "jobs" || this.jobsTab !== "active") return;
+        const now = Date.now();
+        if (!force && this._jobsActiveTypeStatsLastFetchAt && now - this._jobsActiveTypeStatsLastFetchAt < 2500) return;
+        this._jobsActiveTypeStatsLastFetchAt = now;
+
+        const typeFilter = String(this.jobsTypeFilter || "").trim();
+        const qs = new URLSearchParams();
+        qs.set("status_in", "pending,running");
+        if (typeFilter) qs.set("type", typeFilter);
+
+        const hasStats = Array.isArray(this.jobsActiveTypeStats) && this.jobsActiveTypeStats.length > 0;
+        this.jobsActiveTypeStatsLoading = force || !hasStats;
+        this.jobsActiveTypeStatsError = "";
+        const payload = await this.api(`/jobs/type_counts?${qs.toString()}`);
+        if (this.activeView !== "jobs" || this.jobsTab !== "active") return;
+        if (String(this.jobsTypeFilter || "").trim() !== typeFilter) return;
+
+        const items = payload && Array.isArray(payload.items) ? payload.items : [];
+        this.jobsActiveTypeStats = items
+          .map((item) => {
+            const count = Number(item && item.count);
+            const percentage = Number(item && item.percentage);
+            return {
+              type: item && item.type ? String(item.type) : "",
+              count: Number.isFinite(count) && count > 0 ? count : 0,
+              counts: item && item.counts && typeof item.counts === "object" ? item.counts : {},
+              percentage: Number.isFinite(percentage) && percentage >= 0 ? percentage : 0,
+            };
+          })
+          .filter((item) => item.type && item.count > 0);
+        const total = Number(payload && payload.total);
+        this.jobsActiveTypeStatsTotal = Number.isFinite(total) && total >= 0 ? total : 0;
+      } catch (e) {
+        this.jobsActiveTypeStatsError = e && e.message ? e.message : String(e);
+      } finally {
+        this.jobsActiveTypeStatsLoading = false;
+      }
+    },
+
+    jobsActiveTypeStatsPercentLabel(item) {
+      const value = Number(item && item.percentage);
+      if (!Number.isFinite(value) || value <= 0) return "0%";
+      return `${Math.round(value * 100) / 100}%`;
+    },
+
+    jobsActiveTypeStatsTitle(item) {
+      if (!item || typeof item !== "object") return "";
+      const counts = item.counts && typeof item.counts === "object" ? item.counts : {};
+      const pending = Number(counts.pending || 0);
+      const running = Number(counts.running || 0);
+      const parts = [
+        `type=${String(item.type || "")}`,
+        `total=${Number(item.count || 0)}`,
+        `pending=${Number.isFinite(pending) ? pending : 0}`,
+        `running=${Number.isFinite(running) ? running : 0}`,
+        `占比=${this.jobsActiveTypeStatsPercentLabel(item)}`,
+      ];
+      return parts.join("  ");
     },
 
     jobProgressPct(job) {
@@ -377,12 +451,14 @@ export function createJobsViewMethods() {
         "media.delete",
         "media.sync_profile",
         "media.sync_videos",
+        "playlist.backfill_embeddings",
+        "playlist.build_analysis_snapshot",
         "video.asr_transcribe",
         "video.download",
         "video.download.bilibili",
         "video.download.youtube",
+        "video.embed_transcript",
         "video.extract_audio",
-        "video.generate_note",
         "video.normalize_subtitle",
         "video.polish_transcript",
       ];
@@ -393,11 +469,14 @@ export function createJobsViewMethods() {
       for (const job of Array.isArray(this.jobListDone) ? this.jobListDone : []) {
         if (job && job.type) set.add(String(job.type));
       }
+      for (const item of Array.isArray(this.jobsActiveTypeStats) ? this.jobsActiveTypeStats : []) {
+        if (item && item.type) set.add(String(item.type));
+      }
       return Array.from(set).filter(Boolean).sort();
     },
 
     _workersKnownRoleOrder() {
-      return ["download_youtube", "download_bilibili", "audio", "process", "asr", "sync", "ai", "all"];
+      return ["download_youtube", "download_bilibili", "audio", "process", "asr", "sync", "embedding", "analysis", "ai", "all"];
     },
 
     workerRoleLabel(role) {
@@ -409,6 +488,8 @@ export function createJobsViewMethods() {
         process: "处理",
         asr: "ASR",
         sync: "同步",
+        embedding: "Embedding",
+        analysis: "分析",
         ai: "AI",
         all: "ALL",
       };
@@ -492,10 +573,11 @@ export function createJobsViewMethods() {
       try {
         if (this.activeView !== "jobs" || this.jobsTab !== "active") return;
         const now = Date.now();
-        if (!force && this._workersLastFetchAt && now - this._workersLastFetchAt < 3000) return;
+        if (!force && this._workersLastFetchAt && now - this._workersLastFetchAt < 2500) return;
         this._workersLastFetchAt = now;
 
-        this.workersLoading = true;
+        const hasRoles = Array.isArray(this.workersRoles) && this.workersRoles.length > 0;
+        this.workersLoading = force || !hasRoles;
         if (force) this.workersError = "";
 
         const payload = await this.api(`/workers`);
@@ -544,6 +626,7 @@ export function createJobsViewMethods() {
           this.refreshWorkers({ force: true }),
           this._fetchJobsActiveSnapshot({ force: true }),
           this.refreshJobsActiveCount({ force: true }),
+          this.refreshJobsActiveTypeStats({ force: true }),
         ]);
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
@@ -565,6 +648,7 @@ export function createJobsViewMethods() {
       this._jobsActiveServerCount = 0;
       this._jobsActiveLastFetchAt = 0;
       this._jobsActiveCountLastFetchAt = 0;
+      this._jobsActiveTypeStatsLastFetchAt = 0;
       this._syncUrl({ push: false });
       this.refreshJobs();
       this.refreshJobsSeries({ force: true });
@@ -840,6 +924,14 @@ export function createJobsViewMethods() {
       if (!this._ensureJobsDoneChart()) {
         if (this.activeView === "jobs" && this.jobsTab !== "active") {
           clearTimeout(this._jobsDoneChartRetryTimer);
+          if (!window.LightweightCharts && typeof this.ensureLightweightCharts === "function") {
+            this.ensureLightweightCharts()
+              .then(() => this._updateJobsDoneChart())
+              .catch((e) => {
+                this.jobsError = e && e.message ? e.message : String(e);
+              });
+            return;
+          }
           this._jobsDoneChartRetryTimer = setTimeout(() => this._updateJobsDoneChart(), 80);
         }
         return;
@@ -1141,6 +1233,7 @@ export function createJobsViewMethods() {
         this._connectJobsWs();
         this._fetchJobsActiveSnapshot();
         this.refreshJobsActiveCount();
+        this.refreshJobsActiveTypeStats();
         this.refreshWorkers();
 
         if (this.jobsTab === "active") {

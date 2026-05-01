@@ -152,7 +152,6 @@ MCP transcript 输出字段固定包含：
 - `media`
 - `assets`
 - transcript 首块
-- note 摘要状态
 
 适合“这个视频是否已经可分析”“先拿上下文再决定是否继续深入读取”。
 
@@ -163,7 +162,7 @@ MCP transcript 输出字段固定包含：
 - 播放列表概要
 - 周期边界
 - 周期内视频列表
-- 每个视频的 transcript / note 就绪状态
+- 每个视频的 transcript 就绪状态
 - 可选 transcript 首块
 - 对应 brief 状态
 

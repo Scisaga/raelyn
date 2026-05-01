@@ -49,8 +49,10 @@ class _FakeRowsResult:
 class _FakeCountsSession:
     def __init__(self, rows) -> None:
         self.rows = list(rows)
+        self.statements = []
 
     def execute(self, _stmt):
+        self.statements.append(_stmt)
         return _FakeRowsResult(self.rows)
 
 
@@ -178,6 +180,62 @@ class JobsApiTests(unittest.TestCase):
             payload = jobs_api.job_counts(status_in="pending,running", type="video.download.youtube")
 
         self.assertEqual(payload.model_dump(), {"counts": {"pending": 2, "running": 3}, "total": 5})
+
+    def test_job_type_counts_returns_type_items_with_percentages(self) -> None:
+        session = _FakeCountsSession(
+            [
+                ("video.asr_transcribe", "pending", 20),
+                ("video.asr_transcribe", "running", 1),
+                ("brief.generate_period", "pending", 9),
+            ]
+        )
+
+        with patch("raelyn.api.jobs.session_scope", lambda: _fake_session_scope(session)):
+            payload = jobs_api.job_type_counts(status_in="pending,running")
+
+        self.assertEqual(
+            payload.model_dump(),
+            {
+                "counts": {"pending": 29, "running": 1},
+                "items": [
+                    {
+                        "type": "video.asr_transcribe",
+                        "count": 21,
+                        "counts": {"pending": 20, "running": 1},
+                        "percentage": 70.0,
+                    },
+                    {
+                        "type": "brief.generate_period",
+                        "count": 9,
+                        "counts": {"pending": 9, "running": 0},
+                        "percentage": 30.0,
+                    },
+                ],
+                "total": 30,
+            },
+        )
+
+    def test_job_type_counts_applies_type_filters(self) -> None:
+        session = _FakeCountsSession([("video.asr_transcribe", "pending", 5)])
+
+        with patch("raelyn.api.jobs.session_scope", lambda: _fake_session_scope(session)):
+            payload = jobs_api.job_type_counts(
+                status_in="pending,running",
+                type="video.asr_transcribe",
+                type_in="brief.generate_period",
+            )
+
+        self.assertEqual(payload.total, 5)
+        sql = str(session.statements[0])
+        self.assertIn("job.type IN", sql)
+
+    def test_job_type_counts_returns_empty_result(self) -> None:
+        session = _FakeCountsSession([])
+
+        with patch("raelyn.api.jobs.session_scope", lambda: _fake_session_scope(session)):
+            payload = jobs_api.job_type_counts(status_in="pending,running")
+
+        self.assertEqual(payload.model_dump(), {"counts": {"pending": 0, "running": 0}, "items": [], "total": 0})
 
 
 if __name__ == "__main__":

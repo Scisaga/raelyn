@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import re
 from datetime import date
+from threading import Lock
+from time import monotonic
 from typing import Any
 
 from fastapi import APIRouter
@@ -21,6 +24,10 @@ from raelyn.services.s3 import s3_get_bytes
 
 
 router = APIRouter(tags=["stats"])
+
+_STATS_CACHE_LOCK = Lock()
+_STATS_CACHE_EXPIRES_AT = 0.0
+_STATS_CACHE_PAYLOAD: dict[str, Any] | None = None
 
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _MD_IMG_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
@@ -92,8 +99,52 @@ def _extract_llm_usage(result: Any) -> dict[str, int]:
     return out
 
 
-@router.get("/stats")
-def stats() -> dict:
+def _stats_cache_ttl_seconds() -> int:
+    try:
+        return max(0, int(settings.stats_cache_ttl_seconds))
+    except Exception:
+        return 60
+
+
+def _cached_stats_payload() -> dict[str, Any] | None:
+    ttl = _stats_cache_ttl_seconds()
+    if ttl <= 0:
+        return None
+    now = monotonic()
+    with _STATS_CACHE_LOCK:
+        if _STATS_CACHE_PAYLOAD is not None and _STATS_CACHE_EXPIRES_AT > now:
+            return deepcopy(_STATS_CACHE_PAYLOAD)
+    return None
+
+
+def _store_stats_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    ttl = _stats_cache_ttl_seconds()
+    if ttl <= 0:
+        return payload
+    with _STATS_CACHE_LOCK:
+        global _STATS_CACHE_EXPIRES_AT, _STATS_CACHE_PAYLOAD
+        _STATS_CACHE_PAYLOAD = deepcopy(payload)
+        _STATS_CACHE_EXPIRES_AT = monotonic() + ttl
+    return payload
+
+
+def _s3_tracked_size(session) -> tuple[int | None, str | None, str | None]:
+    configured_bucket = (settings.s3_bucket or "").strip() or None
+    rows = session.execute(
+        select(Asset.s3_bucket, func.sum(func.coalesce(Asset.size_bytes, 0))).group_by(Asset.s3_bucket)
+    ).all()
+    by_bucket: dict[str, int] = {str(bucket or ""): int(total or 0) for bucket, total in rows if str(bucket or "").strip()}
+    if not by_bucket:
+        return (0 if configured_bucket else None), configured_bucket, None
+    if configured_bucket and configured_bucket in by_bucket:
+        return by_bucket[configured_bucket], configured_bucket, None
+    if len(by_bucket) == 1:
+        actual_bucket = next(iter(by_bucket))
+        return by_bucket[actual_bucket], actual_bucket, configured_bucket
+    return sum(by_bucket.values()), None, configured_bucket
+
+
+def _build_stats() -> dict:
     with session_scope() as session:
         media_count = session.execute(select(func.count()).select_from(Media)).scalar_one()
         video_count = session.execute(select(func.count()).select_from(Video)).scalar_one()
@@ -149,13 +200,7 @@ def stats() -> dict:
         ]
 
         # S3 size: "tracked" by the Asset table (fast, no S3 listing).
-        bucket = (settings.s3_bucket or "").strip()
-        s3_tracked_size_bytes = None
-        if bucket:
-            s3_tracked_size_bytes = session.execute(
-                select(func.sum(func.coalesce(Asset.size_bytes, 0))).where(Asset.s3_bucket == bucket)
-            ).scalar_one()
-            s3_tracked_size_bytes = int(s3_tracked_size_bytes or 0)
+        s3_tracked_size_bytes, s3_tracked_bucket, s3_configured_bucket_mismatch = _s3_tracked_size(session)
 
         # Service usage counts (best-effort, derived from job history).
         done_statuses = ["succeeded", "failed"]
@@ -168,7 +213,7 @@ def stats() -> dict:
         llm_total_tokens = 0
         llm_rows = session.execute(
             select(Job.type, Job.result).where(
-                Job.type.in_(["video.polish_transcript", "video.generate_note", "brief.generate_period", "brief.generate_daily"]),
+                Job.type.in_(["video.polish_transcript", "brief.generate_period", "brief.generate_daily"]),
                 Job.status.in_(done_statuses),
             )
         ).all()
@@ -180,7 +225,7 @@ def stats() -> dict:
             llm_total_tokens += int(usage.get("total_tokens", 0) or 0)
 
             # Backward compatibility for historical jobs created before usage was recorded.
-            if usage["call_count"] <= 0 and job_type in {"video.generate_note", "brief.generate_period", "brief.generate_daily"}:
+            if usage["call_count"] <= 0 and job_type in {"brief.generate_period", "brief.generate_daily"}:
                 llm_calls += 1
 
         # Top playlists by "latest video timestamp" (coalesce published_at -> created_at), for the overview page.
@@ -318,9 +363,20 @@ def stats() -> dict:
             "recent_videos": recent_videos,
             "recent_playlists": playlists,
             "s3_tracked_size_bytes": s3_tracked_size_bytes,
+            "s3_tracked_bucket": s3_tracked_bucket,
+            "s3_configured_bucket_mismatch": s3_configured_bucket_mismatch,
             "asr_calls": int(asr_calls or 0),
             "llm_calls": int(llm_calls or 0),
             "llm_input_tokens": int(llm_input_tokens or 0),
             "llm_output_tokens": int(llm_output_tokens or 0),
             "llm_total_tokens": int(llm_total_tokens or 0),
         }
+
+
+@router.get("/stats")
+def stats(refresh: bool = False) -> dict:
+    if not refresh:
+        cached = _cached_stats_payload()
+        if cached is not None:
+            return cached
+    return _store_stats_payload(_build_stats())

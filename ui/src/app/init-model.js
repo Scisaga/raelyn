@@ -62,22 +62,36 @@ export function createAppInitMethods() {
       } catch {
         // ignore
       }
-      try {
-        if (!this._workersPollId) this._workersPollId = setInterval(() => this.refreshWorkers(), 5000);
-      } catch {
-        // ignore
+    },
+
+    async loadMediaIndex({ lightweight = false } = {}) {
+      const params = new URLSearchParams({ limit: "500", offset: "0" });
+      if (!lightweight && (!this.assetDelivery || this.assetDelivery.mode !== "direct")) {
+        params.set("presign", "false");
       }
+      const path = lightweight ? `/media/options?${params.toString()}` : `/media?${params.toString()}`;
+      this.mediaIndex = await this.api(path);
+      if (!lightweight && typeof this._syncMediaDeleteTrackingFromList === "function") {
+        this._syncMediaDeleteTrackingFromList(this.mediaIndex);
+      }
+      return this.mediaIndex;
     },
 
     async _refreshProtectedData({ statsReady = false } = {}) {
-      this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
-      if (typeof this._syncMediaDeleteTrackingFromList === "function") this._syncMediaDeleteTrackingFromList(this.mediaIndex);
-      if (this.activeView !== "overview") {
-        await this.refreshActive();
+      if (this.activeView === "overview") {
         if (!statsReady) await this.loadStats();
         return;
       }
-      if (!statsReady) await this.loadStats();
+      if (this.activeView === "media") {
+        await this.refreshActive();
+        if (!statsReady) void this.loadStats({ silent: true });
+        return;
+      }
+      await this.loadMediaIndex({ lightweight: ["playlist", "playlists", "videos"].includes(this.activeView) });
+      await this.refreshActive();
+      if (!statsReady) {
+        void this.loadStats({ silent: true });
+      }
     },
 
     async _prepareOverviewStartupGate() {

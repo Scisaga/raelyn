@@ -20,6 +20,24 @@ def is_ffmpeg_segfault(msg: str) -> bool:
     )
 
 
+def is_provider_media_unavailable_error(msg: str, *, provider: str | None = None) -> bool:
+    p = str(provider or "").strip().lower()
+    m = _normalize_msg(msg)
+    if not m:
+        return False
+    if p and p != "youtube":
+        return False
+    return (
+        "youtube:tab" in m
+        and "http error 404" in m
+        and (
+            "requested entity was not found" in m
+            or "unable to download api page" in m
+            or "unable to download webpage" in m
+        )
+    )
+
+
 def parse_upcoming_live_delay_seconds(msg: str) -> int | None:
     """
     Parse "upcoming livestream/premiere" hints from yt-dlp error strings.

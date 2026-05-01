@@ -478,7 +478,7 @@ export function createSettingsViewMethods({ ytdlpFormatPreset1080, ytdlpFormatPr
         const deleted = Number((payload && payload.deleted) || 0);
         await this.loadStaleVideosCleanup({ force: true });
         await this.loadMedia();
-        this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
+        await this.loadMediaIndex({ lightweight: true });
         await this.loadStats();
         const message = deleted > 0 ? `已清理 ${deleted} 条遗留视频记录` : "没有可清理的遗留视频记录";
         this.globalStatus = message;

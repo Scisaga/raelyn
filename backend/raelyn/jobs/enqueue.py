@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from raelyn.config import settings
 from raelyn.models import Job, JobEvent
 from raelyn.timeutil import utcnow
 
@@ -49,6 +50,16 @@ def _brief_period_start(d: date, granularity: str) -> date:
 
 
 def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+    if type_ in {"media.sync_profile", "media.sync_videos"}:
+        if not isinstance(params, dict):
+            return None, params
+        params2 = dict(params)
+        try:
+            media_id = uuid.UUID(str(params2.get("media_id")))
+        except Exception:
+            return None, params2
+        return f"{type_}:{media_id}", params2
+
     if type_ == "media.delete":
         if not isinstance(params, dict):
             return None, params
@@ -59,6 +70,60 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
         except Exception:
             return None, params2
         return f"media.delete:{media_id}", params2
+
+    if type_ == "video.embed_transcript":
+        if not isinstance(params, dict):
+            return None, params
+        params2 = dict(params)
+        try:
+            video_id = uuid.UUID(str(params2.get("video_id")))
+        except Exception:
+            return None, params2
+        text_checksum = str(params2.get("text_checksum") or "").strip()
+        if not text_checksum:
+            return None, params2
+        model = str(settings.embedding_model or "").strip() or "Qwen/Qwen3-Embedding-8B"
+        dim = max(1, int(settings.embedding_dim or 1024))
+        variant = str(settings.embedding_transcript_variant or "plain").strip().lower() or "plain"
+        return f"video_embedding:{video_id}:{variant}:{model}:{dim}:{text_checksum}", params2
+
+    if type_ == "playlist.build_analysis_snapshot":
+        if not isinstance(params, dict):
+            return None, params
+        params2 = dict(params)
+        try:
+            playlist_id = uuid.UUID(str(params2.get("playlist_id")))
+        except Exception:
+            return None, params2
+        model = str(settings.embedding_model or "").strip() or "Qwen/Qwen3-Embedding-8B"
+        dim = max(1, int(settings.embedding_dim or 1024))
+        variant = str(settings.embedding_transcript_variant or "plain").strip().lower() or "plain"
+        return f"playlist_analysis:{playlist_id}:day:{variant}:{model}:{dim}", params2
+
+    if type_ == "playlist.backfill_embeddings":
+        if not isinstance(params, dict):
+            return None, params
+        params2 = dict(params)
+        try:
+            playlist_id = uuid.UUID(str(params2.get("playlist_id")))
+        except Exception:
+            return None, params2
+        force = bool(params2.get("force", False))
+        try:
+            batch_size = int(params2.get("batch_size") or settings.embedding_batch_size or 16)
+        except Exception:
+            batch_size = 16
+        try:
+            batch_max_size = int(settings.embedding_batch_max_size or 64)
+        except Exception:
+            batch_max_size = 64
+        params2["force"] = force
+        params2["batch_size"] = max(1, min(batch_size, max(1, batch_max_size)))
+        model = str(settings.embedding_model or "").strip() or "Qwen/Qwen3-Embedding-8B"
+        dim = max(1, int(settings.embedding_dim or 1024))
+        variant = str(settings.embedding_transcript_variant or "plain").strip().lower() or "plain"
+        mode = "force" if force else "missing"
+        return f"playlist_embedding_backfill:{playlist_id}:{variant}:{model}:{dim}:{mode}", params2
 
     if type_ not in {"brief.generate_period", "brief.generate_daily"}:
         return None, params

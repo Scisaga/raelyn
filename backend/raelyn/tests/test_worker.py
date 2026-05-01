@@ -12,9 +12,9 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn.jobs import claim
-from raelyn.models import Job, Video
+from raelyn.models import AppConfig, Job, Media, Video
 from raelyn import worker
-from raelyn.services.ytdlp import YTDLP_RETRY_WITHOUT_COOKIES_PARAM
+from raelyn.services.ytdlp import YTDLP_RETRY_WITHOUT_COOKIES_PARAM, YtdlpCookiesInvalidError
 
 
 def _scalar_one_or_none(value):
@@ -106,6 +106,33 @@ class WorkerRetryMergeTests(unittest.TestCase):
         self.assertFalse(merged)
         self.assertEqual(current_job.status, "running")
         self.assertEqual(job_log.call_count, 0)
+
+    def test_finalize_terminal_failure_does_not_schedule_retry(self) -> None:
+        job = Job(
+            id=uuid.uuid4(),
+            type="playlist.build_analysis_snapshot",
+            status="running",
+            attempt=0,
+            max_attempts=5,
+            worker_id="worker-1",
+            lease_expires_at=datetime(2026, 3, 20, 0, 22, tzinfo=timezone.utc),
+            progress_current=1,
+            progress_total=2,
+        )
+        now = datetime(2026, 3, 20, 0, 23, tzinfo=timezone.utc)
+        session = Mock()
+
+        with patch("raelyn.worker.utcnow", return_value=now):
+            with patch("raelyn.worker.job_log") as job_log:
+                worker._finalize_terminal_failure(session, job=job, reason="analysis aborted: available memory too low")
+
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.attempt, 1)
+        self.assertEqual(job.error_message, "analysis aborted: available memory too low")
+        self.assertIsNone(job.worker_id)
+        self.assertIsNone(job.lease_expires_at)
+        self.assertEqual(job.finished_at, now)
+        job_log.assert_called_once()
 
 
 class WorkerRecoveryMergeTests(unittest.TestCase):
@@ -270,6 +297,47 @@ class WorkerDownloadFailureStateTests(unittest.TestCase):
         worker._update_download_retry_params(job)
 
         self.assertNotIn(YTDLP_RETRY_WITHOUT_COOKIES_PARAM, job.params)
+
+    def test_persist_youtube_cookie_pause_after_rollback(self) -> None:
+        media_id = uuid.uuid4()
+        media = Media(
+            id=media_id,
+            provider="youtube",
+            provider_media_id="channel-1",
+            url="https://www.youtube.com/@channel-1/videos",
+        )
+        job = Job(
+            id=uuid.uuid4(),
+            type="media.sync_videos",
+            params={"media_id": str(media_id)},
+        )
+        config_item = AppConfig(key="provider_pause", value={})
+        session = Mock()
+
+        def _get(model, key):
+            if model is Media and key == media_id:
+                return media
+            if model is AppConfig and key == "provider_pause":
+                return config_item
+            return None
+
+        session.get.side_effect = _get
+
+        worker._persist_provider_pause_after_rollback(
+            session,
+            job=job,
+            err=YtdlpCookiesInvalidError(
+                "ytdlp_cookies_expired",
+                "YTDLP_COOKIES_YOUTUBE 已失效：YouTube 登录态 cookies 过期。请在 UI -> 设置 更新 YouTube cookies.txt。",
+                provider="youtube",
+            ),
+        )
+
+        pause = config_item.value["youtube"]
+        self.assertTrue(pause["paused"])
+        self.assertEqual(pause["reason"], "ytdlp_cookies_expired")
+        self.assertIn("YTDLP_COOKIES_YOUTUBE 已失效", pause["message"])
+        self.assertIn("YTDLP_COOKIES_YOUTUBE", pause["message"])
 
 
 if __name__ == "__main__":

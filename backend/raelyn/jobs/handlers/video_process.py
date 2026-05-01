@@ -6,6 +6,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from raelyn.config import settings
 from raelyn.jobs.enqueue import enqueue_in, enqueue_job
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
@@ -14,12 +15,32 @@ from raelyn.services.assets import ensure_asset
 from raelyn.services.asr import asr_enabled, asr_transcribe
 from raelyn.services.ffmpeg import extract_audio_to_m4a
 from raelyn.services.llm import llm_enabled
+from raelyn.services.playlist_analysis import schedule_video_embedding_refresh, transcript_checksum
 from raelyn.services.s3 import s3_download_file
 from raelyn.services.subtitles import normalize_subtitle
 from raelyn.services.workdir import job_workdir
 
 from .briefs import _enqueue_brief_for_video_playlists
 from .common import _best_language_subtitle
+
+
+def _schedule_auto_video_embedding_refresh(
+    session: Session,
+    *,
+    video_id: uuid.UUID,
+    text_checksum_value: str,
+    priority: int = 0,
+    parent_job_id: str | None = None,
+) -> uuid.UUID | None:
+    if not bool(settings.auto_embed_new_video_transcripts):
+        return None
+    return schedule_video_embedding_refresh(
+        session,
+        video_id=video_id,
+        text_checksum_value=text_checksum_value,
+        priority=priority,
+        parent_job_id=parent_job_id,
+    )
 
 
 @registry.register("video.extract_audio")
@@ -136,6 +157,13 @@ def video_normalize_subtitle(session: Session, job: Job) -> dict | None:
             replace=force,
         )
 
+    _schedule_auto_video_embedding_refresh(
+        session,
+        video_id=video.id,
+        text_checksum_value=transcript_checksum(plain),
+        priority=job.priority,
+        parent_job_id=str(job.id),
+    )
     _enqueue_brief_for_video_playlists(session, video=video)
     if llm_enabled():
         enqueue_job(
@@ -222,6 +250,13 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
             replace=force,
         )
 
+    _schedule_auto_video_embedding_refresh(
+        session,
+        video_id=video.id,
+        text_checksum_value=transcript_checksum(str(text)),
+        priority=job.priority,
+        parent_job_id=str(job.id),
+    )
     _enqueue_brief_for_video_playlists(session, video=video)
     if llm_enabled():
         enqueue_job(

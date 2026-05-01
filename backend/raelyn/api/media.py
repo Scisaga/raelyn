@@ -49,8 +49,20 @@ class MediaOut(OrmModel):
     video_count: int | None = None
     last_profile_sync_at: Any | None = None
     last_video_sync_at: Any | None = None
+    disabled_reason: str | None = None
+    disabled_message: str | None = None
+    disabled_at: str | None = None
     deleting: bool = False
     deletion_job_id: uuid.UUID | None = None
+
+
+class MediaOptionOut(OrmModel):
+    id: uuid.UUID
+    provider: str
+    provider_media_id: str
+    url: str
+    name: str | None = None
+    monitor_enabled: bool
 
 
 class MediaUpdate(BaseModel):
@@ -87,11 +99,24 @@ def _media_out(
     *,
     local_video_count: int | None = None,
     deleting_job_id: uuid.UUID | None = None,
+    include_presigned_assets: bool = True,
 ) -> MediaOut:
     out = MediaOut.model_validate(m)
+    auto_disabled = (m.sync_cursor or {}).get("auto_disabled") if isinstance(m.sync_cursor, dict) else None
+    if isinstance(auto_disabled, dict) and not bool(m.monitor_enabled):
+        reason = auto_disabled.get("reason")
+        message = auto_disabled.get("message")
+        disabled_at = auto_disabled.get("at")
+        out.disabled_reason = str(reason) if isinstance(reason, str) and reason else None
+        out.disabled_message = str(message) if isinstance(message, str) and message else None
+        out.disabled_at = str(disabled_at) if isinstance(disabled_at, str) and disabled_at else None
     if local_video_count is not None:
         out.video_count = int(local_video_count)
-    out.avatar_asset = build_asset_ref(session.get(Asset, m.avatar_asset_id)) if getattr(m, "avatar_asset_id", None) else None
+    out.avatar_asset = (
+        build_asset_ref(session.get(Asset, m.avatar_asset_id), include_presigned=include_presigned_assets)
+        if getattr(m, "avatar_asset_id", None)
+        else None
+    )
     out.deleting = deleting_job_id is not None
     out.deletion_job_id = deleting_job_id
     return out
@@ -274,31 +299,54 @@ def create_media(payload: MediaCreate) -> MediaOut:
 
 
 @router.get("/media", response_model=list[MediaOut])
-def list_media(provider: str | None = None, q: str | None = None, limit: int = 50, offset: int = 0) -> list[MediaOut]:
+def list_media(
+    provider: str | None = None,
+    q: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    presign: bool = True,
+) -> list[MediaOut]:
     with session_scope() as session:
-        video_counts = select(Video.media_id.label("media_id"), func.count(Video.id).label("local_video_count")).group_by(
-            Video.media_id
-        )
-        counts_sq = video_counts.subquery()
-
-        stmt = select(Media, counts_sq.c.local_video_count).outerjoin(counts_sq, counts_sq.c.media_id == Media.id)
+        stmt = select(Media)
         if provider:
             stmt = stmt.where(Media.provider == provider)
         if q:
             like = f"%{q}%"
             stmt = stmt.where((Media.name.ilike(like)) | (Media.description.ilike(like)))
         stmt = stmt.order_by(Media.created_at.desc(), Media.id.desc()).limit(limit).offset(offset)
-        rows = session.execute(stmt).all()
-        delete_job_map = active_media_delete_job_map(session, [m.id for m, _c in rows])
+        items = session.execute(stmt).scalars().all()
+        media_ids = [m.id for m in items]
+        count_map = {}
+        if media_ids:
+            count_rows = session.execute(
+                select(Video.media_id, func.count(Video.id)).where(Video.media_id.in_(media_ids)).group_by(Video.media_id)
+            ).all()
+            count_map = {media_id: int(count or 0) for media_id, count in count_rows}
+        delete_job_map = active_media_delete_job_map(session, media_ids)
         return [
             _media_out(
                 session,
                 m,
-                local_video_count=int(c or 0),
+                local_video_count=count_map.get(m.id, 0),
                 deleting_job_id=delete_job_map.get(m.id),
+                include_presigned_assets=presign,
             )
-            for m, c in rows
+            for m in items
         ]
+
+
+@router.get("/media/options", response_model=list[MediaOptionOut])
+def list_media_options(provider: str | None = None, q: str | None = None, limit: int = 500, offset: int = 0) -> list[MediaOptionOut]:
+    with session_scope() as session:
+        stmt = select(Media)
+        if provider:
+            stmt = stmt.where(Media.provider == provider)
+        if q:
+            like = f"%{q}%"
+            stmt = stmt.where((Media.name.ilike(like)) | (Media.description.ilike(like)))
+        stmt = stmt.order_by(Media.created_at.desc(), Media.id.desc()).limit(limit).offset(offset)
+        items = session.execute(stmt).scalars().all()
+        return [MediaOptionOut.model_validate(m) for m in items]
 
 
 @router.get("/media/export")
@@ -413,7 +461,7 @@ def import_media(payload: MediaImportIn) -> dict:
 
 
 @router.get("/media/{media_id}", response_model=MediaOut)
-def get_media(media_id: uuid.UUID) -> MediaOut:
+def get_media(media_id: uuid.UUID, presign: bool = True) -> MediaOut:
     with session_scope() as session:
         media = session.get(Media, media_id)
         if not media:
@@ -425,6 +473,7 @@ def get_media(media_id: uuid.UUID) -> MediaOut:
             media,
             local_video_count=int(c or 0),
             deleting_job_id=active_delete.id if active_delete else None,
+            include_presigned_assets=presign,
         )
 
 

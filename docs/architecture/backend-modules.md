@@ -10,6 +10,7 @@
 - 媒体新增时只投递 `media.sync_profile`，默认不启用监控。
 - 支持显式开启 / 关闭 `monitor_enabled`。
 - 关闭监控时会删除该媒体尚未执行的下载任务。
+- YouTube 频道返回 404 / entity not found 时，`media.sync_videos` 会自动关闭该媒体监控，并在 `sync_cursor.auto_disabled` 记录原因。
 - 支持手动同步单个媒体或全部已启用监控媒体，范围可选 `recent` 或 `all`。
 
 实现要点：
@@ -28,13 +29,13 @@
 - `video.normalize_subtitle`：将字幕标准化为 transcript。
 - `video.asr_transcribe`：在无可用中文字幕 transcript 时调用 ASR。
 - `video.polish_transcript`：可选的 LLM 文字稿润色。
-- `video.generate_note`：按需生成单视频 Markdown 笔记。
 
 当前边界：
 
 - 字幕下载是否开启由运行时配置 `ytdlp_subtitles` 决定。
 - YouTube 会员视频默认不会下载；只有配置 `ytdlp_members_only.enabled=true` 时才会尝试。
 - Cookies 来自 `app_config`，运行时会写入 `tmp/` 下的 provider 专属 `cookies.txt` 文件。
+- 新视频 transcript 生成后默认不会自动投递 `video.embed_transcript`；只有环境变量 `AUTO_EMBED_NEW_VIDEO_TRANSCRIPTS=true` 时才会开启。历史 embedding 补算仍通过 `playlist.backfill_embeddings` 显式触发。
 
 ## 资产访问与分发
 

@@ -12,7 +12,6 @@ from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
 from raelyn.models import Asset, Job, Video
 from raelyn.services.assets import ensure_asset
-from raelyn.services.brief_prompt import load_plain_transcript_asset
 from raelyn.services.llm import llm_enabled, llm_generate
 from raelyn.services.s3 import s3_download_file
 from raelyn.services.transcript_polish_prompt import (
@@ -105,60 +104,6 @@ def video_polish_transcript(session: Session, job: Job) -> dict | None:
     except Exception as e:
         job_log(session, job, f"llm transcript polish failed: {e}", level="warn")
         return {"skipped": "llm failed"}
-
-
-@registry.register("video.generate_note")
-def video_generate_note(session: Session, job: Job) -> dict | None:
-    video_id = uuid.UUID(job.params["video_id"])
-    video = session.get(Video, video_id)
-    if not video:
-        return {"skipped": "video not found"}
-
-    if not llm_enabled():
-        return {"skipped": "llm not configured"}
-
-    bucket, key = load_plain_transcript_asset(session, video.id)
-    if not bucket or not key:
-        return {"skipped": "transcript not found"}
-
-    with job_workdir(job.id) as wd:
-        local_txt = wd / "transcript.txt"
-        s3_download_file(bucket=bucket, key=key, local_path=local_txt)
-        text = local_txt.read_text(encoding="utf-8", errors="ignore").strip()
-        if not text:
-            return {"skipped": "empty transcript"}
-
-        prompt = (
-            "你是一个内容总结助手。请根据以下视频的文字内容，生成一份**Markdown**格式的总结。\n"
-            "要求：\n"
-            "- 用中文\n"
-            "- 输出：一句话摘要、要点（bullet）、可能的行动建议（可选）\n"
-            "- 不要编造未出现的信息；不确定的地方明确说明“文本未提及”。\n\n"
-            f"视频标题：{video.title or video.provider_video_id}\n"
-            f"来源：{video.url}\n\n"
-            "以下是视频文本：\n\n"
-            f"{text}\n"
-        )
-
-        resp = llm_generate(prompt=prompt, think=True)
-        md = str(resp.get("text", ""))
-        out = wd / "note.md"
-        out.write_text(md, encoding="utf-8")
-
-        asset = ensure_asset(
-            session,
-            video_id=video.id,
-            type_="note",
-            format_="md",
-            language="zh",
-            source="llm",
-            variant="summary",
-            local_path=out,
-            s3_key=f"{video.provider}/{video.media_id}/{video.provider_video_id}/note/summary.md",
-            content_type="text/markdown; charset=utf-8",
-            metadata={"video_id": str(video.id)},
-        )
-        return {"asset_id": str(asset.id), "llm_usage": resp.get("usage")}
 
 
 def _sanitize_llm_plain_text(text: str) -> str:

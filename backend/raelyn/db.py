@@ -33,6 +33,76 @@ def _timestamp_sql(dialect_name: str) -> str:
     return "now()" if dialect_name == "postgresql" else "CURRENT_TIMESTAMP"
 
 
+def _create_job_query_indexes(conn) -> None:
+    if conn.dialect.name == "postgresql":
+        statements = [
+            (
+                "create index if not exists job_pending_type_schedule_idx "
+                "on job(type, scheduled_for, priority desc, created_at desc, id desc) "
+                "where status = 'pending'"
+            ),
+            (
+                "create index if not exists job_pending_schedule_idx "
+                "on job(scheduled_for, priority desc, created_at desc, id desc) "
+                "where status = 'pending'"
+            ),
+            (
+                "create index if not exists job_pending_claim_order_idx "
+                "on job("
+                "priority desc, "
+                "(case "
+                "when ((type)::text = 'video.asr_transcribe'::text) then 0 "
+                "when ((type)::text = 'video.normalize_subtitle'::text) then 1 "
+                "when ((type)::text = 'video.extract_audio'::text) then 2 "
+                "else 10 end), "
+                "scheduled_for asc, created_at desc, id desc"
+                ") "
+                "where status = 'pending'"
+            ),
+            (
+                "create index if not exists job_active_list_order_idx "
+                "on job("
+                "(case when ((status)::text = 'running'::text) then 0 else 1 end), "
+                "started_at asc nulls last, scheduled_for asc, created_at asc"
+                ") "
+                "where status in ('pending', 'running')"
+            ),
+            "create index if not exists job_status_type_idx on job(status, type)",
+            (
+                "create index if not exists job_finished_status_finished_at_idx "
+                "on job(status, finished_at desc, created_at desc) "
+                "where finished_at is not null"
+            ),
+            (
+                "create index if not exists job_running_lease_idx "
+                "on job(lease_expires_at) "
+                "where status = 'running' and lease_expires_at is not null"
+            ),
+            (
+                "create index if not exists job_running_worker_idx "
+                "on job(worker_id) "
+                "where status = 'running' and worker_id is not null"
+            ),
+        ]
+    else:
+        statements = [
+            "create index if not exists job_pending_type_schedule_idx on job(status, type, scheduled_for, priority, created_at, id)",
+            "create index if not exists job_pending_schedule_idx on job(status, scheduled_for, priority, created_at, id)",
+            "create index if not exists job_pending_claim_order_idx on job(status, priority, scheduled_for, created_at, id)",
+            "create index if not exists job_active_list_order_idx on job(status, started_at, scheduled_for, created_at)",
+            "create index if not exists job_status_type_idx on job(status, type)",
+            "create index if not exists job_finished_status_finished_at_idx on job(status, finished_at, created_at)",
+            "create index if not exists job_running_lease_idx on job(status, lease_expires_at)",
+            "create index if not exists job_running_worker_idx on job(status, worker_id)",
+        ]
+
+    for statement in statements:
+        try:
+            conn.execute(text(statement))
+        except Exception:
+            pass
+
+
 def _backfill_owned_image_assets(conn, *, owner_table: str, owner_id_col: str, asset_id_col: str, key_col: str, variant: str) -> None:
     try:
         rows = conn.execute(
@@ -230,7 +300,7 @@ where job.type = 'video.download'
         except Exception:
             # Best-effort: some dialects/versions may not support partial indexes.
             pass
-
+        _create_job_query_indexes(conn)
     # Worker heartbeats: add optional metadata columns (role) for UI observability.
     if "worker_heartbeat" in tables:
         cols = {c.get("name") for c in insp.get_columns("worker_heartbeat")}
@@ -239,6 +309,131 @@ where job.type = 'video.download'
                 conn.execute(text("alter table worker_heartbeat add column role varchar"))
             except Exception:
                 pass
+
+    if "video_embedding" in tables:
+        try:
+            conn.execute(text("create index if not exists video_embedding_video_id_idx on video_embedding(video_id)"))
+        except Exception:
+            pass
+        try:
+            conn.execute(
+                text(
+                    "create index if not exists video_embedding_spec_status_video_idx "
+                    "on video_embedding(transcript_variant, embedding_model, embedding_dim, status, video_id)"
+                )
+            )
+        except Exception:
+            pass
+
+    if "video" in tables:
+        try:
+            conn.execute(text("create index if not exists video_media_id_idx on video(media_id)"))
+        except Exception:
+            pass
+
+    if "playlist_analysis_run" in tables:
+        try:
+            conn.execute(
+                text("create index if not exists playlist_analysis_run_playlist_status_idx on playlist_analysis_run(playlist_id, status)")
+            )
+        except Exception:
+            pass
+
+    if "playlist_analysis_period" in tables:
+        cols = {c.get("name") for c in insp.get_columns("playlist_analysis_period")}
+        for column_name in [
+            "drift_rolling_std",
+            "dispersion_std",
+            "dispersion_p25",
+            "dispersion_p75",
+            "projection_z",
+        ]:
+            if column_name not in cols:
+                try:
+                    conn.execute(text(f"alter table playlist_analysis_period add column {column_name} double precision"))
+                except Exception:
+                    pass
+        try:
+            conn.execute(
+                text(
+                    "create index if not exists playlist_analysis_period_run_period_idx "
+                    "on playlist_analysis_period(analysis_run_id, period_date)"
+                )
+            )
+        except Exception:
+            pass
+
+    if "playlist_analysis_signal" in tables:
+        try:
+            conn.execute(
+                text(
+                    "create index if not exists playlist_analysis_signal_run_granularity_period_idx "
+                    "on playlist_analysis_signal(analysis_run_id, granularity, period_date)"
+                )
+            )
+        except Exception:
+            pass
+        try:
+            conn.execute(
+                text(
+                    "create index if not exists playlist_analysis_signal_linked_event_idx "
+                    "on playlist_analysis_signal(linked_event_id)"
+                )
+            )
+        except Exception:
+            pass
+
+    if "playlist_analysis_candidate" in tables:
+        cols = {c.get("name") for c in insp.get_columns("playlist_analysis_candidate")}
+        date_columns = ["peak_date", "event_start", "event_end"]
+        for column_name in date_columns:
+            if column_name not in cols:
+                try:
+                    conn.execute(text(f"alter table playlist_analysis_candidate add column {column_name} date"))
+                except Exception:
+                    pass
+        if "event_type" not in cols:
+            try:
+                conn.execute(text("alter table playlist_analysis_candidate add column event_type varchar not null default 'burst'"))
+            except Exception:
+                pass
+        for column_name in ["confidence", "uncertainty"]:
+            if column_name not in cols:
+                try:
+                    conn.execute(text(f"alter table playlist_analysis_candidate add column {column_name} double precision"))
+                except Exception:
+                    pass
+        if "summary" not in cols:
+            try:
+                conn.execute(text("alter table playlist_analysis_candidate add column summary text"))
+            except Exception:
+                pass
+        for column_name in ["top_terms", "evidence_video_ids"]:
+            if column_name not in cols:
+                try:
+                    if conn.dialect.name == "postgresql":
+                        conn.execute(text(f"alter table playlist_analysis_candidate add column {column_name} jsonb"))
+                    else:
+                        conn.execute(text(f"alter table playlist_analysis_candidate add column {column_name} json"))
+                except Exception:
+                    pass
+        if "available_at" not in cols:
+            try:
+                if conn.dialect.name == "postgresql":
+                    conn.execute(text("alter table playlist_analysis_candidate add column available_at timestamptz"))
+                else:
+                    conn.execute(text("alter table playlist_analysis_candidate add column available_at datetime"))
+            except Exception:
+                pass
+        try:
+            conn.execute(
+                text(
+                    "create index if not exists playlist_analysis_candidate_run_status_idx "
+                    "on playlist_analysis_candidate(analysis_run_id, status)"
+                )
+            )
+        except Exception:
+            pass
 
     # Query performance indexes (best-effort).
     if "video" in tables:
@@ -259,6 +454,13 @@ where job.type = 'video.download'
     if "asset" in tables:
         try:
             conn.execute(text("create index if not exists asset_video_created_at_idx on asset(video_id, created_at desc)"))
+        except Exception:
+            pass
+        try:
+            if conn.dialect.name == "postgresql":
+                conn.execute(text("create index if not exists asset_playback_video_idx on asset(video_id) where type = 'video'"))
+            else:
+                conn.execute(text("create index if not exists asset_playback_video_idx on asset(video_id, type)"))
         except Exception:
             pass
 

@@ -17,7 +17,9 @@ from raelyn.services.provider import build_media_videos_url
 from raelyn.services.transcripts import TRANSCRIPT_VARIANTS
 from raelyn.services.video_actions import schedule_video_download
 from raelyn.services.video_meta import parse_published_at
+from raelyn.services.playlist_analysis import mark_playlists_analysis_dirty_for_video
 from raelyn.services.ytdlp import YtdlpCookiesInvalidError, ytdlp_extract_info
+from raelyn.services.ytdlp_errors import is_provider_media_unavailable_error
 from raelyn.timeutil import utcnow
 
 from .briefs import _enqueue_brief_for_video_playlists
@@ -36,6 +38,24 @@ from .common import (
 
 _AUTO_DISCOVERED_DOWNLOAD_PRIORITY = 7
 _DOWNLOAD_JOB_TYPES = ("video.download", "video.download.youtube", "video.download.bilibili")
+_AUTO_DISABLED_SOURCE_UNAVAILABLE_REASON = "source_unavailable"
+
+
+def _auto_disable_media_source_unavailable(session: Session, *, job: Job, media: Media, err: Exception) -> dict:
+    now = utcnow()
+    message = f"{media.provider} 媒体源不可用，已自动停用监控：{err}"
+    media.monitor_enabled = False
+    media.last_video_sync_at = now
+    sync_cursor = dict(media.sync_cursor or {})
+    sync_cursor["auto_disabled"] = {
+        "reason": _AUTO_DISABLED_SOURCE_UNAVAILABLE_REASON,
+        "message": message,
+        "at": now.isoformat(),
+        "job_id": str(job.id),
+    }
+    media.sync_cursor = sync_cursor
+    job_log(session, job, message, level="warn")
+    return {"disabled": True, "reason": _AUTO_DISABLED_SOURCE_UNAVAILABLE_REASON}
 
 
 def _job_video_id_expr():
@@ -146,6 +166,8 @@ def media_sync_profile(session: Session, job: Job) -> dict | None:
             media.last_profile_sync_at = utcnow()
             raise
         except Exception as e:
+            if is_provider_media_unavailable_error(str(e), provider=media.provider):
+                return _auto_disable_media_source_unavailable(session, job=job, media=media, err=e)
             msg = str(e)
             if "members-only" in msg.lower() or "members only" in msg.lower():
                 job_log(session, job, "members-only content detected; skip profile sync", level="warn")
@@ -222,6 +244,8 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
             media.last_video_sync_at = utcnow()
             raise
         except Exception as e:
+            if is_provider_media_unavailable_error(str(e), provider=media.provider):
+                return _auto_disable_media_source_unavailable(session, job=job, media=media, err=e)
             msg = str(e or "").lower()
             blocked = ("(352)" in msg) or ("http error 412" in msg) or ("precondition failed" in msg)
             if blocked:
@@ -285,6 +309,8 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
             session.add(video)
             created += 1
             session.flush()
+            if video.published_at:
+                mark_playlists_analysis_dirty_for_video(session, video.id)
 
             has_transcript = (
                 session.execute(

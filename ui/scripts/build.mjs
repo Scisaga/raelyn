@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,6 +12,7 @@ const root = resolve(uiDir, "..");
 
 const cssOut = resolve(root, "static/css/tailwind.min.css");
 const vendorDir = resolve(root, "static/vendor");
+const timelineVendorDir = resolve(vendorDir, "timelinejs");
 const pwaDir = resolve(root, "static/pwa");
 const pwaGlyphColor = [2, 6, 23];
 const pwaGlyphScaleAny = 0.6;
@@ -20,6 +21,7 @@ const pwaGlyphScaleAppleTouch = 0.56;
 
 mkdirSync(resolve(root, "static/css"), { recursive: true });
 mkdirSync(vendorDir, { recursive: true });
+rmSync(timelineVendorDir, { recursive: true, force: true });
 mkdirSync(pwaDir, { recursive: true });
 
 const tailwindCli = resolve(uiDir, "node_modules/.bin/tailwindcss");

@@ -24,7 +24,7 @@
 - `published_at` 可能在“发现视频”阶段就写入；它只决定时间归属，不代表视频已可播放或可用于简报。
 - 播放列表周期归属使用 `published_at` + 视频资产就绪。
 - 简报周期归属使用 `published_at` + transcript 文本就绪。
-- 通过 `Asset` 关联视频文件、音频、字幕、文字稿、笔记等产物。
+- 通过 `Asset` 关联视频文件、音频、字幕、文字稿、简报图片等产物。
 
 ### Asset
 
@@ -55,15 +55,17 @@
 ### Worker 进程
 
 - 入口是 [backend/raelyn/worker.py](../../backend/raelyn/worker.py)。
-- 支持按 `WORKER_ROLE` 或 `WORKER_TYPES` 拆分角色，例如 `download_youtube`、`download_bilibili`、`audio`、`process`、`asr`、`sync`、`ai`。
+- 支持按 `WORKER_ROLE` 或 `WORKER_TYPES` 拆分角色，例如 `download_youtube`、`download_bilibili`、`audio`、`process`、`asr`、`sync`、`embedding`、`analysis`、`ai`。
 - `download_youtube` / `download_bilibili` 是 provider 专属下载执行面；其 worker 进程数默认与 `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 强绑定，用来兑现真实下载并发语义。
+- `asr` 负责 `video.asr_transcribe`；其 worker 进程数默认与 `ASR_WORKER_CONCURRENCY` 绑定，每个进程同一时间执行一个远端 ASR 请求。
+- `embedding` 负责 `video.embed_transcript` 与 `playlist.backfill_embeddings`；`analysis` 负责 `playlist.build_analysis_snapshot`；二者可通过 `EMBEDDING_WORKER_CONCURRENCY=0` / `ANALYSIS_WORKER_CONCURRENCY=0` 在当前节点禁用对应执行面；`ai` 只保留转写润色与简报生成，避免 embedding 补算、快照聚合、LLM 任务互相堵塞。
 - provider 下载 handler 内仍保留 advisory lock 作为最终并发上限保护；它是内部实现，不是对外配置语义。
 - 负责任务领取、心跳、孤儿任务回收、失败退避与实际处理逻辑执行。
 
 ### Scheduler 进程
 
 - 入口是 [backend/raelyn/scheduler.py](../../backend/raelyn/scheduler.py)。
-- 每分钟扫描已启用监控且超过同步间隔的媒体，投递 `media.sync_videos`。
+- 每分钟扫描已启用监控且超过同步间隔的媒体；到期时间会按媒体与上次同步时间增加稳定随机抖动，再投递 `media.sync_videos`。
 - 会尊重系统暂停和 provider 暂停状态，避免继续放量。
 
 ### MCP HTTP 挂载
@@ -98,7 +100,6 @@
 - `video.extract_audio` 生成音频资产。
 - `video.normalize_subtitle` 生成 transcript，并可继续触发 `video.polish_transcript`。
 - 若没有可用中文字幕且配置了 ASR，则进入 `video.asr_transcribe`。
-- 需要时可手动触发 `video.generate_note` 生成视频级 Markdown 笔记。
 
 ### 4. 播放列表聚合与简报
 

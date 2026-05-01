@@ -129,6 +129,12 @@
                               >
                                 删除中
                               </span>
+                              <span
+                                x-show="!m.deleting && m.disabled_reason"
+                                class="inline-flex items-center rounded-full border border-rose-500/40 bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-200 whitespace-nowrap shrink-0"
+                                :title="mediaDisabledTitle(m)"
+                                x-text="mediaDisabledLabel(m)"
+                              ></span>
 		                        </div>
 	                        <a
 	                          class="inline-flex min-w-0 max-w-full items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 hover:underline"

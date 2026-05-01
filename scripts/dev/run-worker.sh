@@ -15,6 +15,8 @@ Roles:
   process
   asr
   sync
+  embedding
+  analysis
   ai
 
 If role is omitted, WORKER_ROLE from the environment is used as-is.
@@ -35,7 +37,7 @@ fi
 effective_role="${requested_role:-${WORKER_ROLE:-}}"
 if [[ -n "${effective_role:-}" ]]; then
   case "$effective_role" in
-    download|download_youtube|download_bilibili|audio|process|asr|sync|ai)
+    download|download_youtube|download_bilibili|audio|process|asr|sync|embedding|analysis|ai)
       export WORKER_ROLE="$effective_role"
       ;;
     *)

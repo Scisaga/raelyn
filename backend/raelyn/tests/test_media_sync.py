@@ -164,6 +164,39 @@ class MediaSyncVideoOrderingTests(unittest.TestCase):
         )
         self.assertTrue(all(call.kwargs["priority"] == 5 for call in schedule_video_download.call_args_list))
 
+    def test_media_sync_auto_disables_missing_youtube_channel(self) -> None:
+        media = Media(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_media_id="@missing",
+            url="https://www.youtube.com/@missing/videos",
+            monitor_enabled=True,
+            sync_cursor={"previous": "kept"},
+        )
+        job = Job(
+            id=uuid.uuid4(),
+            type="media.sync_videos",
+            params={"media_id": str(media.id)},
+            priority=1,
+            status="pending",
+        )
+        session = Mock()
+        session.get.side_effect = lambda model, _key: media if getattr(model, "__name__", "") == "Media" else None
+        err = RuntimeError("ERROR: [youtube:tab] @missing: Unable to download API page: HTTP Error 404: Not Found")
+
+        with patch("raelyn.jobs.handlers.media_sync.advisory_lock_any", return_value=nullcontext("youtube:sync")):
+            with patch("raelyn.jobs.handlers.media_sync.ytdlp_extract_info", side_effect=err):
+                with patch("raelyn.jobs.handlers.media_sync.job_log") as job_log:
+                    result = media_sync_videos(session, job)
+
+        self.assertEqual(result, {"disabled": True, "reason": "source_unavailable"})
+        self.assertFalse(media.monitor_enabled)
+        self.assertIsNotNone(media.last_video_sync_at)
+        self.assertEqual(media.sync_cursor["previous"], "kept")
+        self.assertEqual(media.sync_cursor["auto_disabled"]["reason"], "source_unavailable")
+        self.assertIn("媒体源不可用", media.sync_cursor["auto_disabled"]["message"])
+        job_log.assert_called()
+
 
 if __name__ == "__main__":
     unittest.main()

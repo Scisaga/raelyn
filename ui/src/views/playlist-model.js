@@ -19,6 +19,29 @@ import {
 } from "../shared/playlist-periods.js";
 
 const PLAYLIST_TRANSCRIPT_VARIANTS = ["plain", "polished"];
+const PLAYLIST_ANALYSIS_PROJECTION_PLAYBACK_INTERVAL_MS = 420;
+const PLAYLIST_ANALYSIS_BREAKPOINT_Z_MIN = 1.5;
+const PLAYLIST_ANALYSIS_BREAKPOINT_Z_MAX = 5.0;
+const PLAYLIST_ANALYSIS_BREAKPOINT_AUTO_MONTH_LIMIT = 18;
+const PLAYLIST_ANALYSIS_BREAKPOINT_AUTO_COUNT_LIMIT = 24;
+const PLAYLIST_ANALYSIS_BREAKPOINT_CLUSTER_MIN_PX = 32;
+const PLAYLIST_ANALYSIS_BREAKPOINT_TOP_VISIBLE_COUNT = 8;
+const PLAYLIST_ANALYSIS_BREAKPOINT_IMPORTANT_COUNT = 12;
+const PLAYLIST_ANALYSIS_BREAKPOINT_DISPLAY_MODES = [
+  { key: "auto", label: "自动" },
+  { key: "important", label: "重要" },
+  { key: "density", label: "密度" },
+  { key: "all", label: "全部" },
+];
+const PLAYLIST_ANALYSIS_PROJECTION_WINDOW_OPTIONS = [
+  { months: 3, label: "3个月" },
+  { months: 6, label: "6个月" },
+  { months: 12, label: "1年" },
+  { months: 36, label: "3年" },
+];
+const PLAYLIST_ANALYSIS_CENTROID_ARROW_MIN_LENGTH = 8;
+const PLAYLIST_ANALYSIS_CENTROID_ARROW_MAX_LENGTH = 22;
+const PLAYLIST_ANALYSIS_CENTROID_ARROW_MIN_DISTANCE = 2.5;
 
 function emptyPlaylistTranscriptVariants() {
   return { plain: false, polished: false };
@@ -47,6 +70,12 @@ export function createPlaylistViewMethods() {
         this.playlistCalendarResetDragState();
         this.playlistDayListResetSwipeState();
         this.playlistBriefResetSwipeState();
+        this.playlistAnalysisStopPolling();
+        this.playlistAnalysisStopSignalsReload();
+        this.playlistAnalysisStopProjectionPlayback();
+        this.playlistAnalysisDestroyChart();
+        this.playlistAnalysisReleaseRangeDrag();
+        this.playlistAnalysisReleaseProjectionWindowDrag();
         this.playlistDetail = null;
         this.playlistDayVideos = [];
         this.playlistPlayerNeedsDownload = false;
@@ -65,6 +94,40 @@ export function createPlaylistViewMethods() {
         this.playlistNameSaving = false;
         this.playlistDescEditing = false;
         this.playlistDescDraft = "";
+        this.playlistAnalysisSummary = null;
+        this.playlistAnalysisPeriods = [];
+        this.playlistAnalysisSignals = [];
+        this.playlistAnalysisInvalidateSignalCaches();
+        this.playlistAnalysisCandidates = [];
+        this.playlistAnalysisCandidatesLoaded = false;
+        this.playlistAnalysisCandidatesVersion = 0;
+        this.playlistAnalysisBreakpointDisplayMode = "auto";
+        this.playlistAnalysisHoveredBreakpointItemId = "";
+        this._playlistAnalysisCandidateHydrationRunId = "";
+        this.playlistAnalysisSelectedCandidateId = "";
+        this.playlistAnalysisCandidateDetail = null;
+        this.playlistAnalysisTab = "trend";
+        this.playlistAnalysisRangeStart = "";
+        this.playlistAnalysisRangeEnd = "";
+        this.playlistAnalysisFullRangeStart = "";
+        this.playlistAnalysisFullRangeEnd = "";
+        this.playlistAnalysisSignalsLoadedRangeStart = "";
+        this.playlistAnalysisSignalsLoadedRangeEnd = "";
+        this.playlistAnalysisProjectionWindowStart = "";
+        this.playlistAnalysisProjectionWindowEnd = "";
+        this.playlistAnalysisProjectionWindowAnchorDate = "";
+        this.playlistAnalysisProjectionWindowPreviewStartIndex = null;
+        this.playlistAnalysisTimelinePreviewStartIndex = null;
+        this.playlistAnalysisTimelinePreviewEndIndex = null;
+        this.playlistAnalysisSignalsVersion = 0;
+        this.playlistAnalysisProjectionPlaying = false;
+        this.playlistAnalysisProjectionPlayTimer = null;
+        this.playlistAnalysisError = "";
+        this.playlistAnalysisBackfillSubmitting = false;
+        this.playlistAnalysisBackfillCanceling = false;
+        this.playlistAnalysisBackfillJob = null;
+        this.playlistAnalysisExportOpen = false;
+        this.playlistAnalysisExportPayload = null;
         this.playlistPendingAutoPlayId = "";
         this.playlistAudioThumbnailFailures = new Map();
         this.playlistAudioThumbnailSources = new Map();
@@ -129,7 +192,11 @@ export function createPlaylistViewMethods() {
         this.playlistEditResetFromDetail();
         if (Number(this.playlistLoadToken || 0) !== pageLoadToken) return;
         if (this.activeView !== "playlist") return;
-        await this.playlistLoadDay(this.playlistSelectedDate, { autoPlay: false });
+        if (this.playlistSubview === "analysis") {
+          await this.playlistLoadAnalysisView();
+        } else {
+          await this.playlistLoadDay(this.playlistSelectedDate, { autoPlay: false });
+        }
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
       }
@@ -1195,24 +1262,36 @@ export function createPlaylistViewMethods() {
       return periodEndIso(periodStart, granularity);
     },
 
-    playlistToggleSubview() {
+    async playlistSetSubview(nextSubview) {
       if (!this.playlistDetail) return;
+      const target = ["main", "analysis", "settings"].includes(String(nextSubview || "").trim()) ? String(nextSubview).trim() : "main";
+      if (this.playlistSubview === target) return;
       this.playlistCalendarResetDragState();
       this.playlistBriefResetSwipeState();
       this.playlistStopBriefSpeech({ clearError: true });
-      const nextSubview = this.playlistSubview === "settings" ? "main" : "settings";
-      if (nextSubview !== "main" && typeof this.playlistMediaPause === "function") {
+      if (target !== "main" && typeof this.playlistMediaPause === "function") {
         this.playlistMediaPause();
       }
-      this.playlistSubview = nextSubview;
+      if (target !== "analysis") {
+        this.playlistAnalysisStopProjectionPlayback();
+        this.playlistAnalysisReleaseProjectionWindowDrag();
+      }
+      this.playlistSubview = target;
       if (this.playlistSubview === "main") {
         try {
           if (this.$nextTick) this.$nextTick(() => this.playlistCalendarUpdateCount());
         } catch {
           // ignore
         }
+      } else if (this.playlistSubview === "analysis") {
+        await this.playlistLoadAnalysisView();
       }
       this._syncUrl({ push: false });
+    },
+
+    async playlistToggleSubview() {
+      const nextSubview = this.playlistSubview === "settings" ? "main" : "settings";
+      await this.playlistSetSubview(nextSubview);
     },
 
     leavePlaylistPage() {
@@ -1225,6 +1304,12 @@ export function createPlaylistViewMethods() {
       this._abortCtrl("_playlistPlayableProbeAbortCtrl");
       this._abortCtrl("_playlistSelectAbortCtrl");
       this._abortCtrl("_playlistTranscriptVariantAbortCtrl");
+      this.playlistAnalysisStopPolling();
+      this.playlistAnalysisStopSignalsReload();
+      this.playlistAnalysisStopProjectionPlayback();
+      this.playlistAnalysisDestroyChart();
+      this.playlistAnalysisReleaseRangeDrag();
+      this.playlistAnalysisReleaseProjectionWindowDrag();
       try {
         if (typeof this.playlistStopBriefSpeech === "function") {
           this.playlistStopBriefSpeech({ clearError: true });
@@ -1249,6 +1334,43 @@ export function createPlaylistViewMethods() {
       this.playlistTranscriptAvailableVariants = emptyPlaylistTranscriptVariants();
       this.playlistTranscriptUpdatedAt = "";
       this.playlistTranscriptSwitching = false;
+      this.playlistAnalysisSummary = null;
+      this.playlistAnalysisPeriods = [];
+      this.playlistAnalysisSignals = [];
+      this.playlistAnalysisInvalidateSignalCaches();
+      this.playlistAnalysisCandidates = [];
+      this.playlistAnalysisCandidatesLoaded = false;
+      this.playlistAnalysisCandidatesVersion = 0;
+      this.playlistAnalysisBreakpointDisplayMode = "auto";
+      this.playlistAnalysisHoveredBreakpointItemId = "";
+      this._playlistAnalysisCandidateHydrationRunId = "";
+      this.playlistAnalysisSelectedCandidateId = "";
+      this.playlistAnalysisCandidateDetail = null;
+      this.playlistAnalysisTab = "trend";
+      this.playlistAnalysisRangeStart = "";
+      this.playlistAnalysisRangeEnd = "";
+      this.playlistAnalysisFullRangeStart = "";
+      this.playlistAnalysisFullRangeEnd = "";
+      this.playlistAnalysisSignalsLoadedRangeStart = "";
+      this.playlistAnalysisSignalsLoadedRangeEnd = "";
+      this.playlistAnalysisProjectionWindowStart = "";
+      this.playlistAnalysisProjectionWindowEnd = "";
+      this.playlistAnalysisProjectionWindowAnchorDate = "";
+      this.playlistAnalysisProjectionWindowPreviewStartIndex = null;
+      this.playlistAnalysisTimelinePreviewStartIndex = null;
+      this.playlistAnalysisTimelinePreviewEndIndex = null;
+      this.playlistAnalysisSignalsVersion = 0;
+      this.playlistAnalysisProjectionPlaying = false;
+      this.playlistAnalysisLoading = false;
+      this.playlistAnalysisPeriodsLoading = false;
+      this.playlistAnalysisSignalsLoading = false;
+      this.playlistAnalysisCandidatesLoading = false;
+      this.playlistAnalysisError = "";
+      this.playlistAnalysisBackfillSubmitting = false;
+      this.playlistAnalysisBackfillCanceling = false;
+      this.playlistAnalysisBackfillJob = null;
+      this.playlistAnalysisExportOpen = false;
+      this.playlistAnalysisExportPayload = null;
       this.playlistMediaDurationSec = 0;
       this.playlistMediaCurrentTimeSec = 0;
       this.playlistMediaPlaying = false;
@@ -3456,6 +3578,2279 @@ export function createPlaylistViewMethods() {
       } finally {
         this.playlistSettingsGranularitySaving = false;
       }
+    },
+
+    playlistAnalysisStopPolling() {
+      try {
+        clearTimeout(this.playlistAnalysisPollTimer);
+      } catch {
+        // ignore
+      }
+      this.playlistAnalysisPollTimer = null;
+    },
+
+    playlistAnalysisStopSignalsReload() {
+      try {
+        clearTimeout(this._playlistAnalysisSignalsReloadTimer);
+      } catch {
+        // ignore
+      }
+      this._playlistAnalysisSignalsReloadTimer = null;
+      this._playlistAnalysisSignalsRequestToken = Number(this._playlistAnalysisSignalsRequestToken || 0) + 1;
+      this._abortCtrl("_playlistAnalysisSignalsAbortCtrl");
+      this.playlistAnalysisSignalsLoading = false;
+    },
+
+    playlistAnalysisInvalidateSignalCaches() {
+      this.playlistAnalysisSignalsVersion = Number(this.playlistAnalysisSignalsVersion || 0) + 1;
+      this._playlistAnalysisGranularityCache = null;
+      this._playlistAnalysisMetricDataCache = null;
+      this._playlistAnalysisProjectionScaleCache = null;
+      this._playlistAnalysisProjectionPointsCache = null;
+      this._playlistAnalysisBreakpointsCache = null;
+      this._playlistAnalysisBreakpointDisplayCache = null;
+      this._playlistAnalysisProjectionCentroidsCache = null;
+    },
+
+    playlistAnalysisStopProjectionPlayback() {
+      try {
+        clearInterval(this.playlistAnalysisProjectionPlayTimer);
+      } catch {
+        // ignore
+      }
+      this.playlistAnalysisProjectionPlayTimer = null;
+      this.playlistAnalysisProjectionPlaying = false;
+    },
+
+    playlistAnalysisDestroyChart() {
+      try {
+        if (this._playlistAnalysisChartRenderFrame && window.cancelAnimationFrame) {
+          window.cancelAnimationFrame(this._playlistAnalysisChartRenderFrame);
+        }
+      } catch {
+        // ignore
+      }
+      this._playlistAnalysisChartRenderFrame = null;
+      try {
+        if (this.playlistAnalysisChart) this.playlistAnalysisChart.remove();
+      } catch {
+        // ignore
+      }
+      this.playlistAnalysisChart = null;
+      this.playlistAnalysisChartAxisSeries = null;
+      this.playlistAnalysisChartDriftSeries = null;
+      this.playlistAnalysisChartDispersionSeries = null;
+      this.playlistAnalysisChartSeries = {};
+    },
+
+    _ensurePlaylistAnalysisChart() {
+      if (this.playlistAnalysisChart && this.playlistAnalysisChartSeries) return true;
+      const el = this.$refs && this.$refs.playlistAnalysisTrendChart;
+      if (!el || el.clientWidth < 10 || el.clientHeight < 10) return false;
+      const LC = window.LightweightCharts;
+      if (!LC || typeof LC.createChart !== "function") return false;
+      const chart = LC.createChart(el, {
+        autoSize: true,
+        handleScroll: false,
+        handleScale: false,
+        layout: {
+          background: { type: LC.ColorType.Solid, color: "rgba(0,0,0,0)" },
+          textColor: "rgba(148, 163, 184, 0.85)",
+          attributionLogo: false,
+        },
+        grid: {
+          vertLines: { color: "rgba(30, 41, 59, 0.35)" },
+          horzLines: { color: "rgba(30, 41, 59, 0.35)" },
+        },
+        rightPriceScale: { borderColor: "rgba(30, 41, 59, 0.55)" },
+        timeScale: {
+          borderColor: "rgba(30, 41, 59, 0.55)",
+          fixLeftEdge: true,
+          fixRightEdge: true,
+          rightOffset: 0,
+        },
+        crosshair: { mode: LC.CrosshairMode.Normal },
+      });
+      const addLineSeries = (options) => {
+        if (typeof chart.addSeries === "function" && LC.LineSeries) return chart.addSeries(LC.LineSeries, options);
+        return chart.addLineSeries(options);
+      };
+      const axisSeries = addLineSeries({
+        color: "rgba(0,0,0,0)",
+        lineWidth: 1,
+        lastValueVisible: false,
+        priceLineVisible: false,
+        crosshairMarkerVisible: false,
+        title: "",
+      });
+      const metricDefs = this.playlistAnalysisMetricDefs();
+      const series = {};
+      metricDefs.forEach((metric) => {
+        if (!this.playlistAnalysisVisibleMetrics[metric.key]) return;
+        series[metric.key] = addLineSeries({
+          color: metric.color,
+          lineWidth: metric.lineWidth || 1,
+          lastValueVisible: false,
+          priceLineVisible: false,
+          title: metric.title,
+        });
+      });
+      this.playlistAnalysisChart = chart;
+      this.playlistAnalysisChartAxisSeries = axisSeries;
+      this.playlistAnalysisChartSeries = series;
+      return true;
+    },
+
+    _renderPlaylistAnalysisChart() {
+      if (String(this.playlistAnalysisTab || "trend") !== "trend") return;
+      if (!this._ensurePlaylistAnalysisChart()) {
+        if (!window.LightweightCharts && typeof this.ensureLightweightCharts === "function") {
+          this.ensureLightweightCharts()
+            .then(() => this.playlistAnalysisRequestChartRender())
+            .catch((e) => {
+              this.playlistAnalysisError = e && e.message ? e.message : String(e);
+            });
+          return;
+        }
+        setTimeout(() => this._renderPlaylistAnalysisChart(), 80);
+        return;
+      }
+      const bounds = this.playlistAnalysisChartRangeBounds();
+      if (this.playlistAnalysisChartAxisSeries) {
+        this.playlistAnalysisChartAxisSeries.setData(this.playlistAnalysisCalendarAxisData(bounds));
+      }
+      const series = this.playlistAnalysisChartSeries || {};
+      this.playlistAnalysisMetricDefs().forEach((metric) => {
+        const target = series[metric.key];
+        if (!target) return;
+        const valueData = this.playlistAnalysisMetricValueData(metric);
+        target.setData(this.playlistAnalysisChartDataWithBounds(valueData, bounds));
+      });
+      try {
+        if (bounds) this.playlistAnalysisChart.timeScale().setVisibleRange({ from: bounds.start, to: bounds.end });
+        else this.playlistAnalysisChart.timeScale().fitContent();
+      } catch {
+        // ignore
+      }
+    },
+
+    playlistAnalysisChartRangeBounds() {
+      const start = String(this.playlistAnalysisRangeStart || this.playlistAnalysisFullRangeStart || "").trim();
+      const end = String(this.playlistAnalysisRangeEnd || this.playlistAnalysisFullRangeEnd || "").trim();
+      if (!start || !end || start > end) return null;
+      return { start, end };
+    },
+
+    playlistAnalysisChartDataWithBounds(valueData, bounds) {
+      const data = Array.isArray(valueData) ? valueData.filter((item) => item && item.time) : [];
+      if (!bounds) return data.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+      const seen = new Set(data.map((item) => String(item.time)));
+      if (!seen.has(bounds.start)) data.push({ time: bounds.start });
+      if (!seen.has(bounds.end)) data.push({ time: bounds.end });
+      return data.sort((a, b) => String(a.time).localeCompare(String(b.time)));
+    },
+
+    playlistAnalysisCalendarAxisData(bounds) {
+      if (!bounds || !bounds.start || !bounds.end || bounds.start > bounds.end) return [];
+      const key = `${bounds.start}|${bounds.end}`;
+      if (this._playlistAnalysisCalendarAxisCache && this._playlistAnalysisCalendarAxisCache.key === key) {
+        return this._playlistAnalysisCalendarAxisCache.value;
+      }
+      const data = [];
+      const totalDays = Math.max(1, this.playlistAnalysisDateDiffDays(bounds.start, bounds.end));
+      const stepDays = totalDays > 2190 ? 30 : totalDays > 730 ? 7 : 1;
+      let current = bounds.start;
+      let guard = 0;
+      while (current && current <= bounds.end && guard < 10000) {
+        data.push({ time: current });
+        current = this.playlistAnalysisAddDays(current, stepDays);
+        guard += 1;
+      }
+      if (!data.length || String(data[data.length - 1].time) !== String(bounds.end)) {
+        data.push({ time: bounds.end });
+      }
+      this._playlistAnalysisCalendarAxisCache = { key, value: data };
+      return data;
+    },
+
+    playlistAnalysisMetricValueData(metric) {
+      const metricKey = String((metric && metric.key) || (metric && metric.field) || "");
+      const cacheKey = [
+        Number(this.playlistAnalysisSignalsVersion || 0),
+        String(this.playlistAnalysisRangeStart || ""),
+        String(this.playlistAnalysisRangeEnd || ""),
+        metricKey,
+      ].join("|");
+      if (this._playlistAnalysisMetricDataCache && this._playlistAnalysisMetricDataCache.has(cacheKey)) {
+        return this._playlistAnalysisMetricDataCache.get(cacheKey);
+      }
+      const rows = this.playlistAnalysisSignalsForGranularity(metric && metric.granularity).filter((item) => item && item.period_date);
+      const data = [];
+      const seen = new Set();
+      let previousTime = "";
+      rows.forEach((item) => {
+        const time = String(item.period_date || "");
+        if (!time || seen.has(time)) return;
+        const maxGapDays = Number((metric && metric.maxGapDays) || 0);
+        if (previousTime && maxGapDays > 0 && this.playlistAnalysisDateDiffDays(previousTime, time) > maxGapDays) {
+          const breakTime = this.playlistAnalysisAddDays(previousTime, 1);
+          if (breakTime && breakTime < time && !seen.has(breakTime)) {
+            data.push({ time: breakTime });
+            seen.add(breakTime);
+          }
+        }
+        const minReadyCount = Number((metric && metric.minReadyCount) || 0);
+        const readyCount = Number(item.ready_embedding_count || item.video_count || 0);
+        const rawValue = item[metric.field];
+        const value = Number(rawValue);
+        if ((minReadyCount > 0 && readyCount < minReadyCount) || rawValue == null || !Number.isFinite(value)) {
+          data.push({ time });
+          seen.add(time);
+          previousTime = time;
+          return;
+        }
+        data.push({ time, value });
+        seen.add(time);
+        previousTime = time;
+      });
+      if (!this._playlistAnalysisMetricDataCache) this._playlistAnalysisMetricDataCache = new Map();
+      this._playlistAnalysisMetricDataCache.set(cacheKey, data);
+      return data;
+    },
+
+    playlistAnalysisDateDiffDays(leftDate, rightDate) {
+      const left = this.playlistAnalysisDateToUtcMs(leftDate);
+      const right = this.playlistAnalysisDateToUtcMs(rightDate);
+      if (!Number.isFinite(left) || !Number.isFinite(right)) return 0;
+      return Math.round((right - left) / 86400000);
+    },
+
+    playlistAnalysisAddDays(dateValue, dayOffset) {
+      const base = this.playlistAnalysisDateToUtcMs(dateValue);
+      if (!Number.isFinite(base)) return "";
+      const date = new Date(base + Number(dayOffset || 0) * 86400000);
+      const year = date.getUTCFullYear();
+      const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+      const day = String(date.getUTCDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    },
+
+    playlistAnalysisDateToUtcMs(dateValue) {
+      const value = String(dateValue || "").slice(0, 10);
+      const parts = value.split("-").map((item) => Number(item));
+      if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return NaN;
+      return Date.UTC(parts[0], parts[1] - 1, parts[2]);
+    },
+
+    playlistAnalysisRequestChartRender() {
+      if (String(this.playlistAnalysisTab || "trend") !== "trend") return;
+      if (this._playlistAnalysisChartRenderFrame) return;
+      const render = () => {
+        this._playlistAnalysisChartRenderFrame = null;
+        this._renderPlaylistAnalysisChart();
+      };
+      try {
+        if (window.requestAnimationFrame) {
+          this._playlistAnalysisChartRenderFrame = window.requestAnimationFrame(render);
+          return;
+        }
+      } catch {
+        // ignore
+      }
+      setTimeout(render, 0);
+    },
+
+    playlistAnalysisMetricDefs() {
+      return [
+        {
+          key: "day_z",
+          title: "日 rolling z",
+          granularity: "day",
+          field: "drift_rolling_z",
+          color: "rgba(16, 185, 129, 0.95)",
+          minReadyCount: 3,
+          maxGapDays: 3,
+          description: "日级信号对低样本日期很敏感，默认隐藏；少于 3 个 embedding 的日期会断线。",
+        },
+        { key: "week_z", title: "周语义漂移 z", granularity: "week", field: "drift_rolling_z", color: "rgba(56, 189, 248, 0.92)", maxGapDays: 21 },
+        { key: "month_z", title: "月语义漂移 z", granularity: "month", field: "drift_rolling_z", color: "rgba(251, 191, 36, 0.88)", maxGapDays: 70 },
+        { key: "day_drift", title: "日 drift", granularity: "day", field: "drift_score", color: "rgba(129, 140, 248, 0.86)", lineWidth: 1, minReadyCount: 3, maxGapDays: 3 },
+        { key: "day_uncertainty", title: "日不确定性", granularity: "day", field: "dispersion_mean", color: "rgba(244, 114, 182, 0.84)", lineWidth: 1, minReadyCount: 2, maxGapDays: 3 },
+      ];
+    },
+
+    playlistAnalysisToggleMetric(metricKey) {
+      const key = String(metricKey || "").trim();
+      if (!key) return;
+      this.playlistAnalysisVisibleMetrics[key] = !this.playlistAnalysisVisibleMetrics[key];
+      this.playlistAnalysisDestroyChart();
+      this.$nextTick(() => this.playlistAnalysisRequestChartRender());
+    },
+
+    playlistAnalysisTabClass(tab) {
+      const active = String(this.playlistAnalysisTab || "trend") === String(tab || "");
+      return active
+        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
+        : "border-slate-700 bg-slate-950/20 text-slate-300 hover:bg-slate-900/60";
+    },
+
+    playlistAnalysisSetTab(tab) {
+      this.playlistAnalysisTab = String(tab || "trend");
+      if (this.playlistAnalysisTab === "trend") {
+        this.$nextTick(() => this.playlistAnalysisRequestChartRender());
+        return;
+      }
+      this.playlistAnalysisStopProjectionPlayback();
+      this.playlistAnalysisReleaseProjectionWindowDrag();
+      if (this.playlistAnalysisTab === "events" && !this.playlistAnalysisCandidatesLoaded && !this.playlistAnalysisCandidatesLoading) {
+        this.playlistLoadAnalysisCandidates();
+      } else if (this.playlistAnalysisTab === "events" && this.playlistAnalysisCandidatesLoaded && !this.playlistAnalysisCandidateDetail) {
+        const selectedId = String(this.playlistAnalysisSelectedCandidateId || "").trim();
+        const target =
+          (Array.isArray(this.playlistAnalysisCandidates) ? this.playlistAnalysisCandidates : []).find((item) => String(item.id) === selectedId) ||
+          (Array.isArray(this.playlistAnalysisCandidates) ? this.playlistAnalysisCandidates[0] : null);
+        if (target) this.playlistSelectAnalysisCandidate(target.id);
+      }
+    },
+
+    playlistAnalysisSummaryBadgeClass() {
+      const summary = this.playlistAnalysisSummary;
+      if (!summary) return "border-slate-700 bg-slate-900/40 text-slate-300";
+      if (summary.running) return "border-amber-500/30 bg-amber-500/10 text-amber-200";
+      if (summary.analysis_dirty) return "border-sky-500/30 bg-sky-500/10 text-sky-200";
+      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+    },
+
+    playlistAnalysisActiveBackfillJob() {
+      const summaryJob = this.playlistAnalysisSummary && this.playlistAnalysisSummary.backfill_job ? this.playlistAnalysisSummary.backfill_job : null;
+      const localJob = this.playlistAnalysisBackfillJob && this.playlistAnalysisBackfillJob.job_id ? this.playlistAnalysisBackfillJob : null;
+      const job = summaryJob || (localJob && localJob.backfill_job ? localJob.backfill_job : localJob);
+      if (!job || !job.job_id) return null;
+      const status = String(job.status || "").trim().toLowerCase();
+      if (!["pending", "running"].includes(status)) return null;
+      return job;
+    },
+
+    playlistAnalysisBackfillJobText() {
+      const job = this.playlistAnalysisActiveBackfillJob();
+      if (!job) return "";
+      const status = String(job.status || "").trim().toLowerCase() === "running" ? "执行中" : "排队中";
+      const id = String(job.job_id || "").slice(0, 8);
+      const parts = [`历史 embedding 补算${status}`, `任务 ${id}`];
+      const scanned = Number(job.scanned || job.progress_current || 0);
+      const embedded = Number(job.embedded || 0);
+      const skipped = Number(job.skipped_over_budget || 0);
+      const batches = Number(job.embedding_batches || 0);
+      if (scanned || embedded || skipped || batches) {
+        parts.push(`扫描 ${scanned}`);
+        parts.push(`写入 ${embedded}`);
+        if (skipped) parts.push(`跳过 ${skipped}`);
+        if (batches) parts.push(`batch ${batches}`);
+      }
+      if (job.cancel_requested_at) parts.push("停止中");
+      return parts.join(" · ");
+    },
+
+    playlistAnalysisCandidateStatusClass(status) {
+      const value = String(status || "").trim().toLowerCase();
+      if (value === "confirmed") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+      if (value === "rejected") return "border-rose-500/30 bg-rose-500/10 text-rose-200";
+      return "border-amber-500/30 bg-amber-500/10 text-amber-200";
+    },
+
+    playlistAnalysisSelectedCandidate() {
+      const selectedId = String(this.playlistAnalysisSelectedCandidateId || "").trim();
+      const items = Array.isArray(this.playlistAnalysisCandidates) ? this.playlistAnalysisCandidates : [];
+      return items.find((item) => String(item.id) === selectedId) || null;
+    },
+
+    playlistAnalysisSignalsForGranularity(granularity) {
+      const target = String(granularity || "day");
+      const start = String(this.playlistAnalysisRangeStart || "");
+      const end = String(this.playlistAnalysisRangeEnd || "");
+      const key = `${Number(this.playlistAnalysisSignalsVersion || 0)}|${target}|${start}|${end}`;
+      if (this._playlistAnalysisGranularityCache && this._playlistAnalysisGranularityCache.has(key)) {
+        return this._playlistAnalysisGranularityCache.get(key);
+      }
+      const rows = [];
+      (Array.isArray(this.playlistAnalysisSignals) ? this.playlistAnalysisSignals : []).forEach((item) => {
+        if (String(item && item.granularity ? item.granularity : "") !== target) return;
+        const date = String(item.period_date || "");
+        if (!date) return;
+        if (start && date < start) return;
+        if (end && date > end) return;
+        rows.push(item);
+      });
+      rows.sort((left, right) => String(left.period_date || "").localeCompare(String(right.period_date || "")));
+      if (!this._playlistAnalysisGranularityCache) this._playlistAnalysisGranularityCache = new Map();
+      this._playlistAnalysisGranularityCache.set(key, rows);
+      return rows;
+    },
+
+    playlistAnalysisInitializeRange() {
+      const daySignals = (Array.isArray(this.playlistAnalysisSignals) ? this.playlistAnalysisSignals : [])
+        .filter((item) => String(item.granularity || "") === "day" && item.period_date)
+        .map((item) => String(item.period_date))
+        .sort();
+      if (!daySignals.length) {
+        this.playlistAnalysisFullRangeStart = "";
+        this.playlistAnalysisFullRangeEnd = "";
+        this.playlistAnalysisRangeStart = "";
+        this.playlistAnalysisRangeEnd = "";
+        return;
+      }
+      const minDate = daySignals[0];
+      const maxDate = daySignals[daySignals.length - 1];
+      this.playlistAnalysisFullRangeStart = minDate;
+      this.playlistAnalysisFullRangeEnd = maxDate;
+      if (this.playlistAnalysisRangeStart && this.playlistAnalysisRangeEnd) return;
+      const maxMonth = maxDate.slice(0, 7);
+      const defaultStartMonth = this.playlistAnalysisShiftMonth(maxMonth, -11);
+      this.playlistAnalysisSetTimelineRangeByMonth(defaultStartMonth, maxMonth, { render: false });
+    },
+
+    playlistAnalysisInitializeRangeFromSummary(summary) {
+      const start = summary && summary.signal_start_date ? String(summary.signal_start_date).slice(0, 10) : "";
+      const end = summary && summary.signal_end_date ? String(summary.signal_end_date).slice(0, 10) : "";
+      if (!start || !end || start > end) {
+        this.playlistAnalysisFullRangeStart = "";
+        this.playlistAnalysisFullRangeEnd = "";
+        this.playlistAnalysisRangeStart = "";
+        this.playlistAnalysisRangeEnd = "";
+        return;
+      }
+      this.playlistAnalysisFullRangeStart = start;
+      this.playlistAnalysisFullRangeEnd = end;
+      if (this.playlistAnalysisRangeStart && this.playlistAnalysisRangeEnd) return;
+      const maxMonth = end.slice(0, 7);
+      const defaultStartMonth = this.playlistAnalysisShiftMonth(maxMonth, -11);
+      this.playlistAnalysisSetTimelineRangeByMonth(defaultStartMonth, maxMonth, { render: false });
+    },
+
+    playlistAnalysisScheduleSignalsReload() {
+      this.playlistAnalysisStopSignalsReload();
+      this.$nextTick(() => this.playlistAnalysisRequestChartRender());
+      this._playlistAnalysisSignalsReloadTimer = setTimeout(() => {
+        this.playlistLoadAnalysisSignals().catch((e) => {
+          this.playlistAnalysisError = e && e.message ? e.message : String(e);
+        });
+      }, 180);
+    },
+
+    playlistAnalysisSelectedTimelineMonths() {
+      const months = this.playlistAnalysisTimelineMonths();
+      if (!months.length) return [];
+      const start = Math.min(this.playlistAnalysisTimelineStartIndex(), this.playlistAnalysisTimelineEndIndex());
+      const end = Math.max(this.playlistAnalysisTimelineStartIndex(), this.playlistAnalysisTimelineEndIndex());
+      return months.slice(start, end + 1);
+    },
+
+    playlistAnalysisProjectionWindowOptions() {
+      return PLAYLIST_ANALYSIS_PROJECTION_WINDOW_OPTIONS;
+    },
+
+    playlistAnalysisProjectionWindowOptionClass(months) {
+      const active = Number(this.playlistAnalysisProjectionWindowMonths || 3) === Number(months || 0);
+      return active
+        ? "border-sky-400/40 bg-sky-500/15 text-sky-100"
+        : "border-slate-700 bg-slate-950/30 text-slate-400 hover:bg-slate-900/70 hover:text-slate-200";
+    },
+
+    playlistAnalysisProjectionWindowSize() {
+      const months = this.playlistAnalysisSelectedTimelineMonths();
+      if (!months.length) return 0;
+      const configured = Math.max(1, Number(this.playlistAnalysisProjectionWindowMonths || 3));
+      return Math.min(configured, months.length);
+    },
+
+    playlistAnalysisProjectionWindowCenterIndex() {
+      const startIndex = this.playlistAnalysisTimelineMonthIndex(this.playlistAnalysisProjectionWindowStart || this.playlistAnalysisRangeStart);
+      const endIndex = this.playlistAnalysisTimelineMonthIndex(this.playlistAnalysisProjectionWindowEnd || this.playlistAnalysisRangeEnd);
+      if (Number.isFinite(startIndex) && Number.isFinite(endIndex)) return Math.round((startIndex + endIndex) / 2);
+      return this.playlistAnalysisTimelineEndIndex();
+    },
+
+    playlistAnalysisSetProjectionWindowByCenterIndex(index, { anchorDate = "" } = {}) {
+      const selected = this.playlistAnalysisSelectedTimelineMonths();
+      const size = this.playlistAnalysisProjectionWindowSize();
+      if (!selected.length || size <= 0) return;
+      const selectedStart = Number(selected[0].index || 0);
+      const selectedEnd = Number(selected[selected.length - 1].index || 0);
+      const maxStart = Math.max(selectedStart, selectedEnd - size + 1);
+      const centerIndex = Math.max(selectedStart, Math.min(selectedEnd, Number(index || selectedStart)));
+      const startIndex = Math.max(selectedStart, Math.min(maxStart, centerIndex - Math.floor(size / 2)));
+      this.playlistAnalysisSetProjectionWindowByStartIndex(startIndex, { anchorDate });
+    },
+
+    playlistAnalysisSetProjectionWindowCenteredAtDate(dateValue, { anchorDate = "" } = {}) {
+      const date = String(dateValue || "").slice(0, 10);
+      if (!date) return;
+      this.playlistAnalysisSetProjectionWindowByCenterIndex(this.playlistAnalysisTimelineMonthIndex(date), { anchorDate });
+    },
+
+    playlistAnalysisSetProjectionWindowMonths(months) {
+      const next = Number(months || 0);
+      if (!PLAYLIST_ANALYSIS_PROJECTION_WINDOW_OPTIONS.some((item) => Number(item.months) === next)) return;
+      if (Number(this.playlistAnalysisProjectionWindowMonths || 3) === next) return;
+      this.playlistAnalysisStopProjectionPlayback();
+      this.playlistAnalysisReleaseProjectionWindowDrag();
+      const anchorDate = String(this.playlistAnalysisProjectionWindowAnchorDate || "").slice(0, 10);
+      const centerIndex = anchorDate ? this.playlistAnalysisTimelineMonthIndex(anchorDate) : this.playlistAnalysisProjectionWindowCenterIndex();
+      this.playlistAnalysisProjectionWindowMonths = next;
+      this.playlistAnalysisSetProjectionWindowByCenterIndex(centerIndex, { anchorDate });
+      this._playlistAnalysisProjectionPointsCache = null;
+      this._playlistAnalysisProjectionCentroidsCache = null;
+    },
+
+    playlistAnalysisEnsureProjectionWindow({ forceEnd = false } = {}) {
+      const months = this.playlistAnalysisTimelineMonths();
+      const selected = this.playlistAnalysisSelectedTimelineMonths();
+      const size = this.playlistAnalysisProjectionWindowSize();
+      if (!months.length || !selected.length || size <= 0) {
+        this.playlistAnalysisProjectionWindowStart = "";
+        this.playlistAnalysisProjectionWindowEnd = "";
+        this.playlistAnalysisProjectionWindowAnchorDate = "";
+        this.playlistAnalysisStopProjectionPlayback();
+        return;
+      }
+      const selectedStart = Number(selected[0].index || 0);
+      const selectedEnd = Number(selected[selected.length - 1].index || 0);
+      const maxStart = Math.max(selectedStart, selectedEnd - size + 1);
+      let startIndex = maxStart;
+      if (!forceEnd && this.playlistAnalysisProjectionWindowStart && this.playlistAnalysisProjectionWindowEnd) {
+        startIndex = this.playlistAnalysisTimelineMonthIndex(this.playlistAnalysisProjectionWindowStart);
+        startIndex = Math.max(selectedStart, Math.min(maxStart, startIndex));
+      }
+      const endIndex = Math.min(selectedEnd, startIndex + size - 1);
+      const startDate = months[startIndex].ym + "-01";
+      const endDate = this.playlistAnalysisMonthEndDate(months[endIndex].ym);
+      this.playlistAnalysisProjectionWindowStart = this.playlistAnalysisClampDateToRange(startDate);
+      this.playlistAnalysisProjectionWindowEnd = this.playlistAnalysisClampDateToRange(endDate);
+      if (forceEnd) this.playlistAnalysisProjectionWindowAnchorDate = "";
+    },
+
+    playlistAnalysisSetProjectionWindowByStartIndex(index, { anchorDate = "" } = {}) {
+      const months = this.playlistAnalysisTimelineMonths();
+      const selected = this.playlistAnalysisSelectedTimelineMonths();
+      const size = this.playlistAnalysisProjectionWindowSize();
+      if (!months.length || !selected.length || size <= 0) return;
+      const selectedStart = Number(selected[0].index || 0);
+      const selectedEnd = Number(selected[selected.length - 1].index || 0);
+      const maxStart = Math.max(selectedStart, selectedEnd - size + 1);
+      const startIndex = Math.max(selectedStart, Math.min(maxStart, Number(index || 0)));
+      const endIndex = Math.min(selectedEnd, startIndex + size - 1);
+      const startDate = months[startIndex].ym + "-01";
+      const endDate = this.playlistAnalysisMonthEndDate(months[endIndex].ym);
+      this.playlistAnalysisProjectionWindowStart = this.playlistAnalysisClampDateToRange(startDate);
+      this.playlistAnalysisProjectionWindowEnd = this.playlistAnalysisClampDateToRange(endDate);
+      this.playlistAnalysisProjectionWindowAnchorDate = String(anchorDate || "").slice(0, 10);
+    },
+
+    playlistAnalysisProjectionStep(delta = 1, { wrap = false } = {}) {
+      this.playlistAnalysisEnsureProjectionWindow();
+      const selected = this.playlistAnalysisSelectedTimelineMonths();
+      const size = this.playlistAnalysisProjectionWindowSize();
+      if (!selected.length || size <= 0) return;
+      const selectedStart = Number(selected[0].index || 0);
+      const selectedEnd = Number(selected[selected.length - 1].index || 0);
+      const maxStart = Math.max(selectedStart, selectedEnd - size + 1);
+      const current = this.playlistAnalysisTimelineMonthIndex(this.playlistAnalysisProjectionWindowStart || this.playlistAnalysisRangeStart);
+      let next = current + Number(delta || 1);
+      if (next > maxStart) next = wrap ? selectedStart : maxStart;
+      if (next < selectedStart) next = wrap ? maxStart : selectedStart;
+      this.playlistAnalysisSetProjectionWindowByStartIndex(next);
+    },
+
+    playlistAnalysisToggleProjectionPlayback() {
+      if (this.playlistAnalysisProjectionPlaying) {
+        this.playlistAnalysisStopProjectionPlayback();
+        return;
+      }
+      this.playlistAnalysisEnsureProjectionWindow({ forceEnd: false });
+      const selected = this.playlistAnalysisSelectedTimelineMonths();
+      if (selected.length <= this.playlistAnalysisProjectionWindowSize()) return;
+      const selectedStart = Number(selected[0].index || 0);
+      const selectedEnd = Number(selected[selected.length - 1].index || 0);
+      const maxStart = Math.max(selectedStart, selectedEnd - this.playlistAnalysisProjectionWindowSize() + 1);
+      if (this.playlistAnalysisTimelineMonthIndex(this.playlistAnalysisProjectionWindowStart) >= maxStart) {
+        this.playlistAnalysisSetProjectionWindowByStartIndex(selectedStart);
+      }
+      this.playlistAnalysisProjectionPlaying = true;
+      this.playlistAnalysisProjectionPlayTimer = setInterval(() => {
+        if (this.activeView !== "playlist" || this.playlistSubview !== "analysis" || this.playlistAnalysisTab !== "trend") {
+          this.playlistAnalysisStopProjectionPlayback();
+          return;
+        }
+        this.playlistAnalysisProjectionStep(1, { wrap: true });
+      }, PLAYLIST_ANALYSIS_PROJECTION_PLAYBACK_INTERVAL_MS);
+    },
+
+    playlistAnalysisProjectionRangeLabel() {
+      const start = this.playlistAnalysisProjectionWindowStart || "";
+      const end = this.playlistAnalysisProjectionWindowEnd || "";
+      if (!start || !end) return "暂无焦点窗口";
+      return `${start} ~ ${end}`;
+    },
+
+    playlistAnalysisProjectionWindowPreviewActive() {
+      const index = this.playlistAnalysisProjectionWindowPreviewStartIndex;
+      return index !== null && index !== undefined && Number.isFinite(Number(index));
+    },
+
+    playlistAnalysisProjectionWindowRangeForIndex(index) {
+      const months = this.playlistAnalysisTimelineMonths();
+      const selected = this.playlistAnalysisSelectedTimelineMonths();
+      const size = this.playlistAnalysisProjectionWindowSize();
+      if (!months.length || !selected.length || size <= 0) return null;
+      const selectedStart = Number(selected[0].index || 0);
+      const selectedEnd = Number(selected[selected.length - 1].index || 0);
+      const maxStart = Math.max(selectedStart, selectedEnd - size + 1);
+      const startIndex = Math.max(selectedStart, Math.min(maxStart, Number(index || 0)));
+      const endIndex = Math.min(selectedEnd, startIndex + size - 1);
+      if (!months[startIndex] || !months[endIndex]) return null;
+      return {
+        start: this.playlistAnalysisClampDateToRange(`${months[startIndex].ym}-01`),
+        end: this.playlistAnalysisClampDateToRange(this.playlistAnalysisMonthEndDate(months[endIndex].ym)),
+        startIndex,
+      };
+    },
+
+    playlistAnalysisProjectionDisplayWindowRange() {
+      if (this.playlistAnalysisProjectionWindowPreviewActive()) {
+        const preview = this.playlistAnalysisProjectionWindowRangeForIndex(this.playlistAnalysisProjectionWindowPreviewStartIndex);
+        if (preview && preview.start && preview.end) return preview;
+      }
+      return {
+        start: this.playlistAnalysisClampDateToRange(this.playlistAnalysisProjectionWindowStart),
+        end: this.playlistAnalysisClampDateToRange(this.playlistAnalysisProjectionWindowEnd),
+        startIndex: this.playlistAnalysisTimelineMonthIndex(this.playlistAnalysisProjectionWindowStart || this.playlistAnalysisRangeStart),
+      };
+    },
+
+    playlistAnalysisClampDateToRange(dateValue) {
+      const value = String(dateValue || "").slice(0, 10);
+      if (!value) return "";
+      const rangeStart = String(this.playlistAnalysisRangeStart || this.playlistAnalysisFullRangeStart || "").slice(0, 10);
+      const rangeEnd = String(this.playlistAnalysisRangeEnd || this.playlistAnalysisFullRangeEnd || "").slice(0, 10);
+      if (rangeStart && value < rangeStart) return rangeStart;
+      if (rangeEnd && value > rangeEnd) return rangeEnd;
+      return value;
+    },
+
+    playlistAnalysisDateRangeRatio(dateValue, bounds) {
+      const value = String(dateValue || "").slice(0, 10);
+      if (!value || !bounds || !bounds.start || !bounds.end) return null;
+      const totalDays = this.playlistAnalysisDateDiffDays(bounds.start, bounds.end) + 1;
+      if (!Number.isFinite(totalDays) || totalDays <= 0) return null;
+      const offsetDays = this.playlistAnalysisDateDiffDays(bounds.start, value);
+      if (!Number.isFinite(offsetDays)) return null;
+      return Math.max(0, Math.min(1, offsetDays / totalDays));
+    },
+
+    playlistAnalysisProjectionChartWindowStyle() {
+      const selected = this.playlistAnalysisSelectedTimelineMonths();
+      const displayRange = this.playlistAnalysisProjectionDisplayWindowRange();
+      const windowStart = displayRange.start;
+      const windowEnd = displayRange.end;
+      const bounds = this.playlistAnalysisChartRangeBounds();
+      const startRatio = this.playlistAnalysisDateRangeRatio(windowStart, bounds);
+      const endRatio = this.playlistAnalysisDateRangeRatio(this.playlistAnalysisAddDays(windowEnd, 1), bounds);
+      if (startRatio != null && endRatio != null) {
+        const left = Math.max(0, Math.min(100, Math.min(startRatio, endRatio) * 100));
+        const right = Math.max(0, Math.min(100, 100 - Math.max(startRatio, endRatio) * 100));
+        return [`left:${left}%`, `right:${right}%`].join(";");
+      }
+      if (!selected.length || !windowStart || !windowEnd) {
+        return "left:0%;right:100%;";
+      }
+      const selectedStart = Number(selected[0].index || 0);
+      const selectedEnd = Number(selected[selected.length - 1].index || 0);
+      const slotCount = Math.max(1, selectedEnd - selectedStart + 1);
+      const startIndex = Math.max(selectedStart, Math.min(selectedEnd, this.playlistAnalysisTimelineMonthIndex(windowStart)));
+      const endIndex = Math.max(selectedStart, Math.min(selectedEnd, this.playlistAnalysisTimelineMonthIndex(windowEnd)));
+      const left = Math.max(0, Math.min(100, ((Math.min(startIndex, endIndex) - selectedStart) / slotCount) * 100));
+      const right = Math.max(0, Math.min(100, 100 - ((Math.max(startIndex, endIndex) - selectedStart + 1) / slotCount) * 100));
+      return [`left:${left}%`, `right:${right}%`].join(";");
+    },
+
+    playlistAnalysisBreakpoints() {
+      const bounds = this.playlistAnalysisChartRangeBounds();
+      if (!bounds) return [];
+      const cacheKey = [
+        Number(this.playlistAnalysisSignalsVersion || 0),
+        Number(this.playlistAnalysisCandidatesVersion || 0),
+        String(this.playlistAnalysisRangeStart || ""),
+        String(this.playlistAnalysisRangeEnd || ""),
+        String(this.playlistAnalysisCandidatesLoaded || false),
+        String((Array.isArray(this.playlistAnalysisCandidates) ? this.playlistAnalysisCandidates.length : 0)),
+      ].join("|");
+      if (this._playlistAnalysisBreakpointsCache && this._playlistAnalysisBreakpointsCache.key === cacheKey) {
+        return this._playlistAnalysisBreakpointsCache.value;
+      }
+      const byEvent = new Map();
+      const priority = { day: 0, week: 1, month: 2 };
+      const remember = (item) => {
+        const id = String(item && item.id ? item.id : "").trim();
+        const date = String(item && item.date ? item.date : "").slice(0, 10);
+        if (!id || !date || date < bounds.start || date > bounds.end) return;
+        const granularity = String(item.granularity || "event");
+        const rank = priority[granularity] ?? 3;
+        const sourceRank = String(item.source || "") === "candidate" ? 2 : 1;
+        const current = byEvent.get(id);
+        if (current) {
+          if (Number(current.sourceRank || 0) > sourceRank) return;
+          if (Number(current.sourceRank || 0) === sourceRank && (current.rank < rank || (current.rank === rank && String(current.date || "") <= date))) return;
+        }
+        byEvent.set(id, { ...item, id, date, granularity, rank, sourceRank });
+      };
+      (Array.isArray(this.playlistAnalysisSignals) ? this.playlistAnalysisSignals : []).forEach((signal) => {
+        const id = String((signal && signal.linked_event_id) || "").trim();
+        if (!id) return;
+        remember({
+          id,
+          date: signal.period_date,
+          granularity: signal.granularity,
+          score: null,
+          strengthReady: false,
+          source: "signal",
+          label: "候选断点",
+        });
+      });
+      if (this.playlistAnalysisCandidatesLoaded) {
+        (Array.isArray(this.playlistAnalysisCandidates) ? this.playlistAnalysisCandidates : []).forEach((candidate) => {
+          remember({
+            id: candidate.event_id || candidate.id,
+            date: candidate.breakpoint_date || candidate.event_date || candidate.candidate_date,
+            granularity: candidate.detection_granularity || "event",
+            score: candidate.boundary_z ?? candidate.score,
+            boundaryScore: candidate.boundary_score,
+            strengthReady: candidate.boundary_z != null || candidate.score != null,
+            source: "candidate",
+            label: this.playlistAnalysisEventTypeLabel(candidate.event_type),
+          });
+        });
+      }
+      const result = Array.from(byEvent.values())
+        .map((item) => {
+          const ratio = this.playlistAnalysisDateRangeRatio(item.date, bounds);
+          return ratio == null ? null : { ...item, left: ratio * 100 };
+        })
+        .filter(Boolean)
+        .sort((left, right) => String(left.date || "").localeCompare(String(right.date || "")));
+      this._playlistAnalysisBreakpointsCache = { key: cacheKey, value: result };
+      return result;
+    },
+
+    playlistAnalysisBreakpointDisplayModeOptions() {
+      return PLAYLIST_ANALYSIS_BREAKPOINT_DISPLAY_MODES;
+    },
+
+    playlistAnalysisBreakpointDisplayModeClass(mode) {
+      const active = String(this.playlistAnalysisBreakpointDisplayMode || "auto") === String(mode || "auto");
+      return active
+        ? "border-rose-400/40 bg-rose-500/15 text-rose-100"
+        : "border-slate-700 bg-slate-950/30 text-slate-400 hover:bg-slate-900/70 hover:text-slate-200";
+    },
+
+    playlistAnalysisSetBreakpointDisplayMode(mode) {
+      const next = String(mode || "auto").trim();
+      const valid = PLAYLIST_ANALYSIS_BREAKPOINT_DISPLAY_MODES.some((item) => item.key === next);
+      this.playlistAnalysisBreakpointDisplayMode = valid ? next : "auto";
+      this.playlistAnalysisHoveredBreakpointItemId = "";
+      this._playlistAnalysisBreakpointDisplayCache = null;
+    },
+
+    playlistAnalysisBreakpointScoreValue(item) {
+      const score = item && item.score != null ? Number(item.score) : NaN;
+      return Number.isFinite(score) ? score : -Infinity;
+    },
+
+    playlistAnalysisSortBreakpointsByStrength(items) {
+      return (Array.isArray(items) ? items : [])
+        .slice()
+        .sort((left, right) => {
+          const scoreDiff = this.playlistAnalysisBreakpointScoreValue(right) - this.playlistAnalysisBreakpointScoreValue(left);
+          if (Number.isFinite(scoreDiff) && scoreDiff !== 0) return scoreDiff;
+          const readyDiff = Number(!!(right && right.strengthReady)) - Number(!!(left && left.strengthReady));
+          if (readyDiff) return readyDiff;
+          return String(left && left.date ? left.date : "").localeCompare(String(right && right.date ? right.date : ""));
+        });
+    },
+
+    playlistAnalysisBreakpointClusterItems(breakpoints) {
+      const points = (Array.isArray(breakpoints) ? breakpoints : [])
+        .slice()
+        .sort((left, right) => Number(left.left || 0) - Number(right.left || 0));
+      if (!points.length) return [];
+      const width = this.playlistAnalysisTrendChartWidthPx() || 960;
+      const bucketPercent = (PLAYLIST_ANALYSIS_BREAKPOINT_CLUSTER_MIN_PX / Math.max(1, width)) * 100;
+      const groups = [];
+      let group = [];
+      let lastLeft = null;
+      points.forEach((point) => {
+        const left = Number(point.left || 0);
+        if (group.length && lastLeft != null && Math.abs(left - lastLeft) > bucketPercent) {
+          groups.push(group);
+          group = [];
+        }
+        group.push(point);
+        lastLeft = left;
+      });
+      if (group.length) groups.push(group);
+      return groups.map((items, index) => {
+        const sortedByDate = items.slice().sort((left, right) => String(left.date || "").localeCompare(String(right.date || "")));
+        const strongest = this.playlistAnalysisSortBreakpointsByStrength(items)[0] || sortedByDate[0];
+        const minLeft = Math.min(...items.map((item) => Number(item.left || 0)));
+        const maxLeft = Math.max(...items.map((item) => Number(item.left || 0)));
+        return {
+          kind: "cluster",
+          displayId: `cluster:${index}:${String(sortedByDate[0] && sortedByDate[0].id ? sortedByDate[0].id : "")}:${items.length}`,
+          breakpoints: items,
+          topBreakpoint: strongest,
+          date: strongest && strongest.date ? strongest.date : sortedByDate[0].date,
+          rangeStart: sortedByDate[0].date,
+          rangeEnd: sortedByDate[sortedByDate.length - 1].date,
+          left: (minLeft + maxLeft) / 2,
+          rangeLeft: minLeft,
+          rangeRight: maxLeft,
+          count: items.length,
+          score: strongest ? strongest.score : null,
+          strengthReady: !!(strongest && strongest.strengthReady),
+          granularity: strongest ? strongest.granularity : "event",
+        };
+      });
+    },
+
+    playlistAnalysisBreakpointDisplayItems() {
+      const breakpoints = this.playlistAnalysisBreakpoints();
+      if (!breakpoints.length) return [];
+      const selectedId = String(this.playlistAnalysisSelectedCandidateId || "");
+      const mode = PLAYLIST_ANALYSIS_BREAKPOINT_DISPLAY_MODES.some((item) => item.key === String(this.playlistAnalysisBreakpointDisplayMode || "auto"))
+        ? String(this.playlistAnalysisBreakpointDisplayMode || "auto")
+        : "auto";
+      const width = Math.round(this.playlistAnalysisTrendChartWidthPx() || 0);
+      const cacheKey = [
+        Number(this.playlistAnalysisSignalsVersion || 0),
+        Number(this.playlistAnalysisCandidatesVersion || 0),
+        String(this.playlistAnalysisRangeStart || ""),
+        String(this.playlistAnalysisRangeEnd || ""),
+        String(this.playlistAnalysisCandidatesLoaded || false),
+        String(breakpoints.length),
+        selectedId,
+        mode,
+        width,
+      ].join("|");
+      if (this._playlistAnalysisBreakpointDisplayCache && this._playlistAnalysisBreakpointDisplayCache.key === cacheKey) {
+        return this._playlistAnalysisBreakpointDisplayCache.value;
+      }
+      const selectedMonths = this.playlistAnalysisSelectedTimelineMonths().length;
+      const strongest = this.playlistAnalysisSortBreakpointsByStrength(breakpoints);
+      const labelIds = new Set(
+        strongest
+          .filter((item) => item && item.strengthReady)
+          .slice(0, PLAYLIST_ANALYSIS_BREAKPOINT_TOP_VISIBLE_COUNT)
+          .map((item) => String(item.id || ""))
+      );
+      const asSingle = (breakpoint, { showLabel = false, overlay = false } = {}) => ({
+        ...breakpoint,
+        kind: "single",
+        displayId: `${overlay ? "overlay" : "single"}:${String(breakpoint.id || "")}`,
+        breakpoint,
+        showLabelByDefault: showLabel,
+        overlay,
+      });
+      let result = [];
+      if (mode === "all") {
+        result = breakpoints.map((item) => asSingle(item, { showLabel: labelIds.has(String(item.id || "")) }));
+      } else if (mode === "important") {
+        result = strongest.slice(0, PLAYLIST_ANALYSIS_BREAKPOINT_IMPORTANT_COUNT).map((item) => asSingle(item, { showLabel: true }));
+      } else {
+        const shouldExpand =
+          mode === "auto" &&
+          selectedMonths > 0 &&
+          selectedMonths <= PLAYLIST_ANALYSIS_BREAKPOINT_AUTO_MONTH_LIMIT &&
+          breakpoints.length <= PLAYLIST_ANALYSIS_BREAKPOINT_AUTO_COUNT_LIMIT;
+        if (shouldExpand) {
+          result = breakpoints.map((item) => asSingle(item, { showLabel: labelIds.has(String(item.id || "")) }));
+        } else {
+          result = this.playlistAnalysisBreakpointClusterItems(breakpoints);
+          if (mode === "auto") {
+            const overlayIds = new Set(
+              strongest
+                .filter((item) => item && item.strengthReady)
+                .slice(0, PLAYLIST_ANALYSIS_BREAKPOINT_TOP_VISIBLE_COUNT)
+                .map((item) => String(item.id || ""))
+            );
+            if (selectedId) overlayIds.add(selectedId);
+            const overlays = breakpoints
+              .filter((item) => overlayIds.has(String(item.id || "")))
+              .map((item) => asSingle(item, { showLabel: String(item.id || "") === selectedId, overlay: true }));
+            result = result.concat(overlays);
+          }
+        }
+      }
+      this._playlistAnalysisBreakpointDisplayCache = { key: cacheKey, value: result };
+      return result;
+    },
+
+    playlistAnalysisHoveredBreakpointDisplayClusters() {
+      return this.playlistAnalysisBreakpointDisplayItems().filter((item) => item.kind === "cluster" && this.playlistAnalysisBreakpointDisplayItemHovered(item));
+    },
+
+    playlistAnalysisBreakpointDisplayItemClass(item) {
+      if (item && item.kind === "cluster") {
+        return "top-0 h-9 w-10 -translate-x-1/2";
+      }
+      return "bottom-7 top-4 w-0 -translate-x-1/2 border-l border-dashed border-rose-300/65 hover:border-rose-200 focus:border-rose-200";
+    },
+
+    playlistAnalysisBreakpointDisplayItemStyle(item) {
+      if (item && item.kind === "cluster") {
+        const left = Math.max(0, Math.min(100, Number(item.left || 0)));
+        return `left:${left}%;z-index:11;`;
+      }
+      return `${this.playlistAnalysisBreakpointStyle(item)}z-index:${item && item.overlay ? 13 : 12};`;
+    },
+
+    playlistAnalysisBreakpointClusterLineStyle(item) {
+      const intensity = this.playlistAnalysisBreakpointIntensity(item);
+      const alpha = item && item.strengthReady ? 0.34 + intensity * 0.5 : 0.26;
+      const height = Math.min(28, 14 + Math.sqrt(Math.max(1, Number(item && item.count ? item.count : 1))) * 3);
+      return `height:${height}px;border-color:rgba(251,113,133,${alpha});`;
+    },
+
+    playlistAnalysisBreakpointClusterDotStyle(item) {
+      const intensity = this.playlistAnalysisBreakpointIntensity(item);
+      const count = Math.max(1, Number(item && item.count ? item.count : 1));
+      const size = Math.min(18, 6 + Math.sqrt(count) * 2 + intensity * 3);
+      const fillAlpha = item && item.strengthReady ? 0.58 + intensity * 0.36 : 0.46;
+      const glowAlpha = item && item.strengthReady ? 0.16 + intensity * 0.28 : 0.12;
+      return [
+        `width:${size}px`,
+        `height:${size}px`,
+        `background:rgba(251,113,133,${fillAlpha})`,
+        `box-shadow:0 0 ${8 + intensity * 10}px rgba(251,113,133,${glowAlpha})`,
+      ].join(";");
+    },
+
+    playlistAnalysisBreakpointClusterRangeStyle(item) {
+      const left = Math.max(0, Math.min(100, Number(item && item.rangeLeft != null ? item.rangeLeft : item && item.left != null ? item.left : 0)));
+      const right = Math.max(left, Math.min(100, Number(item && item.rangeRight != null ? item.rangeRight : left)));
+      const width = Math.max(0.6, right - left);
+      return `left:${left}%;width:${width}%;`;
+    },
+
+    playlistAnalysisBreakpointClusterCountLabel(item) {
+      const count = Math.max(1, Number(item && item.count ? item.count : 1));
+      return count > 99 ? "99+" : `+${count}`;
+    },
+
+    playlistAnalysisBreakpointDisplayItemTarget(item) {
+      if (!item) return null;
+      if (item.kind === "cluster") return item.topBreakpoint || null;
+      return item.breakpoint || item;
+    },
+
+    playlistAnalysisSelectBreakpointDisplayItem(item) {
+      const target = this.playlistAnalysisBreakpointDisplayItemTarget(item);
+      if (target) this.playlistAnalysisSelectBreakpoint(target);
+    },
+
+    playlistAnalysisHoverBreakpointDisplayItem(item) {
+      this.playlistAnalysisHoveredBreakpointItemId = item && item.displayId ? String(item.displayId) : "";
+    },
+
+    playlistAnalysisBreakpointDisplayItemHovered(item) {
+      return !!item && String(item.displayId || "") === String(this.playlistAnalysisHoveredBreakpointItemId || "");
+    },
+
+    playlistAnalysisBreakpointDisplayItemSelected(item) {
+      const selectedId = String(this.playlistAnalysisSelectedCandidateId || "");
+      if (!selectedId || !item) return false;
+      if (item.kind === "cluster") {
+        return (Array.isArray(item.breakpoints) ? item.breakpoints : []).some((breakpoint) => String(breakpoint.id || "") === selectedId);
+      }
+      const target = this.playlistAnalysisBreakpointDisplayItemTarget(item);
+      return !!target && String(target.id || "") === selectedId;
+    },
+
+    playlistAnalysisBreakpointShowLabel(item) {
+      if (!item || item.kind !== "single") return false;
+      return !!item.showLabelByDefault || this.playlistAnalysisBreakpointDisplayItemHovered(item) || this.playlistAnalysisBreakpointDisplayItemSelected(item);
+    },
+
+    playlistAnalysisBreakpointDisplayItemTitle(item) {
+      if (item && item.kind === "cluster") {
+        const count = Number(item.count || 0);
+        const score = item.score != null ? Number(item.score) : NaN;
+        const scoreText = Number.isFinite(score) ? ` · 最高边界 z ${score.toFixed(2)}` : " · 强度加载中";
+        const topDate = item.topBreakpoint && item.topBreakpoint.date ? ` · 最强 ${item.topBreakpoint.date}` : "";
+        const range = item.rangeStart && item.rangeEnd && item.rangeStart !== item.rangeEnd ? `${item.rangeStart} ~ ${item.rangeEnd}` : String(item.rangeStart || item.date || "");
+        return `候选断点簇 ${range} · ${count} 个${scoreText}${topDate}`;
+      }
+      return this.playlistAnalysisBreakpointTitle(item);
+    },
+
+    playlistAnalysisBreakpointStyle(breakpoint) {
+      const left = Math.max(0, Math.min(100, Number(breakpoint && breakpoint.left != null ? breakpoint.left : 0)));
+      const intensity = this.playlistAnalysisBreakpointIntensity(breakpoint);
+      const alpha = breakpoint && breakpoint.strengthReady ? 0.28 + intensity * 0.62 : 0.32;
+      return `left:${left}%;border-color:rgba(251,113,133,${alpha});`;
+    },
+
+    playlistAnalysisBreakpointIntensity(breakpoint) {
+      const score = breakpoint && breakpoint.score != null ? Number(breakpoint.score) : NaN;
+      if (!Number.isFinite(score)) return 0;
+      const span = PLAYLIST_ANALYSIS_BREAKPOINT_Z_MAX - PLAYLIST_ANALYSIS_BREAKPOINT_Z_MIN;
+      return Math.max(0, Math.min(1, (score - PLAYLIST_ANALYSIS_BREAKPOINT_Z_MIN) / span));
+    },
+
+    playlistAnalysisBreakpointDotStyle(breakpoint) {
+      const intensity = this.playlistAnalysisBreakpointIntensity(breakpoint);
+      const ready = !!(breakpoint && breakpoint.strengthReady);
+      const size = ready ? 6 + intensity * 6 : 6;
+      const fillAlpha = ready ? 0.62 + intensity * 0.34 : 0.5;
+      const glowAlpha = ready ? 0.2 + intensity * 0.32 : 0.16;
+      const spread = ready ? 7 + intensity * 9 : 7;
+      return [
+        `width:${size}px`,
+        `height:${size}px`,
+        `background:rgba(251,113,133,${fillAlpha})`,
+        `box-shadow:0 0 ${spread}px rgba(251,113,133,${glowAlpha})`,
+      ].join(";");
+    },
+
+    playlistAnalysisBreakpointLabelStyle(breakpoint) {
+      const intensity = this.playlistAnalysisBreakpointIntensity(breakpoint);
+      const ready = !!(breakpoint && breakpoint.strengthReady);
+      const alpha = ready ? 0.72 + intensity * 0.24 : 0.58;
+      return `opacity:${alpha};`;
+    },
+
+    playlistAnalysisBreakpointTitle(breakpoint) {
+      const date = String((breakpoint && breakpoint.date) || "");
+      const score = breakpoint && breakpoint.score != null ? Number(breakpoint.score) : null;
+      const granularity = String((breakpoint && breakpoint.granularity) || "").trim();
+      if (!breakpoint || !breakpoint.strengthReady || !Number.isFinite(score)) return `候选断点 ${date} · 强度加载中`;
+      const granularityText = granularity ? ` · ${granularity}` : "";
+      return `候选断点 ${date} · 边界 z ${score.toFixed(2)}${granularityText}`;
+    },
+
+    playlistAnalysisBreakpointShortLabel(breakpoint) {
+      const date = String((breakpoint && breakpoint.date) || "");
+      if (date.length >= 10) return `${date.slice(2, 4)}/${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
+      return date || "断点";
+    },
+
+    playlistAnalysisSelectBreakpoint(breakpoint) {
+      const date = String((breakpoint && breakpoint.date) || "").slice(0, 10);
+      if (!date) return;
+      this.playlistAnalysisStopProjectionPlayback();
+      if (breakpoint && breakpoint.id) this.playlistAnalysisSelectedCandidateId = String(breakpoint.id);
+      this.playlistAnalysisSetProjectionWindowCenteredAtDate(date, { anchorDate: date });
+    },
+
+    playlistAnalysisProjectionWindowDragClass() {
+      if (!this.playlistAnalysisProjectionCanPlay()) return "cursor-not-allowed opacity-60";
+      return this.playlistAnalysisProjectionWindowDragging
+        ? "cursor-grabbing border-sky-200/70 bg-sky-400/20 shadow-[0_0_18px_rgba(56,189,248,0.22)]"
+        : "cursor-grab border-sky-400/40 bg-sky-400/10 hover:border-sky-200/70 hover:bg-sky-400/20";
+    },
+
+    playlistAnalysisProjectionWindowStepPx() {
+      const selected = this.playlistAnalysisSelectedTimelineMonths();
+      if (selected.length <= 1) return 0;
+      const width = this.playlistAnalysisTrendChartWidthPx();
+      return width > 0 ? width / Math.max(1, selected.length) : 0;
+    },
+
+    playlistAnalysisTrendChartWidthPx() {
+      try {
+        const el = this.$refs && (this.$refs.playlistAnalysisProjectionWindowLayer || this.$refs.playlistAnalysisTrendChartFrame || this.$refs.playlistAnalysisTrendChart);
+        const width = el && el.clientWidth ? Number(el.clientWidth) : 0;
+        return Number.isFinite(width) && width > 0 ? width : 0;
+      } catch {
+        return 0;
+      }
+    },
+
+    playlistAnalysisReleaseProjectionWindowDrag() {
+      try {
+        if (this._playlistAnalysisProjectionWindowDragMove) window.removeEventListener("pointermove", this._playlistAnalysisProjectionWindowDragMove);
+      } catch {
+        // ignore
+      }
+      try {
+        if (this._playlistAnalysisProjectionWindowDragEnd) {
+          window.removeEventListener("pointerup", this._playlistAnalysisProjectionWindowDragEnd);
+          window.removeEventListener("pointercancel", this._playlistAnalysisProjectionWindowDragEnd);
+        }
+      } catch {
+        // ignore
+      }
+      this._playlistAnalysisProjectionWindowDragMove = null;
+      this._playlistAnalysisProjectionWindowDragEnd = null;
+      this.playlistAnalysisProjectionWindowDragging = false;
+      this.playlistAnalysisProjectionWindowDragPointerId = null;
+      this.playlistAnalysisProjectionWindowPreviewStartIndex = null;
+    },
+
+    playlistAnalysisStartProjectionWindowDrag(ev) {
+      if (!this.playlistAnalysisProjectionCanPlay()) return;
+      if (!ev || (ev.pointerType === "mouse" && ev.button !== 0)) return;
+      this.playlistAnalysisReleaseRangeDrag();
+      this.playlistAnalysisReleaseProjectionWindowDrag();
+      this.playlistAnalysisStopProjectionPlayback();
+      this.playlistAnalysisEnsureProjectionWindow();
+      this.playlistAnalysisProjectionWindowDragging = true;
+      this.playlistAnalysisProjectionWindowDragPointerId = ev.pointerId;
+      this.playlistAnalysisProjectionWindowDragStartX = Number(ev.clientX || 0);
+      this.playlistAnalysisProjectionWindowDragStartIndex = this.playlistAnalysisTimelineMonthIndex(this.playlistAnalysisProjectionWindowStart || this.playlistAnalysisRangeStart);
+      this.playlistAnalysisProjectionWindowPreviewStartIndex = this.playlistAnalysisProjectionWindowDragStartIndex;
+      this._playlistAnalysisProjectionWindowDragMove = (nextEv) => this.playlistAnalysisMoveProjectionWindowDrag(nextEv);
+      this._playlistAnalysisProjectionWindowDragEnd = (nextEv) => this.playlistAnalysisEndProjectionWindowDrag(nextEv);
+      try {
+        window.addEventListener("pointermove", this._playlistAnalysisProjectionWindowDragMove, { passive: false });
+        window.addEventListener("pointerup", this._playlistAnalysisProjectionWindowDragEnd, { passive: false });
+        window.addEventListener("pointercancel", this._playlistAnalysisProjectionWindowDragEnd, { passive: false });
+      } catch {
+        // ignore
+      }
+      try {
+        if (ev.currentTarget && ev.currentTarget.setPointerCapture) ev.currentTarget.setPointerCapture(ev.pointerId);
+      } catch {
+        // ignore
+      }
+      try {
+        if (ev.cancelable) ev.preventDefault();
+        ev.stopPropagation();
+      } catch {
+        // ignore
+      }
+    },
+
+    playlistAnalysisMoveProjectionWindowDrag(ev) {
+      if (!this.playlistAnalysisProjectionWindowDragging) return;
+      if (ev && this.playlistAnalysisProjectionWindowDragPointerId !== null && ev.pointerId !== this.playlistAnalysisProjectionWindowDragPointerId) return;
+      const selected = this.playlistAnalysisSelectedTimelineMonths();
+      const size = this.playlistAnalysisProjectionWindowSize();
+      if (!selected.length || size <= 0) return;
+      const selectedStart = Number(selected[0].index || 0);
+      const selectedEnd = Number(selected[selected.length - 1].index || 0);
+      const maxStart = Math.max(selectedStart, selectedEnd - size + 1);
+      const stepPx = this.playlistAnalysisProjectionWindowStepPx();
+      if (stepPx <= 0) return;
+      const delta = Math.round((Number((ev && ev.clientX) || 0) - Number(this.playlistAnalysisProjectionWindowDragStartX || 0)) / stepPx);
+      const nextStart = Math.max(selectedStart, Math.min(maxStart, Number(this.playlistAnalysisProjectionWindowDragStartIndex || selectedStart) + delta));
+      if (nextStart !== Number(this.playlistAnalysisProjectionWindowPreviewStartIndex)) {
+        this.playlistAnalysisProjectionWindowPreviewStartIndex = nextStart;
+      }
+      try {
+        if (ev && ev.cancelable) ev.preventDefault();
+        if (ev) ev.stopPropagation();
+      } catch {
+        // ignore
+      }
+    },
+
+    playlistAnalysisEndProjectionWindowDrag(ev) {
+      if (!this.playlistAnalysisProjectionWindowDragging) return;
+      if (ev && this.playlistAnalysisProjectionWindowDragPointerId !== null && ev.pointerId !== this.playlistAnalysisProjectionWindowDragPointerId) return;
+      this.playlistAnalysisMoveProjectionWindowDrag(ev);
+      const nextStart = this.playlistAnalysisProjectionWindowPreviewActive()
+        ? Number(this.playlistAnalysisProjectionWindowPreviewStartIndex)
+        : this.playlistAnalysisTimelineMonthIndex(this.playlistAnalysisProjectionWindowStart || this.playlistAnalysisRangeStart);
+      this.playlistAnalysisReleaseProjectionWindowDrag();
+      this.playlistAnalysisSetProjectionWindowByStartIndex(nextStart);
+    },
+
+    playlistAnalysisProjectionWindowKeydown(ev) {
+      const key = String((ev && ev.key) || "");
+      const delta = key === "ArrowLeft" ? -1 : key === "ArrowRight" ? 1 : 0;
+      if (!delta || !this.playlistAnalysisProjectionCanPlay()) return;
+      this.playlistAnalysisStopProjectionPlayback();
+      this.playlistAnalysisProjectionStep(delta);
+      try {
+        if (ev.cancelable) ev.preventDefault();
+        ev.stopPropagation();
+      } catch {
+        // ignore
+      }
+    },
+
+    playlistAnalysisProjectionCanPlay() {
+      const selected = this.playlistAnalysisSelectedTimelineMonths();
+      return selected.length > this.playlistAnalysisProjectionWindowSize();
+    },
+
+    playlistAnalysisRangeLabel() {
+      const start = this.playlistAnalysisRangeStart || this.playlistAnalysisFullRangeStart || "-";
+      const end = this.playlistAnalysisRangeEnd || this.playlistAnalysisFullRangeEnd || "-";
+      return `${start} ~ ${end}`;
+    },
+
+    playlistAnalysisHeaderContextLabel() {
+      if (String(this.playlistAnalysisTab || "trend") === "events") {
+        if (this.playlistAnalysisCandidatesLoading) return "事件加载中";
+        if (!this.playlistAnalysisCandidatesLoaded) return "事件未加载";
+        const items = Array.isArray(this.playlistAnalysisCandidates) ? this.playlistAnalysisCandidates : [];
+        if (!items.length) return "暂无事件";
+        const confirmed = items.filter((item) => String(item.status || "").trim().toLowerCase() === "confirmed").length;
+        return `${items.length} 个事件 · ${confirmed} 已确认`;
+      }
+      const start = this.playlistAnalysisRangeStart || this.playlistAnalysisFullRangeStart || "";
+      const end = this.playlistAnalysisRangeEnd || this.playlistAnalysisFullRangeEnd || "";
+      if (!start || !end) return "暂无信号范围";
+      return `信号范围 ${start} ~ ${end}`;
+    },
+
+    playlistAnalysisHandleRangeChange() {
+      if (this.playlistAnalysisRangeStart && this.playlistAnalysisRangeEnd && this.playlistAnalysisRangeStart > this.playlistAnalysisRangeEnd) {
+        const start = this.playlistAnalysisRangeStart;
+        this.playlistAnalysisRangeStart = this.playlistAnalysisRangeEnd;
+        this.playlistAnalysisRangeEnd = start;
+      }
+      this.playlistAnalysisDestroyChart();
+      this.$nextTick(() => this.playlistAnalysisRequestChartRender());
+    },
+
+    playlistAnalysisShiftMonth(ym, offset) {
+      const value = String(ym || "").slice(0, 7);
+      const parts = value.split("-").map((item) => Number(item));
+      if (parts.length !== 2 || !parts[0] || !parts[1]) return "";
+      const date = new Date(parts[0], parts[1] - 1 + Number(offset || 0), 1);
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      return `${year}-${month}`;
+    },
+
+    playlistAnalysisMonthEndDate(ym) {
+      const value = String(ym || "").slice(0, 7);
+      const parts = value.split("-").map((item) => Number(item));
+      if (parts.length !== 2 || !parts[0] || !parts[1]) return "";
+      const day = new Date(parts[0], parts[1], 0).getDate();
+      return `${value}-${String(day).padStart(2, "0")}`;
+    },
+
+    playlistAnalysisTimelineMonths() {
+      const start = String(this.playlistAnalysisFullRangeStart || "").slice(0, 7);
+      const end = String(this.playlistAnalysisFullRangeEnd || "").slice(0, 7);
+      if (!start || !end || start > end) return [];
+      const cacheKey = `${start}|${end}`;
+      if (this._playlistAnalysisTimelineMonthsCache && this._playlistAnalysisTimelineMonthsCache.key === cacheKey) {
+        return this._playlistAnalysisTimelineMonthsCache.value;
+      }
+      const months = [];
+      for (let ym = start; ym && ym <= end; ym = this.playlistAnalysisShiftMonth(ym, 1)) {
+        months.push({
+          index: months.length,
+          ym,
+        });
+      }
+      this._playlistAnalysisTimelineMonthsCache = { key: cacheKey, value: months };
+      return months;
+    },
+
+    playlistAnalysisTimelineTickStyle() {
+      const count = this.playlistAnalysisTimelineMonths().length;
+      if (count <= 1) return "background:rgba(100,116,139,0.35);";
+      const step = 100 / Math.max(1, count - 1);
+      return [
+        "background-image:linear-gradient(90deg,rgba(100,116,139,0.42) 1px,transparent 1px)",
+        `background-size:${step}% 100%`,
+        "background-position:left center",
+        "background-repeat:repeat-x",
+      ].join(";");
+    },
+
+    playlistAnalysisTimelineTrackWidthPx() {
+      try {
+        const el = this.$refs && this.$refs.playlistAnalysisTimelineTrack;
+        const width = el && el.clientWidth ? Number(el.clientWidth) : 0;
+        return Number.isFinite(width) && width > 0 ? width : 0;
+      } catch {
+        return 0;
+      }
+    },
+
+    playlistAnalysisTimelineYearMarks() {
+      const months = this.playlistAnalysisTimelineMonths();
+      if (!months.length) return [];
+      const marks = [];
+      months.forEach((month) => {
+        const ym = String(month.ym || "");
+        const year = ym.slice(0, 4);
+        const monthPart = ym.slice(5, 7);
+        if (!year) return;
+        if (Number(month.index || 0) === 0 || monthPart === "01") {
+          marks.push({ key: `${year}-${month.index}`, label: year, index: Number(month.index || 0) });
+        }
+      });
+      if (marks.length <= 1) return marks;
+      let maxMarks = 18;
+      try {
+        const width = this.playlistAnalysisTimelineTrackWidthPx() || (window && window.innerWidth ? Number(window.innerWidth) : 1280);
+        if (width < 520) maxMarks = 5;
+        else if (width < 900) maxMarks = 8;
+        else if (width < 1280) maxMarks = 12;
+      } catch {
+        // ignore
+      }
+      const step = Math.max(1, Math.ceil(marks.length / maxMarks));
+      return marks.filter((mark, index) => index === 0 || index === marks.length - 1 || index % step === 0);
+    },
+
+    playlistAnalysisTimelineYearMarkStyle(mark) {
+      const months = this.playlistAnalysisTimelineMonths();
+      const maxIndex = Math.max(1, months.length - 1);
+      const index = Math.max(0, Math.min(Number(mark && mark.index != null ? mark.index : 0), maxIndex));
+      const percent = (index / maxIndex) * 100;
+      const transform = index <= 0 ? "translateX(0)" : index >= maxIndex ? "translateX(-100%)" : "translateX(-50%)";
+      return `left:${percent}%;transform:${transform};`;
+    },
+
+    playlistAnalysisTimelineMonthIndex(dateValue) {
+      const ym = String(dateValue || "").slice(0, 7);
+      const months = this.playlistAnalysisTimelineMonths();
+      const index = months.findIndex((item) => item.ym === ym);
+      if (index >= 0) return index;
+      if (!months.length) return 0;
+      if (ym && ym < months[0].ym) return 0;
+      return months.length - 1;
+    },
+
+    playlistAnalysisTimelineStartIndex() {
+      return this.playlistAnalysisTimelineMonthIndex(this.playlistAnalysisRangeStart || this.playlistAnalysisFullRangeStart);
+    },
+
+    playlistAnalysisTimelineEndIndex() {
+      return this.playlistAnalysisTimelineMonthIndex(this.playlistAnalysisRangeEnd || this.playlistAnalysisFullRangeEnd);
+    },
+
+    playlistAnalysisTimelinePreviewActive() {
+      const start = this.playlistAnalysisTimelinePreviewStartIndex;
+      const end = this.playlistAnalysisTimelinePreviewEndIndex;
+      if (start === null || start === undefined || end === null || end === undefined) return false;
+      return (
+        Number.isFinite(Number(start)) &&
+        Number.isFinite(Number(end))
+      );
+    },
+
+    playlistAnalysisTimelineDisplayStartIndex() {
+      if (this.playlistAnalysisTimelinePreviewActive()) {
+        return Math.min(Number(this.playlistAnalysisTimelinePreviewStartIndex), Number(this.playlistAnalysisTimelinePreviewEndIndex));
+      }
+      return Math.min(this.playlistAnalysisTimelineStartIndex(), this.playlistAnalysisTimelineEndIndex());
+    },
+
+    playlistAnalysisTimelineDisplayEndIndex() {
+      if (this.playlistAnalysisTimelinePreviewActive()) {
+        return Math.max(Number(this.playlistAnalysisTimelinePreviewStartIndex), Number(this.playlistAnalysisTimelinePreviewEndIndex));
+      }
+      return Math.max(this.playlistAnalysisTimelineStartIndex(), this.playlistAnalysisTimelineEndIndex());
+    },
+
+    playlistAnalysisSetTimelinePreview(startIndex, endIndex) {
+      const months = this.playlistAnalysisTimelineMonths();
+      if (!months.length) return;
+      const maxIndex = months.length - 1;
+      const start = Math.max(0, Math.min(maxIndex, Number(startIndex || 0)));
+      const end = Math.max(0, Math.min(maxIndex, Number(endIndex || 0)));
+      this.playlistAnalysisTimelinePreviewStartIndex = Math.min(start, end);
+      this.playlistAnalysisTimelinePreviewEndIndex = Math.max(start, end);
+    },
+
+    playlistAnalysisClearTimelinePreview() {
+      this.playlistAnalysisTimelinePreviewStartIndex = null;
+      this.playlistAnalysisTimelinePreviewEndIndex = null;
+    },
+
+    playlistAnalysisSignalsCacheKey(pid, start, end) {
+      const runId = this.playlistAnalysisSummary && this.playlistAnalysisSummary.last_ready_run_id ? String(this.playlistAnalysisSummary.last_ready_run_id) : "";
+      return [String(pid || ""), runId, String(start || ""), String(end || "")].join("|");
+    },
+
+    playlistAnalysisApplySignalsPayload(payload, requestedStart, requestedEnd) {
+      this.playlistAnalysisSignals = Array.isArray(payload) ? payload : [];
+      this.playlistAnalysisPeriods = this.playlistAnalysisSignals.filter((item) => String(item.granularity || "") === "day");
+      this.playlistAnalysisInvalidateSignalCaches();
+      this.playlistAnalysisSignalsLoadedRangeStart = String(requestedStart || "");
+      this.playlistAnalysisSignalsLoadedRangeEnd = String(requestedEnd || "");
+      if (!this.playlistAnalysisFullRangeStart || !this.playlistAnalysisFullRangeEnd) this.playlistAnalysisInitializeRange();
+      this.playlistAnalysisEnsureProjectionWindow();
+      this.$nextTick(() => this.playlistAnalysisRequestChartRender());
+      this.playlistAnalysisScheduleBreakpointCandidateHydration();
+    },
+
+    playlistAnalysisScheduleBreakpointCandidateHydration() {
+      if (this.playlistAnalysisCandidatesLoaded || this.playlistAnalysisCandidatesLoading) return;
+      if (String(this.playlistAnalysisTab || "trend") !== "trend") return;
+      const hasLinkedBreakpoints = (Array.isArray(this.playlistAnalysisSignals) ? this.playlistAnalysisSignals : []).some((item) =>
+        String((item && item.linked_event_id) || "").trim()
+      );
+      if (!hasLinkedBreakpoints) return;
+      const runId = this.playlistAnalysisSummary && this.playlistAnalysisSummary.last_ready_run_id ? String(this.playlistAnalysisSummary.last_ready_run_id) : "";
+      if (!runId || String(this._playlistAnalysisCandidateHydrationRunId || "") === runId) return;
+      this._playlistAnalysisCandidateHydrationRunId = runId;
+      setTimeout(() => {
+        if (String(this.playlistAnalysisTab || "trend") !== "trend") return;
+        if (this.playlistAnalysisCandidatesLoaded || this.playlistAnalysisCandidatesLoading) return;
+        this.playlistLoadAnalysisCandidates({ preserveSelection: true, selectDetail: false }).catch((e) => {
+          if (String(this._playlistAnalysisCandidateHydrationRunId || "") === runId) this._playlistAnalysisCandidateHydrationRunId = "";
+          this.playlistAnalysisError = e && e.message ? e.message : String(e);
+        });
+      }, 0);
+    },
+
+    playlistAnalysisTimelineSelectionStyle() {
+      const months = this.playlistAnalysisTimelineMonths();
+      if (!months.length) return "left:0%;right:100%";
+      if (months.length === 1) return "left:0%;right:0%";
+      const maxIndex = Math.max(1, months.length - 1);
+      const start = this.playlistAnalysisTimelineDisplayStartIndex();
+      const end = this.playlistAnalysisTimelineDisplayEndIndex();
+      return [`left:${(start / maxIndex) * 100}%`, `right:${100 - (end / maxIndex) * 100}%`].join(";");
+    },
+
+    playlistAnalysisTimelineRangeCanMove() {
+      const months = this.playlistAnalysisTimelineMonths();
+      if (months.length <= 1) return false;
+      const start = Math.min(this.playlistAnalysisTimelineStartIndex(), this.playlistAnalysisTimelineEndIndex());
+      const end = Math.max(this.playlistAnalysisTimelineStartIndex(), this.playlistAnalysisTimelineEndIndex());
+      return end - start < months.length - 1;
+    },
+
+    playlistAnalysisTimelineSelectionDragClass() {
+      if (!this.playlistAnalysisTimelineRangeCanMove()) return "cursor-not-allowed opacity-50";
+      return this.playlistAnalysisRangeDragging
+        ? "cursor-grabbing bg-emerald-300/10 ring-1 ring-emerald-200/40"
+        : "cursor-grab hover:bg-emerald-300/10";
+    },
+
+    playlistAnalysisTimelineHandleStyle(edge) {
+      const months = this.playlistAnalysisTimelineMonths();
+      if (!months.length) return "left:0%;transform:translateX(0);";
+      const maxIndex = Math.max(1, months.length - 1);
+      const index = String(edge || "") === "end" ? this.playlistAnalysisTimelineDisplayEndIndex() : this.playlistAnalysisTimelineDisplayStartIndex();
+      const clampedIndex = Math.max(0, Math.min(Number(index || 0), maxIndex));
+      const percent = (clampedIndex / maxIndex) * 100;
+      let transform = String(edge || "") === "end" ? "translateX(0)" : "translateX(-100%)";
+      if (clampedIndex <= 0) transform = "translateX(0)";
+      if (clampedIndex >= maxIndex) transform = "translateX(-100%)";
+      return `left:${percent}%;transform:${transform};`;
+    },
+
+    playlistAnalysisTimelineHandleClass(edge) {
+      const active = String(this.playlistAnalysisTimelineHandleDragging || "") === String(edge || "");
+      return active
+        ? "cursor-grabbing border-emerald-300/70 bg-slate-900/95 shadow-[0_0_14px_rgba(16,185,129,0.22)]"
+        : "cursor-ew-resize border-slate-500/70 bg-slate-950/85 hover:border-emerald-300/70 hover:bg-slate-900/95";
+    },
+
+    playlistAnalysisReleaseRangeDrag() {
+      try {
+        if (this._playlistAnalysisRangeDragMove) window.removeEventListener("pointermove", this._playlistAnalysisRangeDragMove);
+      } catch {
+        // ignore
+      }
+      try {
+        if (this._playlistAnalysisRangeDragEnd) {
+          window.removeEventListener("pointerup", this._playlistAnalysisRangeDragEnd);
+          window.removeEventListener("pointercancel", this._playlistAnalysisRangeDragEnd);
+        }
+      } catch {
+        // ignore
+      }
+      this._playlistAnalysisRangeDragMove = null;
+      this._playlistAnalysisRangeDragEnd = null;
+      this.playlistAnalysisRangeDragging = false;
+      this.playlistAnalysisRangeDragPointerId = null;
+      this.playlistAnalysisReleaseTimelineHandleDrag();
+    },
+
+    playlistAnalysisReleaseTimelineHandleDrag() {
+      try {
+        if (this._playlistAnalysisTimelineHandleDragMove) window.removeEventListener("pointermove", this._playlistAnalysisTimelineHandleDragMove);
+      } catch {
+        // ignore
+      }
+      try {
+        if (this._playlistAnalysisTimelineHandleDragEnd) {
+          window.removeEventListener("pointerup", this._playlistAnalysisTimelineHandleDragEnd);
+          window.removeEventListener("pointercancel", this._playlistAnalysisTimelineHandleDragEnd);
+        }
+      } catch {
+        // ignore
+      }
+      this._playlistAnalysisTimelineHandleDragMove = null;
+      this._playlistAnalysisTimelineHandleDragEnd = null;
+      this.playlistAnalysisTimelineHandleDragging = "";
+      this.playlistAnalysisTimelineHandlePointerId = null;
+      if (!this.playlistAnalysisRangeDragging) this.playlistAnalysisClearTimelinePreview();
+    },
+
+    playlistAnalysisStartRangeDrag(ev) {
+      if (!this.playlistAnalysisTimelineRangeCanMove()) return;
+      if (!ev || (ev.pointerType === "mouse" && ev.button !== 0)) return;
+      const months = this.playlistAnalysisTimelineMonths();
+      if (months.length <= 1) return;
+      this.playlistAnalysisReleaseProjectionWindowDrag();
+      this.playlistAnalysisReleaseRangeDrag();
+      this.playlistAnalysisRangeDragging = true;
+      this.playlistAnalysisRangeDragPointerId = ev.pointerId;
+      this.playlistAnalysisRangeDragStartX = Number(ev.clientX || 0);
+      this.playlistAnalysisRangeDragStartStartIndex = Math.min(this.playlistAnalysisTimelineStartIndex(), this.playlistAnalysisTimelineEndIndex());
+      this.playlistAnalysisRangeDragStartEndIndex = Math.max(this.playlistAnalysisTimelineStartIndex(), this.playlistAnalysisTimelineEndIndex());
+      this.playlistAnalysisSetTimelinePreview(this.playlistAnalysisRangeDragStartStartIndex, this.playlistAnalysisRangeDragStartEndIndex);
+      this._playlistAnalysisRangeDragMove = (nextEv) => this.playlistAnalysisMoveRangeDrag(nextEv);
+      this._playlistAnalysisRangeDragEnd = (nextEv) => this.playlistAnalysisEndRangeDrag(nextEv);
+      try {
+        window.addEventListener("pointermove", this._playlistAnalysisRangeDragMove, { passive: false });
+        window.addEventListener("pointerup", this._playlistAnalysisRangeDragEnd, { passive: false });
+        window.addEventListener("pointercancel", this._playlistAnalysisRangeDragEnd, { passive: false });
+      } catch {
+        // ignore
+      }
+      try {
+        if (ev.currentTarget && ev.currentTarget.setPointerCapture) ev.currentTarget.setPointerCapture(ev.pointerId);
+      } catch {
+        // ignore
+      }
+      try {
+        if (ev.cancelable) ev.preventDefault();
+        ev.stopPropagation();
+      } catch {
+        // ignore
+      }
+    },
+
+    playlistAnalysisMoveRangeDrag(ev) {
+      if (!this.playlistAnalysisRangeDragging) return;
+      if (ev && this.playlistAnalysisRangeDragPointerId !== null && ev.pointerId !== this.playlistAnalysisRangeDragPointerId) return;
+      const months = this.playlistAnalysisTimelineMonths();
+      const maxIndex = months.length - 1;
+      const width = this.playlistAnalysisTimelineTrackWidthPx();
+      if (maxIndex <= 0 || width <= 0) return;
+      const stepPx = width / maxIndex;
+      const delta = Math.round((Number((ev && ev.clientX) || 0) - Number(this.playlistAnalysisRangeDragStartX || 0)) / stepPx);
+      const span = Math.max(0, Number(this.playlistAnalysisRangeDragStartEndIndex || 0) - Number(this.playlistAnalysisRangeDragStartStartIndex || 0));
+      const nextStart = Math.max(0, Math.min(maxIndex - span, Number(this.playlistAnalysisRangeDragStartStartIndex || 0) + delta));
+      const nextEnd = nextStart + span;
+      if (nextStart !== this.playlistAnalysisTimelineDisplayStartIndex() || nextEnd !== this.playlistAnalysisTimelineDisplayEndIndex()) {
+        this.playlistAnalysisSetTimelinePreview(nextStart, nextEnd);
+      }
+      try {
+        if (ev && ev.cancelable) ev.preventDefault();
+      } catch {
+        // ignore
+      }
+    },
+
+    playlistAnalysisEndRangeDrag(ev) {
+      if (!this.playlistAnalysisRangeDragging) return;
+      if (ev && this.playlistAnalysisRangeDragPointerId !== null && ev.pointerId !== this.playlistAnalysisRangeDragPointerId) return;
+      this.playlistAnalysisMoveRangeDrag(ev);
+      const months = this.playlistAnalysisTimelineMonths();
+      const startIndex = this.playlistAnalysisTimelineDisplayStartIndex();
+      const endIndex = this.playlistAnalysisTimelineDisplayEndIndex();
+      this.playlistAnalysisReleaseRangeDrag();
+      if (months[startIndex] && months[endIndex]) {
+        this.playlistAnalysisSetTimelineRangeByMonth(months[startIndex].ym, months[endIndex].ym);
+      }
+    },
+
+    playlistAnalysisTimelineIndexFromClientX(clientX) {
+      const months = this.playlistAnalysisTimelineMonths();
+      const maxIndex = months.length - 1;
+      if (maxIndex <= 0) return 0;
+      let left = 0;
+      let width = this.playlistAnalysisTimelineTrackWidthPx();
+      try {
+        const el = this.$refs && this.$refs.playlistAnalysisTimelineTrack;
+        if (el && el.getBoundingClientRect) {
+          const rect = el.getBoundingClientRect();
+          left = Number(rect.left || 0);
+          width = Number(rect.width || width || 0);
+        }
+      } catch {
+        // ignore
+      }
+      if (!Number.isFinite(width) || width <= 0) return 0;
+      const ratio = (Number(clientX || 0) - left) / width;
+      return Math.max(0, Math.min(maxIndex, Math.round(ratio * maxIndex)));
+    },
+
+    playlistAnalysisStartTimelineHandleDrag(edge, ev) {
+      const targetEdge = String(edge || "") === "end" ? "end" : "start";
+      if (!ev || (ev.pointerType === "mouse" && ev.button !== 0)) return;
+      if (!this.playlistAnalysisTimelineMonths().length) return;
+      this.playlistAnalysisReleaseProjectionWindowDrag();
+      this.playlistAnalysisReleaseRangeDrag();
+      this.playlistAnalysisTimelineHandleDragging = targetEdge;
+      this.playlistAnalysisTimelineHandlePointerId = ev.pointerId;
+      this.playlistAnalysisSetTimelinePreview(this.playlistAnalysisTimelineStartIndex(), this.playlistAnalysisTimelineEndIndex());
+      this._playlistAnalysisTimelineHandleDragMove = (nextEv) => this.playlistAnalysisMoveTimelineHandleDrag(nextEv);
+      this._playlistAnalysisTimelineHandleDragEnd = (nextEv) => this.playlistAnalysisEndTimelineHandleDrag(nextEv);
+      try {
+        window.addEventListener("pointermove", this._playlistAnalysisTimelineHandleDragMove, { passive: false });
+        window.addEventListener("pointerup", this._playlistAnalysisTimelineHandleDragEnd, { passive: false });
+        window.addEventListener("pointercancel", this._playlistAnalysisTimelineHandleDragEnd, { passive: false });
+      } catch {
+        // ignore
+      }
+      this.playlistAnalysisMoveTimelineHandleDrag(ev);
+      try {
+        if (ev.currentTarget && ev.currentTarget.setPointerCapture) ev.currentTarget.setPointerCapture(ev.pointerId);
+      } catch {
+        // ignore
+      }
+      try {
+        if (ev.cancelable) ev.preventDefault();
+        ev.stopPropagation();
+      } catch {
+        // ignore
+      }
+    },
+
+    playlistAnalysisMoveTimelineHandleDrag(ev) {
+      const edge = String(this.playlistAnalysisTimelineHandleDragging || "");
+      if (!edge) return;
+      if (ev && this.playlistAnalysisTimelineHandlePointerId !== null && ev.pointerId !== this.playlistAnalysisTimelineHandlePointerId) return;
+      const months = this.playlistAnalysisTimelineMonths();
+      if (!months.length) return;
+      const index = this.playlistAnalysisTimelineIndexFromClientX(ev && ev.clientX);
+      if (edge === "end") {
+        const startIndex = this.playlistAnalysisTimelineDisplayStartIndex();
+        const nextIndex = Math.max(startIndex, index);
+        this.playlistAnalysisSetTimelinePreview(startIndex, nextIndex);
+      } else {
+        const endIndex = this.playlistAnalysisTimelineDisplayEndIndex();
+        const nextIndex = Math.min(endIndex, index);
+        this.playlistAnalysisSetTimelinePreview(nextIndex, endIndex);
+      }
+      try {
+        if (ev && ev.cancelable) ev.preventDefault();
+        if (ev) ev.stopPropagation();
+      } catch {
+        // ignore
+      }
+    },
+
+    playlistAnalysisEndTimelineHandleDrag(ev) {
+      if (!this.playlistAnalysisTimelineHandleDragging) return;
+      if (ev && this.playlistAnalysisTimelineHandlePointerId !== null && ev.pointerId !== this.playlistAnalysisTimelineHandlePointerId) return;
+      this.playlistAnalysisMoveTimelineHandleDrag(ev);
+      const months = this.playlistAnalysisTimelineMonths();
+      const startIndex = this.playlistAnalysisTimelineDisplayStartIndex();
+      const endIndex = this.playlistAnalysisTimelineDisplayEndIndex();
+      this.playlistAnalysisReleaseTimelineHandleDrag();
+      if (months[startIndex] && months[endIndex]) {
+        this.playlistAnalysisSetTimelineRangeByMonth(months[startIndex].ym, months[endIndex].ym);
+      }
+    },
+
+    playlistAnalysisTimelineHandleKeydown(edge, ev) {
+      const key = String((ev && ev.key) || "");
+      const delta = key === "ArrowLeft" ? -1 : key === "ArrowRight" ? 1 : 0;
+      if (!delta) return;
+      const months = this.playlistAnalysisTimelineMonths();
+      if (!months.length) return;
+      if (String(edge || "") === "end") {
+        const startIndex = this.playlistAnalysisTimelineStartIndex();
+        const endIndex = this.playlistAnalysisTimelineEndIndex();
+        const nextIndex = Math.max(startIndex, Math.min(months.length - 1, endIndex + delta));
+        this.playlistAnalysisSetTimelineRangeByMonth(months[startIndex].ym, months[nextIndex].ym);
+      } else {
+        const startIndex = this.playlistAnalysisTimelineStartIndex();
+        const endIndex = this.playlistAnalysisTimelineEndIndex();
+        const nextIndex = Math.max(0, Math.min(endIndex, startIndex + delta));
+        this.playlistAnalysisSetTimelineRangeByMonth(months[nextIndex].ym, months[endIndex].ym);
+      }
+      try {
+        if (ev.cancelable) ev.preventDefault();
+        ev.stopPropagation();
+      } catch {
+        // ignore
+      }
+    },
+
+    playlistAnalysisSetTimelineRangeByMonth(startMonth, endMonth, { render = true } = {}) {
+      const months = this.playlistAnalysisTimelineMonths();
+      if (!months.length) return;
+      const monthValues = months.map((item) => item.ym);
+      let start = String(startMonth || monthValues[0]).slice(0, 7);
+      let end = String(endMonth || monthValues[monthValues.length - 1]).slice(0, 7);
+      if (start > end) {
+        const swapped = start;
+        start = end;
+        end = swapped;
+      }
+      if (start < monthValues[0]) start = monthValues[0];
+      if (end > monthValues[monthValues.length - 1]) end = monthValues[monthValues.length - 1];
+      const startDate = `${start}-01`;
+      const endDate = this.playlistAnalysisMonthEndDate(end);
+      const nextRangeStart = this.playlistAnalysisFullRangeStart && startDate < this.playlistAnalysisFullRangeStart ? this.playlistAnalysisFullRangeStart : startDate;
+      const nextRangeEnd = this.playlistAnalysisFullRangeEnd && endDate > this.playlistAnalysisFullRangeEnd ? this.playlistAnalysisFullRangeEnd : endDate;
+      const changed =
+        String(this.playlistAnalysisRangeStart || "") !== String(nextRangeStart || "") ||
+        String(this.playlistAnalysisRangeEnd || "") !== String(nextRangeEnd || "");
+      this.playlistAnalysisRangeStart = nextRangeStart;
+      this.playlistAnalysisRangeEnd = nextRangeEnd;
+      this.playlistAnalysisClearTimelinePreview();
+      if (!changed) return;
+      this.playlistAnalysisStopProjectionPlayback();
+      this.playlistAnalysisEnsureProjectionWindow({ forceEnd: true });
+      if (render) {
+        this.playlistAnalysisScheduleSignalsReload();
+      }
+    },
+
+    playlistAnalysisSetTimelineStartIndex(index) {
+      const months = this.playlistAnalysisTimelineMonths();
+      if (!months.length) return;
+      const endIndex = this.playlistAnalysisTimelineEndIndex();
+      const nextIndex = Math.max(0, Math.min(Number(index || 0), endIndex));
+      this.playlistAnalysisSetTimelineRangeByMonth(months[nextIndex].ym, months[endIndex].ym);
+    },
+
+    playlistAnalysisSetTimelineEndIndex(index) {
+      const months = this.playlistAnalysisTimelineMonths();
+      if (!months.length) return;
+      const startIndex = this.playlistAnalysisTimelineStartIndex();
+      const nextIndex = Math.min(months.length - 1, Math.max(Number(index || 0), startIndex));
+      this.playlistAnalysisSetTimelineRangeByMonth(months[startIndex].ym, months[nextIndex].ym);
+    },
+
+    playlistAnalysisSelectRecentTimelineMonths(count) {
+      const months = this.playlistAnalysisTimelineMonths();
+      if (!months.length) return;
+      const endIndex = months.length - 1;
+      const startIndex = Math.max(0, endIndex - Math.max(1, Number(count || 1)) + 1);
+      this.playlistAnalysisSetTimelineRangeByMonth(months[startIndex].ym, months[endIndex].ym);
+    },
+
+    playlistAnalysisSelectFullTimelineRange() {
+      const months = this.playlistAnalysisTimelineMonths();
+      if (!months.length) return;
+      this.playlistAnalysisSetTimelineRangeByMonth(months[0].ym, months[months.length - 1].ym);
+    },
+
+    playlistAnalysisProjectionPoints() {
+      const scalePoints = this.playlistAnalysisSignalsForGranularity("day");
+      const start = String(this.playlistAnalysisProjectionWindowStart || "");
+      const end = String(this.playlistAnalysisProjectionWindowEnd || "");
+      const cacheKey = [
+        Number(this.playlistAnalysisSignalsVersion || 0),
+        String(this.playlistAnalysisRangeStart || ""),
+        String(this.playlistAnalysisRangeEnd || ""),
+        start,
+        end,
+      ].join("|");
+      if (this._playlistAnalysisProjectionPointsCache && this._playlistAnalysisProjectionPointsCache.key === cacheKey) {
+        return this._playlistAnalysisProjectionPointsCache.value;
+      }
+      const points = [];
+      scalePoints.forEach((item) => {
+        const date = String(item && item.period_date ? item.period_date : "");
+        if (!date) return;
+        if (start && date < start) return;
+        if (end && date > end) return;
+        points.push(item);
+      });
+      if (!points.length) {
+        this._playlistAnalysisProjectionPointsCache = { key: cacheKey, value: [] };
+        return [];
+      }
+      const scaleKey = `${Number(this.playlistAnalysisSignalsVersion || 0)}|${String(this.playlistAnalysisRangeStart || "")}|${String(this.playlistAnalysisRangeEnd || "")}`;
+      let scale = this._playlistAnalysisProjectionScaleCache && this._playlistAnalysisProjectionScaleCache.key === scaleKey ? this._playlistAnalysisProjectionScaleCache.value : null;
+      if (!scale) {
+        const coordinatePoints = scalePoints.length ? scalePoints : points;
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+        let minZ = Infinity;
+        let maxZ = -Infinity;
+        let minDispersion = Infinity;
+        let maxDispersion = -Infinity;
+        coordinatePoints.forEach((item) => {
+          const x = Number(item.projection_x || 0);
+          const y = Number(item.projection_y || 0);
+          const z = Number(item.projection_z || 0);
+          const dispersion = Number(item.dispersion_mean || 0);
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
+          minZ = Math.min(minZ, z);
+          maxZ = Math.max(maxZ, z);
+          minDispersion = Math.min(minDispersion, dispersion);
+          maxDispersion = Math.max(maxDispersion, dispersion);
+        });
+        scale = {
+          minX,
+          minY,
+          minZ,
+          minDispersion,
+          spanX: Math.max(1e-6, maxX - minX),
+          spanY: Math.max(1e-6, maxY - minY),
+          spanZ: Math.max(1e-6, maxZ - minZ),
+          spanDispersion: Math.max(1e-6, maxDispersion - minDispersion),
+        };
+        this._playlistAnalysisProjectionScaleCache = { key: scaleKey, value: scale };
+      }
+      const rendered = points.map((item, index) => {
+        const xRatio = (Number(item.projection_x || 0) - scale.minX) / scale.spanX;
+        const yRatio = (Number(item.projection_y || 0) - scale.minY) / scale.spanY;
+        const zRatio = (Number(item.projection_z || 0) - scale.minZ) / scale.spanZ;
+        const uncertainty = (Number(item.dispersion_mean || 0) - scale.minDispersion) / scale.spanDispersion;
+        const x = xRatio * 76 + 12 + (zRatio - 0.5) * 10;
+        const y = 88 - yRatio * 72 - (zRatio - 0.5) * 12;
+        const ratio = points.length <= 1 ? 0 : index / Math.max(1, points.length - 1);
+        return {
+          ...item,
+          x,
+          y,
+          zRatio,
+          ratio,
+          uncertainty,
+          diameter: 4,
+        };
+      });
+      this._playlistAnalysisProjectionPointsCache = { key: cacheKey, value: rendered };
+      return rendered;
+    },
+
+    playlistAnalysisProjectionPointStyle(point) {
+      const uncertainty = Number(point && point.uncertainty != null ? point.uncertainty : 0);
+      const hue = Math.round(160 - uncertainty * 125);
+      const x = Number(point && point.x != null ? point.x : 50);
+      const y = Number(point && point.y != null ? point.y : 50);
+      const zRatio = Number(point && point.zRatio != null ? point.zRatio : 0.5);
+      const diameter = Math.max(4, Math.min(8, Number(point && point.diameter != null ? point.diameter : 4) + zRatio * 3));
+      const opacity = Math.max(0.55, Math.min(0.96, 0.58 + uncertainty * 0.34));
+      return [
+        `left:${x}%`,
+        `top:${y}%`,
+        `width:${diameter}px`,
+        `height:${diameter}px`,
+        "transform:translate(-50%,-50%)",
+        `background:hsl(${hue} 78% 58% / ${opacity})`,
+        "border-color:rgba(15,23,42,0.88)",
+        `box-shadow:0 0 0 ${Math.round(1 + uncertainty * 4)}px hsl(${hue} 78% 58% / 0.12)`,
+      ].join(";");
+    },
+
+    playlistAnalysisProjectionActiveBreakpoint() {
+      const start = String(this.playlistAnalysisProjectionWindowStart || "");
+      const end = String(this.playlistAnalysisProjectionWindowEnd || "");
+      if (!start || !end) return null;
+      const selectedId = String(this.playlistAnalysisSelectedCandidateId || "").trim();
+      const candidates = this.playlistAnalysisBreakpoints().filter((item) => {
+        const date = String((item && item.date) || "");
+        return date && date >= start && date <= end;
+      });
+      if (!candidates.length) return null;
+      if (selectedId) {
+        const selected = candidates.find((item) => String(item.id || "") === selectedId);
+        if (selected) return selected;
+      }
+      const midpoint = (this.playlistAnalysisDateToUtcMs(start) + this.playlistAnalysisDateToUtcMs(end)) / 2;
+      return candidates
+        .slice()
+        .sort((left, right) => {
+          const leftDistance = Math.abs(this.playlistAnalysisDateToUtcMs(left.date) - midpoint);
+          const rightDistance = Math.abs(this.playlistAnalysisDateToUtcMs(right.date) - midpoint);
+          return leftDistance - rightDistance;
+        })[0];
+    },
+
+    playlistAnalysisProjectionCentroids() {
+      const breakpoint = this.playlistAnalysisProjectionActiveBreakpoint();
+      if (!breakpoint) return null;
+      const cacheKey = [
+        Number(this.playlistAnalysisSignalsVersion || 0),
+        String(this.playlistAnalysisProjectionWindowStart || ""),
+        String(this.playlistAnalysisProjectionWindowEnd || ""),
+        String(breakpoint.id || ""),
+        String(breakpoint.date || ""),
+      ].join("|");
+      if (this._playlistAnalysisProjectionCentroidsCache && this._playlistAnalysisProjectionCentroidsCache.key === cacheKey) {
+        return this._playlistAnalysisProjectionCentroidsCache.value;
+      }
+      const date = String(breakpoint.date || "");
+      const points = this.playlistAnalysisProjectionPoints();
+      const beforePoints = points.filter((point) => String(point.period_date || "") < date);
+      const afterPoints = points.filter((point) => String(point.period_date || "") >= date);
+      if (!beforePoints.length || !afterPoints.length) {
+        this._playlistAnalysisProjectionCentroidsCache = { key: cacheKey, value: null };
+        return null;
+      }
+      const average = (items) => {
+        const total = items.reduce(
+          (acc, item) => {
+            acc.x += Number(item.x || 0);
+            acc.y += Number(item.y || 0);
+            return acc;
+          },
+          { x: 0, y: 0 }
+        );
+        return { x: total.x / items.length, y: total.y / items.length };
+      };
+      const value = {
+        breakpoint,
+        before: average(beforePoints),
+        after: average(afterPoints),
+      };
+      const dx = value.after.x - value.before.x;
+      const dy = value.after.y - value.before.y;
+      const distance = Math.hypot(dx, dy);
+      const midpoint = {
+        x: (value.before.x + value.after.x) / 2,
+        y: (value.before.y + value.after.y) / 2,
+      };
+      value.midpoint = midpoint;
+      value.arrowDistance = distance;
+      value.arrowAngle = Number.isFinite(distance) && distance > 0 ? (Math.atan2(dy, dx) * 180) / Math.PI : 0;
+      value.arrowVisible = Number.isFinite(distance) && distance >= PLAYLIST_ANALYSIS_CENTROID_ARROW_MIN_DISTANCE;
+      if (value.arrowVisible) {
+        const length = Math.max(
+          PLAYLIST_ANALYSIS_CENTROID_ARROW_MIN_LENGTH,
+          Math.min(PLAYLIST_ANALYSIS_CENTROID_ARROW_MAX_LENGTH, distance)
+        );
+        const ux = dx / distance;
+        const uy = dy / distance;
+        value.arrowLength = length;
+        value.arrowStart = {
+          x: Math.max(3, Math.min(97, midpoint.x - (ux * length) / 2)),
+          y: Math.max(3, Math.min(97, midpoint.y - (uy * length) / 2)),
+        };
+        value.arrowEnd = {
+          x: Math.max(3, Math.min(97, midpoint.x + (ux * length) / 2)),
+          y: Math.max(3, Math.min(97, midpoint.y + (uy * length) / 2)),
+        };
+      } else {
+        value.arrowLength = 0;
+        value.arrowStart = null;
+        value.arrowEnd = null;
+      }
+      this._playlistAnalysisProjectionCentroidsCache = { key: cacheKey, value };
+      return value;
+    },
+
+    playlistAnalysisProjectionCentroidStyle(point) {
+      if (!point) return "left:50%;top:50%;";
+      const x = Math.max(0, Math.min(100, Number(point.x || 0)));
+      const y = Math.max(0, Math.min(100, Number(point.y || 0)));
+      return `left:${x}%;top:${y}%;transform:translate(-50%,-50%);`;
+    },
+
+    async playlistAnalysisSelectEventFromDate(periodDate) {
+      const date = String(periodDate || "").trim();
+      if (!date) return;
+      if (!this.playlistAnalysisCandidatesLoaded) {
+        await this.playlistLoadAnalysisCandidates();
+      }
+      const item = (Array.isArray(this.playlistAnalysisCandidates) ? this.playlistAnalysisCandidates : []).find(
+        (candidate) => String(candidate.event_date || candidate.candidate_date || "") === date
+      );
+      if (!item) return;
+      this.playlistAnalysisSetTab("events");
+      this.playlistSelectAnalysisCandidate(item.id);
+    },
+
+    playlistAnalysisEventTypeLabel(value) {
+      const type = String(value || "").trim().toLowerCase();
+      if (type === "regime") return "Regime";
+      if (type === "transition") return "Transition";
+      return "Burst";
+    },
+
+    playlistAnalysisEventTypeClass(value) {
+      const type = String(value || "").trim().toLowerCase();
+      if (type === "regime") return "border-purple-500/30 bg-purple-500/10 text-purple-200";
+      if (type === "transition") return "border-sky-500/30 bg-sky-500/10 text-sky-200";
+      return "border-amber-500/30 bg-amber-500/10 text-amber-200";
+    },
+
+    playlistAnalysisExportJson() {
+      try {
+        return JSON.stringify(this.playlistAnalysisExportPayload || { events: [] }, null, 2);
+      } catch {
+        return '{"events":[]}';
+      }
+    },
+
+    playlistAnalysisSchedulePoll() {
+      this.playlistAnalysisStopPolling();
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid || this.activeView !== "playlist" || this.playlistSubview !== "analysis") return;
+      this.playlistAnalysisPollTimer = setTimeout(() => {
+        this.playlistLoadAnalysisView({ silent: true });
+      }, 3000);
+    },
+
+    async playlistLoadAnalysisSummary() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return null;
+      const summary = await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/summary`);
+      this.playlistAnalysisSummary = summary || null;
+      if (summary && summary.last_ready_run_id) this.playlistAnalysisInitializeRangeFromSummary(summary);
+      this.playlistAnalysisBackfillJob = summary && summary.backfill_job ? summary.backfill_job : null;
+      return summary || null;
+    },
+
+    async playlistLoadAnalysisPeriods() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return [];
+      this.playlistAnalysisPeriodsLoading = true;
+      try {
+        const payload = await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/periods`);
+        this.playlistAnalysisPeriods = Array.isArray(payload) ? payload : [];
+        this.$nextTick(() => this.playlistAnalysisRequestChartRender());
+        return this.playlistAnalysisPeriods;
+      } finally {
+        this.playlistAnalysisPeriodsLoading = false;
+      }
+    },
+
+    async playlistLoadAnalysisSignals() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return [];
+      if (!this.playlistAnalysisRangeStart || !this.playlistAnalysisRangeEnd) {
+        this.playlistAnalysisInitializeRangeFromSummary(this.playlistAnalysisSummary);
+      }
+      const requestedStart = String(this.playlistAnalysisRangeStart || "");
+      const requestedEnd = String(this.playlistAnalysisRangeEnd || "");
+      const cacheKey = this.playlistAnalysisSignalsCacheKey(pid, requestedStart, requestedEnd);
+      if (this._playlistAnalysisSignalsResponseCache && this._playlistAnalysisSignalsResponseCache.has(cacheKey)) {
+        this._playlistAnalysisSignalsRequestToken = Number(this._playlistAnalysisSignalsRequestToken || 0) + 1;
+        this._abortCtrl("_playlistAnalysisSignalsAbortCtrl");
+        this.playlistAnalysisSignalsLoading = false;
+        const cached = this._playlistAnalysisSignalsResponseCache.get(cacheKey);
+        this.playlistAnalysisApplySignalsPayload(cached, requestedStart, requestedEnd);
+        return this.playlistAnalysisSignals;
+      }
+      const token = Number(this._playlistAnalysisSignalsRequestToken || 0) + 1;
+      this._playlistAnalysisSignalsRequestToken = token;
+      this._abortCtrl("_playlistAnalysisSignalsAbortCtrl");
+      const ctrl = new AbortController();
+      this._playlistAnalysisSignalsAbortCtrl = ctrl;
+      this.playlistAnalysisSignalsLoading = true;
+      try {
+        const params = new URLSearchParams();
+        if (requestedStart) params.set("since", requestedStart);
+        if (requestedEnd) params.set("until", requestedEnd);
+        const suffix = params.toString() ? `?${params.toString()}` : "";
+        const payload = await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/signals${suffix}`, { signal: ctrl.signal });
+        if (Number(this._playlistAnalysisSignalsRequestToken || 0) !== token) return [];
+        if (!this._playlistAnalysisSignalsResponseCache) this._playlistAnalysisSignalsResponseCache = new Map();
+        this._playlistAnalysisSignalsResponseCache.set(cacheKey, Array.isArray(payload) ? payload : []);
+        this.playlistAnalysisApplySignalsPayload(payload, requestedStart, requestedEnd);
+        return this.playlistAnalysisSignals;
+      } catch (e) {
+        if (this._isAbortError && this._isAbortError(e)) return [];
+        throw e;
+      } finally {
+        if (Number(this._playlistAnalysisSignalsRequestToken || 0) === token) {
+          this._playlistAnalysisSignalsAbortCtrl = null;
+          this.playlistAnalysisSignalsLoading = false;
+        }
+      }
+    },
+
+    async playlistLoadAnalysisCandidates({ preserveSelection = true, selectDetail = true } = {}) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return [];
+      if (this.playlistAnalysisCandidatesLoading && this._playlistAnalysisCandidatesPromise) {
+        return this._playlistAnalysisCandidatesPromise;
+      }
+      this.playlistAnalysisCandidatesLoading = true;
+      const request = (async () => {
+        const payload = await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/candidates`);
+        this.playlistAnalysisCandidates = Array.isArray(payload) ? payload : [];
+        this.playlistAnalysisCandidatesLoaded = true;
+        this.playlistAnalysisCandidatesVersion = Number(this.playlistAnalysisCandidatesVersion || 0) + 1;
+        const selectedId = preserveSelection ? String(this.playlistAnalysisSelectedCandidateId || "").trim() : "";
+        const shouldSelectDetail = !!selectDetail || String(this.playlistAnalysisTab || "trend") === "events";
+        if (!shouldSelectDetail) {
+          if (selectedId && !this.playlistAnalysisCandidates.some((item) => String(item.id) === selectedId)) {
+            this.playlistAnalysisSelectedCandidateId = "";
+          }
+          this._playlistAnalysisBreakpointsCache = null;
+          return this.playlistAnalysisCandidates;
+        }
+        const target =
+          this.playlistAnalysisCandidates.find((item) => String(item.id) === selectedId) ||
+          this.playlistAnalysisCandidates[0] ||
+          null;
+        this.playlistAnalysisSelectedCandidateId = target ? String(target.id) : "";
+        if (target) {
+          await this.playlistSelectAnalysisCandidate(target.id);
+        } else {
+          this.playlistAnalysisCandidateDetail = null;
+        }
+        return this.playlistAnalysisCandidates;
+      })();
+      this._playlistAnalysisCandidatesPromise = request;
+      try {
+        return await request;
+      } finally {
+        if (this._playlistAnalysisCandidatesPromise === request) this._playlistAnalysisCandidatesPromise = null;
+        this.playlistAnalysisCandidatesLoading = false;
+      }
+    },
+
+    async playlistSelectAnalysisCandidate(candidateId) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const id = String(candidateId || "").trim();
+      if (!pid || !id) {
+        this.playlistAnalysisSelectedCandidateId = "";
+        this.playlistAnalysisCandidateDetail = null;
+        return;
+      }
+      this.playlistAnalysisSelectedCandidateId = id;
+      this.playlistAnalysisCandidateDetail = await this.api(
+        `/playlists/${encodeURIComponent(pid)}/analysis/candidates/${encodeURIComponent(id)}`
+      );
+    },
+
+    async playlistLoadAnalysisView({ silent = false } = {}) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return;
+      if (!silent) this.playlistAnalysisLoading = true;
+      this.playlistAnalysisError = "";
+      try {
+        const summary = await this.playlistLoadAnalysisSummary();
+        if (!summary) return;
+        if (summary.last_ready_run_id) {
+          if (String(this.playlistAnalysisTab || "trend") === "events") {
+            await Promise.all([this.playlistLoadAnalysisSignals(), this.playlistLoadAnalysisCandidates()]);
+          } else {
+            await this.playlistLoadAnalysisSignals();
+          }
+        } else {
+          this.playlistAnalysisStopProjectionPlayback();
+          this.playlistAnalysisPeriods = [];
+          this.playlistAnalysisSignals = [];
+          this.playlistAnalysisInvalidateSignalCaches();
+          this.playlistAnalysisCandidates = [];
+          this.playlistAnalysisCandidatesLoaded = false;
+          this.playlistAnalysisCandidatesVersion = Number(this.playlistAnalysisCandidatesVersion || 0) + 1;
+          this._playlistAnalysisCandidateHydrationRunId = "";
+          this.playlistAnalysisHoveredBreakpointItemId = "";
+          this.playlistAnalysisCandidateDetail = null;
+          this.playlistAnalysisSelectedCandidateId = "";
+          this.playlistAnalysisRangeStart = "";
+          this.playlistAnalysisRangeEnd = "";
+          this.playlistAnalysisFullRangeStart = "";
+          this.playlistAnalysisFullRangeEnd = "";
+          this.playlistAnalysisSignalsLoadedRangeStart = "";
+          this.playlistAnalysisSignalsLoadedRangeEnd = "";
+          this.playlistAnalysisProjectionWindowAnchorDate = "";
+          this.playlistAnalysisDestroyChart();
+        }
+        if (summary.running || this.playlistAnalysisActiveBackfillJob()) this.playlistAnalysisSchedulePoll();
+        else this.playlistAnalysisStopPolling();
+      } catch (e) {
+        this.playlistAnalysisError = e && e.message ? e.message : String(e);
+      } finally {
+        if (!silent) this.playlistAnalysisLoading = false;
+      }
+    },
+
+    async playlistAnalysisRebuild({ silent = false } = {}) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid || this.playlistAnalysisRebuilding) return;
+      try {
+        this.playlistAnalysisRebuilding = true;
+        await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/rebuild`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        });
+        if (!silent) this.globalStatus = "已触发分析重建";
+        await this.playlistLoadAnalysisSummary();
+        this.playlistAnalysisSchedulePoll();
+      } catch (e) {
+        this.playlistAnalysisError = e && e.message ? e.message : String(e);
+        this.globalStatus = `error: ${this.playlistAnalysisError}`;
+      } finally {
+        this.playlistAnalysisRebuilding = false;
+      }
+    },
+
+    async playlistAnalysisBackfillEmbeddings() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid || this.playlistAnalysisBackfillSubmitting || this.playlistAnalysisActiveBackfillJob()) return;
+      try {
+        this.playlistAnalysisBackfillSubmitting = true;
+        const result = await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/backfill_embeddings`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ force: false }),
+        });
+        this.playlistAnalysisBackfillJob = result && result.backfill_job ? result.backfill_job : result || null;
+        const jobId = result && result.job_id ? String(result.job_id).slice(0, 8) : "";
+        this.globalStatus = result && result.created ? `已投递历史 embedding 补算 ${jobId}` : `已复用历史 embedding 补算 ${jobId}`;
+        await this.playlistLoadAnalysisSummary({ silent: true });
+      } catch (e) {
+        this.playlistAnalysisError = e && e.message ? e.message : String(e);
+        this.globalStatus = `error: ${this.playlistAnalysisError}`;
+      } finally {
+        this.playlistAnalysisBackfillSubmitting = false;
+      }
+    },
+
+    async playlistAnalysisCancelBackfill() {
+      const job = this.playlistAnalysisActiveBackfillJob();
+      const jobId = job && job.job_id ? String(job.job_id) : "";
+      if (!jobId || this.playlistAnalysisBackfillCanceling) return;
+      try {
+        this.playlistAnalysisBackfillCanceling = true;
+        const result = await this.api(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+        const status = result && result.status ? String(result.status) : "";
+        this.globalStatus = status === "canceled" ? "已停止历史 embedding 补算任务" : "已请求停止历史 embedding 补算任务";
+        const summary = await this.playlistLoadAnalysisSummary({ silent: true });
+        if (summary && (summary.running || this.playlistAnalysisActiveBackfillJob())) this.playlistAnalysisSchedulePoll();
+        else this.playlistAnalysisStopPolling();
+      } catch (e) {
+        this.playlistAnalysisError = e && e.message ? e.message : String(e);
+        this.globalStatus = `error: ${this.playlistAnalysisError}`;
+      } finally {
+        this.playlistAnalysisBackfillCanceling = false;
+      }
+    },
+
+    async playlistAnalysisPatchCandidate(patch) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const candidateId = String(this.playlistAnalysisSelectedCandidateId || "").trim();
+      if (!pid || !candidateId) return;
+      await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/candidates/${encodeURIComponent(candidateId)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch || {}),
+      });
+      await this.playlistLoadAnalysisCandidates();
+    },
+
+    async playlistAnalysisConfirmCandidate() {
+      await this.playlistAnalysisPatchCandidate({ status: "confirmed" });
+      this.globalStatus = "已确认候选事件";
+    },
+
+    async playlistAnalysisRejectCandidate() {
+      await this.playlistAnalysisPatchCandidate({ status: "rejected" });
+      this.globalStatus = "已拒绝候选事件";
+    },
+
+    async playlistAnalysisOpenExport() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return;
+      const events = await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/events`);
+      this.playlistAnalysisExportPayload = { events: Array.isArray(events) ? events : [] };
+      this.playlistAnalysisExportOpen = true;
     },
 
     playlistStartEditName() {

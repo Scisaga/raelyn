@@ -69,10 +69,42 @@ class JobCountsOut(BaseModel):
     total: int
 
 
+class JobTypeCountItem(BaseModel):
+    type: str
+    count: int
+    counts: dict[str, int]
+    percentage: float
+
+
+class JobTypeCountsOut(BaseModel):
+    counts: dict[str, int]
+    items: list[JobTypeCountItem]
+    total: int
+
+
 def _parse_csv(value: str | None) -> list[str]:
     if not value:
         return []
     return [s.strip() for s in str(value).split(",") if s.strip()]
+
+
+def _job_filter_values(
+    *,
+    status: str | None = None,
+    status_in: str | None = None,
+    type: str | None = None,
+    type_in: str | None = None,
+) -> tuple[list[str], list[str]]:
+    statuses = _parse_csv(status_in)
+    if status and str(status).strip():
+        statuses.append(str(status).strip())
+    statuses = list(dict.fromkeys([s for s in statuses if s]))
+
+    types = _parse_csv(type_in)
+    if type and str(type).strip():
+        types.append(str(type).strip())
+    types = list(dict.fromkeys([t for t in types if t]))
+    return statuses, types
 
 
 def _job_context_maps(
@@ -212,15 +244,7 @@ def job_counts(
     finished_since: datetime | None = None,
     finished_until: datetime | None = None,
 ) -> JobCountsOut:
-    statuses = _parse_csv(status_in)
-    if status and str(status).strip():
-        statuses.append(str(status).strip())
-    statuses = list(dict.fromkeys([s for s in statuses if s]))
-
-    types = _parse_csv(type_in)
-    if type and str(type).strip():
-        types.append(str(type).strip())
-    types = list(dict.fromkeys([t for t in types if t]))
+    statuses, types = _job_filter_values(status=status, status_in=status_in, type=type, type_in=type_in)
 
     with session_scope() as session:
         stmt = select(Job.status, func.count(Job.id).label("n"))
@@ -242,6 +266,71 @@ def job_counts(
         counts = {str(st): int(n or 0) for st, n in rows}
         total = sum(counts.values())
         return JobCountsOut(counts=counts, total=total)
+
+
+@router.get("/jobs/type_counts", response_model=JobTypeCountsOut)
+def job_type_counts(
+    status: str | None = None,
+    status_in: str | None = None,
+    type: str | None = None,
+    type_in: str | None = None,
+    created_since: datetime | None = None,
+    created_until: datetime | None = None,
+    finished_since: datetime | None = None,
+    finished_until: datetime | None = None,
+) -> JobTypeCountsOut:
+    statuses, types = _job_filter_values(status=status, status_in=status_in, type=type, type_in=type_in)
+
+    with session_scope() as session:
+        stmt = select(Job.type, Job.status, func.count(Job.id).label("n"))
+        if statuses:
+            stmt = stmt.where(Job.status.in_(statuses))
+        if types:
+            stmt = stmt.where(Job.type.in_(types))
+        if created_since:
+            stmt = stmt.where(Job.created_at >= created_since)
+        if created_until:
+            stmt = stmt.where(Job.created_at < created_until)
+        if finished_since:
+            stmt = stmt.where(Job.finished_at.is_not(None), Job.finished_at >= finished_since)
+        if finished_until:
+            stmt = stmt.where(Job.finished_at.is_not(None), Job.finished_at < finished_until)
+        stmt = stmt.group_by(Job.type, Job.status)
+
+        rows = session.execute(stmt).all()
+        counts: dict[str, int] = {}
+        by_type: dict[str, dict[str, int]] = {}
+        for type_value, status_value, n in rows:
+            job_type = str(type_value or "")
+            job_status = str(status_value or "")
+            count = int(n or 0)
+            if not job_type or not job_status:
+                continue
+            counts[job_status] = int(counts.get(job_status, 0)) + count
+            type_counts = by_type.setdefault(job_type, {})
+            type_counts[job_status] = int(type_counts.get(job_status, 0)) + count
+
+        status_keys = statuses or sorted(counts.keys())
+        for status_key in status_keys:
+            counts.setdefault(status_key, 0)
+
+        total = sum(counts.values())
+        items: list[JobTypeCountItem] = []
+        for job_type, type_counts in sorted(
+            by_type.items(),
+            key=lambda item: (-sum(int(v) for v in item[1].values()), item[0]),
+        ):
+            count = sum(int(v) for v in type_counts.values())
+            percentage = round((count * 100.0) / total, 2) if total > 0 else 0.0
+            items.append(
+                JobTypeCountItem(
+                    type=job_type,
+                    count=count,
+                    counts={status_key: int(type_counts.get(status_key, 0)) for status_key in status_keys},
+                    percentage=percentage,
+                )
+            )
+        return JobTypeCountsOut(counts=counts, items=items, total=total)
 
 
 @router.get("/jobs/series", response_model=list[JobSeriesPoint])

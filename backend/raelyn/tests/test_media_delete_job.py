@@ -105,7 +105,7 @@ class MediaDeleteJobTests(unittest.TestCase):
         delete_job = Job(id=uuid.uuid4(), type="media.delete", status="running", priority=20, params={"media_id": str(media_id)})
         pending_job = Job(
             id=uuid.uuid4(),
-            type="video.generate_note",
+            type="video.polish_transcript",
             status="pending",
             priority=5,
             params={"video_id": str(uuid.uuid4())},

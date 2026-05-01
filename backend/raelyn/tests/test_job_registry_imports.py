@@ -24,8 +24,10 @@ class JobRegistryImportTests(unittest.TestCase):
             "video.extract_audio",
             "video.normalize_subtitle",
             "video.asr_transcribe",
+            "video.embed_transcript",
             "video.polish_transcript",
-            "video.generate_note",
+            "playlist.backfill_embeddings",
+            "playlist.build_analysis_snapshot",
             "brief.generate_period",
             "brief.generate_daily",
         }

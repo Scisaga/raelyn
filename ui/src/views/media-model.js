@@ -3,8 +3,10 @@ export function createMediaViewMethods() {
     async loadMedia() {
       try {
         this._syncUrl({ push: false });
-        const query = this.mediaQuery ? `&q=${encodeURIComponent(this.mediaQuery)}` : "";
-        this.mediaList = await this.api(`/media?limit=50&offset=0${query}`);
+        const params = new URLSearchParams({ limit: "50", offset: "0" });
+        if (this.mediaQuery) params.set("q", this.mediaQuery);
+        if (!this.assetDelivery || this.assetDelivery.mode !== "direct") params.set("presign", "false");
+        this.mediaList = await this.api(`/media?${params.toString()}`);
         this._syncMediaDeleteTrackingFromList(this.mediaList);
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
@@ -23,6 +25,20 @@ export function createMediaViewMethods() {
       if (!id) return null;
       const list = Array.isArray(this.mediaIndex) ? this.mediaIndex : [];
       return list.find((item) => item && String(item.id) === id) || null;
+    },
+
+    mediaDisabledLabel(media) {
+      const reason = String((media && media.disabled_reason) || "").trim();
+      if (reason === "source_unavailable") return "来源不可用";
+      return reason ? "已停用" : "";
+    },
+
+    mediaDisabledTitle(media) {
+      const message = String((media && media.disabled_message) || "").trim();
+      if (message) return message;
+      const reason = String((media && media.disabled_reason) || "").trim();
+      if (reason === "source_unavailable") return "媒体源返回 404，系统已自动停用监控";
+      return reason ? `自动停用：${reason}` : "";
     },
 
     _markMediaDeleting(mediaId, jobId) {
@@ -95,8 +111,7 @@ export function createMediaViewMethods() {
 
     async _refreshMediaAndStatsAfterDelete() {
       await this.loadMedia();
-      this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
-      this._syncMediaDeleteTrackingFromList(this.mediaIndex);
+      await this.loadMediaIndex();
       await Promise.all([this.loadStats(), this.loadJobs()]);
     },
 
@@ -254,7 +269,7 @@ export function createMediaViewMethods() {
         this.globalStatus = message;
         this.toastSuccess(message);
         await this.loadMedia();
-        this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
+        await this.loadMediaIndex({ lightweight: true });
         await this.loadStats();
       } catch (e) {
         const message = e && e.message ? e.message : String(e);
@@ -294,7 +309,7 @@ export function createMediaViewMethods() {
         this.modals.addMedia = false;
         if (this.activeView !== "media") this.switchView("media");
         await this.loadMedia();
-        this.mediaIndex = await this.api(`/media?limit=500&offset=0`);
+        await this.loadMediaIndex({ lightweight: true });
         this.globalStatus = "已添加媒体，默认未启用监控";
         this.toastSuccess("已添加媒体，默认未启用监控");
       } catch (e) {

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import time
 from datetime import timedelta
+from typing import Any
 
 from sqlalchemy import select, text
 
@@ -29,9 +31,27 @@ def _has_pending_sync_job(session, media_id) -> bool:
     return row is not None
 
 
+def _sync_jitter_minutes(media_id: Any, last_video_sync_at: Any) -> int:
+    jitter_max = max(0, int(settings.sync_interval_jitter_minutes))
+    if jitter_max <= 0 or last_video_sync_at is None:
+        return 0
+    seed = f"{media_id}:{last_video_sync_at.isoformat() if hasattr(last_video_sync_at, 'isoformat') else last_video_sync_at}"
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big") % (jitter_max + 1)
+
+
+def _is_sync_due(media: Media, now: Any) -> bool:
+    last_sync = media.last_video_sync_at
+    if last_sync is None:
+        return True
+    due_after = timedelta(minutes=int(settings.sync_interval_minutes) + _sync_jitter_minutes(media.id, last_sync))
+    return last_sync + due_after <= now
+
+
 def tick() -> int:
     now = utcnow()
     threshold = now - timedelta(minutes=settings.sync_interval_minutes)
+    candidate_limit = max(int(settings.sync_batch_size) * 4, int(settings.sync_batch_size))
     with session_scope() as session:
         if is_paused(session):
             return 0
@@ -40,11 +60,15 @@ def tick() -> int:
             .where(Media.monitor_enabled.is_(True))
             .where((Media.last_video_sync_at.is_(None)) | (Media.last_video_sync_at < threshold))
             .order_by(Media.last_video_sync_at.asc().nullsfirst(), Media.updated_at.desc())
-            .limit(settings.sync_batch_size)
+            .limit(candidate_limit)
         )
         medias = session.execute(stmt).scalars().all()
         enqueued = 0
         for m in medias:
+            if enqueued >= int(settings.sync_batch_size):
+                break
+            if not _is_sync_due(m, now):
+                continue
             if is_provider_paused(session, m.provider):
                 continue
             if _has_pending_sync_job(session, m.id):

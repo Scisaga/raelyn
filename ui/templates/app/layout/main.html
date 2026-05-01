@@ -55,7 +55,7 @@
               class="inline-flex items-center gap-2 rounded-md border border-red-900/60 bg-red-950/20 px-3 py-1.5 text-sm text-red-200 hover:bg-red-900/30"
               x-show="hasProviderPause('youtube')"
               x-transition.opacity.duration.150ms
-              :title="providerPause('youtube').message || 'YouTube任务已暂停'"
+              :title="providerPauseMessage('youtube')"
               @click="gotoCookiesSettings('youtube')"
             >
               <span class="hidden sm:inline" x-text="providerPauseLabel('youtube')"></span>
@@ -65,7 +65,7 @@
               class="inline-flex items-center gap-2 rounded-md border border-sky-900/60 bg-sky-950/20 px-3 py-1.5 text-sm text-sky-200 hover:bg-sky-900/30"
               x-show="hasProviderPause('bilibili')"
               x-transition.opacity.duration.150ms
-              :title="providerPause('bilibili').message || 'B站任务已暂停'"
+              :title="providerPauseMessage('bilibili')"
               @click="gotoCookiesSettings('bilibili')"
             >
               <span class="hidden sm:inline" x-text="providerPauseLabel('bilibili')"></span>

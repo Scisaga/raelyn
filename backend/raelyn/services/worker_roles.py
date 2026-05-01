@@ -16,6 +16,8 @@ CONTROLLABLE_WORKER_ROLES: tuple[str, ...] = (
     "process",
     "asr",
     "sync",
+    "embedding",
+    "analysis",
     "ai",
 )
 KNOWN_WORKER_ROLES: tuple[str, ...] = CONTROLLABLE_WORKER_ROLES + (WORKER_ROLE_ALL,)
@@ -27,7 +29,13 @@ WORKER_ROLE_TYPES: dict[str, list[str]] = {
     "process": ["video.normalize_subtitle"],
     "asr": ["video.asr_transcribe"],
     "sync": ["media.sync_profile", "media.sync_videos", "media.delete"],
-    "ai": ["video.polish_transcript", "video.generate_note", "brief.generate_daily", "brief.generate_period"],
+    "embedding": ["video.embed_transcript", "playlist.backfill_embeddings"],
+    "analysis": ["playlist.build_analysis_snapshot"],
+    "ai": [
+        "video.polish_transcript",
+        "brief.generate_daily",
+        "brief.generate_period",
+    ],
 }
 
 _TYPE_TO_ROLE: dict[str, str] = {}

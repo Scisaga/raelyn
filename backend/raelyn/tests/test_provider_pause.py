@@ -16,11 +16,16 @@ if str(_BACKEND_DIR) not in sys.path:
 from raelyn.jobs.claim import claim_next_job
 from raelyn.services.provider_pause import (
     ProviderPauseRequestError,
+    bilibili_provider_pause_message,
     clear_provider_pause,
     get_provider_pause,
     set_provider_paused,
 )
-from raelyn.services.ytdlp import _raise_if_provider_pause_messages
+from raelyn.services.ytdlp import (
+    YtdlpCookiesInvalidError,
+    _raise_if_provider_pause_messages,
+    _raise_if_youtube_bot_check_messages,
+)
 
 
 class ProviderPauseStateTests(unittest.TestCase):
@@ -166,6 +171,13 @@ class ClaimNextJobProviderPauseTests(unittest.TestCase):
 
 
 class BilibiliProviderPauseDetectionTests(unittest.TestCase):
+    def test_bilibili_pause_message_describes_412_not_just_cookies(self) -> None:
+        message = bilibili_provider_pause_message()
+
+        self.assertIn("412", message)
+        self.assertIn("yt-dlp", message)
+        self.assertIn("若仍 412", message)
+
     def test_raise_if_provider_pause_messages_detects_bilibili_412(self) -> None:
         with self.assertRaises(ProviderPauseRequestError) as ctx:
             _raise_if_provider_pause_messages(
@@ -174,6 +186,42 @@ class BilibiliProviderPauseDetectionTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.provider, "bilibili")
         self.assertEqual(ctx.exception.reason, "bilibili_risk_control")
+
+
+class YoutubeCookiesPauseDetectionTests(unittest.TestCase):
+    def test_raise_if_youtube_bot_check_messages_treats_as_cookie_expired(self) -> None:
+        with self.assertRaises(YtdlpCookiesInvalidError) as ctx:
+            _raise_if_youtube_bot_check_messages(
+                [
+                    (
+                        "ERROR: [youtube] abc123: Sign in to confirm you're not a bot. "
+                        "This helps protect our community."
+                    )
+                ],
+                provider="youtube",
+            )
+
+        self.assertEqual(ctx.exception.provider, "youtube")
+        self.assertEqual(ctx.exception.reason, "ytdlp_cookies_expired")
+        self.assertIn("YTDLP_COOKIES_YOUTUBE 已失效", str(ctx.exception))
+
+    def test_raise_if_youtube_tab_authcheck_treats_as_cookie_expired(self) -> None:
+        with self.assertRaises(YtdlpCookiesInvalidError) as ctx:
+            _raise_if_youtube_bot_check_messages(
+                [
+                    (
+                        "ERROR: [youtube:tab] @lukoudaye-: Playlists that require authentication "
+                        "may not extract correctly without a successful webpage download. "
+                        "If you are not downloading private content, pass "
+                        '"--extractor-args youtubetab:skip=authcheck" to skip this check'
+                    )
+                ],
+                provider="youtube",
+            )
+
+        self.assertEqual(ctx.exception.provider, "youtube")
+        self.assertEqual(ctx.exception.reason, "ytdlp_cookies_expired")
+        self.assertIn("频道/播放列表鉴权检查失败", str(ctx.exception))
 
 
 if __name__ == "__main__":

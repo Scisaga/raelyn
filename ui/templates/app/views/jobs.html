@@ -199,14 +199,30 @@
 	                        </template>
                         <span x-show="workersLoading" class="text-[11px] text-slate-500">刷新中…</span>
                         <span x-show="workersError" class="text-[11px] text-rose-300 truncate" x-text="workersError"></span>
-                        <button
-                          type="button"
-                          class="px-2 py-0.5 rounded-md border border-slate-700 bg-slate-950/20 text-[11px] text-slate-300 hover:bg-slate-800/60"
-                          @click="refreshWorkers({ force: true })"
-                          title="手动刷新 worker 状态"
+                      </div>
+
+                      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400" x-show="jobsTab==='active'">
+                        <span class="text-slate-500">任务构成:</span>
+                        <template x-for="item in jobsActiveTypeStats" :key="item.type">
+                          <button
+                            type="button"
+                            class="inline-flex max-w-full items-center gap-1.5 rounded-full border border-slate-700 bg-slate-950/20 px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-800/60"
+                            :title="jobsActiveTypeStatsTitle(item)"
+                            @click="jobsTypeFilter = item.type; applyJobsTypeFilter()"
+                          >
+                            <span class="max-w-[18rem] truncate font-mono text-slate-200" x-text="item.type"></span>
+                            <span class="tabular-nums text-slate-400" x-text="formatInteger(item.count || 0)"></span>
+                            <span class="tabular-nums text-emerald-300" x-text="jobsActiveTypeStatsPercentLabel(item)"></span>
+                          </button>
+                        </template>
+                        <span x-show="jobsActiveTypeStatsLoading" class="text-[11px] text-slate-500">刷新中…</span>
+                        <span
+                          x-show="!jobsActiveTypeStatsLoading && !(jobsActiveTypeStats||[]).length && !jobsActiveTypeStatsError"
+                          class="text-[11px] text-slate-500"
                         >
-                          刷新
-                        </button>
+                          暂无待处理 / 运行中任务
+                        </span>
+                        <span x-show="jobsActiveTypeStatsError" class="text-[11px] text-rose-300 truncate" x-text="jobsActiveTypeStatsError"></span>
                       </div>
 
 			                <div x-show="jobsTab!=='active' && (jobsDoneLoading || jobsSeriesLoading || jobsSeriesError)" class="flex items-center justify-between gap-3">
@@ -248,13 +264,13 @@
                           type="button"
                           x-show="hasProviderPause('youtube')"
                           class="w-full rounded-lg border border-red-900/60 bg-red-950/20 px-3 py-3 text-left text-sm text-red-100 hover:bg-red-900/25"
-                          :title="providerPause('youtube').message || 'YouTube任务已暂停'"
+                          :title="providerPauseMessage('youtube')"
                           @click="gotoCookiesSettings('youtube')"
                         >
                           <div class="flex flex-wrap items-center justify-between gap-3">
                             <div class="min-w-0">
                               <div class="font-medium">YouTube 下载任务已暂停</div>
-                              <div class="mt-1 text-xs text-red-200/90" x-text="providerPause('youtube').message || 'YTDLP_COOKIES_YOUTUBE 无效，请更新 Netscape cookies.txt 后重试。'"></div>
+                              <div class="mt-1 text-xs text-red-200/90" x-text="providerPauseMessage('youtube')"></div>
                             </div>
                             <span class="inline-flex items-center rounded-md border border-red-800/70 bg-red-950/40 px-2.5 py-1 text-xs text-red-100">
                               前往设置更新 Cookies
@@ -266,16 +282,16 @@
                           type="button"
                           x-show="hasProviderPause('bilibili')"
                           class="w-full rounded-lg border border-sky-900/60 bg-sky-950/20 px-3 py-3 text-left text-sm text-sky-100 hover:bg-sky-900/25"
-                          :title="providerPause('bilibili').message || 'B站任务已暂停'"
+                          :title="providerPauseMessage('bilibili')"
                           @click="gotoCookiesSettings('bilibili')"
                         >
                           <div class="flex flex-wrap items-center justify-between gap-3">
                             <div class="min-w-0">
                               <div class="font-medium">B站任务已暂停</div>
-                              <div class="mt-1 text-xs text-sky-200/90" x-text="providerPause('bilibili').message || 'YTDLP_COOKIES_BILIBILI 无效，请更新 Netscape cookies.txt 后重试。'"></div>
+                              <div class="mt-1 text-xs text-sky-200/90" x-text="providerPauseMessage('bilibili')"></div>
                             </div>
                             <span class="inline-flex items-center rounded-md border border-sky-800/70 bg-sky-950/40 px-2.5 py-1 text-xs text-sky-100">
-                              前往设置更新 Cookies
+                              查看 Cookies 设置
                             </span>
                           </div>
                         </button>

@@ -59,10 +59,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("YTDLP_FORMAT"),
     )
 
-    sync_interval_minutes: int = 5
+    sync_interval_minutes: int = 60
+    sync_interval_jitter_minutes: int = 15
     sync_batch_size: int = 20
     sync_max_entries: int = 10
     auto_download_new_videos: bool = True
+    stats_cache_ttl_seconds: int = Field(default=60, validation_alias=AliasChoices("STATS_CACHE_TTL_SECONDS"))
 
     youtube_sync_concurrency: int = 1
     bilibili_sync_concurrency: int = 1
@@ -94,12 +96,32 @@ class Settings(BaseSettings):
         default=600,
         validation_alias=AliasChoices("ASR_TIMEOUT_SECONDS", "SPEACHES_TIMEOUT_SECONDS"),
     )
+    asr_worker_concurrency: int = Field(default=1, validation_alias=AliasChoices("ASR_WORKER_CONCURRENCY"))
 
     llm_url: str = ""
     llm_model: str = ""
     llm_api_key: str = ""
     llm_headers_json: str = ""
     llm_timeout_seconds: int = 600
+
+    # --- Embedding analysis (OpenAI-compatible embedding servers) ---
+    embedding_url: str = "http://10.6.0.10:12302"
+    embedding_endpoint: str = "/v1/embeddings"
+    embedding_model: str = "Qwen/Qwen3-Embedding-8B"
+    embedding_dim: int = 1024
+    embedding_timeout_seconds: int = 120
+    embedding_transcript_variant: str = "plain"
+    embedding_batch_size: int = 16
+    embedding_batch_max_size: int = 64
+    embedding_batch_max_chars: int = 60000
+    embedding_transcript_prefetch_workers: int = 4
+    embedding_backfill_http_inflight: int = 1
+    auto_embed_new_video_transcripts: bool = Field(default=False, validation_alias=AliasChoices("AUTO_EMBED_NEW_VIDEO_TRANSCRIPTS"))
+    embedding_worker_concurrency: int = 1
+    analysis_worker_concurrency: int = 1
+    analysis_min_available_memory_bytes: int = 1024 * 1024 * 1024
+    analysis_max_rss_bytes: int = 6 * 1024 * 1024 * 1024
+    analysis_stream_batch_size: int = 500
 
     # --- Volcengine managed inference defaults (used when inference_mode=volcengine) ---
     volcengine_llm_url: str = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"

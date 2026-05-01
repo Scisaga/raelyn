@@ -75,7 +75,11 @@ export function createPlaylistsViewMethods() {
       this.createPlaylistAvatarFile = null;
       this.createPlaylistBackgroundFile = null;
       if (!this.mediaIndex || this.mediaIndex.length === 0) {
-        this.api(`/media?limit=500&offset=0`)
+        const loadOptions =
+          typeof this.loadMediaIndex === "function"
+            ? this.loadMediaIndex({ lightweight: true })
+            : this.api(`/media/options?limit=500&offset=0`);
+        loadOptions
           .then((items) => {
             this.mediaIndex = Array.isArray(items) ? items : [];
           })

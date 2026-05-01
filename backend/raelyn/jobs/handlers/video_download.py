@@ -18,6 +18,7 @@ from raelyn.services.assets import ensure_asset
 from raelyn.services.pg_lock import advisory_lock_any
 from raelyn.services.provider_pause import ProviderPauseRequestError
 from raelyn.services.video_meta import parse_published_at
+from raelyn.services.playlist_analysis import mark_playlists_analysis_dirty_for_video
 from raelyn.services.workdir import job_workdir
 from raelyn.services.ytdlp import (
     YTDLP_RETRY_WITHOUT_COOKIES_PARAM,
@@ -228,7 +229,10 @@ def video_download(session: Session, job: Job) -> dict | None:
                 if (not video.description) and raw_info.get("description"):
                     video.description = str(raw_info.get("description"))
                 if not video.published_at:
-                    video.published_at = parse_published_at(video.raw_info)
+                    published_at = parse_published_at(video.raw_info)
+                    if published_at and video.published_at != published_at:
+                        video.published_at = published_at
+                        mark_playlists_analysis_dirty_for_video(session, video.id)
                 if not video.duration_sec and raw_info.get("duration"):
                     try:
                         video.duration_sec = int(raw_info.get("duration"))

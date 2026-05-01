@@ -112,10 +112,14 @@ def _normalize_bilibili_video_url(url_or_id: str) -> str:
             host = (parsed.netloc or "").lower()
             if "bilibili.com" in host and parsed.path.startswith("/video/"):
                 seg = (parsed.path.split("/video/", 1)[1].split("/", 1)[0] or "").strip()
+                suffix = f"?{parsed.query}" if parsed.query else ""
                 if seg and _BILIBILI_BV_PART_RE.match(seg):
-                    return f"https://www.bilibili.com/video/BV{seg}"
+                    return f"https://www.bilibili.com/video/BV{seg}{suffix}"
                 if seg and seg.isdigit():
-                    return f"https://www.bilibili.com/video/av{seg}"
+                    return f"https://www.bilibili.com/video/av{seg}{suffix}"
+                low_seg = seg.lower()
+                if low_seg.startswith("bv") or low_seg.startswith("av"):
+                    return f"https://www.bilibili.com/video/{seg}{suffix}"
         except Exception:
             pass
         return s

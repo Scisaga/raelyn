@@ -54,8 +54,8 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - 数据写入侧通过唯一键 + upsert 保证重复任务不会重复产出
   - `videos(provider, provider_video_id)` 唯一
   - `assets(video_id, type, format, language, source, variant)` 可按业务定义唯一
-- Job 层可设置 `idempotency_key`
-  - 例如 `media.sync_videos:{media_id}:{window}`
+- Job 层可设置 `dedupe_key`
+  - 例如 `media.sync_videos:{media_id}`
 
 ## 并发与外部依赖门控（Guardrails）
 
@@ -85,6 +85,18 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - 每个 job 记录 `type / status / params / result / error / attempt / worker_id`
 - 结构化日志带 `job_id` 与 `video_id / media_id`
 - `job_events` 保存关键事件，便于 UI 展示与排障
+
+## Job 查询索引
+
+`job` 是 API、WebSocket、worker claim 和租约回收共享的热表。当前兼容迁移会补充以下查询索引：
+
+- `job_active_list_order_idx`：支撑任务页和 `/api/ws/jobs` 的 `pending/running` 实时列表，按运行中优先、开始时间、计划时间和创建时间取前 N 条。
+- `job_pending_claim_order_idx`：支撑 worker 领取 `pending` 任务，按优先级、处理阶段等级、计划时间和创建时间取候选任务。
+- `job_status_type_idx`：支撑 `/api/jobs/counts` 与 `/api/jobs/type_counts` 的状态 / 类型聚合。
+- `job_finished_status_finished_at_idx`：支撑已完成任务列表和 24 小时成功 / 失败统计。
+- `job_running_lease_idx` / `job_running_worker_idx`：支撑租约过期回收和孤儿 `running` 任务回收。
+
+生产库补建大索引时优先使用 `CREATE INDEX CONCURRENTLY` 在维护窗口外执行；常规启动迁移只保证缺失索引能被补齐，不承担大表在线建索引调度。
 
 ## 当前协作式取消语义
 

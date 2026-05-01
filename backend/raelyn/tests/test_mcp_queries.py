@@ -181,14 +181,13 @@ class McpQueriesTests(unittest.TestCase):
                 with patch("raelyn.mcp.queries._media_payload", return_value={"id": str(media.id), "name": "Channel A"}):
                     with patch("raelyn.mcp.queries._asset_payload", return_value={"id": str(asset.id), "type": "transcript"}):
                         with patch("raelyn.mcp.queries._video_transcript_payload", return_value={"ok": True, "status": "ready", "text": "hello"}):
-                            with patch("raelyn.mcp.queries._note_payload", return_value={"ok": False, "status": "not_ready", "text": ""}):
-                                result = queries.get_video_context(video.id)
+                            result = queries.get_video_context(video.id)
 
         self.assertEqual(result["video"]["id"], str(video.id))
         self.assertEqual(result["media"]["id"], str(media.id))
         self.assertEqual(result["assets"], [{"id": str(asset.id), "type": "transcript"}])
         self.assertEqual(result["transcript"]["status"], "ready")
-        self.assertEqual(result["note"]["status"], "not_ready")
+        self.assertNotIn("note", result)
 
     def test_get_playlist_summary_counts_ready_assets_and_embeds_transcript(self) -> None:
         playlist = Playlist(id=uuid.uuid4(), name="Daily", brief_granularity="day")
@@ -205,17 +204,6 @@ class McpQueriesTests(unittest.TestCase):
             s3_bucket="bucket",
             s3_key="a.txt",
         )
-        note_asset = Asset(
-            id=uuid.uuid4(),
-            video_id=video_a,
-            type="note",
-            format="md",
-            language="zh",
-            source="llm",
-            variant="summary",
-            s3_bucket="bucket",
-            s3_key="note.md",
-        )
         session = Mock()
         videos = [{"id": str(video_a), "title": "A"}, {"id": str(video_b), "title": "B"}]
 
@@ -228,24 +216,23 @@ class McpQueriesTests(unittest.TestCase):
                     with patch("raelyn.mcp.queries._playlist_summary_payload", return_value={"id": str(playlist.id), "name": "Daily"}):
                         with patch("raelyn.mcp.queries.build_brief_payload", return_value={"ok": False, "status": "not_ready"}):
                             with patch("raelyn.mcp.queries.pick_transcript_asset", side_effect=[transcript_asset, None]):
-                                with patch("raelyn.mcp.queries._pick_note_asset", side_effect=[note_asset, note_asset]):
-                                    with patch(
-                                        "raelyn.mcp.queries._build_transcript_chunk_payload",
-                                        return_value={"ok": True, "status": "ready", "text": "chunk"},
-                                    ):
-                                        result = queries.get_playlist_summary(
-                                            playlist.id,
-                                            date=date(2026, 3, 10),
-                                            include_transcript=True,
-                                            limit=50,
-                                        )
+                                with patch(
+                                    "raelyn.mcp.queries._build_transcript_chunk_payload",
+                                    return_value={"ok": True, "status": "ready", "text": "chunk"},
+                                ):
+                                    result = queries.get_playlist_summary(
+                                        playlist.id,
+                                        date=date(2026, 3, 10),
+                                        include_transcript=True,
+                                        limit=50,
+                                    )
 
         self.assertEqual(result["playlist"]["id"], str(playlist.id))
         self.assertEqual(result["video_count"], 2)
         self.assertEqual(result["transcript_ready_count"], 1)
-        self.assertEqual(result["note_ready_count"], 2)
         self.assertEqual(result["videos"][0]["transcript_status"], "ready")
         self.assertEqual(result["videos"][0]["transcript"]["text"], "chunk")
+        self.assertNotIn("note_status", result["videos"][0])
         self.assertEqual(result["videos"][1]["transcript_status"], "not_ready")
         self.assertNotIn("transcript", result["videos"][1])
 

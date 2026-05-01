@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -141,6 +141,185 @@ class PlaylistMedia(Base):
 
     playlist: Mapped["Playlist"] = relationship(back_populates="media")
     media: Mapped["Media"] = relationship()
+
+
+class VideoEmbedding(Base):
+    __tablename__ = "video_embedding"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    video_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("video.id", ondelete="CASCADE"), nullable=False)
+    transcript_variant: Mapped[str] = mapped_column(String, nullable=False, default="plain")
+    embedding_model: Mapped[str] = mapped_column(String, nullable=False)
+    embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    vector: Mapped[list[float] | None] = mapped_column(JSONB, nullable=True)
+    text_checksum: Mapped[str] = mapped_column(String, nullable=False)
+    skip_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    generated_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "video_id",
+            "transcript_variant",
+            "embedding_model",
+            "embedding_dim",
+            name="video_embedding_ux",
+        ),
+    )
+
+
+class PlaylistAnalysisRun(Base):
+    __tablename__ = "playlist_analysis_run"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    playlist_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("playlist.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    analysis_clock: Mapped[str] = mapped_column(String, nullable=False, default="day")
+    embedding_model: Mapped[str] = mapped_column(String, nullable=False)
+    embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    transcript_variant: Mapped[str] = mapped_column(String, nullable=False, default="plain")
+    video_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    video_embedded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    video_skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    video_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    started_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PlaylistAnalysisState(Base):
+    __tablename__ = "playlist_analysis_state"
+
+    playlist_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("playlist.id", ondelete="CASCADE"), primary_key=True)
+    analysis_dirty: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_ready_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playlist_analysis_run.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    last_requested_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_built_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PlaylistAnalysisPeriod(Base):
+    __tablename__ = "playlist_analysis_period"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playlist_analysis_run.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    period_date: Mapped[Any] = mapped_column(Date, nullable=False)
+    video_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    centroid_vector: Mapped[list[float] | None] = mapped_column(JSONB, nullable=True)
+    drift_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dispersion_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    drift_rolling_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    drift_rolling_std: Mapped[float | None] = mapped_column(Float, nullable=True)
+    drift_rolling_z: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dispersion_std: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dispersion_p25: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dispersion_p75: Mapped[float | None] = mapped_column(Float, nullable=True)
+    projection_x: Mapped[float | None] = mapped_column(Float, nullable=True)
+    projection_y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    projection_z: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (UniqueConstraint("analysis_run_id", "period_date", name="playlist_analysis_period_ux"),)
+
+
+class PlaylistAnalysisSignal(Base):
+    __tablename__ = "playlist_analysis_signal"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playlist_analysis_run.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    granularity: Mapped[str] = mapped_column(String, nullable=False)
+    period_date: Mapped[Any] = mapped_column(Date, nullable=False)
+    rolling_window: Mapped[int] = mapped_column(Integer, nullable=False)
+    video_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ready_embedding_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    centroid_vector: Mapped[list[float] | None] = mapped_column(JSONB, nullable=True)
+    drift_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    drift_rolling_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    drift_rolling_std: Mapped[float | None] = mapped_column(Float, nullable=True)
+    drift_rolling_z: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dispersion_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dispersion_std: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dispersion_p25: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dispersion_p75: Mapped[float | None] = mapped_column(Float, nullable=True)
+    projection_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    projection_method: Mapped[str | None] = mapped_column(String, nullable=True)
+    projection_x: Mapped[float | None] = mapped_column(Float, nullable=True)
+    projection_y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    projection_z: Mapped[float | None] = mapped_column(Float, nullable=True)
+    projection_explained_variance_ratio: Mapped[list[float] | None] = mapped_column(JSONB, nullable=True)
+    linked_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playlist_analysis_candidate.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "analysis_run_id",
+            "granularity",
+            "period_date",
+            "rolling_window",
+            name="playlist_analysis_signal_ux",
+        ),
+    )
+
+
+class PlaylistAnalysisCandidate(Base):
+    __tablename__ = "playlist_analysis_candidate"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playlist_analysis_run.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    candidate_date: Mapped[Any] = mapped_column(Date, nullable=False)
+    effective_trade_date: Mapped[Any] = mapped_column(Date, nullable=False)
+    peak_date: Mapped[Any | None] = mapped_column(Date, nullable=True)
+    event_start: Mapped[Any | None] = mapped_column(Date, nullable=True)
+    event_end: Mapped[Any | None] = mapped_column(Date, nullable=True)
+    event_type: Mapped[str] = mapped_column(String, nullable=False, default="burst")
+    status: Mapped[str] = mapped_column(String, nullable=False, default="draft")
+    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    uncertainty: Mapped[float | None] = mapped_column(Float, nullable=True)
+    drift_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dispersion_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    drift_rolling_z: Mapped[float | None] = mapped_column(Float, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    top_terms: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    evidence_video_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    evidence_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    available_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    train_start: Mapped[Any | None] = mapped_column(Date, nullable=True)
+    train_end: Mapped[Any | None] = mapped_column(Date, nullable=True)
+    valid_start: Mapped[Any | None] = mapped_column(Date, nullable=True)
+    valid_end: Mapped[Any | None] = mapped_column(Date, nullable=True)
+    test_start: Mapped[Any | None] = mapped_column(Date, nullable=True)
+    test_end: Mapped[Any | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (UniqueConstraint("analysis_run_id", "candidate_date", name="playlist_analysis_candidate_ux"),)
 
 
 class DailyBrief(Base):

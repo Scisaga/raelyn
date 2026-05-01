@@ -24,7 +24,6 @@ _RELATED_VIDEO_JOB_TYPES = {
     "video.normalize_subtitle",
     "video.asr_transcribe",
     "video.polish_transcript",
-    "video.generate_note",
 }
 _RELATED_BRIEF_JOB_TYPES = {"brief.generate_period", "brief.generate_daily"}
 
