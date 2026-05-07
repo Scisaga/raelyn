@@ -89,6 +89,8 @@
                 </div>
               </div>
 	              <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar divide-y divide-slate-800">
+                  <div x-show="mediaLoadingList && mediaList.length===0" class="p-4 text-sm text-slate-300">加载中…</div>
+                  <div x-show="!mediaLoadingList && mediaList.length===0" class="p-4 text-sm text-slate-400">暂无媒体</div>
 	                <template x-for="m in mediaList" :key="m.id">
 	                  <div
                       class="p-4 flex flex-col gap-3 hover:bg-slate-900/50 sm:flex-row sm:items-center sm:justify-between sm:gap-4 cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset"
@@ -233,7 +235,13 @@
 	                    </div>
 	                  </div>
 	                </template>
-                  <div class="h-0 border-t border-slate-800" x-show="mediaList.length>0"></div>
+                  <div class="py-4 flex flex-col items-center gap-2" x-show="mediaList.length>0">
+                    <div x-ref="mediaInfiniteSentinel" class="h-1 w-1 opacity-0"></div>
+                    <div class="text-xs text-slate-400" x-show="mediaLoadingMore">加载更多…</div>
+                    <div class="text-xs text-slate-500" x-show="!mediaLoadingList && !mediaHasMore && !mediaLoadingMore">
+                      没有更多了
+                    </div>
+                  </div>
 	              </div>
             </div>
           </div>

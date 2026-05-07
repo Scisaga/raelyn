@@ -11,6 +11,7 @@ export function createAppInitMethods() {
       window.addEventListener("orientationchange", onResize, { passive: true });
       window.addEventListener("popstate", () => {
         const viewKey = this._parseViewFromLocation();
+        if (this.activeView === "media" && viewKey !== "media") this._teardownMediaIo();
         if (this.activeView === "videos" && viewKey !== "videos") this._teardownVideoIo();
         if (this.activeView === "jobs" && viewKey !== "jobs") this._destroyJobsDoneChart();
         if (this.activeView === "video" && viewKey !== "video" && typeof this.leaveVideoPage === "function") this.leaveVideoPage();

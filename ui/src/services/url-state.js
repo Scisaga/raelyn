@@ -126,6 +126,7 @@ export function createUrlStateMethods({ settingsTabs }) {
 
     switchView(key, { push = true, stateExtras = null, refresh = true } = {}) {
       const item = this.navItems.find((nav) => nav.key === key);
+      if (this.activeView === "media" && key !== "media") this._teardownMediaIo();
       if (this.activeView === "videos" && key !== "videos") this._teardownVideoIo();
       if (this.activeView === "video" && key !== "video" && typeof this.leaveVideoPage === "function") this.leaveVideoPage();
       if (this.activeView === "playlist" && key !== "playlist" && typeof this.leavePlaylistPage === "function") {

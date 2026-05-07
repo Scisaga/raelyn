@@ -2,12 +2,107 @@ export function createMediaViewMethods() {
   return {
     async loadMedia() {
       try {
+        this.mediaLoadingList = true;
         this._syncUrl({ push: false });
-        const params = new URLSearchParams({ limit: "50", offset: "0" });
+        this.mediaOffset = 0;
+        this.mediaHasMore = true;
+        this.mediaLoadingMore = false;
+
+        const params = this._mediaListParams({ offset: 0 });
+        const items = await this.api(`/media?${params.toString()}`);
+        this.mediaList = Array.isArray(items) ? items : [];
+        this.mediaOffset = this.mediaList.length;
+        const limit = Number(this.mediaLimit || 50);
+        this.mediaHasMore = this.mediaList.length >= limit;
+        this._syncMediaDeleteTrackingFromList(this.mediaList);
+        if (this.mediaHasMore) this._setupMediaIo();
+        else this._teardownMediaIo();
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      } finally {
+        this.mediaLoadingList = false;
+      }
+    },
+
+    _mediaListParams({ offset = 0 } = {}) {
+      const params = new URLSearchParams({
+        limit: String(this.mediaLimit || 50),
+        offset: String(offset || 0),
+      });
+      if (this.mediaQuery) params.set("q", this.mediaQuery);
+      if (!this.assetDelivery || this.assetDelivery.mode !== "direct") params.set("presign", "false");
+      return params;
+    },
+
+    _teardownMediaIo() {
+      try {
+        if (this.mediaIo) this.mediaIo.disconnect();
+      } catch {
+        // 忽略 observer 清理失败
+      }
+      this.mediaIo = null;
+    },
+
+    _setupMediaIo() {
+      if (this.activeView !== "media") return;
+      this.$nextTick(() => {
+        const el = this.$refs && this.$refs.mediaInfiniteSentinel;
+        if (!el) return;
+        this._teardownMediaIo();
+        const io = new IntersectionObserver(
+          (entries) => {
+            if (!entries || !entries.some((entry) => entry.isIntersecting)) return;
+            this.loadMoreMedia();
+          },
+          { root: null, rootMargin: "800px 0px", threshold: 0 }
+        );
+        this.mediaIo = io;
+        io.observe(el);
+      });
+    },
+
+    async loadMoreMedia() {
+      if (this.activeView !== "media" || this.mediaLoadingList || this.mediaLoadingMore || !this.mediaHasMore) return;
+
+      try {
+        this.mediaLoadingMore = true;
+        const params = this._mediaListParams({ offset: this.mediaOffset || 0 });
+        const items = await this.api(`/media?${params.toString()}`);
+        const nextItems = Array.isArray(items) ? items : [];
+        const current = Array.isArray(this.mediaList) ? this.mediaList : [];
+        const seen = new Set(current.map((media) => String(media && media.id)));
+        const fresh = nextItems.filter((media) => media && media.id && !seen.has(String(media.id)));
+        this.mediaList = current.concat(fresh);
+        this.mediaOffset = (this.mediaOffset || 0) + nextItems.length;
+
+        const limit = Number(this.mediaLimit || 50);
+        this.mediaHasMore = nextItems.length >= limit;
+        this._syncMediaDeleteTrackingFromList(fresh);
+        if (!this.mediaHasMore) this._teardownMediaIo();
+      } catch (e) {
+        this.globalStatus = `error: ${e.message}`;
+      } finally {
+        this.mediaLoadingMore = false;
+      }
+    },
+
+    async refreshCurrentMediaPage() {
+      try {
+        const currentCount = Array.isArray(this.mediaList) ? this.mediaList.length : 0;
+        const limit = Math.max(Number(this.mediaLimit || 50), currentCount || Number(this.mediaLimit || 50));
+        const params = new URLSearchParams({
+          limit: String(limit),
+          offset: "0",
+        });
         if (this.mediaQuery) params.set("q", this.mediaQuery);
         if (!this.assetDelivery || this.assetDelivery.mode !== "direct") params.set("presign", "false");
-        this.mediaList = await this.api(`/media?${params.toString()}`);
+        const items = await this.api(`/media?${params.toString()}`);
+        this.mediaList = Array.isArray(items) ? items : [];
+        this.mediaOffset = this.mediaList.length;
+        this.mediaHasMore = this.mediaList.length >= limit;
         this._syncMediaDeleteTrackingFromList(this.mediaList);
+        if (this.mediaHasMore) this._setupMediaIo();
+        else this._teardownMediaIo();
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
       }
@@ -110,7 +205,7 @@ export function createMediaViewMethods() {
     },
 
     async _refreshMediaAndStatsAfterDelete() {
-      await this.loadMedia();
+      await this.refreshCurrentMediaPage();
       await this.loadMediaIndex();
       await Promise.all([this.loadStats(), this.loadJobs()]);
     },
