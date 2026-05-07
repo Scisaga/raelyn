@@ -4796,7 +4796,8 @@ export function createPlaylistViewMethods() {
         const items = Array.isArray(this.playlistAnalysisCandidates) ? this.playlistAnalysisCandidates : [];
         if (!items.length) return "暂无事件";
         const confirmed = items.filter((item) => String(item.status || "").trim().toLowerCase() === "confirmed").length;
-        return `${items.length} 个事件 · ${confirmed} 已确认`;
+        const topicBursts = items.filter((item) => String((item && item.detection_method) || "") === "open_topic_burst_v1").length;
+        return `${items.length} 个候选 · ${topicBursts} 事件候选 · ${confirmed} 已确认`;
       }
       const start = this.playlistAnalysisRangeStart || this.playlistAnalysisFullRangeStart || "";
       const end = this.playlistAnalysisRangeEnd || this.playlistAnalysisFullRangeEnd || "";
@@ -4853,11 +4854,10 @@ export function createPlaylistViewMethods() {
 
     playlistAnalysisTimelineTickStyle() {
       const count = this.playlistAnalysisTimelineMonths().length;
-      if (count <= 1) return "background:rgba(100,116,139,0.35);";
-      const step = 100 / Math.max(1, count - 1);
+      const step = count <= 1 ? 100 : 100 / Math.max(1, count - 1);
       return [
-        "background-image:linear-gradient(90deg,rgba(100,116,139,0.42) 1px,transparent 1px)",
-        `background-size:${step}% 100%`,
+        "background-image:linear-gradient(90deg,rgba(100,116,139,0.38) 1px,transparent 1px)",
+        `background-size:${step}% 12px`,
         "background-position:left center",
         "background-repeat:repeat-x",
       ].join(";");
@@ -4898,6 +4898,14 @@ export function createPlaylistViewMethods() {
       }
       const step = Math.max(1, Math.ceil(marks.length / maxMarks));
       return marks.filter((mark, index) => index === 0 || index === marks.length - 1 || index % step === 0);
+    },
+
+    playlistAnalysisTimelineYearTicks() {
+      const months = this.playlistAnalysisTimelineMonths();
+      if (!months.length) return [];
+      return months
+        .filter((month) => Number(month.index || 0) === 0 || String(month.ym || "").slice(5, 7) === "01")
+        .map((month) => ({ key: `year-tick-${month.ym}-${month.index}`, index: Number(month.index || 0) }));
     },
 
     playlistAnalysisTimelineYearMarkStyle(mark) {
@@ -5574,6 +5582,39 @@ export function createPlaylistViewMethods() {
       return "border-amber-500/30 bg-amber-500/10 text-amber-200";
     },
 
+    playlistAnalysisDetectionKindLabel(item) {
+      const method = String((item && item.detection_method) || "").trim();
+      if (method === "open_topic_burst_v1") return "事件候选";
+      return "候选断点";
+    },
+
+    playlistAnalysisDetectionKindClass(item) {
+      const method = String((item && item.detection_method) || "").trim();
+      if (method === "open_topic_burst_v1") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+      return "border-rose-500/30 bg-rose-500/10 text-rose-200";
+    },
+
+    playlistAnalysisDisplayCandidates() {
+      return (Array.isArray(this.playlistAnalysisCandidates) ? this.playlistAnalysisCandidates : [])
+        .slice()
+        .sort((left, right) => {
+          const leftMethod = String((left && left.detection_method) || "");
+          const rightMethod = String((right && right.detection_method) || "");
+          const leftDate = String((left && (left.event_date || left.candidate_date)) || "");
+          const rightDate = String((right && (right.event_date || right.candidate_date)) || "");
+          const dateOrder = rightDate.localeCompare(leftDate);
+          if (dateOrder !== 0) return dateOrder;
+          const rank = (method) => {
+            if (method === "open_topic_burst_v1") return 0;
+            return 1;
+          };
+          const leftRank = rank(leftMethod);
+          const rightRank = rank(rightMethod);
+          if (leftRank !== rightRank) return leftRank - rightRank;
+          return String((left && left.id) || "").localeCompare(String((right && right.id) || ""));
+        });
+    },
+
     playlistAnalysisExportJson() {
       try {
         return JSON.stringify(this.playlistAnalysisExportPayload || { events: [] }, null, 2);
@@ -5765,12 +5806,14 @@ export function createPlaylistViewMethods() {
       if (!pid || this.playlistAnalysisRebuilding) return;
       try {
         this.playlistAnalysisRebuilding = true;
-        await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/rebuild`, {
+        const result = await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/rebuild`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: "{}",
         });
-        if (!silent) this.globalStatus = "已触发分析重建";
+        if (!silent) {
+          this.globalStatus = result && result.created ? "已触发分析重建" : "分析重建已在执行或排队，已复用现有任务";
+        }
         await this.playlistLoadAnalysisSummary();
         this.playlistAnalysisSchedulePoll();
       } catch (e) {
@@ -5974,6 +6017,7 @@ export function createPlaylistViewMethods() {
       this.playlistEditMediaIds = media.map((m) => String(m.id)).filter(Boolean);
       this.playlistEditMediaTagQuery = "";
       this.playlistEditMediaTagOpen = false;
+      this.playlistEditMediaOptionsError = "";
 
       const g = d && d.brief_granularity ? String(d.brief_granularity).trim().toLowerCase() : "day";
       this.playlistSettingsGranularityDraft = ["day", "week", "month"].includes(g) ? g : "day";
@@ -5984,13 +6028,47 @@ export function createPlaylistViewMethods() {
       this.playlistSettingsPromptError = "";
     },
 
+    async playlistOpenEditMedia() {
+      if (!this.playlistDetail) return;
+      this.playlistEditResetFromDetail();
+      this.playlistEditMediaOpen = true;
+      if (Array.isArray(this.mediaIndex) && this.mediaIndex.length > 0) return;
+      if (typeof this.loadMediaIndex !== "function") return;
+
+      try {
+        this.playlistEditMediaOptionsLoading = true;
+        this.playlistEditMediaOptionsError = "";
+        await this.loadMediaIndex({ lightweight: true });
+      } catch (e) {
+        this.playlistEditMediaOptionsError = e && e.message ? e.message : String(e);
+        this.globalStatus = `error: ${this.playlistEditMediaOptionsError}`;
+      } finally {
+        this.playlistEditMediaOptionsLoading = false;
+      }
+    },
+
+    playlistEditMediaOptionIndex() {
+      const items = [];
+      const seen = new Set();
+      const push = (media) => {
+        const id = media && media.id ? String(media.id) : "";
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+        items.push(media);
+      };
+      const detailMedia = this.playlistDetail && Array.isArray(this.playlistDetail.media) ? this.playlistDetail.media : [];
+      detailMedia.forEach(push);
+      (Array.isArray(this.mediaIndex) ? this.mediaIndex : []).forEach(push);
+      return items;
+    },
+
     playlistEditSelectedMedia() {
-      return resolveMediaItemsByIds(this.mediaIndex, this.playlistEditMediaIds);
+      return resolveMediaItemsByIds(this.playlistEditMediaOptionIndex(), this.playlistEditMediaIds);
     },
 
     playlistEditFilteredMediaOptions() {
       return filterUnselectedMediaOptions({
-        index: this.mediaIndex,
+        index: this.playlistEditMediaOptionIndex(),
         selectedIds: this.playlistEditMediaIds,
         query: this.playlistEditMediaTagQuery,
         displayName: (media) => this.mediaDisplayName(media),

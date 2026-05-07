@@ -207,10 +207,7 @@ def _cache_media_avatar(session: Session, *, job: Job, media: Media, avatar_url:
     max_bytes = 10 * 1024 * 1024
 
     try:
-        use_proxy = settings.ytdlp_proxy
-        if media.provider == "bilibili" or "bilibili.com" in url.lower():
-            use_proxy = ""
-        with httpx_client(proxy=use_proxy, timeout=timeout, follow_redirects=True, headers=headers) as client:
+        with httpx_client(timeout=timeout, follow_redirects=True, headers=headers) as client:
             response = client.get(url)
             if response.status_code < 200 or response.status_code >= 300:
                 raise RuntimeError(f"avatar http {response.status_code}")

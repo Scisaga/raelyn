@@ -179,6 +179,7 @@ def claim_next_job(
     worker_id: str,
     lease_seconds: int = 300,
     type_in: list[str] | None = None,
+    skip_type_in: set[str] | None = None,
 ) -> Job | None:
     if is_paused(session):
         return None
@@ -187,6 +188,9 @@ def claim_next_job(
     base_stmt = select(Job).where(Job.status == "pending", Job.scheduled_for <= now)
     if type_in:
         base_stmt = base_stmt.where(Job.type.in_(list(type_in)))
+    skip_types = set(skip_type_in or set())
+    if skip_types:
+        base_stmt = base_stmt.where(Job.type.not_in(list(skip_types)))
     # 同优先级、同类型等级、同计划时间下，优先领取新创建的任务，
     # 这样新添加的视频采集任务不会长期被旧任务压在后面。
     ordered = base_stmt.order_by(
@@ -206,6 +210,8 @@ def claim_next_job(
         if not rows:
             return None
         for candidate in rows:
+            if str(getattr(candidate, "type", "") or "") in skip_types:
+                continue
             provider = job_provider(session, candidate)
             if provider and is_provider_paused(session, provider):
                 continue

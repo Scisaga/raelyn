@@ -196,6 +196,60 @@ class ClaimNextJobWorkerRolePauseTests(unittest.TestCase):
 
         self.assertIsNone(claimed)
 
+    def test_claim_next_job_skips_capacity_deferred_type(self) -> None:
+        now = datetime.now(timezone.utc)
+        asr_job = SimpleNamespace(
+            type="video.asr_transcribe",
+            status="pending",
+            worker_id=None,
+            error_message="old",
+            error_stack="old",
+            progress_current=1,
+            progress_total=2,
+            started_at=None,
+            lease_expires_at=None,
+            priority=10,
+            scheduled_for=now,
+            created_at=now,
+            id="asr-job",
+            params={"video_id": "video-1"},
+        )
+        sync_job = SimpleNamespace(
+            type="media.sync_videos",
+            status="pending",
+            worker_id=None,
+            error_message="old",
+            error_stack="old",
+            progress_current=3,
+            progress_total=4,
+            started_at=None,
+            lease_expires_at=None,
+            priority=9,
+            scheduled_for=now,
+            created_at=now,
+            id="sync-job",
+            params={"media_id": "media-1"},
+        )
+        scalar_result = Mock()
+        scalar_result.all.return_value = [asr_job, sync_job]
+        session = Mock()
+        session.execute.return_value = Mock(scalars=Mock(return_value=scalar_result))
+
+        with patch("raelyn.jobs.claim.is_paused", return_value=False):
+            with patch("raelyn.jobs.claim.job_provider", return_value=None):
+                with patch("raelyn.jobs.claim.is_provider_paused", return_value=False):
+                    with patch("raelyn.jobs.claim.is_worker_role_paused", return_value=False):
+                        claimed = claim_next_job(
+                            session,
+                            worker_id="worker-1",
+                            lease_seconds=60,
+                            skip_type_in={"video.asr_transcribe"},
+                        )
+
+        self.assertIs(claimed, sync_job)
+        self.assertEqual(asr_job.status, "pending")
+        self.assertEqual(sync_job.status, "running")
+
 
 class WorkersApiTests(unittest.TestCase):
     def test_list_workers_includes_known_roles_and_pause_fields(self) -> None:

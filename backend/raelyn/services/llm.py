@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ipaddress
 import json
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -31,22 +30,6 @@ def _llm_mode(url: str) -> Literal["ollama_generate", "openai_chat", "openai_com
     if "/completions" in path:
         return "openai_completions"
     raise ValueError("LLM_URL must include /api/generate, /chat/completions, or /completions")
-
-
-def _is_private_host(url: str) -> bool:
-    try:
-        host = (urlparse(url).hostname or "").strip().lower()
-    except Exception:
-        host = ""
-    if not host:
-        return False
-    if host in {"localhost", "127.0.0.1", "::1"}:
-        return True
-    try:
-        ip = ipaddress.ip_address(host)
-        return ip.is_private or ip.is_loopback or ip.is_link_local
-    except ValueError:
-        return False
 
 
 def _headers() -> dict[str, str]:
@@ -184,9 +167,7 @@ def llm_generate(*, prompt: str, think: bool | str | None = None) -> dict[str, A
         payload = {"model": model, "prompt": prompt, "stream": False}
 
     headers = {"Content-Type": "application/json", **_headers()}
-    # Avoid accidentally routing private/localhost endpoints through environment proxies.
-    trust_env = not _is_private_host(url)
-    with httpx.Client(timeout=timeout, headers=headers, trust_env=trust_env) as client:
+    with httpx.Client(timeout=timeout, headers=headers, trust_env=False) as client:
         resp = client.post(url, json=payload)
         resp.raise_for_status()
         data = resp.json()

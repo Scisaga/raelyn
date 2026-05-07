@@ -8,7 +8,6 @@ import time
 
 import httpx
 
-from raelyn.config import settings
 from raelyn.services.http_client import httpx_client
 from raelyn.services.provider_cookies import load_provider_cookie_text
 from raelyn.services.provider_pause import (
@@ -69,10 +68,7 @@ def fetch_open_graph(url: str, *, timeout_seconds: float = 10.0) -> dict[str, An
         cookie_header = _load_cookie_header_for_url(url)
         if cookie_header:
             headers["Cookie"] = cookie_header
-    use_proxy = settings.ytdlp_proxy
-    if "bilibili.com" in (url or "").lower():
-        use_proxy = ""
-    with httpx_client(proxy=use_proxy, timeout=timeout, follow_redirects=True) as client:
+    with httpx_client(timeout=timeout, follow_redirects=True) as client:
         r = client.get(url, headers=headers)
         if "bilibili.com" in (url or "").lower() and r.status_code in {412, 429}:
             raise ProviderPauseRequestError(
@@ -200,7 +196,7 @@ def _fetch_bilibili_space_profile(*, mid: str) -> dict[str, Any] | None:
         headers["Cookie"] = cookie_header
     timeout = httpx.Timeout(10.0)
     try:
-        with httpx_client(proxy="", timeout=timeout, follow_redirects=True, headers=headers) as client:
+        with httpx_client(timeout=timeout, follow_redirects=True, headers=headers) as client:
             r = client.get(url)
             if r.status_code in {412, 429}:
                 raise ProviderPauseRequestError(

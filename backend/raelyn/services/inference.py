@@ -359,7 +359,7 @@ def check_llm_health(config: EffectiveLlmConfig | None = None) -> dict[str, Any]
         }
     check_url = _llm_health_check_url(cfg.url)
     try:
-        with httpx.Client(timeout=httpx.Timeout(2.0), headers=headers) as client:
+        with httpx.Client(timeout=httpx.Timeout(2.0), headers=headers, trust_env=False) as client:
             resp = client.get(check_url)
             resp.raise_for_status()
         return {
@@ -418,7 +418,7 @@ def check_asr_health(config: EffectiveAsrConfig | None = None) -> dict[str, Any]
     if cfg.provider == LOCAL_PROVIDER:
         url = _local_asr_health_url(cfg.url)
         try:
-            with httpx.Client(timeout=httpx.Timeout(2.0)) as client:
+            with httpx.Client(timeout=httpx.Timeout(2.0), trust_env=False) as client:
                 resp = client.get(url)
                 resp.raise_for_status()
             return {
@@ -445,7 +445,7 @@ def check_asr_health(config: EffectiveAsrConfig | None = None) -> dict[str, Any]
 
     probe_url = _volcengine_asr_probe_url(cfg.url)
     try:
-        with httpx.Client(timeout=httpx.Timeout(2.0)) as client:
+        with httpx.Client(timeout=httpx.Timeout(2.0), trust_env=False) as client:
             resp = client.get(probe_url)
         ok = resp.status_code < 500
         error = None if ok else f"http {resp.status_code}"
@@ -498,7 +498,7 @@ def test_llm_connection(config: EffectiveLlmConfig | None = None) -> dict[str, A
     else:
         payload = {"model": cfg.model, "prompt": "ping", "stream": False}
     try:
-        with httpx.Client(timeout=httpx.Timeout(min(cfg.timeout_seconds, 20)), headers=headers) as client:
+        with httpx.Client(timeout=httpx.Timeout(min(cfg.timeout_seconds, 20)), headers=headers, trust_env=False) as client:
             resp = client.post(cfg.url, json=payload)
             resp.raise_for_status()
         base["ok"] = True
@@ -531,7 +531,7 @@ def test_asr_connection(config: EffectiveAsrConfig | None = None) -> dict[str, A
         "request": {"model_name": cfg.model},
     }
     try:
-        with httpx.Client(timeout=httpx.Timeout(min(cfg.timeout_seconds, 20))) as client:
+        with httpx.Client(timeout=httpx.Timeout(min(cfg.timeout_seconds, 20)), trust_env=False) as client:
             resp = client.post(cfg.url, json=payload, headers=headers)
         status_code = str(resp.headers.get("X-Api-Status-Code") or "").strip()
         if resp.status_code >= 400:

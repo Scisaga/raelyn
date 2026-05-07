@@ -45,6 +45,13 @@
 - HTTPS 主站下，若对象存储或 presigned URL 仍是 `http://`，前端不会使用直连资源，而会统一退回 `ASSET_PROXY_BASE_PATH` 对应的 API 代理路径。
 - 若希望在 HTTPS 主站下继续使用直连 / presigned URL，需要让对象存储出口本身也提供 HTTPS。
 
+### 高优先级代理规则
+
+- `YTDLP_PROXY` 只用于 YouTube 的 `yt-dlp` 同步 / 下载请求。
+- 非 `yt-dlp` 的资料抓取 / 头像缓存、B 站请求、ASR / LLM / Embedding / 健康检查都不使用 `YTDLP_PROXY`。
+- 应用默认不隐式读取进程环境中的 `HTTP_PROXY` / `HTTPS_PROXY`；这些变量存在于 shell 或 systemd 环境里，不代表本应用会把外部请求送进代理。
+- 若 YouTube 同步/下载需要代理，必须配置 `YTDLP_PROXY`，不要依赖 `HTTP_PROXY` / `HTTPS_PROXY` 的副作用。
+
 ### 工具与下载
 
 - `FFMPEG_BIN`
@@ -53,6 +60,7 @@
 - `AUDIO_SAMPLE_RATE_HZ`
 - `AUDIO_CHANNELS`
 - `YTDLP_PROXY`
+  - 仅 YouTube 的 `yt-dlp` 同步 / 下载请求会显式使用该代理；完整边界见上方“高优先级代理规则”。
 - `YTDLP_REMOTE_COMPONENTS`
   - 默认 `ejs:github`
 - `YTDLP_FORMAT`
@@ -84,6 +92,11 @@
   - `devctl.sh` / Docker 单容器入口启动 `asr` worker 的进程数，默认 `1`。
   - 每个 `asr` worker 同一时间只执行一个 `video.asr_transcribe`，因此该值决定 ASR 远端转写请求的进程级并发上限。
   - 该配置只增加 worker 进程数，不改变 ASR 请求的认证、连接复用或缓存行为。
+- `ASR_BACKEND_CAPACITY_GUARD_ENABLED`
+  - 是否在本地 OpenAI-compatible ASR worker 领取任务前探测 `/health` 并根据 qwen3-asr-openai 的 `backend_replicas` / `in_flight` / `backend_queue_waiters` 暂停领取 ASR 任务，默认 `true`。
+  - 该门控只影响 `video.asr_transcribe` 的任务调度节奏，不改变 ASR 请求体、认证、连接复用或后端模型参数。
+- `ASR_BACKEND_CAPACITY_DEFER_SECONDS`
+  - 当 ASR `/health` 没有返回 `backend_queue_timeout_seconds` 时，handler 兜底重排 ASR 任务的默认延后秒数，默认 `30`。
 - `EMBEDDING_WORKER_CONCURRENCY`
   - `devctl.sh` / Docker 单容器入口启动 `embedding` worker 的进程数，默认 `1`。
   - 可设为 `0`，表示当前节点不启动 `embedding` worker；历史 embedding 补算和新视频自动 embedding 任务会保留在 `pending`，直到有 embedding worker 可领取。
@@ -97,7 +110,7 @@
   - `playlist.build_analysis_snapshot` 允许的最大 worker 进程 RSS，默认 `6442450944`（6 GiB）。
   - 高于该值时任务直接失败并记录原因，不进入重试队列；生产环境仍建议用 systemd / cgroup 设置同等硬上限。
 - `ANALYSIS_STREAM_BATCH_SIZE`
-  - 分析快照构建分批读取 ready embedding 的批大小，默认 `500`。
+  - 分析快照构建分批读取 ready embedding 的批大小，默认 `2000`。
 - `EMBEDDING_BATCH_SIZE`
   - 历史 embedding 补算任务单次请求的默认文本条数，默认 `16`。
 - `EMBEDDING_BATCH_MAX_SIZE`
@@ -170,6 +183,7 @@ Embedding / 播放列表分析：
 
 - `local` 模式只读取本地 `.env` 与自托管推理服务配置。
 - `volcengine` 模式优先读取运行时配置 `app_config`；若某些字段未配置，则回退到对应的 `VOLCENGINE_*` 环境变量默认值。
+- ASR / LLM / Embedding 的健康检查、容量门控、实际请求与配置测试连接都会忽略进程环境中的 `HTTP_PROXY` / `HTTPS_PROXY`；对应 URL 应直接指向可达服务地址。
 - UI 不直接修改 `.env`；保存设置后只影响新任务，不会中断正在运行的任务。
 
 ### Worker 进程选择

@@ -333,7 +333,7 @@ def _youtube_js_challenge_hint() -> str:
         "1) 升级 Python 依赖：`.venv/bin/python -m pip install -U yt-dlp[default]`；\n"
         "2) 或直接运行：`./scripts/dev/install-ytdlp-ejs.sh`（会升级 yt-dlp-ejs 并做基础自检）；\n"
         "3) 确认已启用 `YTDLP_REMOTE_COMPONENTS=ejs:github`，并且 `node` 可用；\n"
-        "4) 若仍失败：配置 YouTube cookies（UI -> 设置 -> YTDLP_COOKIES_YOUTUBE）或代理（YTDLP_PROXY），并重试。"
+        "4) 若 YouTube 同步/下载仍失败：配置 YouTube cookies（UI -> 设置 -> YTDLP_COOKIES_YOUTUBE）或代理（YTDLP_PROXY），并重试。"
     )
 
 
@@ -360,8 +360,8 @@ def _youtube_bot_check_hint() -> str:
     return (
         "YouTube 拒绝访问（需要登录/人机验证）。解决方法：在 UI 的 Settings 页面配置 "
         "YTDLP_COOKIES_YOUTUBE（Netscape cookies.txt 格式，登录 YouTube 后从浏览器导出并粘贴保存），"
-        "或通过 API `PUT /api/config/ytdlp_cookies_youtube` 写入。若已配置仍失败，通常是 IP 被风控，"
-        "需要更换网络或配置代理（YTDLP_PROXY）。"
+        "或通过 API `PUT /api/config/ytdlp_cookies_youtube` 写入。若 YouTube 同步/下载已配置 cookies 仍失败，"
+        "通常是 IP 被风控，需要更换网络或配置代理（YTDLP_PROXY）。"
     )
 
 
@@ -394,13 +394,12 @@ def _apply_common_ytdlp_opts(
             if cookie_path and cookie_path.exists() and cookie_path.is_file():
                 opts["cookiefile"] = str(cookie_path)
 
-    # Some providers are sensitive to UA / referer; set conservative defaults.
-    # Keep it minimal to avoid interfering with providers that don't require these headers.
-    u = (url or "").strip()
-    lower_u = u.lower()
-    # url can be a real URL (https://www.bilibili.com/...) or an id-like string (BV... / av...).
+    # 禁止 yt-dlp 隐式读取进程环境中的 HTTP(S)_PROXY；YouTube 的 yt-dlp 同步/下载显式使用 YTDLP_PROXY。
+    opts["proxy"] = ""
+
     is_bili = cookie_provider == "bilibili"
     if is_bili:
+        # B 站对 UA / referer 较敏感，保留最小必要请求头。
         headers = dict(opts.get("http_headers") or {})
         headers.setdefault(
             "User-Agent",
@@ -412,19 +411,17 @@ def _apply_common_ytdlp_opts(
         headers.setdefault("Referer", "https://www.bilibili.com/")
         headers.setdefault("Origin", "https://www.bilibili.com")
         opts["http_headers"] = headers
-        # 显式禁用代理；仅移除 opts["proxy"] 还不够，yt-dlp 会继续读取进程环境里的 HTTP(S)_PROXY。
-        opts["proxy"] = ""
-    else:
-        if settings.ytdlp_proxy.strip():
-            opts["proxy"] = settings.ytdlp_proxy.strip()
-            # ffmpeg cannot use SOCKS proxies for some download flows (notably HLS),
-            # and yt-dlp will warn and may fail. Prefer native HLS handling in this case.
-            try:
-                p = str(opts.get("proxy") or "").strip().lower()
-                if p.startswith("socks"):
-                    opts["hls_prefer_native"] = True
-            except Exception:
-                pass
+
+    if cookie_provider == "youtube" and settings.ytdlp_proxy.strip():
+        opts["proxy"] = settings.ytdlp_proxy.strip()
+        # ffmpeg cannot use SOCKS proxies for some download flows (notably HLS),
+        # and yt-dlp will warn and may fail. Prefer native HLS handling in this case.
+        try:
+            p = str(opts.get("proxy") or "").strip().lower()
+            if p.startswith("socks"):
+                opts["hls_prefer_native"] = True
+        except Exception:
+            pass
 
     is_yt = cookie_provider == "youtube"
     if is_yt:

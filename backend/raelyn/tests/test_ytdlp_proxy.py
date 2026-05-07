@@ -41,7 +41,7 @@ class YtdlpProxyTests(unittest.TestCase):
         finally:
             settings.ytdlp_proxy = original
 
-    def test_youtube_keeps_configured_proxy(self) -> None:
+    def test_youtube_ytdlp_keeps_configured_proxy(self) -> None:
         original = settings.ytdlp_proxy
         try:
             settings.ytdlp_proxy = "http://127.0.0.1:7890"
@@ -52,6 +52,35 @@ class YtdlpProxyTests(unittest.TestCase):
                 provider="youtube",
             )
             self.assertEqual(opts.get("proxy"), "http://127.0.0.1:7890")
+        finally:
+            settings.ytdlp_proxy = original
+
+    def test_youtube_sync_keeps_configured_proxy(self) -> None:
+        original = settings.ytdlp_proxy
+        try:
+            settings.ytdlp_proxy = "http://127.0.0.1:7890"
+            opts: dict[str, object] = {}
+            _apply_common_ytdlp_opts(
+                opts,
+                url="https://www.youtube.com/@example/videos",
+                provider="youtube",
+            )
+            self.assertEqual(opts.get("proxy"), "http://127.0.0.1:7890")
+        finally:
+            settings.ytdlp_proxy = original
+
+    def test_other_provider_disables_proxy(self) -> None:
+        original = settings.ytdlp_proxy
+        try:
+            settings.ytdlp_proxy = "http://127.0.0.1:7890"
+            opts: dict[str, object] = {}
+            _apply_common_ytdlp_opts(
+                opts,
+                url="https://example.com/video",
+                provider="other",
+            )
+            self.assertEqual(opts.get("proxy"), "")
+            self.assertEqual(YoutubeDL({"proxy": opts["proxy"]}).proxies, {"all": "__noproxy__"})
         finally:
             settings.ytdlp_proxy = original
 

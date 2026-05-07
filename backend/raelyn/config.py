@@ -97,6 +97,14 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ASR_TIMEOUT_SECONDS", "SPEACHES_TIMEOUT_SECONDS"),
     )
     asr_worker_concurrency: int = Field(default=1, validation_alias=AliasChoices("ASR_WORKER_CONCURRENCY"))
+    asr_backend_capacity_guard_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ASR_BACKEND_CAPACITY_GUARD_ENABLED"),
+    )
+    asr_backend_capacity_defer_seconds: int = Field(
+        default=30,
+        validation_alias=AliasChoices("ASR_BACKEND_CAPACITY_DEFER_SECONDS"),
+    )
 
     llm_url: str = ""
     llm_model: str = ""
@@ -121,7 +129,7 @@ class Settings(BaseSettings):
     analysis_worker_concurrency: int = 1
     analysis_min_available_memory_bytes: int = 1024 * 1024 * 1024
     analysis_max_rss_bytes: int = 6 * 1024 * 1024 * 1024
-    analysis_stream_batch_size: int = 500
+    analysis_stream_batch_size: int = 2000
 
     # --- Volcengine managed inference defaults (used when inference_mode=volcengine) ---
     volcengine_llm_url: str = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"

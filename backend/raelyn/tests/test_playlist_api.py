@@ -19,6 +19,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from raelyn.api.playlists import (
     _candidate_detail_out,
     _playlist_analysis_summary,
+    get_playlist_analysis_candidates,
     get_playlist_analysis_signals,
     list_playlist_video_counts_by_period,
     list_playlist_videos_by_period,
@@ -110,7 +111,20 @@ class PlaylistApiTests(unittest.TestCase):
             summary="事件摘要",
             top_terms=["tariff"],
             evidence_video_ids=["v1"],
-            evidence_json={"preview": "事件摘要", "videos": []},
+            evidence_json={
+                "preview": "事件摘要",
+                "videos": [],
+                "detection": {
+                    "method": "open_topic_burst_v1",
+                    "breakpoint_date": "2026-04-20",
+                    "granularity": "event",
+                    "video_count": 9,
+                    "media_count": 4,
+                    "active_days": 3,
+                    "cohesion": 0.91,
+                    "representative_title": "事件摘要",
+                },
+            },
             available_at=datetime(2026, 4, 20, 1, 0, tzinfo=timezone.utc),
             train_start=date(2022, 4, 21),
             valid_start=date(2025, 4, 21),
@@ -121,8 +135,9 @@ class PlaylistApiTests(unittest.TestCase):
 
         self.assertEqual(payload["event_id"], candidate_id)
         self.assertEqual(payload["event_date"], date(2026, 4, 20))
-        self.assertIsNone(payload["breakpoint_date"])
-        self.assertIsNone(payload["detection_method"])
+        self.assertEqual(payload["breakpoint_date"], date(2026, 4, 20))
+        self.assertEqual(payload["detection_method"], "open_topic_burst_v1")
+        self.assertEqual(payload["detection_granularity"], "event")
         self.assertNotIn("train_start", payload)
         self.assertNotIn("valid_start", payload)
         self.assertNotIn("test_start", payload)
@@ -272,6 +287,22 @@ class PlaylistApiTests(unittest.TestCase):
         self.assertIn("playlist_analysis_signal.granularity = 'day'", compiled)
         self.assertIn("playlist_analysis_signal.period_date >= '2026-01-01'", compiled)
         self.assertIn("playlist_analysis_signal.period_date <= '2026-01-31'", compiled)
+
+    def test_analysis_candidates_orders_events_descending(self) -> None:
+        playlist_id = uuid.uuid4()
+        run_id = uuid.uuid4()
+        session = Mock()
+        session.get.return_value = object()
+        session.execute.return_value = _ScalarResult([])
+
+        with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
+            with patch("raelyn.api.playlists._playlist_last_ready_run_id", return_value=run_id):
+                result = get_playlist_analysis_candidates(playlist_id=playlist_id)
+
+        self.assertEqual(result, [])
+        stmt = session.execute.call_args.args[0]
+        compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
+        self.assertIn("playlist_analysis_candidate.candidate_date desc", compiled)
 
     def test_analysis_signals_rejects_invalid_date_range(self) -> None:
         playlist_id = uuid.uuid4()

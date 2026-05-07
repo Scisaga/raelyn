@@ -203,8 +203,8 @@ class PlaylistAnalysisCandidateOut(BaseModel):
     dispersion_score: float | None = None
     drift_rolling_z: float | None = None
     breakpoint_date: date | None = None
-    detection_method: str | None = None
-    detection_granularity: str | None = None
+    detection_method: str = ""
+    detection_granularity: str = ""
     boundary_score: float | None = None
     boundary_z: float | None = None
     before_start: date | None = None
@@ -329,7 +329,9 @@ def _playlist_analysis_summary(session, playlist_id: uuid.UUID) -> PlaylistAnaly
         )
         candidate_count = int(
             session.execute(
-                select(func.count()).select_from(PlaylistAnalysisCandidate).where(PlaylistAnalysisCandidate.analysis_run_id == last_ready_run.id)
+                select(func.count())
+                .select_from(PlaylistAnalysisCandidate)
+                .where(PlaylistAnalysisCandidate.analysis_run_id == last_ready_run.id)
             ).scalar_one()
             or 0
         )
@@ -433,8 +435,8 @@ def _candidate_out(candidate: PlaylistAnalysisCandidate) -> PlaylistAnalysisCand
         dispersion_score=candidate.dispersion_score,
         drift_rolling_z=candidate.drift_rolling_z,
         breakpoint_date=_candidate_detection_date(detection.get("breakpoint_date")),
-        detection_method=str(detection.get("method") or "").strip() or None,
-        detection_granularity=str(detection.get("granularity") or "").strip() or None,
+        detection_method=str(detection.get("method") or "").strip(),
+        detection_granularity=str(detection.get("granularity") or "").strip(),
         boundary_score=_candidate_detection_float(detection.get("boundary_score")),
         boundary_z=_candidate_detection_float(detection.get("boundary_z")),
         before_start=_candidate_detection_date(detection.get("before_start")),
@@ -835,7 +837,7 @@ def get_playlist_analysis_candidates(playlist_id: uuid.UUID) -> list[PlaylistAna
             session.execute(
                 select(PlaylistAnalysisCandidate)
                 .where(PlaylistAnalysisCandidate.analysis_run_id == last_ready_run_id)
-                .order_by(PlaylistAnalysisCandidate.candidate_date.asc(), PlaylistAnalysisCandidate.id.asc())
+                .order_by(PlaylistAnalysisCandidate.candidate_date.desc(), PlaylistAnalysisCandidate.id.asc())
             )
             .scalars()
             .all()

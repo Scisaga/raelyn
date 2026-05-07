@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 import uuid
+from collections import Counter
 from datetime import date
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,9 +24,14 @@ from raelyn.services.playlist_analysis import (
     EmbeddingBackfillFetchResult,
     EmbeddingBackfillItem,
     EmbeddingBackfillTranscriptCandidate,
+    OpenTopicBurstDetection,
+    OpenTopicBurstItem,
     CoverageStats,
+    _candidate_top_terms,
     _iter_playlist_backfill_candidates,
     _prepare_backfill_batch_result,
+    _limit_open_topic_burst_detections_by_year,
+    _select_open_topic_burst_detections,
     _select_month_boundaries,
     _upsert_video_embedding,
     backfill_playlist_embeddings,
@@ -34,8 +40,10 @@ from raelyn.services.playlist_analysis import (
     fetch_plain_transcript_for_embedding,
     next_china_trading_day,
     build_playlist_analysis_snapshot,
+    pending_playlist_analysis_job,
     playlist_coverage_stats,
     prune_playlist_analysis_runs,
+    request_playlist_analysis_rebuild,
     transcript_checksum,
     video_embedding_needs_refresh,
 )
@@ -95,15 +103,70 @@ class _FakeSnapshotSession:
         return Mock(all=Mock(return_value=[]))
 
 
-def _analysis_item(day_offset: int, vector: list[float], *, title: str | None = None) -> AnalysisEmbeddingItem:
+def _analysis_item(
+    day_offset: int,
+    vector: list[float],
+    *,
+    title: str | None = None,
+    media_name: str = "media",
+) -> AnalysisEmbeddingItem:
     published_at = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc) + timedelta(days=day_offset)
     return AnalysisEmbeddingItem(
         video_id=uuid.uuid4(),
         media_id=uuid.uuid4(),
         title=title or f"video-{day_offset}",
-        media_name="media",
+        media_name=media_name,
         published_at=published_at,
         vector=vector,
+    )
+
+
+def _topic_item(
+    day_offset: int,
+    vector: list[float],
+    *,
+    title: str,
+    media_name: str,
+) -> OpenTopicBurstItem:
+    item = _analysis_item(day_offset, vector, title=title, media_name=media_name)
+    return OpenTopicBurstItem(
+        video_id=item.video_id,
+        media_id=item.media_id,
+        title=item.title,
+        media_name=item.media_name,
+        published_at=item.published_at,
+        day=item.published_at.date(),
+        vector=vector,
+    )
+
+
+def _topic_items_by_day(items: list[OpenTopicBurstItem]) -> dict[date, list[OpenTopicBurstItem]]:
+    result: dict[date, list[OpenTopicBurstItem]] = {}
+    for item in items:
+        result.setdefault(item.day, []).append(item)
+    return result
+
+
+def _burst_detection(
+    candidate_date: date,
+    *,
+    score: float,
+    title: str,
+) -> OpenTopicBurstDetection:
+    return OpenTopicBurstDetection(
+        candidate_date=candidate_date,
+        event_start=candidate_date,
+        event_end=candidate_date,
+        video_count=8,
+        media_count=3,
+        active_days=2,
+        score=score,
+        confidence=0.8,
+        cohesion=0.8,
+        centroid=[1.0, 0.0],
+        representative_title=title,
+        top_terms=[],
+        count_by_day=Counter({candidate_date: 8}),
     )
 
 
@@ -158,6 +221,33 @@ class PlaylistAnalysisServiceTests(unittest.TestCase):
         self.assertEqual(embedding.text_checksum, "checksum")
         self.assertEqual(embedding.status, "ready")
         session.flush.assert_called_once()
+
+    def test_pending_playlist_analysis_job_includes_running_jobs(self) -> None:
+        session = Mock()
+        session.execute.return_value = Mock(scalar_one_or_none=Mock(return_value=None))
+
+        pending_playlist_analysis_job(session, uuid.uuid4())
+
+        statement = session.execute.call_args.args[0]
+        compiled = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
+        self.assertIn("job.status in ('pending', 'running')", compiled)
+
+    def test_request_playlist_analysis_rebuild_reuses_running_job(self) -> None:
+        session = Mock()
+        playlist_id = uuid.uuid4()
+        job_id = uuid.uuid4()
+        state = SimpleNamespace(last_requested_at=None)
+        running_job = SimpleNamespace(id=job_id, status="running")
+
+        with patch("raelyn.services.playlist_analysis.ensure_playlist_analysis_state", return_value=state):
+            with patch("raelyn.services.playlist_analysis.active_playlist_analysis_run", return_value=None):
+                with patch("raelyn.services.playlist_analysis.pending_playlist_analysis_job", return_value=running_job):
+                    with patch("raelyn.services.playlist_analysis.enqueue_job") as enqueue_job:
+                        result = request_playlist_analysis_rebuild(session, playlist_id=playlist_id)
+
+        self.assertEqual(result, (job_id, False))
+        enqueue_job.assert_not_called()
+        self.assertIsNotNone(state.last_requested_at)
 
     def test_fetch_plain_transcript_for_embedding_skips_empty_text(self) -> None:
         with patch("raelyn.services.playlist_analysis.pick_transcript_asset", return_value=object()):
@@ -447,6 +537,174 @@ class PlaylistAnalysisServiceTests(unittest.TestCase):
         self.assertIn("playlist_analysis_run.status not in", statement)
         self.assertIn("playlist_analysis_run.id not in", statement)
 
+    def test_open_topic_burst_detects_cross_media_without_keywords(self) -> None:
+        media_names = ["MacroTalk", "RatesDaily", "CreditDesk", "AsiaFlow"]
+        items = [
+            _topic_item(
+                index % 3,
+                [1.0, 0.0],
+                title=f"Liquidity desk stress update {index}",
+                media_name=media_names[index % len(media_names)],
+            )
+            for index in range(9)
+        ]
+
+        detections = _select_open_topic_burst_detections(_topic_items_by_day(items))
+
+        self.assertEqual(len(detections), 1)
+        detection = detections[0]
+        self.assertEqual(detection.video_count, 9)
+        self.assertEqual(detection.media_count, 4)
+        self.assertEqual(detection.active_days, 3)
+        self.assertGreaterEqual(detection.cohesion, 0.78)
+        self.assertEqual(detection.candidate_date, date(2026, 1, 1))
+
+    def test_open_topic_burst_ignores_single_media_duplicates_when_other_media_active(self) -> None:
+        items = [
+            _topic_item(
+                index % 3,
+                [1.0, 0.0],
+                title=f"Liquidity desk stress update {index}",
+                media_name="MacroTalk",
+            )
+            for index in range(12)
+        ]
+        items.extend(
+            [
+                _topic_item(0, [0.0, 1.0], title="Broad market update", media_name="RatesDaily"),
+                _topic_item(1, [0.0, 1.0], title="Credit desk morning note", media_name="CreditDesk"),
+                _topic_item(2, [0.0, 1.0], title="Asia flow closing note", media_name="AsiaFlow"),
+            ]
+        )
+
+        self.assertEqual(_select_open_topic_burst_detections(_topic_items_by_day(items)), [])
+
+    def test_open_topic_burst_adapts_to_sparse_media_coverage(self) -> None:
+        media_names = ["ArchiveWire", "MarketTape"]
+        items = [
+            _topic_item(
+                index % 3,
+                [1.0, 0.0],
+                title=f"Archive liquidity stress update {index}",
+                media_name=media_names[index % len(media_names)],
+            )
+            for index in range(9)
+        ]
+
+        detections = _select_open_topic_burst_detections(_topic_items_by_day(items))
+
+        self.assertEqual(len(detections), 1)
+        detection = detections[0]
+        self.assertEqual(detection.media_count, 2)
+        self.assertEqual(detection.available_media_count, 2)
+        self.assertEqual(detection.required_media_count, 2)
+
+    def test_open_topic_burst_limits_dense_years_when_timeline_spans_many_years(self) -> None:
+        recent = [
+            _burst_detection(date(2025, 1, 1) + timedelta(days=index), score=100.0 - index, title=f"recent-{index}")
+            for index in range(70)
+        ]
+        older = [
+            _burst_detection(date(year, 6, 1), score=10.0 + index, title=f"older-{year}")
+            for index, year in enumerate([2009, 2011, 2015, 2016])
+        ]
+
+        selected = _limit_open_topic_burst_detections_by_year(recent + older)
+
+        self.assertLess(len([item for item in selected if item.candidate_date.year == 2025]), 70)
+        self.assertTrue({2009, 2011, 2015, 2016}.issubset({item.candidate_date.year for item in selected}))
+
+    def test_open_topic_burst_ignores_single_day_spike(self) -> None:
+        media_names = ["MacroTalk", "RatesDaily", "CreditDesk", "AsiaFlow"]
+        items = [
+            _topic_item(
+                0,
+                [1.0, 0.0],
+                title=f"Liquidity desk stress update {index}",
+                media_name=media_names[index % len(media_names)],
+            )
+            for index in range(10)
+        ]
+
+        self.assertEqual(_select_open_topic_burst_detections(_topic_items_by_day(items)), [])
+
+    def test_open_topic_burst_detects_sustained_cross_media_topic(self) -> None:
+        media_names = ["Reuters", "MacroTalk", "RatesDaily", "CreditDesk"]
+        items = [
+            _topic_item(
+                index,
+                [1.0, 0.0],
+                title=f"Russia Ukraine war update {index}",
+                media_name=media_names[index % len(media_names)],
+            )
+            for index in range(12)
+        ]
+
+        detections = _select_open_topic_burst_detections(_topic_items_by_day(items))
+
+        self.assertEqual(len(detections), 1)
+        detection = detections[0]
+        self.assertEqual(detection.video_count, 12)
+        self.assertEqual(detection.media_count, 4)
+        self.assertEqual(detection.active_days, 12)
+        self.assertEqual(detection.window_days, 14)
+        self.assertGreaterEqual(detection.cohesion, 0.68)
+        self.assertTrue(detection.top_terms)
+
+    def test_open_topic_burst_merges_overlapping_windows(self) -> None:
+        media_names = ["MacroTalk", "RatesDaily", "CreditDesk", "AsiaFlow"]
+        items = [
+            _topic_item(
+                index % 4,
+                [1.0, 0.0],
+                title=f"Funding pressure watch {index}",
+                media_name=media_names[index % len(media_names)],
+            )
+            for index in range(16)
+        ]
+
+        detections = _select_open_topic_burst_detections(_topic_items_by_day(items))
+
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0].video_count, 12)
+
+    def test_open_topic_burst_avoids_occupied_candidate_date(self) -> None:
+        media_names = ["MacroTalk", "RatesDaily", "CreditDesk", "AsiaFlow"]
+        items = [
+            _topic_item(0, [1.0, 0.0], title=f"Funding pressure watch early {index}", media_name=media_names[index % 4])
+            for index in range(2)
+        ]
+        items.extend(
+            _topic_item(1, [1.0, 0.0], title=f"Funding pressure watch peak {index}", media_name=media_names[index % 4])
+            for index in range(5)
+        )
+        items.extend(
+            _topic_item(2, [1.0, 0.0], title=f"Funding pressure watch late {index}", media_name=media_names[index % 4])
+            for index in range(2)
+        )
+
+        detections = _select_open_topic_burst_detections(
+            _topic_items_by_day(items),
+            occupied_dates={date(2026, 1, 2)},
+        )
+
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0].candidate_date, date(2026, 1, 1))
+
+    def test_candidate_top_terms_supports_chinese_ngrams_and_detection_terms(self) -> None:
+        evidence = {
+            "videos": [
+                {"title": "以色列突袭伊朗核设施，中东冲突升级"},
+                {"title": "US strikes Iran nuclear facilities"},
+            ]
+        }
+        terms = _candidate_top_terms(evidence)
+
+        self.assertTrue(set(terms) & {"伊朗", "iran"})
+
+        detection_terms = _candidate_top_terms({"detection": {"top_terms": ["伊朗", "美国"]}, "videos": []})
+        self.assertEqual(detection_terms, ["伊朗", "美国"])
+
     def test_build_snapshot_streams_ready_embeddings_without_full_loader(self) -> None:
         playlist_id = uuid.uuid4()
         session = _FakeSnapshotSession()
@@ -499,6 +757,92 @@ class PlaylistAnalysisServiceTests(unittest.TestCase):
 
         self.assertEqual(result["candidate_count"], 0)
         self.assertFalse([item for item in session.added if isinstance(item, PlaylistAnalysisCandidate)])
+
+    def test_build_snapshot_adds_open_topic_burst_candidate(self) -> None:
+        playlist_id = uuid.uuid4()
+        session = _FakeSnapshotSession()
+        titles = [
+            "Liquidity desk stress rises into close",
+            "Funding desks report overnight pressure",
+            "Credit desks flag collateral squeeze",
+            "Repo market pressure spreads across funds",
+            "Short-term funding stress draws trader focus",
+            "Money market desks discuss collateral shortage",
+            "Rates desk sees cash funding pressure",
+            "Funding squeeze becomes macro focus",
+            "Traders debate liquidity pressure window",
+        ]
+        media_names = ["MacroTalk", "RatesDaily", "CreditDesk", "AsiaFlow", "GlobalMarkets"]
+        background = [_analysis_item(index, [0.0, 1.0], title=f"background-{index}", media_name="Background") for index in range(30)]
+        event_items = [
+            _analysis_item(10 + index % 3, [1.0, 0.0], title=title, media_name=media_names[index % len(media_names)])
+            for index, title in enumerate(titles)
+        ]
+        all_items = background + event_items
+
+        def iter_batches(_session, _playlist_id, **kwargs):
+            only_days = kwargs.get("only_days")
+            if only_days is None:
+                yield all_items
+                return
+            selected = [item for item in all_items if item.published_at.date() in only_days]
+            yield selected
+
+        with patch("raelyn.services.playlist_analysis.playlist_coverage_stats", return_value=CoverageStats(len(all_items), len(all_items), 0, 0)):
+            with patch("raelyn.services.playlist_analysis.ensure_analysis_resource_budget"):
+                with patch("raelyn.services.playlist_analysis._iter_playlist_ready_embedding_batches", side_effect=iter_batches):
+                    result = build_playlist_analysis_snapshot(session, playlist_id)
+
+        self.assertEqual(result["candidate_count"], 1)
+        candidate = next(item for item in session.added if isinstance(item, PlaylistAnalysisCandidate))
+        detection = candidate.evidence_json["detection"]
+        self.assertEqual(detection["method"], "open_topic_burst_v1")
+        self.assertEqual(detection["video_count"], 9)
+        self.assertEqual(detection["required_media_count"], 3)
+        self.assertGreaterEqual(detection["available_media_count"], 3)
+        self.assertGreaterEqual(detection["cohesion"], 0.78)
+        self.assertEqual(candidate.event_type, "burst")
+        self.assertGreaterEqual(len({item["media_name"] for item in candidate.evidence_json["videos"]}), 3)
+
+    def test_build_snapshot_adds_sustained_open_topic_burst_candidate(self) -> None:
+        playlist_id = uuid.uuid4()
+        session = _FakeSnapshotSession()
+        media_names = ["Reuters", "MacroTalk", "RatesDaily", "CreditDesk"]
+        background = [_analysis_item(index, [0.0, 1.0], title=f"background-{index}", media_name="Background") for index in range(30)]
+        event_items = [
+            _analysis_item(
+                index,
+                [1.0, 0.0],
+                title=f"Trump tariff trade war update {index}",
+                media_name=media_names[index % len(media_names)],
+            )
+            for index in range(12)
+        ]
+        all_items = background + event_items
+
+        def iter_batches(_session, _playlist_id, **kwargs):
+            only_days = kwargs.get("only_days")
+            if only_days is None:
+                yield all_items
+                return
+            selected = [item for item in all_items if item.published_at.date() in only_days]
+            yield selected
+
+        with patch("raelyn.services.playlist_analysis.playlist_coverage_stats", return_value=CoverageStats(len(all_items), len(all_items), 0, 0)):
+            with patch("raelyn.services.playlist_analysis.ensure_analysis_resource_budget"):
+                with patch("raelyn.services.playlist_analysis._iter_playlist_ready_embedding_batches", side_effect=iter_batches):
+                    result = build_playlist_analysis_snapshot(session, playlist_id)
+
+        self.assertEqual(result["candidate_count"], 1)
+        candidate = next(item for item in session.added if isinstance(item, PlaylistAnalysisCandidate))
+        detection = candidate.evidence_json["detection"]
+        self.assertEqual(detection["method"], "open_topic_burst_v1")
+        self.assertEqual(detection["window_days"], 14)
+        self.assertEqual(detection["video_count"], 12)
+        self.assertEqual(detection["required_media_count"], 3)
+        self.assertGreaterEqual(detection["available_media_count"], 3)
+        self.assertEqual(candidate.event_type, "burst")
+        self.assertIn("tariff", candidate.top_terms)
 
     def test_build_snapshot_detects_sustained_regime_boundary_with_week_refinement(self) -> None:
         playlist_id = uuid.uuid4()

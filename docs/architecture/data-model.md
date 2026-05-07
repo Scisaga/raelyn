@@ -130,9 +130,13 @@
 - `linked_event_id`：该 signal period 命中的候选事件。
 - `playlist_analysis_candidate.candidate_date` / `event_start` / `event_end` / `peak_date`：事件日期与区间。
 - `event_type`：`burst | transition | regime`。
-- `score` / `confidence` / `uncertainty`：事件强度、置信度与不确定性；新口径中 `score` 使用断点两侧 centroid drift 的 `boundary_z`。
-- `summary` / `top_terms` / `evidence_video_ids` / `evidence_json`：事件解释与证据视频；新口径检测元数据写入 `evidence_json.detection`，包含 `two_window_centroid_drift_v1` 的断点日期、前后窗口、`boundary_score`、`boundary_z` 与支持粒度。
+- `score` / `confidence` / `uncertainty`：事件强度、置信度与不确定性；语义断点候选中 `score` 使用断点两侧 centroid drift 的 `boundary_z`，开放式主题候选中 `score` 使用窗口视频数、媒体数与向量聚合度。
+- `summary` / `top_terms` / `evidence_video_ids` / `evidence_json`：事件解释与证据视频；检测元数据写入 `evidence_json.detection`。语义断点使用 `two_window_centroid_drift_v1`，包含断点日期、前后窗口、`boundary_score`、`boundary_z` 与支持粒度；开放式主题使用 `open_topic_burst_v1`，包含窗口天数、主题种子词、视频数、媒体数、活跃天数、向量聚合度、代表标题与关键词。
 - `available_at`：事件信号可被下游观察到的时间，供回测避免未来函数。
+
+约束说明：
+
+- 当前仍复用 `(analysis_run_id, candidate_date)` 唯一约束；若未来需要同日多事件，再单独引入事件实体表或放宽唯一键。
 
 约束：
 

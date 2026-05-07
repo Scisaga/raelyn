@@ -16,6 +16,7 @@ engine = create_engine(settings.database_url, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, class_=Session)
 
 _CREATE_ALL_LOCK_KEY = "raelyn.schema.create_all"
+_BEST_EFFORT_DDL_LOCK_TIMEOUT = "2s"
 
 
 def _uuid_column_sql(dialect_name: str) -> str:
@@ -31,6 +32,19 @@ def _guess_asset_format_from_key(key: str) -> str:
 
 def _timestamp_sql(dialect_name: str) -> str:
     return "now()" if dialect_name == "postgresql" else "CURRENT_TIMESTAMP"
+
+
+def _execute_best_effort_ddl(conn, statement: str) -> None:
+    try:
+        if conn.dialect.name == "postgresql":
+            with conn.begin_nested():
+                conn.execute(text(f"set local lock_timeout = '{_BEST_EFFORT_DDL_LOCK_TIMEOUT}'"))
+                conn.execute(text(statement))
+                conn.execute(text("set local lock_timeout = '0'"))
+        else:
+            conn.execute(text(statement))
+    except Exception:
+        pass
 
 
 def _create_job_query_indexes(conn) -> None:
@@ -97,10 +111,7 @@ def _create_job_query_indexes(conn) -> None:
         ]
 
     for statement in statements:
-        try:
-            conn.execute(text(statement))
-        except Exception:
-            pass
+        _execute_best_effort_ddl(conn, statement)
 
 
 def _backfill_owned_image_assets(conn, *, owner_table: str, owner_id_col: str, asset_id_col: str, key_col: str, variant: str) -> None:
@@ -285,21 +296,15 @@ where job.type = 'video.download'
                 conn.execute(text("alter table job add column cancel_requested_at timestamptz"))
             else:
                 conn.execute(text("alter table job add column cancel_requested_at datetime"))
-        try:
-            conn.execute(text("drop index if exists job_brief_dedupe_active_ux"))
-        except Exception:
-            pass
-        try:
-            conn.execute(
-                text(
-                    "create unique index if not exists job_brief_dedupe_pending_ux "
-                    "on job(dedupe_key) "
-                    "where dedupe_key is not null and status = 'pending'"
-                )
+        _execute_best_effort_ddl(conn, "drop index if exists job_brief_dedupe_active_ux")
+        _execute_best_effort_ddl(
+            conn,
+            (
+                "create unique index if not exists job_brief_dedupe_pending_ux "
+                "on job(dedupe_key) "
+                "where dedupe_key is not null and status = 'pending'"
             )
-        except Exception:
-            # Best-effort: some dialects/versions may not support partial indexes.
-            pass
+        )
         _create_job_query_indexes(conn)
     # Worker heartbeats: add optional metadata columns (role) for UI observability.
     if "worker_heartbeat" in tables:
@@ -311,33 +316,23 @@ where job.type = 'video.download'
                 pass
 
     if "video_embedding" in tables:
-        try:
-            conn.execute(text("create index if not exists video_embedding_video_id_idx on video_embedding(video_id)"))
-        except Exception:
-            pass
-        try:
-            conn.execute(
-                text(
-                    "create index if not exists video_embedding_spec_status_video_idx "
-                    "on video_embedding(transcript_variant, embedding_model, embedding_dim, status, video_id)"
-                )
-            )
-        except Exception:
-            pass
+        _execute_best_effort_ddl(conn, "create index if not exists video_embedding_video_id_idx on video_embedding(video_id)")
+        _execute_best_effort_ddl(
+            conn,
+            (
+                "create index if not exists video_embedding_spec_status_video_idx "
+                "on video_embedding(transcript_variant, embedding_model, embedding_dim, status, video_id)"
+            ),
+        )
 
     if "video" in tables:
-        try:
-            conn.execute(text("create index if not exists video_media_id_idx on video(media_id)"))
-        except Exception:
-            pass
+        _execute_best_effort_ddl(conn, "create index if not exists video_media_id_idx on video(media_id)")
 
     if "playlist_analysis_run" in tables:
-        try:
-            conn.execute(
-                text("create index if not exists playlist_analysis_run_playlist_status_idx on playlist_analysis_run(playlist_id, status)")
-            )
-        except Exception:
-            pass
+        _execute_best_effort_ddl(
+            conn,
+            "create index if not exists playlist_analysis_run_playlist_status_idx on playlist_analysis_run(playlist_id, status)",
+        )
 
     if "playlist_analysis_period" in tables:
         cols = {c.get("name") for c in insp.get_columns("playlist_analysis_period")}
@@ -353,35 +348,26 @@ where job.type = 'video.download'
                     conn.execute(text(f"alter table playlist_analysis_period add column {column_name} double precision"))
                 except Exception:
                     pass
-        try:
-            conn.execute(
-                text(
-                    "create index if not exists playlist_analysis_period_run_period_idx "
-                    "on playlist_analysis_period(analysis_run_id, period_date)"
-                )
-            )
-        except Exception:
-            pass
+        _execute_best_effort_ddl(
+            conn,
+            (
+                "create index if not exists playlist_analysis_period_run_period_idx "
+                "on playlist_analysis_period(analysis_run_id, period_date)"
+            ),
+        )
 
     if "playlist_analysis_signal" in tables:
-        try:
-            conn.execute(
-                text(
-                    "create index if not exists playlist_analysis_signal_run_granularity_period_idx "
-                    "on playlist_analysis_signal(analysis_run_id, granularity, period_date)"
-                )
-            )
-        except Exception:
-            pass
-        try:
-            conn.execute(
-                text(
-                    "create index if not exists playlist_analysis_signal_linked_event_idx "
-                    "on playlist_analysis_signal(linked_event_id)"
-                )
-            )
-        except Exception:
-            pass
+        _execute_best_effort_ddl(
+            conn,
+            (
+                "create index if not exists playlist_analysis_signal_run_granularity_period_idx "
+                "on playlist_analysis_signal(analysis_run_id, granularity, period_date)"
+            ),
+        )
+        _execute_best_effort_ddl(
+            conn,
+            "create index if not exists playlist_analysis_signal_linked_event_idx on playlist_analysis_signal(linked_event_id)",
+        )
 
     if "playlist_analysis_candidate" in tables:
         cols = {c.get("name") for c in insp.get_columns("playlist_analysis_candidate")}
@@ -425,44 +411,34 @@ where job.type = 'video.download'
                     conn.execute(text("alter table playlist_analysis_candidate add column available_at datetime"))
             except Exception:
                 pass
-        try:
-            conn.execute(
-                text(
-                    "create index if not exists playlist_analysis_candidate_run_status_idx "
-                    "on playlist_analysis_candidate(analysis_run_id, status)"
-                )
-            )
-        except Exception:
-            pass
+        _execute_best_effort_ddl(
+            conn,
+            (
+                "create index if not exists playlist_analysis_candidate_run_status_idx "
+                "on playlist_analysis_candidate(analysis_run_id, status)"
+            ),
+        )
 
     # Query performance indexes (best-effort).
     if "video" in tables:
-        try:
-            if conn.dialect.name == "postgresql":
-                conn.execute(
-                    text(
-                        "create index if not exists video_media_published_at_idx "
-                        "on video(media_id, published_at desc) "
-                        "where published_at is not null"
-                    )
-                )
-            else:
-                conn.execute(text("create index if not exists video_media_published_at_idx on video(media_id, published_at)"))
-        except Exception:
-            pass
+        if conn.dialect.name == "postgresql":
+            _execute_best_effort_ddl(
+                conn,
+                (
+                    "create index if not exists video_media_published_at_idx "
+                    "on video(media_id, published_at desc) "
+                    "where published_at is not null"
+                ),
+            )
+        else:
+            _execute_best_effort_ddl(conn, "create index if not exists video_media_published_at_idx on video(media_id, published_at)")
 
     if "asset" in tables:
-        try:
-            conn.execute(text("create index if not exists asset_video_created_at_idx on asset(video_id, created_at desc)"))
-        except Exception:
-            pass
-        try:
-            if conn.dialect.name == "postgresql":
-                conn.execute(text("create index if not exists asset_playback_video_idx on asset(video_id) where type = 'video'"))
-            else:
-                conn.execute(text("create index if not exists asset_playback_video_idx on asset(video_id, type)"))
-        except Exception:
-            pass
+        _execute_best_effort_ddl(conn, "create index if not exists asset_video_created_at_idx on asset(video_id, created_at desc)")
+        if conn.dialect.name == "postgresql":
+            _execute_best_effort_ddl(conn, "create index if not exists asset_playback_video_idx on asset(video_id) where type = 'video'")
+        else:
+            _execute_best_effort_ddl(conn, "create index if not exists asset_playback_video_idx on asset(video_id, type)")
 
     if "asset" in tables and "media" in tables:
         _backfill_owned_image_assets(
@@ -490,17 +466,15 @@ where job.type = 'video.download'
             key_col="background_s3_key",
             variant="background",
         )
-        try:
-            if conn.dialect.name == "postgresql":
-                conn.execute(
-                    text(
-                        "create index if not exists asset_transcript_pick_idx "
-                        "on asset(video_id, variant, source, language, created_at desc) "
-                        "where type = 'transcript' and format = 'txt'"
-                    )
-                )
-        except Exception:
-            pass
+        if conn.dialect.name == "postgresql":
+            _execute_best_effort_ddl(
+                conn,
+                (
+                    "create index if not exists asset_transcript_pick_idx "
+                    "on asset(video_id, variant, source, language, created_at desc) "
+                    "where type = 'transcript' and format = 'txt'"
+                ),
+            )
 
 
 def init_db() -> None:

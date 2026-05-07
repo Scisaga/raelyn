@@ -14,6 +14,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from raelyn.jobs import claim
 from raelyn.models import AppConfig, Job, Media, Video
 from raelyn import worker
+from raelyn.services.asr import AsrBackendDefer
 from raelyn.services.ytdlp import YTDLP_RETRY_WITHOUT_COOKIES_PARAM, YtdlpCookiesInvalidError
 
 
@@ -27,6 +28,24 @@ def _scalars_all(values):
 
 
 class WorkerRetryMergeTests(unittest.TestCase):
+    def test_asr_capacity_defer_skips_claim_for_asr_only_worker(self) -> None:
+        defer = AsrBackendDefer(reason="asr backend is busy", delay_seconds=30)
+
+        with patch("raelyn.worker.inspect_asr_backend_defer", return_value=defer):
+            skip_types, sleep_seconds = worker._claim_skip_types_for_external_capacity(["video.asr_transcribe"])
+
+        self.assertEqual(skip_types, {"video.asr_transcribe"})
+        self.assertEqual(sleep_seconds, 5.0)
+
+    def test_asr_capacity_defer_only_skips_asr_for_all_worker(self) -> None:
+        defer = AsrBackendDefer(reason="asr backend is busy", delay_seconds=30)
+
+        with patch("raelyn.worker.inspect_asr_backend_defer", return_value=defer):
+            skip_types, sleep_seconds = worker._claim_skip_types_for_external_capacity(None)
+
+        self.assertEqual(skip_types, {"video.asr_transcribe"})
+        self.assertEqual(sleep_seconds, 1.0)
+
     def test_merge_retry_into_existing_pending_job(self) -> None:
         dedupe_key = f"brief:{uuid.uuid4()}:2026-03-20"
         current_job = Job(

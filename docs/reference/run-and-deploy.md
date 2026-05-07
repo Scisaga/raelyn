@@ -123,6 +123,13 @@ source ./scripts/dev/load-env.sh
 
 说明：`load-env.sh` 会导出 `.env` 里的变量，并将 `./bin` 放到 `PATH` 最前（优先使用下载到 `./bin/` 的 `ffmpeg` / `node` 等）。
 
+#### 高优先级代理规则
+
+- YouTube 的 `yt-dlp` 同步/下载请求可通过 `.env` 中的 `YTDLP_PROXY` 显式使用代理。
+- 非 `yt-dlp` 的资料/头像抓取、B 站请求、ASR、LLM、Embedding 与健康检查不使用 `YTDLP_PROXY`。
+- 应用默认不隐式读取 shell、systemd 或容器环境中的 `HTTP_PROXY` / `HTTPS_PROXY`；如果这些变量存在，也不能假设 ASR / LLM / Embedding 或 B 站请求会走代理。
+- 如果 YouTube cookies 是在代理出口下导出的，建议让 `YTDLP_PROXY` 使用同一个出口，避免 cookies 使用 IP 与导出 IP 不一致。
+
 #### 可选：配置平台 Cookies（YouTube / bilibili）
 
 B 站常见 352 风控、年龄验证、会员或私有内容等登录态相关问题，可以通过 cookies 改善。近期 B 站 412 还可能由浏览器 JS 验证、数据中心出口 IP 风控，或 yt-dlp B 站提取器尚未发布的 `playinfo` 参数修复触发；如果更新 B 站 cookies 后仍然 412，优先降低 `BILIBILI_SYNC_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY`、更换更接近真实浏览器访问的网络，或等待 yt-dlp 官方发布包含修复的版本。不要在生产默认依赖中直接切到未合并的第三方 fork，除非只是在隔离环境做临时验证。
@@ -179,6 +186,7 @@ YouTube cookies 不适合作为公开频道 `media.sync_videos` 的长期主方�
 - `devctl.sh start/restart` 会按 `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 自动扩展对应 provider 的下载 worker 数。
 - `devctl.sh start/restart` 会按 `ASR_WORKER_CONCURRENCY` / `EMBEDDING_WORKER_CONCURRENCY` / `ANALYSIS_WORKER_CONCURRENCY` 自动扩展 asr / embedding / analysis worker 数，默认均为 `1`；其中 `EMBEDDING_WORKER_CONCURRENCY=0` / `ANALYSIS_WORKER_CONCURRENCY=0` 表示当前节点不启动对应 worker。
 - 只有在 `.env` 里配置了 `API_BEARER_TOKEN` 时，主 API 进程才会额外挂载 `/mcp`；否则 `/mcp` 与 `/mcp/health` 返回 `404`。
+- 主 API 关闭 Uvicorn HTTP access log；WebSocket 握手日志中的 `token` / `access_token` / `api_key` query 值会被脱敏，避免 `devctl.sh logs` 暴露访问凭证。
 
 ## UI 构建（离线/无 CDN）
 

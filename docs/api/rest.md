@@ -367,6 +367,7 @@
 ### `POST /api/playlists/{playlist_id}/analysis/rebuild`
 
 - 手动创建 `playlist.build_analysis_snapshot` 任务；只有显式调用该接口才会投递分析重建。
+- 同一播放列表已有 `pending/running` 的分析重建任务时，不创建新任务；返回现有任务的 `job_id` 与 `created=false`。
 - 分析 worker 会分批流式读取 ready embedding；可用内存低于 `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES` 或进程 RSS 高于 `ANALYSIS_MAX_RSS_BYTES` 时直接失败并记录原因。
 - 新快照成功后会自动清理同播放列表旧的非运行中 analysis run，只保留当前可读取的 `last_ready_run` 和仍在 `pending/running` 的 run。
 
@@ -379,16 +380,17 @@
 
 ### `GET /api/playlists/{playlist_id}/analysis/events`
 
-- 返回当前 ready 快照的事件序列，等价于候选事件的新主口径。
+- 返回当前 ready 快照的事件序列，等价于候选事件的新主口径；默认按 `event_date / candidate_date` 倒序排列。
 - 关键字段：`event_id`、`event_date`、`peak_date`、`event_start`、`event_end`、`effective_trade_date`、`event_type`、`status`、`score`、`confidence`、`uncertainty`、`summary`、`top_terms`、`evidence_video_ids`、`available_at`。
-- 新口径事件会额外返回 `breakpoint_date`、`detection_method`、`detection_granularity`、`boundary_score`、`boundary_z`、`before_start`、`before_end`、`after_start`、`after_end`、`supporting_granularities`；旧 ready run 没有 detection 元数据时这些字段为 `null` 或空数组。
-- `score` 使用 `boundary_z`，`drift_score` 使用 `boundary_score`；`drift_rolling_z` 仅作为兼容字段保留，不再作为主事件分数解释。
+- `detection_method` 区分检测来源：`open_topic_burst_v1` 表示基于 ready embedding 的开放式主题候选，覆盖 3 日短爆发与 14 日持续主题窗口；`two_window_centroid_drift_v1` 表示语义漂移候选断点。
+- 语义断点候选会额外返回 `breakpoint_date`、`detection_granularity`、`boundary_score`、`boundary_z`、`before_start`、`before_end`、`after_start`、`after_end`、`supporting_granularities`。
+- `open_topic_burst_v1` 的 `score` 来自窗口视频数、媒体数与向量聚合度，检测元数据会包含 `window_days`、`cohesion`、`available_media_count`、`required_media_count` 与解释用 `top_terms`；候选由窗口内 ready embedding 的高响应维度自动语义桶生成，再用完整向量 cohesion 过滤，不使用标题 seed 或固定事件目录。媒体数门槛按候选窗口附近 90 天实际活跃媒体数自适应，媒体稀疏期还要求主题窗口密度明显高于附近背景密度，避免把长期单源栏目误判为事件；最终候选按年份设置上限，避免近年高密度媒体覆盖挤掉历史年份。`summary` 采用结构化摘要，`evidence` 优先保留跨媒体代表标题；`two_window_centroid_drift_v1` 的 `score` 使用 `boundary_z`，`drift_score` 使用 `boundary_score`。
 - 不包含 `train_start / train_end / valid_start / valid_end / test_start / test_end`；训练窗口、验证窗口与回测 horizon 由 quant-lab 按实验目标自行决定。
 
 ### `GET /api/playlists/{playlist_id}/analysis/evidence`
 
 - query：可选 `event_id`。
-- 返回事件证据视频列表，包含 `event_id`、`video_id`、`media_id`、标题、媒体名、发布时间、到 period centroid 的距离与 shift score。
+- 返回事件证据视频列表，包含 `event_id`、`video_id`、`media_id`、标题、媒体名、发布时间、到 period centroid 或事件 centroid 的距离与 shift score。`open_topic_burst_v1` 的 `shift_score` 表示视频向量与事件 centroid 的相似度。
 
 ### `GET /api/playlists/{playlist_id}/analysis/export/explicit-event-windows`
 

@@ -78,7 +78,7 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     }
     timeout = max(5, int(settings.embedding_timeout_seconds or 120))
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=timeout, trust_env=False) as client:
             response = client.post(_embedding_endpoint_url(), json=payload)
     except (httpx.TimeoutException, httpx.TransportError) as exc:
         raise EmbeddingTransientError(str(exc)) from exc

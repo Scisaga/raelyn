@@ -22,6 +22,7 @@ from raelyn.jobs.reschedule import JobReschedule, JobTerminalFailure
 from raelyn.models import Job, Video
 from raelyn.services.job_cancellation import JobCancelRequested, finalize_canceled_job, job_cancel_requested
 from raelyn.services.log_timestamps import install_if_needed
+from raelyn.services.asr import inspect_asr_backend_defer
 from raelyn.services.provider_cookies import cookie_config_name, cookie_provider_label, normalize_cookie_provider
 from raelyn.services.provider_pause import ProviderPauseRequestError, job_provider, set_provider_paused
 from raelyn.services.s3 import s3_ensure_bucket
@@ -69,6 +70,8 @@ def _resolve_worker_types() -> list[str] | None:
 
 
 _DOWNLOAD_JOB_TYPES = {"video.download", "video.download.youtube", "video.download.bilibili"}
+_ASR_JOB_TYPE = "video.asr_transcribe"
+_ASR_CLAIM_DEFER_SLEEP_SECONDS = 5.0
 
 
 def _mark_download_video_terminal_failure(session, *, job: Job) -> None:
@@ -89,6 +92,18 @@ def _mark_download_video_terminal_failure(session, *, job: Job) -> None:
         video.status = "failed"
     if getattr(job, "error_message", None):
         video.error_message = job.error_message
+
+
+def _claim_skip_types_for_external_capacity(type_in: list[str] | None) -> tuple[set[str], float]:
+    if type_in is not None and _ASR_JOB_TYPE not in type_in:
+        return set(), 1.0
+
+    defer = inspect_asr_backend_defer()
+    if defer is None:
+        return set(), 1.0
+
+    sleep_seconds = _ASR_CLAIM_DEFER_SLEEP_SECONDS if type_in == [_ASR_JOB_TYPE] else 1.0
+    return {_ASR_JOB_TYPE}, sleep_seconds
 
 
 def _update_download_retry_params(job: Job) -> None:
@@ -270,8 +285,16 @@ def run_loop() -> None:
                 )
             last_reap = now
 
+        skip_type_in, sleep_seconds = _claim_skip_types_for_external_capacity(type_in)
+
         with session_scope() as session:
-            job = claim_next_job(session, worker_id=worker_id, lease_seconds=3600, type_in=type_in)
+            job = claim_next_job(
+                session,
+                worker_id=worker_id,
+                lease_seconds=3600,
+                type_in=type_in,
+                skip_type_in=skip_type_in,
+            )
             if not job:
                 pass
             else:
@@ -448,7 +471,7 @@ def run_loop() -> None:
                         _mark_download_video_terminal_failure(session, job=job)
                         job_log(session, job, "failed; no more retries", level="error", data={"attempt": job.attempt})
 
-        time.sleep(1)
+        time.sleep(sleep_seconds)
 
 
 def main() -> None:

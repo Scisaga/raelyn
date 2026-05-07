@@ -108,7 +108,7 @@
 		                          <button
                                 type="button"
                                 class="inline-flex items-center shrink-0 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
-                                @click="playlistEditMediaOpen = true"
+                                @click="playlistOpenEditMedia()"
                                 :disabled="!playlistDetail"
                                 :class="playlistDetail ? 'cursor-pointer hover:opacity-90' : 'opacity-60 cursor-not-allowed'"
                                 title="编辑包含媒体"
@@ -217,6 +217,11 @@
                         </div>
 
                         <div class="text-xs text-slate-400">检索添加/移除媒体，保存后会触发全量简报生成</div>
+                        <div
+                          class="rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-200"
+                          x-show="playlistEditMediaOptionsError"
+                          x-text="`媒体选项加载失败：${playlistEditMediaOptionsError}`"
+                        ></div>
                         <div class="flex flex-wrap items-center gap-2">
                           <template x-for="m in playlistEditSelectedMedia()" :key="m.id">
                             <span class="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-950/30 px-3 py-1 text-xs text-slate-200">
@@ -249,7 +254,8 @@
                                 <span class="text-[11px] text-slate-500" x-text="m.provider"></span>
                               </button>
                             </template>
-                            <div class="px-3 py-2 text-xs text-slate-500" x-show="playlistEditFilteredMediaOptions().length===0">无匹配</div>
+                            <div class="px-3 py-2 text-xs text-slate-500" x-show="playlistEditMediaOptionsLoading">加载中…</div>
+                            <div class="px-3 py-2 text-xs text-slate-500" x-show="!playlistEditMediaOptionsLoading && playlistEditFilteredMediaOptions().length===0">无匹配</div>
                           </div>
                         </div>
 
@@ -991,6 +997,11 @@
                           <div class="relative h-14 overflow-hidden rounded-md border border-slate-800 bg-slate-950/20 px-3">
                             <div x-ref="playlistAnalysisTimelineTrack" class="absolute inset-x-3 top-5 h-7 -translate-y-1/2">
                               <div class="absolute inset-0 opacity-60" :style="playlistAnalysisTimelineTickStyle()"></div>
+                              <div class="pointer-events-none absolute inset-0 opacity-75">
+                                <template x-for="tick in playlistAnalysisTimelineYearTicks()" :key="tick.key">
+                                  <span class="absolute inset-y-0 w-px bg-slate-500/60" :style="playlistAnalysisTimelineYearMarkStyle(tick)"></span>
+                                </template>
+                              </div>
                               <div class="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-slate-800/80">
                                 <div class="absolute inset-y-0 rounded-full bg-emerald-400/80 shadow-[0_0_18px_rgba(16,185,129,0.18)]" :style="playlistAnalysisTimelineSelectionStyle()"></div>
                               </div>
@@ -1061,10 +1072,10 @@
                     <div class="min-h-0 flex flex-col divide-y divide-slate-800">
                       <div class="shrink-0 px-4 py-3">
                         <div class="text-sm font-semibold text-slate-100">事件序列</div>
-                        <div class="text-xs text-slate-400 mt-1">人工确认后进入 quant-lab 事件读取口径。</div>
+                        <div class="text-xs text-slate-400 mt-1">按事件日期倒序展示；开放式主题爆发标为事件候选，语义漂移结果标为候选断点。</div>
                       </div>
                       <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar divide-y divide-slate-800">
-                        <template x-for="item in playlistAnalysisCandidates" :key="item.id">
+                        <template x-for="item in playlistAnalysisDisplayCandidates()" :key="item.id">
                           <button
                             type="button"
                             class="w-full text-left px-4 py-3 transition hover:bg-slate-900/50"
@@ -1075,6 +1086,7 @@
                               <div class="min-w-0">
                                 <div class="flex flex-wrap items-center gap-2">
                                   <span class="text-sm text-slate-100 truncate" x-text="item.event_date || item.candidate_date"></span>
+                                  <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="playlistAnalysisDetectionKindClass(item)" x-text="playlistAnalysisDetectionKindLabel(item)"></span>
                                   <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="playlistAnalysisEventTypeClass(item.event_type)" x-text="playlistAnalysisEventTypeLabel(item.event_type)"></span>
                                 </div>
                                 <div class="text-[11px] text-slate-400 truncate mt-1" x-text="item.summary || item.evidence_preview || '暂无证据摘要'"></div>
@@ -1095,6 +1107,7 @@
                           <div>
                             <div class="flex flex-wrap items-center gap-2">
                               <span class="text-sm font-semibold text-slate-100" x-text="playlistAnalysisCandidateDetail.event_date || playlistAnalysisCandidateDetail.candidate_date"></span>
+                              <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="playlistAnalysisDetectionKindClass(playlistAnalysisCandidateDetail)" x-text="playlistAnalysisDetectionKindLabel(playlistAnalysisCandidateDetail)"></span>
                               <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="playlistAnalysisEventTypeClass(playlistAnalysisCandidateDetail.event_type)" x-text="playlistAnalysisEventTypeLabel(playlistAnalysisCandidateDetail.event_type)"></span>
                             </div>
                             <div class="text-xs text-slate-400 mt-1">

@@ -4,7 +4,7 @@ import sys
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(_BACKEND_DIR) not in sys.path:
@@ -21,6 +21,7 @@ from raelyn.services.inference import get_effective_asr_config
 from raelyn.services.inference import get_effective_llm_config
 from raelyn.services.inference import preserve_existing_volcengine_secrets
 from raelyn.services.inference import sanitize_config_value
+from raelyn.services.inference import test_llm_connection
 
 
 class _FakeSession:
@@ -134,6 +135,53 @@ class InferenceServiceTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(result["configured"])
         self.assertIn("headers_json", result["error"])
+
+    def test_llm_health_ignores_environment_proxy(self) -> None:
+        cfg = EffectiveLlmConfig(
+            mode="local",
+            provider="local",
+            source="env",
+            url="http://llm.test/v1/chat/completions",
+            model="qwen2.5",
+            api_key="",
+            headers_json="",
+            timeout_seconds=10,
+            configured=True,
+        )
+        response = Mock()
+        response.raise_for_status.return_value = None
+        with patch("raelyn.services.inference.httpx.Client") as client:
+            client.return_value.__enter__.return_value.get.return_value = response
+            result = check_llm_health(cfg)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(client.call_args.kwargs["trust_env"], False)
+
+    def test_llm_connection_ignores_environment_proxy(self) -> None:
+        cfg = EffectiveLlmConfig(
+            mode="local",
+            provider="local",
+            source="env",
+            url="http://llm.test/v1/chat/completions",
+            model="qwen2.5",
+            api_key="",
+            headers_json="",
+            timeout_seconds=10,
+            configured=True,
+        )
+        health_response = Mock()
+        health_response.raise_for_status.return_value = None
+        completion_response = Mock()
+        completion_response.raise_for_status.return_value = None
+        completion_response.json.return_value = {"choices": [{"message": {"content": "pong"}}]}
+
+        with patch("raelyn.services.inference.httpx.Client") as client:
+            client.return_value.__enter__.return_value.get.return_value = health_response
+            client.return_value.__enter__.return_value.post.return_value = completion_response
+            result = test_llm_connection(cfg)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(all(call.kwargs["trust_env"] is False for call in client.call_args_list))
 
 
 if __name__ == "__main__":

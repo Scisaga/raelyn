@@ -175,6 +175,8 @@ export function createPlaylistsModule() {
     playlistEditMediaIds: [],
     playlistEditMediaTagQuery: "",
     playlistEditMediaTagOpen: false,
+    playlistEditMediaOptionsLoading: false,
+    playlistEditMediaOptionsError: "",
     playlistLoadToken: 0,
     _playlistDayAbortCtrl: null,
     _playlistBriefAbortCtrl: null,

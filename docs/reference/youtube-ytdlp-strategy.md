@@ -9,6 +9,7 @@
 对本项目来说，最稳妥的默认策略是：
 
 - `media.sync_videos` 面向公开频道 / 视频列表同步，默认应优先使用未登录态。
+- YouTube 的 `yt-dlp` 同步 / 下载可显式使用 `YTDLP_PROXY`；这只影响 YouTube 访问出口，不代表 ASR / LLM / Embedding / 头像抓取也走代理。
 - YouTube cookies 只用于确实需要登录权限的内容，例如私有、会员、年龄限制或账号可见内容。
 - 普通公开频道同步不要消耗账号登录态，避免把账号 cookies 暴露在高频定时任务里。
 - 当同步任务持续触发 bot check 或 cookies 失效时，优先降低请求波峰，而不是反复更换 cookies。
@@ -24,6 +25,12 @@
 - `SYNC_BATCH_SIZE=2`
 
 这样做会让积压追赶变慢，但能显著降低同一分钟集中请求 YouTube / B 站的概率。
+
+## 代理规则
+
+YouTube 的 `yt-dlp` 同步 / 下载请求可显式使用 `YTDLP_PROXY`，同步和下载应保持同一出口。应用不会把 shell、systemd 或容器环境中的 `HTTP_PROXY` / `HTTPS_PROXY` 当成 YouTube 代理配置；需要代理时必须配置 `YTDLP_PROXY`。
+
+`YTDLP_PROXY` 不适用于 ASR、LLM、Embedding、B 站请求、资料抓取、头像缓存或健康检查。那些请求默认直连，并且不应隐式继承进程环境代理。
 
 ## Cookies 导出
 

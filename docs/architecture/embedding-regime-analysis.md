@@ -617,15 +617,17 @@ z_t = (x_t - rolling_mean_t) / rolling_std_t
 ## 运行护栏
 
 - 分析页只展示 `analysis_dirty` 的待刷新状态，不自动投递 `playlist.build_analysis_snapshot`。
-- 只有用户明确点击“重建分析”时，API 才创建分析任务。
+- 只有用户明确点击“重建分析”时，API 才创建或复用分析任务；同一播放列表已有 `pending/running` 分析重建时不重复投递。
 - coverage 统计走数据库聚合查询，不把播放列表全量视频 ORM 对象加载到 API 进程。
 - 历史 embedding 补算默认只扫描缺失、失败、非 ready 或无向量的候选视频；`force=true` 才全量重算。
 - 同一播放列表同一时间只允许一个历史 embedding 补算任务；分析摘要会返回活跃补算任务信息，前端展示任务状态并禁用新的补算入口，用户需要等待任务结束或先停止当前任务。
 - 历史补算用 `EMBEDDING_TRANSCRIPT_PREFETCH_WORKERS` 控制 transcript 并发预取，用 `EMBEDDING_BACKFILL_HTTP_INFLIGHT` 控制远端 embedding HTTP batch 并发；batch 同时受 `EMBEDDING_BATCH_SIZE` 与 `EMBEDDING_BATCH_MAX_CHARS` 约束。
 - 每个 embedding batch 成功后立即提交已写入向量、`last_committed_video_id` 和任务进度；后续远端 `502/503/504` 等临时错误不会回滚此前成功 batch，重试时已 ready 行会被 SQL 候选过滤排除。
 - 快照构建按批读取 ready embedding 所需的最小字段：视频 ID、媒体 ID、标题、媒体名、发布时间与向量。
-- `playlist.build_analysis_snapshot` 采用多尺度聚合：按 `day / week / month` 生成 signal panel；事件断点使用 `two_window_centroid_drift_v1`，先用月级前后各 2 个 period 的 centroid 对比提名，再在候选附近用周级前后各 4 个 period 的 centroid 对比细化。日级 signal 不再作为主断点来源，只用于证据、PCA 分布和局部解释。
-- `analysis` worker 在任务开始和处理中检查 `MemAvailable` 与当前进程 `VmRSS`；低于 `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES` 或高于 `ANALYSIS_MAX_RSS_BYTES` 时直接失败并记录原因。
+- `playlist.build_analysis_snapshot` 采用多尺度聚合：按 `day / week / month` 生成 signal panel；语义断点使用 `two_window_centroid_drift_v1`，先用月级前后各 2 个 period 的 centroid 对比提名，再在候选附近用周级前后各 4 个 period 的 centroid 对比细化。日级 signal 不再作为主断点来源，只用于证据、PCA 分布和局部解释。
+- 开放式主题爆发与语义断点分离：`open_topic_burst_v1` 基于发布时间、媒体来源和已有 ready embedding 的视频元数据生成 `burst` 型候选。短爆发使用 3 日窗口，持续主题使用 14 日窗口；窗口内部先按 embedding 高响应维度生成自动语义桶，再用完整向量的 cohesion、媒体覆盖、视频数和活跃天数过滤。媒体覆盖门槛按候选窗口附近 90 天实际活跃媒体数自适应，避免把 2020 年前媒体覆盖稀疏的历史片段按近年多媒体覆盖口径过滤；当自适应门槛低于常规跨 3 媒体口径时，还要求该语义桶的窗口密度明显高于附近背景密度，避免把长期单源栏目误判为事件。最终候选选择对单一年份设置上限，避免近年高密度媒体覆盖挤掉历史年份。它不接入 LLM，不做 transcript chunk 抽取，不使用标题 seed，也不使用固定事件目录；标题 term 只作为候选生成后的解释标签。
+- `open_topic_burst_v1` 的证据视频优先保留跨媒体代表标题，同一媒体近似标题只作为弱证据；`two_window_centroid_drift_v1` 的证据仍解释断点前后 centroid shift。
+- `analysis` worker 在任务开始和处理中检查 `MemAvailable` 与当前进程 `VmRSS`；低于 `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES` 或高于 `ANALYSIS_MAX_RSS_BYTES` 时直接失败并记录原因。`playlist.build_analysis_snapshot` 这类长任务会在批处理检查点刷新任务进度和 `lease_expires_at`，避免计算阶段超过租约后被回收器误判为失联。
 - 快照成功后会清理同播放列表旧的非运行中 run；当前 `last_ready_run` 与仍在 `pending/running` 的 run 不会被删除，避免历史快照长期堆积。
 
 ## 当前推荐结论
@@ -637,7 +639,7 @@ z_t = (x_t - rolling_mean_t) / rolling_std_t
 - embedding 模型版本对前端固定
 - 服务输出维度固定为 `1024`
 - 数据库仍保留 `embedding_model / embedding_dim / transcript_variant / analysis_version`
-- 先做 `two_window_centroid_drift_v1` 候选断点检测，`drift_score / drift_rolling_z / dispersion_score` 作为趋势解释与兼容字段
+- 先做 `two_window_centroid_drift_v1` 候选断点检测，`drift_score / drift_rolling_z / dispersion_score` 作为趋势解释与兼容字段；再做 `open_topic_burst_v1` 开放式主题检测，用于补足语义断点漏报的短窗口与持续主题事件候选
 - 对 quant-lab 暴露 `events / signals / evidence`，不在分析页或主接口中输出训练 / 验证 / 测试窗口
 - 投影采用 PCA 二维投影作为解释层，事件分数来自断点两侧 centroid 的 `boundary_z`；PCA 不作为事件分数来源，PCA 内的前后 centroid 箭头只表达方向，不按真实距离缩放
 

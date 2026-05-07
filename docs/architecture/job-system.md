@@ -38,6 +38,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 ## 租约 / 心跳与回收
 
 - Worker 执行长任务时周期性刷新 `lease_expires_at`
+- 长任务若在业务函数内部有明显批处理检查点，可以通过进度更新同步刷新 `lease_expires_at`，使 DB 中的任务事实源持续反映真实运行状态；例如播放列表分析快照会在 embedding 批读取、离散度计算、事件检测和写库阶段更新进度。
 - `scheduler` 或 `worker` 启动时可执行回收扫描：
   - `status=running AND lease_expires_at < now()` 视为失联，转回 `pending` 或标记为 `failed`
   - 回收动作应记录原因，便于后续排障
@@ -63,6 +64,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 
 - Provider 级并发：如 YouTube 同时下载数、B 站同时下载数
 - Media 级并发：同一媒体同一时刻只允许 1 个同步 / 下载任务
+- ASR 后端容量：当 qwen3-asr-openai `/health` 显示 replica 推理槽位已满或已有等待队列时，worker claim 会跳过 `video.asr_transcribe`，让任务继续留在 DB 的 `pending` 队列中等待后端释放容量
 
 当前项目对下载并发采用“强绑定语义”：
 

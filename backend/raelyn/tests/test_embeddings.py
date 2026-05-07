@@ -53,7 +53,7 @@ class EmbeddingClientTests(unittest.TestCase):
         )
 
         with patch.object(embeddings.settings, "embedding_url", "http://embedding.test"):
-            with patch.object(embeddings.httpx, "Client", lambda timeout: _FakeClient(response, calls)):
+            with patch.object(embeddings.httpx, "Client", lambda **_kwargs: _FakeClient(response, calls)):
                 vectors = embeddings.embed_texts(["第一条", "第二条"])
 
         self.assertEqual(vectors, [[1.0, 2.0], [3.0, 4.0]])
@@ -64,7 +64,7 @@ class EmbeddingClientTests(unittest.TestCase):
         response = _FakeResponse(400, {"detail": "max_model_len exceeded"})
 
         with patch.object(embeddings.settings, "embedding_url", "http://embedding.test"):
-            with patch.object(embeddings.httpx, "Client", lambda timeout: _FakeClient(response, calls)):
+            with patch.object(embeddings.httpx, "Client", lambda **_kwargs: _FakeClient(response, calls)):
                 with self.assertRaises(EmbeddingOverBudgetError):
                     embeddings.embed_texts(["超长文本"])
 
@@ -73,9 +73,24 @@ class EmbeddingClientTests(unittest.TestCase):
         response = _FakeResponse(502, {})
 
         with patch.object(embeddings.settings, "embedding_url", "http://embedding.test"):
-            with patch.object(embeddings.httpx, "Client", lambda timeout: _FakeClient(response, calls)):
+            with patch.object(embeddings.httpx, "Client", lambda **_kwargs: _FakeClient(response, calls)):
                 with self.assertRaises(EmbeddingTransientError):
                     embeddings.embed_texts(["临时错误"])
+
+    def test_embed_texts_ignores_environment_proxy(self) -> None:
+        calls: list[dict] = []
+        client_kwargs: list[dict] = []
+        response = _FakeResponse(200, {"data": [{"index": 0, "embedding": [1, 2]}]})
+
+        def _client(**kwargs):
+            client_kwargs.append(kwargs)
+            return _FakeClient(response, calls)
+
+        with patch.object(embeddings.settings, "embedding_url", "http://embedding.test"):
+            with patch.object(embeddings.httpx, "Client", _client):
+                embeddings.embed_texts(["文本"])
+
+        self.assertEqual(client_kwargs[0]["trust_env"], False)
 
 
 if __name__ == "__main__":
