@@ -89,6 +89,7 @@ docker compose up --build
 
 项目通过 `backend/requirements.txt` 使用 `yt-dlp[default]`，会自动安装 `yt-dlp` 与 `yt-dlp-ejs`（用于 YouTube 的 EJS/JS challenge）。
 默认配置还会向 yt-dlp Python API 传入 `YTDLP_REMOTE_COMPONENTS=ejs:github`，对应 CLI 里的 `--remote-components ejs:github`。
+EJS 只解决 YouTube JS / n challenge；若 cookies 很快再次触发“确认你不是聊天机器人”，还需要启用 PO Token Provider。
 
 如果日志出现类似：
 
@@ -105,7 +106,42 @@ docker compose up --build
 
 ```bash
 YTDLP_REMOTE_COMPONENTS=ejs:github
+YTDLP_YOUTUBE_IMPERSONATE=chrome
 ```
+
+#### 可选：YouTube PO Token Provider（bgutil）
+
+当 YouTube cookies 保存后仍快速触发 bot check 或部分 403 时，启用 bgutil PO Token Provider。项目依赖中已包含 `bgutil-ytdlp-pot-provider` 插件，但仍需要单独运行 bgutil HTTP server。
+
+Docker Compose 会自动启动 `bgutil-pot` 服务，并给 app 注入：
+
+```bash
+YTDLP_POT_BGUTIL_BASE_URL=http://host.docker.internal:4416
+```
+
+如果 `YTDLP_PROXY` 是宿主机上的本地代理，例如 `socks5://127.0.0.1:8887`，bgutil Docker 容器也必须能访问宿主机网络；否则 provider 生成 PO Token 时会在容器内访问自己的 `127.0.0.1` 并失败。Docker Compose 中的 `bgutil-pot` 使用 host 网络以保持这条路径一致。
+
+如果宿主机 shell 或 systemd 环境设置了 `HTTP_PROXY` / `HTTPS_PROXY`，还要确认 `NO_PROXY` / `no_proxy` 包含 `127.0.0.1,localhost,::1,host.docker.internal`。否则访问 `http://127.0.0.1:4416/ping` 也可能被环境代理劫持并显示假性的 `502 Bad Gateway`。
+
+本机运行时可单独启动 provider server，例如：
+
+```bash
+docker run --name bgutil-provider -d --init --net=host brainicism/bgutil-ytdlp-pot-provider:1.3.1-node
+```
+
+然后在 `.env` 中配置：
+
+```bash
+YTDLP_POT_BGUTIL_BASE_URL=http://127.0.0.1:4416
+```
+
+验证插件和 provider 是否被 yt-dlp 识别：
+
+```bash
+NO_PROXY=127.0.0.1,localhost .venv/bin/python -m yt_dlp -v "https://www.youtube.com/watch?v=VIDEO_ID" 2>&1 | grep "PO Token Providers\\|Generating a .* PO Token"
+```
+
+输出应包含类似 `bgutil:http`；真正生成 token 时还应出现 `Generating a ... PO Token ... via bgutil HTTP server`。启用后需重启 `download_youtube` / `sync` worker。
 
 ### 配置
 
@@ -134,11 +170,13 @@ source ./scripts/dev/load-env.sh
 
 B 站常见 352 风控、年龄验证、会员或私有内容等登录态相关问题，可以通过 cookies 改善。近期 B 站 412 还可能由浏览器 JS 验证、数据中心出口 IP 风控，或 yt-dlp B 站提取器尚未发布的 `playinfo` 参数修复触发；如果更新 B 站 cookies 后仍然 412，优先降低 `BILIBILI_SYNC_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY`、更换更接近真实浏览器访问的网络，或等待 yt-dlp 官方发布包含修复的版本。不要在生产默认依赖中直接切到未合并的第三方 fork，除非只是在隔离环境做临时验证。
 
-YouTube cookies 不适合作为公开频道 `media.sync_videos` 的长期主方案；完整判断与排障步骤见 [YouTube yt-dlp 同步与 Cookies 策略](youtube-ytdlp-strategy.md)。
+YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“公开采集默认不用 cookies”。当前 YouTube 同步 / 下载都会使用已保存的 `YTDLP_COOKIES_YOUTUBE`；是否局部关闭 cookies 必须经过相同 yt-dlp 版本、相同代理出口、相同目标类型的最小实测。完整判断与排障步骤见 [YouTube yt-dlp 同步与 Cookies 策略](youtube-ytdlp-strategy.md)。
+当前实测的下载路径在无 cookies 时会直接触发 `LOGIN_REQUIRED`，因此 YouTube 下载任务固定使用已保存的 `YTDLP_COOKIES_YOUTUBE`，并通过 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 尽量贴近浏览器请求形态。
 
 1. 在浏览器里登录对应平台（YouTube / bilibili，建议用单独账号）
-2. 导出 Netscape 格式 `cookies.txt`（Chrome / Firefox 常用扩展：`Get cookies.txt`）
-3. 打开 UI -> 设置：
+2. 如果 YouTube 刚更新 cookies 后仍立刻触发“确认你不是聊天机器人”，先清空浏览器里的 YouTube / Google 相关站点数据，再重新访问 YouTube 登录并导出；不要在原会话里直接重复导出。
+3. 导出 Netscape 格式 `cookies.txt`（Chrome / Firefox 常用扩展：`Get cookies.txt`）
+4. 打开 UI -> 设置：
    - `YTDLP_COOKIES_YOUTUBE（cookies.txt）`：粘贴 YouTube cookies
    - `YTDLP_COOKIES_BILIBILI（cookies.txt）`：粘贴 B站 cookies
 

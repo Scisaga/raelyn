@@ -10,6 +10,7 @@ from collections.abc import Callable
 
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, ExtractorError
+from yt_dlp.networking.impersonate import ImpersonateTarget
 
 from raelyn.config import settings
 from raelyn.db import session_scope
@@ -102,7 +103,12 @@ def _raise_if_cookie_invalid_messages(msgs: list[str], *, provider: str | None =
         raise YtdlpCookiesInvalidError(reason, f"{cfg_name} 无效，请在 UI -> 设置 更新 {label} cookies.txt。", provider=p)
 
 
-def _raise_if_youtube_bot_check_messages(msgs: list[str], *, provider: str | None = None) -> None:
+def _raise_if_youtube_bot_check_messages(
+    msgs: list[str],
+    *,
+    provider: str | None = None,
+    using_cookies: bool = True,
+) -> None:
     p = normalize_cookie_provider(provider)
     if p and p != "youtube":
         return
@@ -116,9 +122,24 @@ def _raise_if_youtube_bot_check_messages(msgs: list[str], *, provider: str | Non
             provider="youtube",
         )
     if _is_youtube_bot_check_error(RuntimeError(combined)):
+        if not using_cookies:
+            raise ProviderPauseRequestError(
+                provider="youtube",
+                reason="youtube_bot_check",
+                message=(
+                    "YouTube下载任务已暂停：YouTube 无 cookies 下载仍触发人机验证。"
+                    "这通常不是 YTDLP_COOKIES_YOUTUBE 失效，而是出口 IP、PO Token 或下载频率被风控。"
+                    "请检查 YTDLP_PROXY、bgutil PO Token Provider 和下载并发。"
+                    f"环境信息：pot_provider={_youtube_pot_provider_desc()}。"
+                ),
+            )
         raise YtdlpCookiesInvalidError(
             "ytdlp_cookies_expired",
-            "YTDLP_COOKIES_YOUTUBE 已失效：YouTube 要求重新登录以确认不是机器人。请在 UI -> 设置 更新 YouTube cookies.txt。",
+            (
+                "YTDLP_COOKIES_YOUTUBE 已失效：YouTube 要求重新登录以确认不是机器人。"
+                "请在 UI -> 设置 更新 YouTube cookies.txt。"
+                f"环境信息：pot_provider={_youtube_pot_provider_desc()}。"
+            ),
             provider="youtube",
         )
 
@@ -159,6 +180,24 @@ def _remote_components() -> list[str] | None:
         seen.add(item)
         items.append(item)
     return items or None
+
+
+def _bgutil_pot_base_url() -> str:
+    return str(settings.ytdlp_pot_bgutil_base_url or "").strip()
+
+
+def _youtube_pot_provider_desc() -> str:
+    base_url = _bgutil_pot_base_url()
+    return f"bgutil_http={base_url}" if base_url else "bgutil_http=not_set"
+
+
+def _youtube_impersonate_target() -> str:
+    return str(settings.ytdlp_youtube_impersonate or "").strip()
+
+
+def _youtube_impersonate_desc() -> str:
+    target = _youtube_impersonate_target()
+    return target or "not_set"
 
 
 def _load_ytdlp_format_text() -> str:
@@ -277,9 +316,13 @@ def _ensure_ytdlp_cookies_file(text: str, *, provider: str | None = None) -> Pat
 
 
 def _is_youtube_bot_check_error(err: Exception) -> bool:
-    msg = str(err or "").lower()
-    msg = msg.replace("’", "'")
-    return "sign in to confirm you're not a bot" in msg or "confirm you're not a bot" in msg
+    msg = _normalize_msg(str(err or ""))
+    return (
+        "sign in to confirm you're not a bot" in msg
+        or "confirm you're not a bot" in msg
+        or "确认你不是聊天机器人" in msg
+        or "确认你不是机器人" in msg
+    )
 
 
 def _is_youtube_tab_authcheck_error(msg: str) -> bool:
@@ -328,7 +371,7 @@ def _youtube_js_challenge_hint() -> str:
     remote_desc = ",".join(remote_components) if remote_components else "not_set"
     return (
         "YouTube JS challenge 解析失败（EJS / n challenge），导致视频/音频格式不可用（可能只剩缩略图等图片格式）。\n"
-        f"环境信息：{node_desc}; remote_components={remote_desc}\n"
+        f"环境信息：{node_desc}; remote_components={remote_desc}; pot_provider={_youtube_pot_provider_desc()}\n"
         "解决建议：\n"
         "1) 升级 Python 依赖：`.venv/bin/python -m pip install -U yt-dlp[default]`；\n"
         "2) 或直接运行：`./scripts/dev/install-ytdlp-ejs.sh`（会升级 yt-dlp-ejs 并做基础自检）；\n"
@@ -361,7 +404,8 @@ def _youtube_bot_check_hint() -> str:
         "YouTube 拒绝访问（需要登录/人机验证）。解决方法：在 UI 的 Settings 页面配置 "
         "YTDLP_COOKIES_YOUTUBE（Netscape cookies.txt 格式，登录 YouTube 后从浏览器导出并粘贴保存），"
         "或通过 API `PUT /api/config/ytdlp_cookies_youtube` 写入。若 YouTube 同步/下载已配置 cookies 仍失败，"
-        "通常是 IP 被风控，需要更换网络或配置代理（YTDLP_PROXY）。"
+        "通常是 IP 被风控，需要更换网络或配置代理（YTDLP_PROXY），并启用 PO Token Provider。"
+        f"环境信息：pot_provider={_youtube_pot_provider_desc()}, impersonate={_youtube_impersonate_desc()}。"
     )
 
 
@@ -425,12 +469,22 @@ def _apply_common_ytdlp_opts(
 
     is_yt = cookie_provider == "youtube"
     if is_yt:
+        if impersonate_target := _youtube_impersonate_target():
+            opts["impersonate"] = ImpersonateTarget.from_str(impersonate_target)
+
+        extractor_args = dict(opts.get("extractor_args") or {})
+        bgutil_base_url = _bgutil_pot_base_url()
+        if bgutil_base_url:
+            bgutil_args = dict(extractor_args.get("youtubepot-bgutilhttp") or {})
+            bgutil_args["base_url"] = [bgutil_base_url]
+            extractor_args["youtubepot-bgutilhttp"] = bgutil_args
+
         lang = _normalize_youtube_lang(_load_ytdlp_youtube_lang())
         if lang:
-            extractor_args = dict(opts.get("extractor_args") or {})
             youtube_args = dict(extractor_args.get("youtube") or {})
             youtube_args["lang"] = [lang]
             extractor_args["youtube"] = youtube_args
+        if extractor_args:
             opts["extractor_args"] = extractor_args
     return
 
@@ -540,6 +594,7 @@ def ytdlp_download(
     out_dir.mkdir(parents=True, exist_ok=True)
     outtmpl = str(out_dir / "%(id)s.%(ext)s")
     cookie_provider = cookie_provider_for_target(url, provider)
+    effective_use_provider_cookies = bool(use_provider_cookies)
     cookie_invalid_line: str | None = None
     captured_warnings: list[str] = []
     captured_errors: list[str] = []
@@ -633,7 +688,12 @@ def ytdlp_download(
     tried_progressive_mp4 = False
     for idx, (label, fmt, merge) in enumerate(format_attempts, start=1):
         opts = dict(base_opts)
-        _apply_common_ytdlp_opts(opts, url=url, provider=cookie_provider, use_provider_cookies=use_provider_cookies)
+        _apply_common_ytdlp_opts(
+            opts,
+            url=url,
+            provider=cookie_provider,
+            use_provider_cookies=effective_use_provider_cookies,
+        )
         opts["format"] = fmt
         if merge:
             opts["merge_output_format"] = merge
@@ -653,7 +713,11 @@ def ytdlp_download(
             last_error = e
             joined = "\n".join([cookie_invalid_line or "", *captured_warnings[-12:], *captured_errors[-12:], str(e)]).strip()
             _raise_if_cookie_invalid_messages([joined], provider=cookie_provider)
-            _raise_if_youtube_bot_check_messages([joined], provider=cookie_provider)
+            _raise_if_youtube_bot_check_messages(
+                [joined],
+                provider=cookie_provider,
+                using_cookies=effective_use_provider_cookies,
+            )
             _raise_if_provider_pause_messages([joined])
             if _is_youtube_bot_check_error(e):
                 raise RuntimeError(_youtube_bot_check_hint()) from e
@@ -681,7 +745,7 @@ def ytdlp_download(
                     prog_opts,
                     url=url,
                     provider=cookie_provider,
-                    use_provider_cookies=use_provider_cookies,
+                    use_provider_cookies=effective_use_provider_cookies,
                 )
                 prog_opts["format"] = "best[ext=mp4][height<=720]/best[ext=mp4]/b"
                 prog_opts.pop("merge_output_format", None)
@@ -699,7 +763,11 @@ def ytdlp_download(
                         [cookie_invalid_line or "", *captured_warnings[-12:], *captured_errors[-12:], str(e2)]
                     ).strip()
                     _raise_if_cookie_invalid_messages([joined2], provider=cookie_provider)
-                    _raise_if_youtube_bot_check_messages([joined2], provider=cookie_provider)
+                    _raise_if_youtube_bot_check_messages(
+                        [joined2],
+                        provider=cookie_provider,
+                        using_cookies=effective_use_provider_cookies,
+                    )
                     _raise_if_provider_pause_messages([joined2])
                     # Fall through to raise a readable error below.
                     joined = joined2 or joined

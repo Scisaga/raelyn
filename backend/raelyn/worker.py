@@ -108,16 +108,7 @@ def _claim_skip_types_for_external_capacity(type_in: list[str] | None) -> tuple[
 
 def _update_download_retry_params(job: Job) -> None:
     params = dict(getattr(job, "params", None) or {})
-    msg = str(getattr(job, "error_message", "") or "").lower()
-    should_disable_cookies = (
-        str(getattr(job, "type", "") or "").strip() in _DOWNLOAD_JOB_TYPES
-        and "http error 403" in msg
-        and "forbidden" in msg
-    )
-    if should_disable_cookies:
-        params[YTDLP_RETRY_WITHOUT_COOKIES_PARAM] = True
-    else:
-        params.pop(YTDLP_RETRY_WITHOUT_COOKIES_PARAM, None)
+    params.pop(YTDLP_RETRY_WITHOUT_COOKIES_PARAM, None)
     job.params = params
 
 

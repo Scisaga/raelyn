@@ -293,7 +293,7 @@ class WorkerDownloadFailureStateTests(unittest.TestCase):
         self.assertEqual(video.status, "ready")
         self.assertEqual(video.error_message, "new error")
 
-    def test_update_download_retry_params_disables_cookies_for_403_retry(self) -> None:
+    def test_update_download_retry_params_keeps_cookies_for_403_retry(self) -> None:
         job = Job(
             id=uuid.uuid4(),
             type="video.download.youtube",
@@ -303,9 +303,9 @@ class WorkerDownloadFailureStateTests(unittest.TestCase):
 
         worker._update_download_retry_params(job)
 
-        self.assertTrue(job.params[YTDLP_RETRY_WITHOUT_COOKIES_PARAM])
+        self.assertNotIn(YTDLP_RETRY_WITHOUT_COOKIES_PARAM, job.params)
 
-    def test_update_download_retry_params_clears_cookie_bypass_for_non_403(self) -> None:
+    def test_update_download_retry_params_clears_legacy_cookie_bypass(self) -> None:
         job = Job(
             id=uuid.uuid4(),
             type="video.download.youtube",

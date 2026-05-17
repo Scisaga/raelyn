@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # Allow yt-dlp to fetch trusted remote components required by YouTube's EJS/JS challenge solver.
     # Default: enable GitHub-hosted ejs component; set empty to disable.
     ytdlp_remote_components: str = Field(default="ejs:github", validation_alias=AliasChoices("YTDLP_REMOTE_COMPONENTS"))
+    # 可选的 bgutil PO Token Provider HTTP server；空值表示不启用。
+    ytdlp_pot_bgutil_base_url: str = Field(default="", validation_alias=AliasChoices("YTDLP_POT_BGUTIL_BASE_URL"))
+    # YouTube 请求默认启用浏览器 TLS 指纹模拟；空值表示不启用。
+    ytdlp_youtube_impersonate: str = Field(default="chrome", validation_alias=AliasChoices("YTDLP_YOUTUBE_IMPERSONATE"))
     # yt-dlp format selector for downloads (see: https://github.com/yt-dlp/yt-dlp#format-selection)
     # Default: cap at 1080p, prefer MP4+M4A, then fall back to best available.
     ytdlp_format: str = Field(

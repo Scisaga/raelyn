@@ -5,6 +5,18 @@ cd /app
 
 export PYTHONPATH="/app/backend"
 
+# 本机/宿主机服务地址不能被容器环境里的 HTTP(S)_PROXY 劫持；YouTube 出口只由 YTDLP_PROXY 显式控制。
+for host in 127.0.0.1 localhost ::1 host.docker.internal; do
+  case ",${NO_PROXY:-}," in
+    *,"${host}",*) ;;
+    *) export NO_PROXY="${NO_PROXY:+${NO_PROXY},}${host}" ;;
+  esac
+  case ",${no_proxy:-}," in
+    *,"${host}",*) ;;
+    *) export no_proxy="${no_proxy:+${no_proxy},}${host}" ;;
+  esac
+done
+
 echo "[entrypoint] python: $(python --version)"
 echo "[entrypoint] starting api + workers + scheduler (single container)"
 

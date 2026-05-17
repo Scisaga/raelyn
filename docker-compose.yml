@@ -33,6 +33,11 @@ services:
       exit 0
       "
 
+  bgutil-pot:
+    image: brainicism/bgutil-ytdlp-pot-provider:1.3.1-node
+    init: true
+    network_mode: host
+
   app:
     build: .
     environment:
@@ -50,6 +55,10 @@ services:
       SYNC_INTERVAL_MINUTES: "5"
       SYNC_BATCH_SIZE: "20"
       SYNC_MAX_ENTRIES: "10"
+      YTDLP_POT_BGUTIL_BASE_URL: http://host.docker.internal:4416
+      YTDLP_YOUTUBE_IMPERSONATE: chrome
+      NO_PROXY: 127.0.0.1,localhost,::1,host.docker.internal
+      no_proxy: 127.0.0.1,localhost,::1,host.docker.internal
     volumes:
       - ./static:/app/static
       - ./tmp:/app/tmp
@@ -58,6 +67,9 @@ services:
     depends_on:
       - postgres
       - minio-init
+      - bgutil-pot
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: ["bash", "-lc", "bash /app/scripts/docker/entrypoint.sh"]
 
 volumes:

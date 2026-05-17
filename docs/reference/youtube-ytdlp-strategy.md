@@ -4,15 +4,35 @@
 
 ## 当前结论
 
-不要把“长期稳定依赖 YouTube cookies”当成主方案。YouTube 会轮换 cookies、限制账号或 IP，并逐步要求 PO Token；cookies 更适合作为需要登录权限时的补救手段。
+不要把“长期稳定依赖 YouTube cookies”当成唯一方案。YouTube 会轮换 cookies、限制账号或 IP，并逐步要求 PO Token；但这不等于“默认不用 cookies”。当前下载实测中，`android_vr`、`web_safari`、`mweb` player response 都返回 `LOGIN_REQUIRED` 时，无 cookies 路径已经不是可行主路径。
 
 对本项目来说，最稳妥的默认策略是：
 
-- `media.sync_videos` 面向公开频道 / 视频列表同步，默认应优先使用未登录态。
+- YouTube `media.sync_videos` 和 `video.download.youtube` 当前都应使用已保存的 `YTDLP_COOKIES_YOUTUBE`。只有在相同 yt-dlp 版本、相同出口、相同目标类型下做过最小实测，并证明无 cookies 路径稳定成功时，才能讨论局部关闭 cookies。
 - YouTube 的 `yt-dlp` 同步 / 下载可显式使用 `YTDLP_PROXY`；这只影响 YouTube 访问出口，不代表 ASR / LLM / Embedding / 头像抓取也走代理。
-- YouTube cookies 只用于确实需要登录权限的内容，例如私有、会员、年龄限制或账号可见内容。
-- 普通公开频道同步不要消耗账号登录态，避免把账号 cookies 暴露在高频定时任务里。
+- 不要从“cookies 会被轮换 / 会增加账号风险”推导出“cookies 不需要”。正确结论是：降低同步频率、降低并发、保持导出 cookies 的浏览器环境干净，并增加 PO Token Provider / impersonation，而不是盲目切到无 cookies。
+- `video.download.youtube` 默认使用 `YTDLP_COOKIES_YOUTUBE`，并通过 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 启用浏览器 impersonation；当前实测这是比单纯重启代理更接近浏览器成功路径的组合。
 - 当同步任务持续触发 bot check 或 cookies 失效时，优先降低请求波峰，而不是反复更换 cookies。
+
+## 2026-05-18 排障复盘
+
+本次排障中曾错误判断“YouTube 采集应默认不用 cookies”。这是一个严重错误，原因不是结论保守程度不够，而是推理链断了：
+
+- 把外部 issue / 官方说明里的“cookies 可能失效、可能被账号风控”误读成“cookies 对公开内容不是必要条件”。前者只是风险提示，不能推出后者。
+- 混淆了频道列表同步、播放页解析和实际媒体下载。不同 yt-dlp extractor / player client 会走不同路径；浏览器能打开、频道页能列出、媒体流能下载不是同一个事实。
+- 忽略了本项目当前实测证据：无 cookies 下载时 `android_vr`、`web_safari`、`mweb` player response 均为 `LOGIN_REQUIRED`。这已经足以否定“无 cookies 可作为默认下载路径”。
+- 把“减少账号登录态消耗”当成实现方向，而没有先证明当前代码是否真的无 cookies 成功。风险治理建议不能替代最小实测。
+- 没有及时检查任务持久化参数。旧逻辑在 `HTTP Error 403: Forbidden` 后写入 `_download_without_cookies=true`，导致更新 cookies、重启进程组后，历史任务仍继续无 cookies 下载并触发 bot check。
+- 没有先区分认证态、连接态、并发态和风控态。`403` 可能来自出口 IP、PO Token、下载频率、播放器客户端、cookies 使用环境等，不能直接用“去掉 cookies”作为兜底。
+
+以后处理 YouTube cookies / bot check / 403 时，必须遵守下面的硬规则：
+
+1. 任何改变“是否使用 cookies”的方案都属于认证态行为变更，必须先有当前代码日志、yt-dlp verbose 输出、最小实测或官方文档依据。
+2. 最小实测必须在相同 `YTDLP_PROXY`、相同 yt-dlp 版本、相同 URL 类型下分别验证“带 cookies”和“无 cookies”，并记录底层 player status 或 yt-dlp 原始错误。
+3. 不能把无 cookies 作为 403 的自动重试策略。403 只能进入可观测失败、降频、代理 / PO Token / impersonation 排查，不能悄悄改变认证态。
+4. 排障时先查 `job.params` 是否有历史 `_download_without_cookies`，再判断 cookies 是否真的失效。更新 cookies 不会自动覆盖历史任务参数。
+5. 看到“浏览器可访问 YouTube”时，必须同时说明浏览器是否登录、是否使用同一代理出口、是否有浏览器 TLS 指纹和站点数据；浏览器成功不能直接证明 yt-dlp 无 cookies 成功。
+6. 文档和代码中禁止再出现“公开 YouTube 采集默认不用 cookies”这类无实测支撑的全局规则。若未来要降低 cookies 使用范围，只能按任务类型和媒体源做灰度验证。
 
 ## 同步频率
 
@@ -36,39 +56,69 @@ YouTube 的 `yt-dlp` 同步 / 下载请求可显式使用 `YTDLP_PROXY`，同步
 
 如果确实需要 YouTube cookies，推荐按 yt-dlp 官方 wiki 的方式导出：
 
-1. 打开新的隐身 / 私密浏览窗口。
-2. 登录 YouTube。
-3. 在同一个窗口、同一个标签打开 `https://www.youtube.com/robots.txt`。
-4. 导出 `youtube.com` 的 Netscape 格式 cookies。
-5. 关闭该隐身窗口，避免浏览器继续使用并轮换这组 session。
+1. 如果刚更新 cookies 后仍立刻触发 `confirm you're not a bot` / “确认你不是聊天机器人”，先清空浏览器里的 YouTube / Google 相关站点数据，再重新访问 YouTube；不要在原会话里直接重复导出。
+2. 打开新的隐身 / 私密浏览窗口。
+3. 登录 YouTube。
+4. 在同一个窗口、同一个标签打开 `https://www.youtube.com/robots.txt`。
+5. 导出 `youtube.com` 的 Netscape 格式 cookies。
+6. 关闭该隐身窗口，避免浏览器继续使用并轮换这组 session。
 
 不要把普通长期打开的浏览器会话作为稳定 cookies 来源。YouTube 会在打开的浏览器标签里频繁轮换账号 cookies，导出的 cookies 很容易很快失效。
 
 ## 失败处理
 
-遇到 `YTDLP_COOKIES_YOUTUBE 已失效`、`Sign in to confirm you are not a bot`、`[youtube:tab] ... Playlists that require authentication ... without a successful webpage download` 或类似鉴权检查失败时，系统会把 YouTube provider 暂停，避免 `scheduler` 因 `last_video_sync_at` 未推进而每分钟反复投递同一个失败同步任务。
+遇到 `YTDLP_COOKIES_YOUTUBE 已失效`、`Sign in to confirm you are not a bot`、`请登录，以便我们确认你不是聊天机器人`、`[youtube:tab] ... Playlists that require authentication ... without a successful webpage download` 或类似鉴权检查失败时，系统会把 YouTube provider 暂停，避免 `scheduler` 因 `last_video_sync_at` 未推进而每分钟反复投递同一个失败同步 / 下载任务。
+
+如果单个下载任务因历史 retry 参数走无 cookies 下载，仍触发 YouTube bot check，则系统按“出口 IP / PO Token / 访问频率风控”暂停 YouTube provider，不再提示更新 `YTDLP_COOKIES_YOUTUBE`。手动重试失败任务时会清除该历史 retry 参数，恢复使用 cookies。
 
 遇到 YouTube 频道页 / 视频页返回 `HTTP Error 404` 且 yt-dlp 明确报 `Requested entity was not found` 或 `Unable to download API page` 时，系统按“单个媒体源不可用”处理：自动关闭该媒体的 `monitor_enabled`，并在媒体列表展示“来源不可用”标签；不会暂停整个 YouTube provider。
 
 排障时按下面顺序处理：
 
-1. 确认公开频道同步是否可以不使用 YouTube cookies。
-2. 确认 `SYNC_BATCH_SIZE` 是否足够低；当前推荐 `2`，必要时可临时降到 `1`。
-3. 检查 cookies 是否按隐身窗口 + `robots.txt` 方式导出。
-4. 确认当前出口 IP 是否已经被 YouTube 风控；必要时更换网络或代理。
-5. 若未登录态和正确导出的 cookies 都不稳定，再评估 PO Token Provider。
+1. 先看原始 yt-dlp 错误和 player status；如果出现 `LOGIN_REQUIRED`，不要切无 cookies。
+2. 检查失败任务的 `job.params` 是否带历史 `_download_without_cookies`，必要时清理后再重试。
+3. 确认 `SYNC_BATCH_SIZE` 是否足够低；当前推荐 `2`，必要时可临时降到 `1`。
+4. 若新 cookies 保存后几秒内再次触发 bot check，先清空浏览器站点数据，再重新访问 YouTube、登录并导出 cookies。
+5. 确认当前出口 IP 是否已经被 YouTube 风控；必要时更换网络或代理。
+6. 确认 bgutil PO Token Provider 和 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 是否生效。
 
 ## PO Token Provider
 
 yt-dlp 官方 PO Token Guide 当前推荐用 PO Token Provider plugin，尤其是在 YouTube 持续要求 PO Token / SABR 的场景。`bgutil-ytdlp-pot-provider` 是官方 wiki 提到的 provider 之一。
 
-对本项目这类长期运行服务，优先评估 HTTP server 模式，而不是每次调用 yt-dlp 时拉起一次脚本。HTTP server 模式更适合持续同步任务，也更容易统一观测和重启。
+本项目只接入 bgutil HTTP server 模式，不使用每次调用 yt-dlp 都拉起脚本的模式。HTTP server 模式更适合持续同步 / 下载任务，也更容易统一观测和重启。
+
+启用方式：
+
+1. 运行 bgutil HTTP server，默认端口 `4416`。
+2. 本机运行配置 `YTDLP_POT_BGUTIL_BASE_URL=http://127.0.0.1:4416`；Docker Compose 的 app 容器内配置 `http://host.docker.internal:4416`。
+3. 重启 `download_youtube` / `sync` worker。
+4. 用 `yt-dlp -v <YouTube URL>` 验证输出中出现 `[youtube] [pot] PO Token Providers: bgutil:http...`。
+
+如果 `YTDLP_PROXY` 指向宿主机本地代理，例如 `socks5://127.0.0.1:8887`，bgutil Docker 容器必须使用 host 网络或其他可达的宿主机代理地址。否则 bgutil 会在容器内部访问自己的 `127.0.0.1:8887`，日志中出现 `ECONNREFUSED 127.0.0.1:8887`。
+
+如果 shell / systemd 环境还设置了 `HTTP_PROXY` / `HTTPS_PROXY`，需要让 `NO_PROXY` / `no_proxy` 包含 `127.0.0.1,localhost,::1,host.docker.internal`。否则本机 `http://127.0.0.1:4416/ping` 可能被环境代理劫持，显示假性的 `502 Bad Gateway`；加上 `NO_PROXY` 后应返回 bgutil 的 JSON 版本信息。
+
+注意：PO Token Provider 不能保证绕过所有 bot check。若 cookies、出口 IP 或账号本身已被 YouTube 风控，仍可能失败；但它是 cookies 很快失效后的下一层必要方案。
+
+## 浏览器 Impersonation
+
+yt-dlp 官方 README 把 `curl_cffi` 列为推荐的浏览器 impersonation 支持库，可用于需要浏览器 TLS 指纹的站点。项目依赖固定 `curl_cffi>=0.14,<0.15`，因为当前 `yt-dlp 2026.03.17` 明确不支持 `curl_cffi 0.15.x`。
+
+当前默认：
+
+- `YTDLP_YOUTUBE_IMPERSONATE=chrome`
+- 空值表示不启用 impersonation。
+- 该设置只注入 YouTube 的 `yt-dlp` 同步 / 下载请求，不改变 B 站、ASR、LLM、Embedding、资料抓取或头像缓存请求。
 
 ## 本项目当前状态
 
 - 本地 `yt-dlp` 版本曾观测为 `2026.03.17`；不是特别旧，但 yt-dlp master / nightly 在 2026-04 仍有新构建。
 - 当前配置已有 `YTDLP_REMOTE_COMPONENTS=ejs:github`，用于 YouTube EJS / JS challenge 组件。
-- 当前未内置 PO Token Provider 配置。
+- 当前支持通过 `YTDLP_POT_BGUTIL_BASE_URL` 启用 bgutil PO Token Provider HTTP server。
+- 当前 YouTube 同步 / 下载固定注入已保存的 YouTube cookies；不再提供全局无 cookies 下载开关。
+- 历史 `_download_without_cookies` 任务参数只作为兼容清理对象存在，不允许作为新的自动重试策略。
+- 当前 YouTube `yt-dlp` 调用默认启用 `YTDLP_YOUTUBE_IMPERSONATE=chrome`。
 - 已将 `SYNC_BATCH_SIZE` 推荐值降为 `2`，减少同步任务波峰。
 
 ## 参考来源

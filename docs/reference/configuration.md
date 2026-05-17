@@ -51,6 +51,7 @@
 - 非 `yt-dlp` 的资料抓取 / 头像缓存、B 站请求、ASR / LLM / Embedding / 健康检查都不使用 `YTDLP_PROXY`。
 - 应用默认不隐式读取进程环境中的 `HTTP_PROXY` / `HTTPS_PROXY`；这些变量存在于 shell 或 systemd 环境里，不代表本应用会把外部请求送进代理。
 - 若 YouTube 同步/下载需要代理，必须配置 `YTDLP_PROXY`，不要依赖 `HTTP_PROXY` / `HTTPS_PROXY` 的副作用。
+- 若运行环境本身设置了 `HTTP_PROXY` / `HTTPS_PROXY`，需要让 `NO_PROXY` / `no_proxy` 包含 `127.0.0.1`、`localhost`、`::1` 和 `host.docker.internal`，避免 bgutil provider、MinIO 等本机服务被环境代理劫持。
 
 ### 工具与下载
 
@@ -61,8 +62,18 @@
 - `AUDIO_CHANNELS`
 - `YTDLP_PROXY`
   - 仅 YouTube 的 `yt-dlp` 同步 / 下载请求会显式使用该代理；完整边界见上方“高优先级代理规则”。
+- `NO_PROXY` / `no_proxy`
+  - 推荐包含 `127.0.0.1,localhost,::1,host.docker.internal`。
+  - `scripts/dev/load-env.sh` 和 Docker entrypoint 会自动补齐这些本机地址。
 - `YTDLP_REMOTE_COMPONENTS`
   - 默认 `ejs:github`
+  - 只用于 YouTube EJS / JS challenge 组件，不等同于 PO Token Provider。
+- `YTDLP_POT_BGUTIL_BASE_URL`
+  - 可选；bgutil PO Token Provider HTTP server 地址。空值表示不启用。
+  - 本机运行常用 `http://127.0.0.1:4416`；Docker Compose 的 app 容器内使用 `http://host.docker.internal:4416`。
+- `YTDLP_YOUTUBE_IMPERSONATE`
+  - 默认 `chrome`，仅用于 YouTube 的 `yt-dlp` 同步 / 下载请求。
+  - 依赖 `curl_cffi`；空值表示不启用浏览器 impersonation。
 - `YTDLP_FORMAT`
   - 作为默认格式选择器；若运行时配置 `ytdlp_format.text` 存在，会优先使用运行时配置。
 
