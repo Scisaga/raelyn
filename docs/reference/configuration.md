@@ -76,6 +76,7 @@
   - 依赖 `curl_cffi`；空值表示不启用浏览器 impersonation。
 - `YTDLP_FORMAT`
   - 作为默认格式选择器；若运行时配置 `ytdlp_format.text` 存在，会优先使用运行时配置。
+  - YouTube 下载默认优先 combined MP4/HLS，再回退 DASH video-only；这是为了避开 2026-05-18 实测中 Bloomberg 样本 360p+ DASH video-only GVS URL 返回 `HTTP Error 403` 的路径。
 
 ### 同步与并发
 
@@ -263,6 +264,8 @@ Embedding / 播放列表分析：
 说明：
 
 - 若存在此项，下载时优先于环境变量 `YTDLP_FORMAT`。
+- YouTube 自定义格式若优先选择 `bestvideo+bestaudio` 这类 DASH video-only 组合，可能重新触发媒体 URL `HTTP Error 403`。排障时优先尝试 `best[ext=mp4][height<=1080]` 或 `best[protocol^=m3u8][height<=1080]`。
+- 格式类型、selector 顺序和 403 排障步骤见 [yt-dlp 视频 / 音频格式选择策略](ytdlp-format-selection.md)。
 
 ### 转写润色提示词
 

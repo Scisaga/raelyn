@@ -41,6 +41,41 @@ class YtdlpCookiesInvalidError(RuntimeError):
 
 YTDLP_RETRY_WITHOUT_COOKIES_PARAM = "_download_without_cookies"
 
+_GENERIC_MP4_FORMAT = (
+    "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]"
+    "/best[ext=mp4][height<=1080]"
+    "/bestvideo[height<=1080]+bestaudio"
+    "/best[height<=1080]"
+    "/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
+    "/best[ext=mp4]"
+    "/best"
+)
+_YOUTUBE_HLS_FIRST_FORMAT = (
+    "best[ext=mp4][height<=1080]"
+    "/best[height<=1080]"
+    "/bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]"
+    "/bestvideo[height<=1080]+bestaudio"
+    "/best"
+)
+_GENERIC_MP4_720_FORMAT = (
+    "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
+    "/best[ext=mp4][height<=720]"
+    "/bestvideo[height<=720]+bestaudio"
+    "/best[height<=720]"
+    "/best"
+)
+_LEGACY_YOUTUBE_DASH_FIRST_FORMATS = {
+    _GENERIC_MP4_FORMAT,
+    _GENERIC_MP4_720_FORMAT,
+    (
+        "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]"
+        "/best[ext=mp4][height<=1080]"
+        "/bestvideo[height<=1080]+bestaudio"
+        "/best[height<=1080]"
+        "/best"
+    ),
+}
+
 
 class _YtdlpCaptureLogger:
     def __init__(self) -> None:
@@ -215,6 +250,83 @@ def _load_ytdlp_format_text() -> str:
     if not isinstance(text, str):
         return ""
     return text
+
+
+def _normalize_format_selector(text: str) -> str:
+    return "".join(str(text or "").split())
+
+
+def _is_legacy_youtube_dash_first_format(text: str) -> bool:
+    normalized = _normalize_format_selector(text)
+    return bool(normalized) and normalized in {_normalize_format_selector(item) for item in _LEGACY_YOUTUBE_DASH_FIRST_FORMATS}
+
+
+def _format_height_cap(format_selector: str) -> int:
+    values = [int(item) for item in re.findall(r"height\s*<=\s*(\d+)", str(format_selector or ""))]
+    return max(values) if values else 1080
+
+
+def _build_youtube_hls_first_format(height_cap: int) -> str:
+    cap = max(1, int(height_cap or 1080))
+    return (
+        f"best[ext=mp4][height<={cap}]"
+        f"/best[height<={cap}]"
+        f"/bestvideo[ext=mp4][height<={cap}]+bestaudio[ext=m4a]"
+        f"/bestvideo[height<={cap}]+bestaudio"
+        "/best"
+    )
+
+
+def _build_dash_mp4_format(height_cap: int) -> str:
+    cap = max(1, int(height_cap or 1080))
+    return (
+        f"bestvideo[ext=mp4][height<={cap}]+bestaudio[ext=m4a]"
+        f"/best[ext=mp4][height<={cap}]"
+        f"/bestvideo[height<={cap}]+bestaudio"
+        f"/best[height<={cap}]"
+        "/best"
+    )
+
+
+def _format_merge_output(format_selector: str) -> str | None:
+    lower = str(format_selector or "").lower()
+    if "ext=mp4" in lower or "[mp4" in lower or "m4a" in lower:
+        return "mp4"
+    return None
+
+
+def _download_format_attempts(*, cookie_provider: str | None, configured_format: str) -> list[tuple[str, str, str | None]]:
+    provider = normalize_cookie_provider(cookie_provider)
+    configured = str(configured_format or "").strip()
+    attempts: list[tuple[str, str, str | None]] = []
+    seen: set[str] = set()
+
+    def add(label: str, selector: str, merge: str | None = None) -> None:
+        normalized = _normalize_format_selector(selector)
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        attempts.append((label, selector, merge))
+
+    if provider == "youtube":
+        height_cap = _format_height_cap(configured)
+        youtube_hls_first_format = _build_youtube_hls_first_format(height_cap)
+        youtube_dash_format = _build_dash_mp4_format(height_cap)
+        if not configured or _is_legacy_youtube_dash_first_format(configured):
+            add("youtube_hls_mp4", youtube_hls_first_format, "mp4")
+        else:
+            add("user", configured, _format_merge_output(configured))
+            add("youtube_hls_mp4", youtube_hls_first_format, "mp4")
+        add("youtube_dash_mp4", youtube_dash_format, "mp4")
+    elif configured:
+        add("user", configured, _format_merge_output(configured))
+        add("prefer_mp4", _GENERIC_MP4_FORMAT, "mp4")
+    else:
+        add("prefer_mp4", _GENERIC_MP4_FORMAT, "mp4")
+
+    add("fallback_best", "bv*+ba/b", None)
+    add("fallback_plain_best", "b", None)
+    return attempts
 
 
 def _load_ytdlp_subtitles_enabled() -> bool:
@@ -397,6 +509,11 @@ def _is_bilibili_precondition_failed_error(err: Exception) -> bool:
 def _is_requested_format_unavailable(err: Exception) -> bool:
     msg = str(err or "").lower()
     return "requested format is not available" in msg or "requested format not available" in msg
+
+
+def _is_http_403_forbidden_error(err: Exception) -> bool:
+    msg = _normalize_msg(str(err or ""))
+    return "http error 403" in msg and "forbidden" in msg
 
 
 def _youtube_bot_check_hint() -> str:
@@ -659,30 +776,14 @@ def ytdlp_download(
     if progress_hook:
         base_opts["progress_hooks"] = [progress_hook]
 
-    default_prefer_mp4 = (
-        "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]"
-        "/best[ext=mp4][height<=1080]"
-        "/bestvideo[height<=1080]+bestaudio"
-        "/best[height<=1080]"
-        "/best"
-    )
     persisted_format = (_load_ytdlp_format_text() or "").strip()
     user_format = persisted_format or (settings.ytdlp_format or "").strip()
 
     # Retry strategy:
-    # - First, use user selector (if provided) else prefer-mp4 selector.
-    # - If yt-dlp says the requested format is not available, retry with a more permissive selector.
-    #   This avoids failing entire downloads due to overly strict format constraints.
-    format_attempts: list[tuple[str, str, str | None]] = []
-    if user_format:
-        user_force_mp4 = ("ext=mp4" in user_format.lower()) or ("[mp4" in user_format.lower()) or ("m4a" in user_format.lower())
-        format_attempts.append(("user", user_format, "mp4" if user_force_mp4 else None))
-        if user_format != default_prefer_mp4:
-            format_attempts.append(("prefer_mp4", default_prefer_mp4, "mp4"))
-    else:
-        format_attempts.append(("prefer_mp4", default_prefer_mp4, "mp4"))
-    format_attempts.append(("fallback_best", "bv*+ba/b", None))
-    format_attempts.append(("fallback_plain_best", "b", None))
+    # - YouTube prefers combined/HLS MP4 first. On 2026-05-18, several Bloomberg videos returned
+    #   HTTP 403 for 360p+ DASH video-only GVS URLs while HLS format 96 downloaded successfully.
+    # - If a selector is unavailable, or a YouTube selector hits media-url 403, retry with the next selector.
+    format_attempts = _download_format_attempts(cookie_provider=cookie_provider, configured_format=user_format)
 
     last_error: Exception | None = None
     tried_progressive_mp4 = False
@@ -731,10 +832,14 @@ def ytdlp_download(
                 # Add a small buffer so we don't retry too early around the start time.
                 raise JobReschedule(delay_seconds=delay + 120, reason="upcoming livestream") from e
 
-            if _is_requested_format_unavailable(e) and idx < len(format_attempts):
+            retryable_format_failure = _is_requested_format_unavailable(e) or (
+                cookie_provider == "youtube" and _is_http_403_forbidden_error(e)
+            )
+            if retryable_format_failure and idx < len(format_attempts):
                 next_label, next_fmt, _next_merge = format_attempts[idx]
+                reason = "HTTP 403" if _is_http_403_forbidden_error(e) else "requested format not available"
                 print(
-                    f"[ytdlp] requested format not available for {label}: {fmt!r}; retrying with {next_label}: {next_fmt!r}",
+                    f"[ytdlp] {reason} for {label}: {fmt!r}; retrying with {next_label}: {next_fmt!r}",
                     flush=True,
                 )
                 continue

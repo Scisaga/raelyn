@@ -12,7 +12,15 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn.config import settings
-from raelyn.services.ytdlp import _apply_common_ytdlp_opts
+from raelyn.services.ytdlp import (
+    _GENERIC_MP4_FORMAT,
+    _GENERIC_MP4_720_FORMAT,
+    _YOUTUBE_HLS_FIRST_FORMAT,
+    _apply_common_ytdlp_opts,
+    _build_dash_mp4_format,
+    _download_format_attempts,
+    _is_http_403_forbidden_error,
+)
 
 
 class YtdlpProxyTests(unittest.TestCase):
@@ -164,6 +172,45 @@ class YtdlpProxyTests(unittest.TestCase):
             self.assertEqual(YoutubeDL({"proxy": opts["proxy"]}).proxies, {"all": "__noproxy__"})
         finally:
             settings.ytdlp_proxy = original
+
+    def test_youtube_legacy_dash_first_format_prefers_hls_mp4(self) -> None:
+        attempts = _download_format_attempts(cookie_provider="youtube", configured_format=_GENERIC_MP4_FORMAT)
+
+        self.assertEqual(attempts[0], ("youtube_hls_mp4", _YOUTUBE_HLS_FIRST_FORMAT, "mp4"))
+        self.assertIn(("youtube_dash_mp4", _build_dash_mp4_format(1080), "mp4"), attempts)
+
+    def test_youtube_legacy_720_format_keeps_height_cap_for_hls_fallback(self) -> None:
+        attempts = _download_format_attempts(cookie_provider="youtube", configured_format=_GENERIC_MP4_720_FORMAT)
+
+        self.assertEqual(
+            attempts[0],
+            (
+                "youtube_hls_mp4",
+                (
+                    "best[ext=mp4][height<=720]/best[height<=720]"
+                    "/bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]"
+                    "/bestvideo[height<=720]+bestaudio/best"
+                ),
+                "mp4",
+            ),
+        )
+        self.assertIn(("youtube_dash_mp4", _build_dash_mp4_format(720), "mp4"), attempts)
+
+    def test_youtube_custom_format_keeps_user_first_and_adds_hls_fallback(self) -> None:
+        attempts = _download_format_attempts(cookie_provider="youtube", configured_format="137+140")
+
+        self.assertEqual(attempts[0], ("user", "137+140", None))
+        self.assertEqual(attempts[1], ("youtube_hls_mp4", _YOUTUBE_HLS_FIRST_FORMAT, "mp4"))
+
+    def test_bilibili_keeps_configured_format_first(self) -> None:
+        attempts = _download_format_attempts(cookie_provider="bilibili", configured_format="137+140")
+
+        self.assertEqual(attempts[0], ("user", "137+140", None))
+        self.assertNotIn(("youtube_hls_mp4", _YOUTUBE_HLS_FIRST_FORMAT, "mp4"), attempts)
+
+    def test_detect_http_403_forbidden_format_failure(self) -> None:
+        self.assertTrue(_is_http_403_forbidden_error(RuntimeError("ERROR: unable to download video data: HTTP Error 403: Forbidden")))
+        self.assertFalse(_is_http_403_forbidden_error(RuntimeError("HTTP Error 404: Not Found")))
 
 
 if __name__ == "__main__":

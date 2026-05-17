@@ -32,6 +32,7 @@
 - [运行与部署](reference/run-and-deploy.md)
 - [配置项说明](reference/configuration.md)
 - [YouTube yt-dlp 同步与 Cookies 策略](reference/youtube-ytdlp-strategy.md)
+- [yt-dlp 视频 / 音频格式选择策略](reference/ytdlp-format-selection.md)
 
 ## 未来约定
 

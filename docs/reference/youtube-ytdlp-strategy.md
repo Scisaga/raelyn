@@ -1,6 +1,6 @@
 # YouTube yt-dlp 同步与 Cookies 策略
 
-本文记录 YouTube `yt-dlp` 同步失败、cookies 失效、bot check 和 PO Token 相关的当前判断。它面向运行排障和配置决策，不替代 yt-dlp 官方文档。
+本文记录 YouTube `yt-dlp` 同步失败、cookies 失效、bot check 和 PO Token 相关的当前判断。它面向运行排障和配置决策，不替代 yt-dlp 官方文档。媒体 URL 下载阶段的 format 选择详见 [yt-dlp 视频 / 音频格式选择策略](ytdlp-format-selection.md)。
 
 ## 当前结论
 
@@ -71,6 +71,15 @@ YouTube 的 `yt-dlp` 同步 / 下载请求可显式使用 `YTDLP_PROXY`，同步
 
 如果单个下载任务因历史 retry 参数走无 cookies 下载，仍触发 YouTube bot check，则系统按“出口 IP / PO Token / 访问频率风控”暂停 YouTube provider，不再提示更新 `YTDLP_COOKIES_YOUTUBE`。手动重试失败任务时会清除该历史 retry 参数，恢复使用 cookies。
 
+2026-05-18 对 Bloomberg Television 失败样本的实测结论：
+
+- `yt-dlp` 能找到 YouTube cookies，`node` JS challenge 成功，`bgutil:http` 能生成 `gvs PO Token`。
+- 403 发生在实际媒体 URL 下载阶段，不是 cookies 格式错误，也不是整体登录态不可用。
+- 同一视频中，音频 format `140` 可返回 `206`，低清视频 format `133/394/395` 可返回 `206`，但 360p 及以上的 DASH video-only GVS URL 返回 `403`。
+- HLS / combined MP4 路径可用：format `96`、`95`、`best[protocol^=m3u8][height<=1080]`、`best[ext=mp4][height<=1080]` 均通过测试下载。
+- 因此 YouTube 下载默认应优先选择 combined MP4/HLS，再回退 DASH video-only；遇到 YouTube 媒体 URL 403 时，可以在同一个任务内切换到下一个格式 selector，不能切换认证态或改成无 cookies。
+- 详细的格式类型、验证方法和 selector 建议见 [yt-dlp 视频 / 音频格式选择策略](ytdlp-format-selection.md)。
+
 遇到 YouTube 频道页 / 视频页返回 `HTTP Error 404` 且 yt-dlp 明确报 `Requested entity was not found` 或 `Unable to download API page` 时，系统按“单个媒体源不可用”处理：自动关闭该媒体的 `monitor_enabled`，并在媒体列表展示“来源不可用”标签；不会暂停整个 YouTube provider。
 
 排障时按下面顺序处理：
@@ -81,6 +90,7 @@ YouTube 的 `yt-dlp` 同步 / 下载请求可显式使用 `YTDLP_PROXY`，同步
 4. 若新 cookies 保存后几秒内再次触发 bot check，先清空浏览器站点数据，再重新访问 YouTube、登录并导出 cookies。
 5. 确认当前出口 IP 是否已经被 YouTube 风控；必要时更换网络或代理。
 6. 确认 bgutil PO Token Provider 和 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 是否生效。
+7. 如果错误是 `ERROR: unable to download video data: HTTP Error 403: Forbidden`，先验证当前 selector 是否选中了 DASH video-only；优先改为 `best[ext=mp4][height<=1080]` 或 `best[protocol^=m3u8][height<=1080]` 路径，而不是更换 cookies。
 
 ## PO Token Provider
 
@@ -119,6 +129,7 @@ yt-dlp 官方 README 把 `curl_cffi` 列为推荐的浏览器 impersonation 支�
 - 当前 YouTube 同步 / 下载固定注入已保存的 YouTube cookies；不再提供全局无 cookies 下载开关。
 - 历史 `_download_without_cookies` 任务参数只作为兼容清理对象存在，不允许作为新的自动重试策略。
 - 当前 YouTube `yt-dlp` 调用默认启用 `YTDLP_YOUTUBE_IMPERSONATE=chrome`。
+- 当前 YouTube 下载格式优先 combined MP4/HLS，避免优先命中已实测 403 的 360p+ DASH video-only GVS URL。
 - 已将 `SYNC_BATCH_SIZE` 推荐值降为 `2`，减少同步任务波峰。
 
 ## 参考来源

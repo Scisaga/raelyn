@@ -172,6 +172,8 @@ B 站常见 352 风控、年龄验证、会员或私有内容等登录态相关�
 
 YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“公开采集默认不用 cookies”。当前 YouTube 同步 / 下载都会使用已保存的 `YTDLP_COOKIES_YOUTUBE`；是否局部关闭 cookies 必须经过相同 yt-dlp 版本、相同代理出口、相同目标类型的最小实测。完整判断与排障步骤见 [YouTube yt-dlp 同步与 Cookies 策略](youtube-ytdlp-strategy.md)。
 当前实测的下载路径在无 cookies 时会直接触发 `LOGIN_REQUIRED`，因此 YouTube 下载任务固定使用已保存的 `YTDLP_COOKIES_YOUTUBE`，并通过 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 尽量贴近浏览器请求形态。
+若失败信息是 `ERROR: unable to download video data: HTTP Error 403: Forbidden`，先检查格式选择器是否优先选中了 YouTube DASH video-only。2026-05-18 实测中，Bloomberg 样本的 360p+ DASH video-only URL 返回 403，但 HLS / combined MP4 format `96` 可下载；默认配置已改为优先 combined MP4/HLS。
+格式选择与验证步骤见 [yt-dlp 视频 / 音频格式选择策略](ytdlp-format-selection.md)。
 
 1. 在浏览器里登录对应平台（YouTube / bilibili，建议用单独账号）
 2. 如果 YouTube 刚更新 cookies 后仍立刻触发“确认你不是聊天机器人”，先清空浏览器里的 YouTube / Google 相关站点数据，再重新访问 YouTube 登录并导出；不要在原会话里直接重复导出。

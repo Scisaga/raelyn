@@ -49,13 +49,13 @@ class Settings(BaseSettings):
     # YouTube 请求默认启用浏览器 TLS 指纹模拟；空值表示不启用。
     ytdlp_youtube_impersonate: str = Field(default="chrome", validation_alias=AliasChoices("YTDLP_YOUTUBE_IMPERSONATE"))
     # yt-dlp format selector for downloads (see: https://github.com/yt-dlp/yt-dlp#format-selection)
-    # Default: cap at 1080p, prefer MP4+M4A, then fall back to best available.
+    # Default: cap at 1080p, prefer combined MP4/HLS before DASH video-only formats.
     ytdlp_format: str = Field(
         default=(
-            "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]"
-            "/best[ext=mp4][height<=1080]"
-            "/bestvideo[height<=1080]+bestaudio"
+            "best[ext=mp4][height<=1080]"
             "/best[height<=1080]"
+            "/bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]"
+            "/bestvideo[height<=1080]+bestaudio"
             "/bestvideo[ext=mp4]+bestaudio[ext=m4a]"
             "/best[ext=mp4]"
             "/best"
