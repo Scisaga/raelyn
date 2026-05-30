@@ -257,6 +257,99 @@ def _create_job_query_indexes(conn) -> None:
             pass
 
 
+_LEGACY_ANALYSIS_JOB_TYPES = (
+    "video.embed_transcript",
+    "playlist.backfill_embeddings",
+    "playlist.build_analysis_snapshot",
+)
+_LEGACY_ANALYSIS_TABLES = (
+    "playlist_analysis_signal",
+    "playlist_analysis_period",
+    "playlist_analysis_candidate",
+    "playlist_analysis_state",
+    "playlist_analysis_run",
+    "video_embedding",
+)
+
+
+def _cancel_and_drop_legacy_analysis(conn) -> None:
+    if "job" in set(inspect(conn).get_table_names()):
+        placeholders = ", ".join([f":t{i}" for i in range(len(_LEGACY_ANALYSIS_JOB_TYPES))])
+        params = {f"t{i}": value for i, value in enumerate(_LEGACY_ANALYSIS_JOB_TYPES)}
+        try:
+            rows = conn.execute(
+                text(
+                    f"""
+select id
+from job
+where type in ({placeholders})
+  and status in ('pending', 'running')
+"""
+                ),
+                params,
+            ).mappings().all()
+            conn.execute(
+                text(
+                    f"""
+update job
+set status = 'canceled',
+    error_message = 'legacy transcript embedding / playlist analysis chain removed',
+    finished_at = coalesce(finished_at, CURRENT_TIMESTAMP),
+    lease_expires_at = null,
+    worker_id = null
+where type in ({placeholders})
+  and status in ('pending', 'running')
+"""
+                ),
+                params,
+            )
+            for row in rows:
+                data_expr = "cast(:data as jsonb)" if conn.dialect.name == "postgresql" else ":data"
+                conn.execute(
+                    text(
+                        f"""
+insert into job_event (job_id, ts, level, message, data)
+values (:job_id, CURRENT_TIMESTAMP, 'warning', 'legacy analysis job canceled by event-regime migration', {data_expr})
+"""
+                    ),
+                    {"job_id": row["id"], "data": json.dumps({"reason": "legacy_analysis_removed"})},
+                )
+        except Exception:
+            pass
+
+    for table_name in _LEGACY_ANALYSIS_TABLES:
+        suffix = " cascade" if conn.dialect.name == "postgresql" else ""
+        try:
+            conn.execute(text(f"drop table if exists {table_name}{suffix}"))
+        except Exception:
+            pass
+
+
+def _create_event_analysis_indexes(conn) -> None:
+    statements = [
+        "create index if not exists market_event_source_video_idx on market_event(source_video_id)",
+        "create index if not exists market_event_status_time_idx on market_event(status, event_time_start)",
+        "create index if not exists market_event_type_time_idx on market_event(event_type, event_time_start)",
+        "create index if not exists market_event_available_at_idx on market_event(available_at)",
+        "create index if not exists market_event_evidence_event_idx on market_event_evidence(event_id)",
+        "create index if not exists market_event_evidence_video_idx on market_event_evidence(video_id)",
+        "create index if not exists market_event_entity_event_idx on market_event_entity(event_id)",
+        "create index if not exists market_event_entity_key_idx on market_event_entity(entity_type, normalized_key)",
+        "create index if not exists market_event_relation_event_idx on market_event_relation(event_id)",
+        "create index if not exists market_event_embedding_event_idx on market_event_embedding(event_id)",
+        "create index if not exists market_event_embedding_status_idx on market_event_embedding(status, embedding_model, embedding_dim)",
+        "create index if not exists event_regime_run_playlist_status_idx on event_regime_run(playlist_id, status)",
+        "create index if not exists event_regime_signal_run_granularity_period_idx on event_regime_signal(regime_run_id, granularity, period_date)",
+        "create index if not exists event_regime_signal_linked_candidate_idx on event_regime_signal(linked_candidate_id)",
+        "create index if not exists event_regime_candidate_run_status_idx on event_regime_candidate(regime_run_id, status)",
+    ]
+    for statement in statements:
+        try:
+            conn.execute(text(statement))
+        except Exception:
+            pass
+
+
 def _migrate_schema(conn) -> None:
     """
     Copied from backend/raelyn/db.py::_migrate_schema to avoid importing raelyn.db (which binds to .env at import).
@@ -394,6 +487,11 @@ where job.type = 'video.download'
             # Best-effort: some dialects/versions may not support partial indexes.
             pass
         _create_job_query_indexes(conn)
+        _cancel_and_drop_legacy_analysis(conn)
+        tables = set(inspect(conn).get_table_names())
+
+    if "market_event" in tables:
+        _create_event_analysis_indexes(conn)
 
     # Query performance indexes (best-effort).
     if "video" in tables:

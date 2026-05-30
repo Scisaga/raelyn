@@ -25,6 +25,7 @@ from raelyn.services.brief_schedule import (
     brief_generation_policy_defaults,
     normalize_brief_generation_policy,
 )
+from raelyn.services.event_analysis import EVENT_EXTRACTION_PROMPT_CONFIG_KEY, event_extraction_prompt_defaults
 from raelyn.services.provider_pause import clear_provider_pauses
 from raelyn.services.transcript_polish_prompt import (
     TRANSCRIPT_POLISH_PROMPT_CONFIG_KEY,
@@ -52,6 +53,14 @@ def _validate_llm_transcript_polish_prompt_value(value: dict) -> None:
         raise HTTPException(status_code=400, detail="llm_transcript_polish_prompt.text must be a string.")
     if len(text.encode("utf-8")) > 64 * 1024:
         raise HTTPException(status_code=400, detail="llm_transcript_polish_prompt.text is too large (max 64KB).")
+
+
+def _validate_llm_event_extraction_prompt_value(value: dict) -> None:
+    text = value.get("text") if isinstance(value, dict) else None
+    if not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="llm_event_extraction_prompt.text must be a string.")
+    if len(text.encode("utf-8")) > 96 * 1024:
+        raise HTTPException(status_code=400, detail="llm_event_extraction_prompt.text is too large (max 96KB).")
 
 
 def _validate_brief_generation_policy_value(value: dict) -> None:
@@ -98,6 +107,7 @@ def get_config() -> dict:
 def get_config_defaults() -> dict:
     defaults = transcript_polish_prompt_defaults()
     defaults.update(brief_generation_policy_defaults())
+    defaults.update(event_extraction_prompt_defaults())
     return defaults
 
 
@@ -128,6 +138,8 @@ def put_config(key: str, payload: ConfigUpsert) -> dict:
                     )
         if key == TRANSCRIPT_POLISH_PROMPT_CONFIG_KEY:
             _validate_llm_transcript_polish_prompt_value(value)
+        if key == EVENT_EXTRACTION_PROMPT_CONFIG_KEY:
+            _validate_llm_event_extraction_prompt_value(value)
         if key == "brief_generation_policy":
             _validate_brief_generation_policy_value(value)
             value = normalize_brief_generation_policy(value)

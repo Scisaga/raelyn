@@ -53,7 +53,10 @@ class BriefPromptTests(unittest.TestCase):
         playback_sql = str(playback_stmt.compile(dialect=postgresql.dialect())).lower()
         self.assertIn("asset.type =", transcript_sql)
         self.assertIn("asset.format =", transcript_sql)
+        self.assertIn("video_time_evidence", transcript_sql)
+        self.assertIn("coalesce", transcript_sql)
         self.assertIn("asset.type =", playback_sql)
+        self.assertIn("video_time_evidence", playback_sql)
 
 
 if __name__ == "__main__":

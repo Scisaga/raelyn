@@ -58,6 +58,8 @@ def list_workers() -> dict[str, Any]:
     now = utcnow()
     stale_after_seconds = int(settings.worker_stale_after_seconds or 0) or 20
     stale_before = now - timedelta(seconds=stale_after_seconds)
+    execution_stale_after_seconds = int(settings.worker_execution_stale_after_seconds or 0) or stale_after_seconds
+    execution_stale_before = now - timedelta(seconds=execution_stale_after_seconds)
     # Keep a small window so recent restarts don't inflate totals for too long.
     # total = number of worker processes seen within this window (online + recently-offline).
     window_seconds = max(60, min(300, stale_after_seconds * 6))
@@ -94,13 +96,18 @@ def list_workers() -> dict[str, Any]:
             wid = str(getattr(hb, "worker_id", "") or "")
             role = normalize_worker_role(getattr(hb, "role", ""))
             updated_at = getattr(hb, "updated_at", None)
+            active_at = getattr(hb, "active_at", None)
             online = bool(updated_at and updated_at >= stale_before)
+            execution_online = bool(active_at and active_at >= execution_stale_before)
             parsed = _parse_worker_id(wid)
             payload = {
                 "worker_id": wid,
                 "role": role,
                 "updated_at": _iso(updated_at),
+                "active_at": _iso(active_at),
+                "current_job_id": str(getattr(hb, "current_job_id", "") or "") or None,
                 "online": online,
+                "execution_online": execution_online,
                 **parsed,
             }
             workers.append(payload)
@@ -131,6 +138,7 @@ def list_workers() -> dict[str, Any]:
         return {
             "now": _iso(now),
             "stale_after_seconds": stale_after_seconds,
+            "execution_stale_after_seconds": execution_stale_after_seconds,
             "window_seconds": window_seconds,
             "workers": workers,
             "roles": sorted(list(roles.values()), key=lambda x: str(x.get("role") or "")),

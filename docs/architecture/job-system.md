@@ -39,8 +39,13 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 
 - Worker 执行长任务时周期性刷新 `lease_expires_at`
 - 长任务若在业务函数内部有明显批处理检查点，可以通过进度更新同步刷新 `lease_expires_at`，使 DB 中的任务事实源持续反映真实运行状态；例如播放列表分析快照会在 embedding 批读取、离散度计算、事件检测和写库阶段更新进度。
+- `worker_heartbeat.updated_at` 是进程心跳，由心跳线程维护，只能证明 worker 进程和心跳线程仍在运行。
+- `worker_heartbeat.active_at` 是主执行线程活动心跳，由 worker 主循环、任务领取点和下载进度更新维护；下载类任务回收必须同时检查它，避免“心跳线程活着”掩盖主执行循环已经卡死。
+- `worker_heartbeat.current_job_id` 记录主执行线程最近声明的任务，用于排障时定位哪个任务导致执行心跳停止推进。
+- 下载类 worker 会在本进程内启动执行 watchdog；当 `current_job_id` 指向下载任务且 `active_at` 超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进时，worker 主动退出，让 supervisor 重启并释放 PostgreSQL session 级 advisory lock。
 - `scheduler` 或 `worker` 启动时可执行回收扫描：
   - `status=running AND lease_expires_at < now()` 视为失联，转回 `pending` 或标记为 `failed`
+  - 对下载类任务，如果进程心跳新鲜但执行心跳超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进，也视为主执行循环卡死并转回 `pending`
   - 回收动作应记录原因，便于后续排障
 
 ## Worker 角色暂停（Claim Gate）

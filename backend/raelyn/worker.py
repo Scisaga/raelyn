@@ -19,7 +19,8 @@ import raelyn.jobs.handlers  # noqa: F401  注册 handlers
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
 from raelyn.jobs.reschedule import JobReschedule, JobTerminalFailure
-from raelyn.models import Job, Video
+from raelyn.jobs.worker_activity import configure_worker_activity, touch_current_worker_activity, worker_job_activity
+from raelyn.models import Job, Video, WorkerHeartbeat
 from raelyn.services.job_cancellation import JobCancelRequested, finalize_canceled_job, job_cancel_requested
 from raelyn.services.log_timestamps import install_if_needed
 from raelyn.services.asr import inspect_asr_backend_defer
@@ -235,6 +236,62 @@ class _HeartbeatThread(threading.Thread):
                 pass
 
 
+def _download_execution_stale_reason(session, *, worker_id: str, stale_after_seconds: int) -> str | None:
+    hb = session.get(WorkerHeartbeat, worker_id)
+    if not hb or not hb.current_job_id or not hb.active_at:
+        return None
+
+    job = session.get(Job, hb.current_job_id)
+    if not job or str(getattr(job, "type", "") or "").strip() not in _DOWNLOAD_JOB_TYPES:
+        return None
+
+    age_seconds = int((utcnow() - hb.active_at).total_seconds())
+    threshold = max(1, int(stale_after_seconds or 0))
+    if age_seconds <= threshold:
+        return None
+
+    return (
+        "download execution heartbeat stale; "
+        f"worker_id={worker_id} job_id={hb.current_job_id} "
+        f"job_status={getattr(job, 'status', None)} "
+        f"age_seconds={age_seconds} stale_after_seconds={threshold}"
+    )
+
+
+class _ExecutionWatchdogThread(threading.Thread):
+    def __init__(self, *, worker_id: str, interval_seconds: int, stale_after_seconds: int) -> None:
+        super().__init__(daemon=True)
+        self._worker_id = worker_id
+        self._interval = max(1, int(interval_seconds or 0))
+        self._stale_after_seconds = max(1, int(stale_after_seconds or 0))
+        self._stop_event = threading.Event()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def run(self) -> None:
+        while not self._stop_event.wait(self._interval):
+            try:
+                with session_scope() as session:
+                    reason = _download_execution_stale_reason(
+                        session,
+                        worker_id=self._worker_id,
+                        stale_after_seconds=self._stale_after_seconds,
+                    )
+            except Exception:
+                continue
+
+            if reason:
+                print(f"[worker] {reason}; exiting for supervisor restart", flush=True)
+                os._exit(70)
+
+
+def _worker_may_run_downloads(type_in: list[str] | None) -> bool:
+    if type_in is None:
+        return True
+    return bool(set(type_in) & _DOWNLOAD_JOB_TYPES)
+
+
 def run_loop() -> None:
     init_db()
     s3_ensure_bucket()
@@ -250,10 +307,17 @@ def run_loop() -> None:
     # Ensure the heartbeat row exists before we claim any jobs, so peers won't
     # mis-classify us as stale during startup.
     with session_scope() as session:
-        touch_worker_heartbeat(session, worker_id=worker_id, role=role)
+        touch_worker_heartbeat(session, worker_id=worker_id, role=role, active=True, current_job_id=None)
+    configure_worker_activity(worker_id=worker_id, role=role)
 
     hb = _HeartbeatThread(worker_id=worker_id, interval_seconds=settings.worker_heartbeat_interval_seconds, role=role)
     hb.start()
+    if _worker_may_run_downloads(type_in):
+        _ExecutionWatchdogThread(
+            worker_id=worker_id,
+            interval_seconds=settings.worker_heartbeat_interval_seconds,
+            stale_after_seconds=settings.worker_execution_stale_after_seconds,
+        ).start()
 
     # On restart, promptly recover orphaned "running" jobs from dead workers.
     with session_scope() as session:
@@ -261,17 +325,21 @@ def run_loop() -> None:
         requeue_orphan_running_jobs(
             session,
             stale_after_seconds=settings.worker_stale_after_seconds,
+            execution_stale_after_seconds=settings.worker_execution_stale_after_seconds,
             priority_bump=settings.orphan_requeue_priority_bump,
         )
 
     while True:
+        touch_current_worker_activity()
         now = time.time()
         if now - last_reap > 15:
             with session_scope() as session:
+                touch_worker_heartbeat(session, worker_id=worker_id, role=role, active=True, current_job_id=None)
                 requeue_expired_running_jobs(session)
                 requeue_orphan_running_jobs(
                     session,
                     stale_after_seconds=settings.worker_stale_after_seconds,
+                    execution_stale_after_seconds=settings.worker_execution_stale_after_seconds,
                     priority_bump=settings.orphan_requeue_priority_bump,
                 )
             last_reap = now
@@ -289,6 +357,7 @@ def run_loop() -> None:
             if not job:
                 pass
             else:
+                touch_worker_heartbeat(session, worker_id=worker_id, role=role, active=True, current_job_id=job.id)
                 # Commit the claim immediately so the API can observe "running" jobs
                 # while long-running handlers (download/transcode) are executing.
                 session.flush()
@@ -313,8 +382,9 @@ def run_loop() -> None:
                 job_id = job.id
                 job_type = job.type
                 try:
-                    job_log(session, job, "running")
-                    result = handler(session, job)
+                    with worker_job_activity(worker_id=worker_id, role=role, job_id=job.id):
+                        job_log(session, job, "running")
+                        result = handler(session, job)
                     # If an operator canceled the job while it was running, do not overwrite status.
                     try:
                         session.refresh(job)

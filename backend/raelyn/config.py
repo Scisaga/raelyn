@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     sync_max_entries: int = 10
     auto_download_new_videos: bool = True
     stats_cache_ttl_seconds: int = Field(default=60, validation_alias=AliasChoices("STATS_CACHE_TTL_SECONDS"))
+    auto_generate_briefs: bool = Field(default=False, validation_alias=AliasChoices("AUTO_GENERATE_BRIEFS"))
 
     youtube_sync_concurrency: int = 1
     bilibili_sync_concurrency: int = 1
@@ -76,11 +77,13 @@ class Settings(BaseSettings):
     bilibili_download_concurrency: int = 2
 
     # --- Worker heartbeats / orphan running job recovery ---
-    # Worker writes a heartbeat row periodically so other workers can detect crashed peers.
+    # Worker 周期性写入进程心跳，用于发现进程崩溃或退出。
     worker_heartbeat_interval_seconds: int = 5
-    # Consider a worker dead if its heartbeat hasn't updated within this window.
+    # 超过该时间未更新进程心跳，则认为 worker 已失联。
     worker_stale_after_seconds: int = 20
-    # When requeuing orphaned "running" jobs, bump their priority to the head of the queue.
+    # 进程心跳仍新鲜、但主执行线程活动时间超过该阈值未推进时，认为执行循环卡死。
+    worker_execution_stale_after_seconds: int = 120
+    # 回收孤儿 running 任务时提升优先级，让它们回到队头。
     orphan_requeue_priority_bump: int = 1000
 
     # --- ASR (qwen3-asr / OpenAI-compatible servers) ---
@@ -116,19 +119,16 @@ class Settings(BaseSettings):
     llm_headers_json: str = ""
     llm_timeout_seconds: int = 600
 
-    # --- Embedding analysis (OpenAI-compatible embedding servers) ---
+    # --- Event extraction / event regime analysis ---
+    event_extraction_chunk_max_chars: int = Field(default=12000, validation_alias=AliasChoices("EVENT_EXTRACTION_CHUNK_MAX_CHARS"))
+    auto_extract_new_video_events: bool = Field(default=True, validation_alias=AliasChoices("AUTO_EXTRACT_NEW_VIDEO_EVENTS"))
+
+    # --- Event embeddings (OpenAI-compatible embedding servers) ---
     embedding_url: str = "http://10.6.0.10:12302"
     embedding_endpoint: str = "/v1/embeddings"
     embedding_model: str = "Qwen/Qwen3-Embedding-8B"
     embedding_dim: int = 1024
     embedding_timeout_seconds: int = 120
-    embedding_transcript_variant: str = "plain"
-    embedding_batch_size: int = 16
-    embedding_batch_max_size: int = 64
-    embedding_batch_max_chars: int = 60000
-    embedding_transcript_prefetch_workers: int = 4
-    embedding_backfill_http_inflight: int = 1
-    auto_embed_new_video_transcripts: bool = Field(default=False, validation_alias=AliasChoices("AUTO_EMBED_NEW_VIDEO_TRANSCRIPTS"))
     embedding_worker_concurrency: int = 1
     analysis_worker_concurrency: int = 1
     analysis_min_available_memory_bytes: int = 1024 * 1024 * 1024

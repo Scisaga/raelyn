@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,49 @@ from raelyn.services.transcript_polish_prompt import (
     render_transcript_polish_prompt,
 )
 from raelyn.services.workdir import job_workdir
+
+
+TRANSCRIPT_POLISH_CHUNK_MAX_CHARS = 1_500
+TRANSCRIPT_POLISH_RETRY_MIN_CHARS = 750
+_NUMBER_WORDS = (
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+    "thirty",
+    "forty",
+    "fifty",
+    "sixty",
+    "seventy",
+    "eighty",
+    "ninety",
+)
+_NUMBER_SCALE_WORDS = ("hundred", "thousand", "million", "billion", "trillion")
+_NUMBER_UNIT_WORDS = ("point", "percent", "percentage", "dollar", "dollars", "basis", "bp")
+_NUMBER_KEEP_WORDS = _NUMBER_WORDS + _NUMBER_SCALE_WORDS + _NUMBER_UNIT_WORDS + ("and", "a", "an")
+_NUMBER_EVIDENCE_RE = re.compile(
+    r"(?<![A-Za-z0-9_])[-+]?\d+(?:\.\d+)?(?:\s*(?:%|percent|percentage|bp|basis points?|points?|billion|million|trillion|dollars?|usd))?"
+    r"|"
+    r"\b(?:" + "|".join(_NUMBER_WORDS) + r")(?:[\s-]+(?:" + "|".join(_NUMBER_KEEP_WORDS) + r")){0,12}\b",
+    re.IGNORECASE,
+)
 
 
 @registry.register("video.polish_transcript")
@@ -118,6 +162,48 @@ def _sanitize_llm_plain_text(text: str) -> str:
     return value.strip().strip("\ufeff")
 
 
+def _number_placeholder(index: int) -> str:
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    value = max(0, int(index))
+    chars: list[str] = []
+    while True:
+        chars.append(alphabet[value % len(alphabet)])
+        value = value // len(alphabet) - 1
+        if value < 0:
+            break
+    return "__RAELYN_NUM_" + "".join(reversed(chars)) + "__"
+
+
+def _is_protected_number_phrase(value: str) -> bool:
+    words = [part.lower() for part in re.findall(r"[A-Za-z]+", value)]
+    if not words:
+        return True
+    has_unit = any(word in _NUMBER_SCALE_WORDS or word in _NUMBER_UNIT_WORDS for word in words)
+    number_word_count = sum(1 for word in words if word in _NUMBER_WORDS)
+    return has_unit or number_word_count >= 2
+
+
+def _protect_numeric_evidence(text: str) -> tuple[str, dict[str, str]]:
+    replacements: dict[str, str] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        value = match.group(0)
+        if not _is_protected_number_phrase(value):
+            return value
+        placeholder = _number_placeholder(len(replacements))
+        replacements[placeholder] = value
+        return placeholder
+
+    return _NUMBER_EVIDENCE_RE.sub(replace, text), replacements
+
+
+def _restore_numeric_evidence(text: str, replacements: dict[str, str]) -> str:
+    value = str(text or "")
+    for placeholder, original in replacements.items():
+        value = value.replace(placeholder, original)
+    return value
+
+
 def _empty_llm_usage() -> dict[str, int]:
     return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "call_count": 0}
 
@@ -172,7 +258,7 @@ def _build_transcript_polish_prompt(*, session: Session | None = None, chunk: st
 
 
 def _polish_transcript_via_llm(*, session: Session | None, text: str) -> tuple[str, dict[str, int]]:
-    chunks = _split_text_for_llm(text, max_chars=12_000)
+    chunks = _split_text_for_llm(text, max_chars=TRANSCRIPT_POLISH_CHUNK_MAX_CHARS)
     if not chunks:
         return "", _empty_llm_usage()
 
@@ -180,14 +266,60 @@ def _polish_transcript_via_llm(*, session: Session | None, text: str) -> tuple[s
     usage = _empty_llm_usage()
     total = len(chunks)
     for index, chunk in enumerate(chunks, start=1):
-        prompt = _build_transcript_polish_prompt(session=session, chunk=chunk, index=index, total=total)
-        resp = llm_generate(prompt=prompt, think=False)
-        usage = _merge_llm_usage(usage, resp.get("usage"))
-        out = _sanitize_llm_plain_text(str(resp.get("text", "")))
+        out, part_usage = _polish_transcript_chunk_via_llm(
+            session=session,
+            chunk=chunk,
+            index=index,
+            total=total,
+        )
+        usage = _merge_llm_usage(usage, part_usage)
         if out:
             outputs.append(out.strip())
 
     return "\n\n".join(outputs).strip(), usage
+
+
+def _polish_transcript_chunk_via_llm(
+    *,
+    session: Session | None,
+    chunk: str,
+    index: int,
+    total: int,
+) -> tuple[str, dict[str, Any]]:
+    try:
+        protected_chunk, numeric_replacements = _protect_numeric_evidence(chunk)
+        prompt = _build_transcript_polish_prompt(session=session, chunk=protected_chunk, index=index, total=total)
+        resp = llm_generate(prompt=prompt, think=False)
+        out = _sanitize_llm_plain_text(str(resp.get("text", "")))
+        return _restore_numeric_evidence(out, numeric_replacements), resp.get("usage") if isinstance(resp, dict) else {}
+    except httpx.TimeoutException:
+        if len(chunk) <= TRANSCRIPT_POLISH_RETRY_MIN_CHARS:
+            raise
+        retry_chunks = _split_text_for_llm(
+            chunk,
+            max_chars=max(TRANSCRIPT_POLISH_RETRY_MIN_CHARS, len(chunk) // 2),
+        )
+        if len(retry_chunks) <= 1:
+            midpoint = len(chunk) // 2
+            retry_chunks = [chunk[:midpoint].strip(), chunk[midpoint:].strip()]
+        outputs: list[str] = []
+        usage = _empty_llm_usage()
+        retry_total = len([part for part in retry_chunks if part])
+        retry_index = 0
+        for part in retry_chunks:
+            if not part:
+                continue
+            retry_index += 1
+            out, part_usage = _polish_transcript_chunk_via_llm(
+                session=session,
+                chunk=part,
+                index=retry_index,
+                total=retry_total,
+            )
+            usage = _merge_llm_usage(usage, part_usage)
+            if out:
+                outputs.append(out)
+        return "\n\n".join(outputs).strip(), usage
 
 
 def _maybe_polish_transcript(

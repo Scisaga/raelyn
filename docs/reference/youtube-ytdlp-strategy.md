@@ -67,9 +67,11 @@ YouTube 的 `yt-dlp` 同步 / 下载请求可显式使用 `YTDLP_PROXY`，同步
 
 ## 失败处理
 
-遇到 `YTDLP_COOKIES_YOUTUBE 已失效`、`Sign in to confirm you are not a bot`、`请登录，以便我们确认你不是聊天机器人`、`[youtube:tab] ... Playlists that require authentication ... without a successful webpage download` 或类似鉴权检查失败时，系统会把 YouTube provider 暂停，避免 `scheduler` 因 `last_video_sync_at` 未推进而每分钟反复投递同一个失败同步 / 下载任务。
+只有当 yt-dlp 明确返回 `provided YouTube account cookies are no longer valid`、`cookies are no longer valid` 或 cookies 文件格式错误时，系统才把失败归类为 `YTDLP_COOKIES_YOUTUBE` 失效 / 无效。
 
-如果单个下载任务因历史 retry 参数走无 cookies 下载，仍触发 YouTube bot check，则系统按“出口 IP / PO Token / 访问频率风控”暂停 YouTube provider，不再提示更新 `YTDLP_COOKIES_YOUTUBE`。手动重试失败任务时会清除该历史 retry 参数，恢复使用 cookies。
+遇到 `Sign in to confirm you are not a bot`、`请登录，以便我们确认你不是聊天机器人`、`[youtube:tab] ... Playlists that require authentication ... without a successful webpage download` 或类似鉴权检查失败时，系统会把 YouTube provider 暂停，但归类为 `youtube_bot_check` / `youtube_auth_check`，避免把出口 IP、请求频率、PO Token、导出会话不一致等问题误报成 cookies 失效。暂停的目的仍然是避免 `scheduler` 因 `last_video_sync_at` 未推进而每分钟反复投递同一个失败同步 / 下载任务。
+
+如果单个下载任务因历史 retry 参数走无 cookies 下载，仍触发 YouTube bot check，则系统同样按“出口 IP / PO Token / 访问频率风控”暂停 YouTube provider，不再提示更新 `YTDLP_COOKIES_YOUTUBE`。手动重试失败任务时会清除该历史 retry 参数，恢复使用 cookies。
 
 2026-05-18 对 Bloomberg Television 失败样本的实测结论：
 

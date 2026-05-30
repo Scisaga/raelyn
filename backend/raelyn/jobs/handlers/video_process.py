@@ -7,7 +7,6 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from raelyn.config import settings
 from raelyn.jobs.enqueue import enqueue_in, enqueue_job
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
@@ -17,7 +16,7 @@ from raelyn.services.assets import ensure_asset
 from raelyn.services.asr import asr_enabled, asr_transcribe, inspect_asr_backend_defer
 from raelyn.services.ffmpeg import extract_audio_to_m4a
 from raelyn.services.llm import llm_enabled
-from raelyn.services.playlist_analysis import schedule_video_embedding_refresh, transcript_checksum
+from raelyn.services.event_analysis import schedule_video_event_extraction
 from raelyn.services.s3 import s3_download_file
 from raelyn.services.subtitles import normalize_subtitle
 from raelyn.services.workdir import job_workdir
@@ -55,20 +54,17 @@ def _reschedule_asr_job(job: Job, *, counter_key: str, delay_seconds: int, reaso
     raise JobReschedule(delay_seconds=delay_seconds, reason=reason)
 
 
-def _schedule_auto_video_embedding_refresh(
+def _schedule_auto_video_event_extraction(
     session: Session,
     *,
     video_id: uuid.UUID,
-    text_checksum_value: str,
     priority: int = 0,
     parent_job_id: str | None = None,
 ) -> uuid.UUID | None:
-    if not bool(settings.auto_embed_new_video_transcripts):
-        return None
-    return schedule_video_embedding_refresh(
+    return schedule_video_event_extraction(
         session,
         video_id=video_id,
-        text_checksum_value=text_checksum_value,
+        force=False,
         priority=priority,
         parent_job_id=parent_job_id,
     )
@@ -188,10 +184,9 @@ def video_normalize_subtitle(session: Session, job: Job) -> dict | None:
             replace=force,
         )
 
-    _schedule_auto_video_embedding_refresh(
+    _schedule_auto_video_event_extraction(
         session,
         video_id=video.id,
-        text_checksum_value=transcript_checksum(plain),
         priority=job.priority,
         parent_job_id=str(job.id),
     )
@@ -304,10 +299,9 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
             replace=force,
         )
 
-    _schedule_auto_video_embedding_refresh(
+    _schedule_auto_video_event_extraction(
         session,
         video_id=video.id,
-        text_checksum_value=transcript_checksum(str(text)),
         priority=job.priority,
         parent_job_id=str(job.id),
     )

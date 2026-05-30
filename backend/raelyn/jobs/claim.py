@@ -23,6 +23,7 @@ _JOB_TYPE_RANK = {
     "video.normalize_subtitle": 1,
     "video.extract_audio": 2,
 }
+_EXECUTION_HEARTBEAT_JOB_TYPES = {"video.download", "video.download.youtube", "video.download.bilibili"}
 
 
 def _merge_requeue_into_existing_pending_job(
@@ -116,28 +117,43 @@ def requeue_orphan_running_jobs(
     session: Session,
     *,
     stale_after_seconds: int,
+    execution_stale_after_seconds: int | None = None,
     priority_bump: int = 1000,
 ) -> int:
     """
-    Requeue "running" jobs whose worker heartbeat is missing/stale.
+    回收 worker 心跳缺失或过期的 running 任务。
 
-    This is designed to make restarts safer: if the container/process restarts,
-    previously "running" jobs should quickly return to pending and be retried.
+    进程重启后，之前处于 running 的任务应尽快回到 pending 重试。
+    下载任务还要求主执行线程活动心跳新鲜，避免“心跳线程仍活着”
+    掩盖下载执行循环已经卡死。
     """
     now = utcnow()
-    stale_before = now - timedelta(seconds=int(stale_after_seconds))
+    process_stale_before = now - timedelta(seconds=int(stale_after_seconds))
+    execution_stale_after = int(execution_stale_after_seconds or stale_after_seconds)
+    execution_stale_before = now - timedelta(seconds=execution_stale_after)
 
     hb = WorkerHeartbeat
+    process_heartbeat_fresh = exists(
+        select(1).select_from(hb).where(
+            hb.worker_id == Job.worker_id,
+            hb.updated_at >= process_stale_before,
+        )
+    )
+    execution_heartbeat_fresh = exists(
+        select(1).select_from(hb).where(
+            hb.worker_id == Job.worker_id,
+            hb.active_at.is_not(None),
+            hb.active_at >= execution_stale_before,
+        )
+    )
     stmt = (
         select(Job)
         .where(
             Job.status == "running",
             Job.worker_id.is_not(None),
-            ~exists(
-                select(1).select_from(hb).where(
-                    hb.worker_id == Job.worker_id,
-                    hb.updated_at >= stale_before,
-                )
+            (
+                (~process_heartbeat_fresh)
+                | (Job.type.in_(_EXECUTION_HEARTBEAT_JOB_TYPES) & ~execution_heartbeat_fresh)
             ),
         )
         .with_for_update(skip_locked=True)

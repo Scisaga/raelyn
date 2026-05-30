@@ -3,15 +3,19 @@ from __future__ import annotations
 import sys
 import unittest
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
+
+from sqlalchemy.dialects import postgresql
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn.jobs import claim
+from raelyn.jobs.heartbeat import touch_worker_heartbeat
+from raelyn.jobs import progress
 from raelyn.models import AppConfig, Job, Media, Video
 from raelyn import worker
 from raelyn.services.asr import AsrBackendDefer
@@ -129,7 +133,7 @@ class WorkerRetryMergeTests(unittest.TestCase):
     def test_finalize_terminal_failure_does_not_schedule_retry(self) -> None:
         job = Job(
             id=uuid.uuid4(),
-            type="playlist.build_analysis_snapshot",
+            type="playlist.build_event_regime_snapshot",
             status="running",
             attempt=0,
             max_attempts=5,
@@ -155,6 +159,28 @@ class WorkerRetryMergeTests(unittest.TestCase):
 
 
 class WorkerRecoveryMergeTests(unittest.TestCase):
+    def test_requeue_orphan_running_jobs_checks_execution_heartbeat_for_downloads(self) -> None:
+        captured_sql: list[str] = []
+        captured_params: list[dict] = []
+        session = Mock()
+
+        def _execute(stmt):
+            compiled = stmt.compile(dialect=postgresql.dialect())
+            captured_sql.append(str(compiled))
+            captured_params.append(dict(compiled.params))
+            return _scalars_all([])
+
+        session.execute.side_effect = _execute
+
+        claim.requeue_orphan_running_jobs(session, stale_after_seconds=60, priority_bump=1000)
+
+        self.assertTrue(captured_sql)
+        self.assertIn("worker_heartbeat.active_at", captured_sql[0])
+        self.assertIn(
+            "video.download.youtube",
+            set(captured_params[0].get("type_1") or []),
+        )
+
     def test_requeue_expired_running_job_merges_into_existing_pending_job(self) -> None:
         dedupe_key = f"brief:{uuid.uuid4()}:2026-03-20"
         running_job = Job(
@@ -240,6 +266,90 @@ class WorkerRecoveryMergeTests(unittest.TestCase):
         self.assertEqual(running_job.status, "failed")
         self.assertEqual(running_job.finished_at, now)
         self.assertIsNone(running_job.worker_id)
+
+
+class WorkerHeartbeatTests(unittest.TestCase):
+    def test_download_execution_stale_reason_exits_even_after_job_requeued(self) -> None:
+        worker_id = "host:1234:abcd"
+        job_id = uuid.uuid4()
+        now = datetime(2026, 3, 20, 1, 2, 3, tzinfo=timezone.utc)
+        hb = Mock(current_job_id=job_id, active_at=now - timedelta(seconds=121))
+        job = Job(id=job_id, type="video.download.youtube", status="pending")
+        session = Mock()
+        session.get.side_effect = lambda model, key: hb if model.__name__ == "WorkerHeartbeat" else job
+
+        with patch("raelyn.worker.utcnow", return_value=now):
+            reason = worker._download_execution_stale_reason(
+                session,
+                worker_id=worker_id,
+                stale_after_seconds=120,
+            )
+
+        self.assertIsNotNone(reason)
+        self.assertIn(str(job_id), reason or "")
+        self.assertIn("job_status=pending", reason or "")
+
+    def test_download_execution_stale_reason_ignores_fresh_download_activity(self) -> None:
+        worker_id = "host:1234:abcd"
+        job_id = uuid.uuid4()
+        now = datetime(2026, 3, 20, 1, 2, 3, tzinfo=timezone.utc)
+        hb = Mock(current_job_id=job_id, active_at=now - timedelta(seconds=30))
+        job = Job(id=job_id, type="video.download.youtube", status="running")
+        session = Mock()
+        session.get.side_effect = lambda model, key: hb if model.__name__ == "WorkerHeartbeat" else job
+
+        with patch("raelyn.worker.utcnow", return_value=now):
+            reason = worker._download_execution_stale_reason(
+                session,
+                worker_id=worker_id,
+                stale_after_seconds=120,
+            )
+
+        self.assertIsNone(reason)
+
+    def test_worker_may_run_downloads_matches_all_and_download_roles(self) -> None:
+        self.assertTrue(worker._worker_may_run_downloads(None))
+        self.assertTrue(worker._worker_may_run_downloads(["video.download.youtube"]))
+        self.assertFalse(worker._worker_may_run_downloads(["video.asr_transcribe"]))
+
+    def test_touch_worker_heartbeat_can_update_execution_activity(self) -> None:
+        worker_id = "host:1234:abcd"
+        job_id = uuid.uuid4()
+        hb = Mock()
+        session = Mock()
+        session.get.return_value = hb
+        now = datetime(2026, 3, 20, 1, 2, 3, tzinfo=timezone.utc)
+
+        with patch("raelyn.jobs.heartbeat.utcnow", return_value=now):
+            touch_worker_heartbeat(
+                session,
+                worker_id=worker_id,
+                role="download_youtube",
+                active=True,
+                current_job_id=job_id,
+            )
+
+        self.assertEqual(hb.updated_at, now)
+        self.assertEqual(hb.active_at, now)
+        self.assertEqual(hb.role, "download_youtube")
+        self.assertEqual(hb.current_job_id, job_id)
+
+    def test_set_job_progress_marks_current_worker_activity(self) -> None:
+        with patch("raelyn.jobs.progress.engine") as engine:
+            with patch("raelyn.jobs.progress.touch_current_worker_activity") as touch_activity:
+                progress.set_job_progress(job_id=uuid.uuid4(), current=1, total=10)
+
+        self.assertTrue(engine.begin.called)
+        touch_activity.assert_called_once()
+
+    def test_set_job_progress_falls_back_to_job_worker_activity(self) -> None:
+        job_id = uuid.uuid4()
+        with patch("raelyn.jobs.progress.engine"):
+            with patch("raelyn.jobs.progress.touch_current_worker_activity", return_value=False):
+                with patch("raelyn.jobs.progress.touch_worker_activity_for_job") as touch_for_job:
+                    progress.set_job_progress(job_id=job_id, current=1, total=10)
+
+        touch_for_job.assert_called_once_with(job_id=job_id)
 
 
 class WorkerDownloadFailureStateTests(unittest.TestCase):

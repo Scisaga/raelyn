@@ -71,7 +71,7 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
             return None, params2
         return f"media.delete:{media_id}", params2
 
-    if type_ == "video.embed_transcript":
+    if type_ == "video.extract_events":
         if not isinstance(params, dict):
             return None, params
         params2 = dict(params)
@@ -79,15 +79,25 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
             video_id = uuid.UUID(str(params2.get("video_id")))
         except Exception:
             return None, params2
-        text_checksum = str(params2.get("text_checksum") or "").strip()
-        if not text_checksum:
+        force = bool(params2.get("force", False))
+        params2["force"] = force
+        model = str(settings.llm_model or "").strip() or "default"
+        mode = "force" if force else "missing"
+        return f"video_event_extract:{video_id}:{model}:{mode}", params2
+
+    if type_ == "event.embed":
+        if not isinstance(params, dict):
+            return None, params
+        params2 = dict(params)
+        try:
+            event_id = uuid.UUID(str(params2.get("event_id")))
+        except Exception:
             return None, params2
         model = str(settings.embedding_model or "").strip() or "Qwen/Qwen3-Embedding-8B"
         dim = max(1, int(settings.embedding_dim or 1024))
-        variant = str(settings.embedding_transcript_variant or "plain").strip().lower() or "plain"
-        return f"video_embedding:{video_id}:{variant}:{model}:{dim}:{text_checksum}", params2
+        return f"event_embedding:{event_id}:{model}:{dim}", params2
 
-    if type_ == "playlist.build_analysis_snapshot":
+    if type_ == "playlist.build_event_regime_snapshot":
         if not isinstance(params, dict):
             return None, params
         params2 = dict(params)
@@ -97,10 +107,9 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
             return None, params2
         model = str(settings.embedding_model or "").strip() or "Qwen/Qwen3-Embedding-8B"
         dim = max(1, int(settings.embedding_dim or 1024))
-        variant = str(settings.embedding_transcript_variant or "plain").strip().lower() or "plain"
-        return f"playlist_analysis:{playlist_id}:day:{variant}:{model}:{dim}", params2
+        return f"playlist_event_regime:{playlist_id}:day:{model}:{dim}", params2
 
-    if type_ == "playlist.backfill_embeddings":
+    if type_ == "playlist.backfill_events":
         if not isinstance(params, dict):
             return None, params
         params2 = dict(params)
@@ -109,21 +118,10 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
         except Exception:
             return None, params2
         force = bool(params2.get("force", False))
-        try:
-            batch_size = int(params2.get("batch_size") or settings.embedding_batch_size or 16)
-        except Exception:
-            batch_size = 16
-        try:
-            batch_max_size = int(settings.embedding_batch_max_size or 64)
-        except Exception:
-            batch_max_size = 64
         params2["force"] = force
-        params2["batch_size"] = max(1, min(batch_size, max(1, batch_max_size)))
-        model = str(settings.embedding_model or "").strip() or "Qwen/Qwen3-Embedding-8B"
-        dim = max(1, int(settings.embedding_dim or 1024))
-        variant = str(settings.embedding_transcript_variant or "plain").strip().lower() or "plain"
         mode = "force" if force else "missing"
-        return f"playlist_embedding_backfill:{playlist_id}:{variant}:{model}:{dim}:{mode}", params2
+        model = str(settings.llm_model or "").strip() or "default"
+        return f"playlist_event_backfill:{playlist_id}:{model}:{mode}", params2
 
     if type_ not in {"brief.generate_period", "brief.generate_daily"}:
         return None, params

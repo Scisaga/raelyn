@@ -88,6 +88,9 @@
   - 当前推荐值为 `2`，用于降低 YouTube / B 站同步请求波峰；媒体数量较多时，追赶积压会更慢，但更不容易触发平台风控。
 - `SYNC_MAX_ENTRIES`
 - `AUTO_DOWNLOAD_NEW_VIDEOS`
+- `AUTO_GENERATE_BRIEFS`
+  - 是否在 transcript 就绪、媒体变更或媒体删除后自动投递 `brief.generate_period`，默认 `false`。
+  - 关闭时不会删除已有 `brief` / `daily_brief` 数据，也不影响手动 `POST /api/briefs/generate` 和 `POST /api/briefs/generate_range`。
 - `STATS_CACHE_TTL_SECONDS`
   - `/api/stats` 的进程内缓存 TTL，默认 `60` 秒；设置为 `0` 可关闭缓存。
 - `YOUTUBE_SYNC_CONCURRENCY`
@@ -111,37 +114,39 @@
   - 当 ASR `/health` 没有返回 `backend_queue_timeout_seconds` 时，handler 兜底重排 ASR 任务的默认延后秒数，默认 `30`。
 - `EMBEDDING_WORKER_CONCURRENCY`
   - `devctl.sh` / Docker 单容器入口启动 `embedding` worker 的进程数，默认 `1`。
-  - 可设为 `0`，表示当前节点不启动 `embedding` worker；历史 embedding 补算和新视频自动 embedding 任务会保留在 `pending`，直到有 embedding worker 可领取。
+  - 可设为 `0`，表示当前节点不启动 `embedding` worker；事件 embedding 任务会保留在 `pending`，直到有 embedding worker 可领取。
 - `ANALYSIS_WORKER_CONCURRENCY`
   - `devctl.sh` / Docker 单容器入口启动 `analysis` worker 的进程数，默认 `1`。
-  - 可设为 `0`，表示当前节点不启动 `analysis` worker；播放列表分析快照任务会保留在 `pending`，直到有 analysis worker 可领取。
+  - 可设为 `0`，表示当前节点不启动 `analysis` worker；事件 Regime 快照任务会保留在 `pending`，直到有 analysis worker 可领取。
 - `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES`
-  - `playlist.build_analysis_snapshot` 开始和处理中允许继续执行的最低 `MemAvailable`，默认 `1073741824`。
+  - `playlist.build_event_regime_snapshot` 开始和处理中允许继续执行的最低 `MemAvailable`，默认 `1073741824`。
   - 低于该值时任务直接失败并记录原因，不进入重试队列。
 - `ANALYSIS_MAX_RSS_BYTES`
-  - `playlist.build_analysis_snapshot` 允许的最大 worker 进程 RSS，默认 `6442450944`（6 GiB）。
+  - `playlist.build_event_regime_snapshot` 允许的最大 worker 进程 RSS，默认 `6442450944`（6 GiB）。
   - 高于该值时任务直接失败并记录原因，不进入重试队列；生产环境仍建议用 systemd / cgroup 设置同等硬上限。
 - `ANALYSIS_STREAM_BATCH_SIZE`
-  - 分析快照构建分批读取 ready embedding 的批大小，默认 `2000`。
-- `EMBEDDING_BATCH_SIZE`
-  - 历史 embedding 补算任务单次请求的默认文本条数，默认 `16`。
-- `EMBEDDING_BATCH_MAX_SIZE`
-  - API/job 参数允许的最大 embedding batch size，默认 `64`。
-- `EMBEDDING_BATCH_MAX_CHARS`
-  - 历史 embedding 补算任务单个 batch 的文本字符预算，默认 `60000`；与 `EMBEDDING_BATCH_SIZE` 同时生效，先触达任一阈值就发送 batch。
-- `EMBEDDING_TRANSCRIPT_PREFETCH_WORKERS`
-  - 历史 embedding 补算任务内部并发读取 transcript 的线程数，默认 `4`；用于减少 S3 读取等待，让 batch 更稳定地送到 embedding 服务。
-- `EMBEDDING_BACKFILL_HTTP_INFLIGHT`
-  - 单个历史 embedding 补算任务同时发送到远端 embedding 服务的 HTTP batch 数，默认 `1`；用于在 transcript 预取和远端推理之间做有限流水线，确认远端稳定后可调大。
-- `AUTO_EMBED_NEW_VIDEO_TRANSCRIPTS`
-  - 是否在新视频 transcript 生成后自动投递 `video.embed_transcript`，默认 `false`。
-  - 关闭时不会影响手动触发的 `playlist.backfill_embeddings` 历史补算。
+  - 事件 Regime 快照构建分批读取 ready event embedding 的批大小，默认 `2000`。
+- `EVENT_EXTRACTION_CHUNK_MAX_CHARS`
+  - `video.extract_events` 读取 `plain` transcript 后的 LLM 分块字符上限，默认 `12000`。
+- `AUTO_EXTRACT_NEW_VIDEO_EVENTS`
+  - 是否在新视频 transcript 生成后自动投递 `video.extract_events`，默认 `true`。
+  - 关闭时不会影响播放列表页面手动触发的 `playlist.backfill_events` 历史回填。
 
 ### Worker 心跳与孤儿任务回收
 
+- `WORKER_RESTART_DELAY_SECONDS`
+  - `devctl.sh` 和 Docker 单容器入口用于自动拉起崩溃 worker 子进程的等待秒数，默认 `5`。
+  - 该配置只影响 worker 子进程；API 或 scheduler 这类关键进程退出时，Docker 单容器入口仍会退出，让外层进程管理器处理整体故障。
 - `WORKER_HEARTBEAT_INTERVAL_SECONDS`
+  - worker 进程心跳线程写入 `worker_heartbeat.updated_at` 的间隔，默认 `5` 秒。
 - `WORKER_STALE_AFTER_SECONDS`
+  - 进程心跳超过该阈值未更新时，其他 worker 可将其 `running` 任务回收到 `pending`，默认 `20` 秒。
+- `WORKER_EXECUTION_STALE_AFTER_SECONDS`
+  - 下载类任务额外检查主执行线程活动心跳 `worker_heartbeat.active_at`，默认 `120` 秒。
+  - 该阈值用于发现“心跳线程仍活着，但主执行循环已经卡死”的情况；下载进度更新会刷新执行心跳。
+  - 下载类 worker 超过该阈值未推进时会主动退出，由 supervisor 重启并释放下载并发锁。
 - `ORPHAN_REQUEUE_PRIORITY_BUMP`
+  - 孤儿 `running` 任务被回收后提升的优先级基数，默认 `1000`，用于让回收任务回到队头。
 
 ### ASR / LLM
 
@@ -160,23 +165,19 @@
 - `LLM_HEADERS_JSON`
 - `LLM_TIMEOUT_SECONDS`
 
-Embedding / 播放列表分析：
+事件抽取 / 事件 Regime：
 
+- `EVENT_EXTRACTION_CHUNK_MAX_CHARS`
+- `AUTO_EXTRACT_NEW_VIDEO_EVENTS`
 - `EMBEDDING_URL`
 - `EMBEDDING_ENDPOINT`
 - `EMBEDDING_MODEL`
 - `EMBEDDING_DIM`
 - `EMBEDDING_TIMEOUT_SECONDS`
-- `EMBEDDING_TRANSCRIPT_VARIANT`
-- `EMBEDDING_BATCH_SIZE`
-- `EMBEDDING_BATCH_MAX_SIZE`
-- `EMBEDDING_BATCH_MAX_CHARS`
-- `EMBEDDING_TRANSCRIPT_PREFETCH_WORKERS`
-- `EMBEDDING_BACKFILL_HTTP_INFLIGHT`
-- `AUTO_EMBED_NEW_VIDEO_TRANSCRIPTS`
 - `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES`
 - `ANALYSIS_MAX_RSS_BYTES`
 - `ANALYSIS_STREAM_BATCH_SIZE`
+- `AUTO_GENERATE_BRIEFS`
 
 火山模式默认值：
 
@@ -281,6 +282,9 @@ Embedding / 播放列表分析：
 
 - 用于 `video.polish_transcript`。
 - 建议保留 `{chunk}` 占位符；`{index}` / `{total}` 可选。
+- 默认提示词定位为“可回溯证据的保真整理稿”：按原文顺序近逐句整理，保留金融、宏观、政策、地缘、企业、行业、资产价格、利率、信用、商品、库存、财报、订单、指引、风险偏好等证据粒度；不得把长转写压缩成摘要；数字表达按原文保留，不做中文数字改写或单位换算。
+- `video.polish_transcript` 默认按约 `1500` 字符切分原始转写后逐段调用 LLM；若单段调用超时，会继续二分该段，直到最小重试粒度仍失败时再让任务失败，降低保真输出过长导致单次调用超时的概率。
+- 调用 LLM 前会对阿拉伯数字和英文数字短语做临时占位保护，返回后还原原文数字表达，避免模型把 `four point seven eight percent`、`ten billion` 等证据改写成中文数字或换算金额。
 
 ### 简报调度策略
 

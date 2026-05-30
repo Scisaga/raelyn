@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from raelyn.models import Asset, Video
 from raelyn.services.transcripts import TRANSCRIPT_VARIANTS
+from raelyn.services.video_time import timeline_time_expr
 from raelyn.services.video_meta import backfill_video_published_at
 
 _VIDEO_PUBLISHED_AT_BACKFILLED = False
@@ -39,8 +40,8 @@ def video_has_transcript_text_expr():
 
 
 def playback_admitted_video_expr():
-    return and_(Video.published_at.is_not(None), video_has_playback_asset_expr())
+    return and_(timeline_time_expr().is_not(None), video_has_playback_asset_expr())
 
 
 def brief_admitted_video_expr():
-    return and_(Video.published_at.is_not(None), video_has_transcript_text_expr())
+    return and_(timeline_time_expr().is_not(None), video_has_transcript_text_expr())

@@ -135,15 +135,16 @@ class BriefScheduleTests(unittest.TestCase):
             _scalar_one_or_none(running_job),
         ]
 
-        with patch("raelyn.services.brief_schedule.utcnow", return_value=now):
-            job_id = brief_schedule.schedule_brief_refresh(
-                session,
-                playlist_id=playlist_id,
-                granularity="day",
-                period_start=date(2026, 3, 8),
-                trigger_mode="auto",
-                reason="transcript_ready",
-            )
+        with patch("raelyn.services.brief_schedule.settings.auto_generate_briefs", True):
+            with patch("raelyn.services.brief_schedule.utcnow", return_value=now):
+                job_id = brief_schedule.schedule_brief_refresh(
+                    session,
+                    playlist_id=playlist_id,
+                    granularity="day",
+                    period_start=date(2026, 3, 8),
+                    trigger_mode="auto",
+                    reason="transcript_ready",
+                )
 
         added_jobs = [call.args[0] for call in session.add.call_args_list if isinstance(call.args[0], Job)]
         self.assertEqual(len(added_jobs), 1)
@@ -171,15 +172,16 @@ class BriefScheduleTests(unittest.TestCase):
             scheduled_periods.append(kwargs["period_start"])
             return uuid.uuid4()
 
-        with patch("raelyn.services.brief_schedule.llm_enabled", return_value=True):
-            with patch("raelyn.services.brief_schedule.ensure_video_published_at_backfilled") as ensure_backfilled:
-                with patch("raelyn.services.brief_schedule.schedule_brief_refresh", side_effect=_record_schedule):
-                    count = brief_schedule.schedule_brief_refresh_for_media_change(
-                        session,
-                        playlist_id=playlist_id,
-                        changed_media_ids=[media_a, media_b],
-                        change_type="media_replaced",
-                    )
+        with patch("raelyn.services.brief_schedule.settings.auto_generate_briefs", True):
+            with patch("raelyn.services.brief_schedule.llm_enabled", return_value=True):
+                with patch("raelyn.services.brief_schedule.ensure_video_published_at_backfilled") as ensure_backfilled:
+                    with patch("raelyn.services.brief_schedule.schedule_brief_refresh", side_effect=_record_schedule):
+                        count = brief_schedule.schedule_brief_refresh_for_media_change(
+                            session,
+                            playlist_id=playlist_id,
+                            changed_media_ids=[media_a, media_b],
+                            change_type="media_replaced",
+                        )
 
         self.assertEqual(count, 2)
         self.assertEqual(scheduled_periods, [date(2026, 3, 2), date(2026, 3, 9)])
@@ -188,7 +190,42 @@ class BriefScheduleTests(unittest.TestCase):
         compiled = str(stmt.compile(dialect=postgresql.dialect())).lower()
         self.assertIn("asset.type =", compiled)
         self.assertIn("asset.format =", compiled)
+        self.assertIn("video_time_evidence", compiled)
+        self.assertIn("coalesce", compiled)
         self.assertIn("exists (select 1", compiled)
+
+    def test_schedule_brief_refresh_auto_is_disabled_by_default(self) -> None:
+        playlist_id = uuid.uuid4()
+        session = Mock()
+        session.get.return_value = Playlist(id=playlist_id, name="p", brief_granularity="day")
+
+        with patch("raelyn.services.brief_schedule.settings.auto_generate_briefs", False):
+            job_id = brief_schedule.schedule_brief_refresh(
+                session,
+                playlist_id=playlist_id,
+                granularity="day",
+                period_start=date(2026, 3, 8),
+                trigger_mode="auto",
+                reason="transcript_ready",
+            )
+
+        self.assertIsNone(job_id)
+        session.execute.assert_not_called()
+
+    def test_schedule_brief_refresh_for_media_change_is_disabled_by_default(self) -> None:
+        session = Mock()
+
+        with patch("raelyn.services.brief_schedule.settings.auto_generate_briefs", False):
+            count = brief_schedule.schedule_brief_refresh_for_media_change(
+                session,
+                playlist_id=uuid.uuid4(),
+                changed_media_ids=[uuid.uuid4()],
+                change_type="media_replaced",
+            )
+
+        self.assertEqual(count, 0)
+        session.get.assert_not_called()
+        session.execute.assert_not_called()
 
 
 if __name__ == "__main__":

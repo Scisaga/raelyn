@@ -16,6 +16,7 @@ from raelyn.services.video_admission import (
     ensure_video_published_at_backfilled,
     playback_admitted_video_expr,
 )
+from raelyn.services.video_time import timeline_time_expr
 
 
 DEFAULT_BRIEF_PROMPT_TEMPLATE = "\n".join(
@@ -194,11 +195,12 @@ def build_brief_prompt_for_period(
     if not media_ids:
         raise LookupError("empty playlist")
 
+    co_ts = timeline_time_expr()
     videos = (
         session.execute(
             select(Video)
-            .where(Video.media_id.in_(list(media_ids)), brief_admitted_video_expr(), Video.published_at >= start_utc, Video.published_at < end_utc)
-            .order_by(Video.published_at.asc().nullslast())
+            .where(Video.media_id.in_(list(media_ids)), brief_admitted_video_expr(), co_ts >= start_utc, co_ts < end_utc)
+            .order_by(co_ts.asc().nullslast())
         )
         .scalars()
         .all()
@@ -210,8 +212,8 @@ def build_brief_prompt_for_period(
                 .where(
                     Video.media_id.in_(list(media_ids)),
                     playback_admitted_video_expr(),
-                    Video.published_at >= start_utc,
-                    Video.published_at < end_utc,
+                    co_ts >= start_utc,
+                    co_ts < end_utc,
                 )
                 .limit(1)
             ).scalar_one_or_none()

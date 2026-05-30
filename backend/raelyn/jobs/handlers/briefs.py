@@ -4,7 +4,7 @@ import re
 import uuid
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from raelyn.jobs.log import job_log
@@ -27,6 +27,7 @@ from raelyn.services.video_admission import (
     ensure_video_published_at_backfilled,
     playback_admitted_video_expr,
 )
+from raelyn.services.video_time import timeline_time_expr
 from raelyn.services.workdir import job_workdir
 
 
@@ -60,7 +61,7 @@ def _brief_generate_period_impl(
         mark_brief_empty(session, playlist_id=playlist_id, granularity=value, period_start=period_start)
         return {"empty": True, "reason": "empty playlist"}
 
-    co_ts = Video.published_at
+    co_ts = timeline_time_expr()
     brief_admitted = brief_admitted_video_expr()
     videos = (
         session.execute(

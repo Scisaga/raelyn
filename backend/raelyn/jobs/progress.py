@@ -7,6 +7,8 @@ from sqlalchemy import update
 
 from raelyn.db import engine
 from raelyn.models import Job
+from raelyn.jobs.worker_activity import touch_current_worker_activity
+from raelyn.jobs.worker_activity import touch_worker_activity_for_job
 
 
 def set_job_progress(
@@ -25,3 +27,5 @@ def set_job_progress(
             .where(Job.id == job_id)
             .values(**values)
         )
+    if not touch_current_worker_activity():
+        touch_worker_activity_for_job(job_id=job_id)

@@ -21,9 +21,9 @@
 ### Video
 
 - 表示一个平台视频条目，保存元数据、状态与错误信息。
-- `published_at` 可能在“发现视频”阶段就写入；它只决定时间归属，不代表视频已可播放或可用于简报。
-- 播放列表周期归属使用 `published_at` + 视频资产就绪。
-- 简报周期归属使用 `published_at` + transcript 文本就绪。
+- `published_at` 可能在“发现视频”阶段就写入；它表示平台原始发布时间，不覆盖历史回填出的内容真实日期。
+- 播放列表周期归属使用内容时间轴 `coalesce(content_published_at, published_at)` + 视频资产就绪。
+- 简报周期归属使用内容时间轴 `coalesce(content_published_at, published_at)` + transcript 文本就绪。
 - 通过 `Asset` 关联视频文件、音频、字幕、文字稿、简报图片等产物。
 
 ### Asset
@@ -38,11 +38,17 @@
 - 当前简报主表是 `brief`，支持 `day / week / month` 三种粒度。
 - `daily_brief` 仍保留用于兼容历史数据读取。
 
+### MarketEvent / EventRegime
+
+- `market_event` 保存从视频 transcript 抽取出的结构化市场原子事件。
+- `market_event_entity`、`market_event_evidence`、`market_event_relation` 以关系表形式承载第一版知识图谱。
+- `market_event_embedding` 与 `event_regime_*` 表承载事件 embedding 和播放列表级 Regime 信号。
+
 ### Job / WorkerHeartbeat / AppConfig
 
 - `job` 统一承载同步、下载、处理、AI 任务。
 - `worker_heartbeat` 用于在线状态展示和孤儿任务回收。
-- `app_config` 保存运行时开关，例如 Cookies、字幕下载、会员视频、下载格式、简报策略与转写润色提示词。
+- `app_config` 保存运行时开关，例如 Cookies、字幕下载、会员视频、下载格式、简报策略、转写润色提示词与事件抽取提示词。
 
 ## 当前组件划分
 
@@ -58,7 +64,7 @@
 - 支持按 `WORKER_ROLE` 或 `WORKER_TYPES` 拆分角色，例如 `download_youtube`、`download_bilibili`、`audio`、`process`、`asr`、`sync`、`embedding`、`analysis`、`ai`。
 - `download_youtube` / `download_bilibili` 是 provider 专属下载执行面；其 worker 进程数默认与 `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 强绑定，用来兑现真实下载并发语义。
 - `asr` 负责 `video.asr_transcribe`；其 worker 进程数默认与 `ASR_WORKER_CONCURRENCY` 绑定，每个进程同一时间执行一个远端 ASR 请求。对 qwen3-asr-openai 这类会在 `/health` 暴露后端 replica 与队列状态的服务，worker 会在领取 ASR 任务前做容量门控，后端已满时不从 DB claim 新 ASR 任务，避免继续把请求打进 502/503。
-- `embedding` 负责 `video.embed_transcript` 与 `playlist.backfill_embeddings`；`analysis` 负责 `playlist.build_analysis_snapshot`；二者可通过 `EMBEDDING_WORKER_CONCURRENCY=0` / `ANALYSIS_WORKER_CONCURRENCY=0` 在当前节点禁用对应执行面；`ai` 只保留转写润色与简报生成，避免 embedding 补算、快照聚合、LLM 任务互相堵塞。
+- `ai` 负责 `video.extract_events`、`playlist.backfill_events`、转写润色与简报生成；`embedding` 负责 `event.embed`；`analysis` 负责 `playlist.build_event_regime_snapshot`。三类执行面可通过对应 worker 并发或角色暂停分开治理，避免 LLM 抽取、事件向量化与 Regime 聚合互相堵塞。
 - provider 下载 handler 内仍保留 advisory lock 作为最终并发上限保护；它是内部实现，不是对外配置语义。
 - 负责任务领取、心跳、孤儿任务回收、失败退避与实际处理逻辑执行。
 

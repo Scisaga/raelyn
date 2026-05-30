@@ -15,6 +15,7 @@ from raelyn.services.downloads import build_download_filename, content_dispositi
 from raelyn.services.periods import local_date, normalize_granularity, period_bounds_utc, period_end_inclusive, period_start
 from raelyn.services.s3 import s3_get_bytes
 from raelyn.services.transcripts import pick_transcript_asset, read_text_asset, transcript_polish_method
+from raelyn.services.video_time import normalize_time_basis, resolve_video_timeline, timeline_time_expr
 from raelyn.services.video_meta import parse_published_at
 
 from .chunking import DEFAULT_TRANSCRIPT_CHUNK_SIZE, build_chunk_bounds, get_text_chunk, normalize_chunk_size
@@ -167,6 +168,7 @@ def _asset_payload(asset: Asset, *, media: Media | None = None, video: Video | N
 
 
 def _video_payload(session: Session, video: Video, media: Media | None) -> dict[str, Any]:
+    timeline = resolve_video_timeline(session, video)
     thumb = session.execute(
         select(Asset).where(Asset.video_id == video.id, Asset.type == "thumbnail").order_by(Asset.created_at.desc()).limit(1)
     ).scalar_one_or_none()
@@ -202,6 +204,11 @@ def _video_payload(session: Session, video: Video, media: Media | None) -> dict[
         "thumbnail_url": video.thumbnail_url,
         "cover_asset": serialize_for_mcp(build_asset_ref(thumb, expires_seconds=_PRESIGNED_EXPIRES_SECONDS).model_dump()) if thumb else None,
         "published_at": video.published_at,
+        "content_published_at": timeline.content_published_at,
+        "timeline_at": timeline.timeline_at,
+        "time_source": timeline.time_source,
+        "time_status": timeline.time_status,
+        "time_confidence": timeline.time_confidence,
         "duration_sec": video.duration_sec,
         "status": video.status,
         "error_message": video.error_message,
@@ -223,8 +230,9 @@ def _playlist_summary_payload(session: Session, playlist: Playlist, *, preview: 
     latest_date_value = None
     if media_ids:
         video_count = int(session.execute(select(func.count()).select_from(Video).where(Video.media_id.in_(list(media_ids)))).scalar_one() or 0)
+        co_ts = timeline_time_expr()
         min_ts, max_ts = session.execute(
-            select(func.min(Video.published_at), func.max(Video.published_at)).where(Video.media_id.in_(list(media_ids)))
+            select(func.min(co_ts), func.max(co_ts)).where(Video.media_id.in_(list(media_ids)))
         ).one()
         if not min_ts and not max_ts:
             min_ts, max_ts = session.execute(
@@ -389,8 +397,9 @@ def _find_brief(session: Session, *, playlist_id: uuid.UUID, granularity: str, p
 
 
 def _playlist_latest_date(session: Session, playlist_id: uuid.UUID) -> date | None:
+    co_ts = timeline_time_expr()
     max_published_at = session.execute(
-        select(func.max(Video.published_at))
+        select(func.max(co_ts))
         .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
         .where(PlaylistMedia.playlist_id == playlist_id)
     ).scalar_one_or_none()
@@ -623,6 +632,7 @@ def list_videos(
     q: str | None = None,
     published_since: str | datetime | None = None,
     published_until: str | datetime | None = None,
+    time_basis: str = "content",
     limit: int = 20,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
@@ -632,10 +642,12 @@ def list_videos(
         offset_value = _clamp_offset(offset)
         published_since_value = _parse_datetime(published_since, "published_since")
         published_until_value = _parse_datetime(published_until, "published_until")
+        resolved_time_basis = normalize_time_basis(time_basis)
         if (published_since_value or published_until_value) and not _PUBLISHED_AT_BACKFILLED:
             _backfill_published_at(session)
             _PUBLISHED_AT_BACKFILLED = True
 
+        co_ts = timeline_time_expr(time_basis=resolved_time_basis)
         stmt = select(Video, Media).join(Media, Media.id == Video.media_id)
         if provider:
             stmt = stmt.where(Video.provider == provider)
@@ -652,12 +664,12 @@ def list_videos(
         if q:
             stmt = stmt.where(Video.title.ilike(f"%{q}%"))
         if published_since_value:
-            stmt = stmt.where(Video.published_at.is_not(None), Video.published_at >= published_since_value)
+            stmt = stmt.where(co_ts.is_not(None), co_ts >= published_since_value)
         if published_until_value:
-            stmt = stmt.where(Video.published_at.is_not(None), Video.published_at < published_until_value)
+            stmt = stmt.where(co_ts.is_not(None), co_ts < published_until_value)
 
         rows = session.execute(
-            stmt.order_by(Video.published_at.desc().nullslast(), Video.created_at.desc(), Video.id.desc()).limit(limit_value).offset(offset_value)
+            stmt.order_by(co_ts.desc().nullslast(), Video.created_at.desc(), Video.id.desc()).limit(limit_value).offset(offset_value)
         ).all()
         return serialize_for_mcp([_video_payload(session, video, media) for video, media in rows])
 
@@ -785,9 +797,12 @@ def _playlist_videos(
     granularity: str,
     period_start_value: date,
     limit: int,
+    time_basis: str = "content",
 ) -> list[dict[str, Any]]:
     g = normalize_granularity(granularity)
+    resolved_time_basis = normalize_time_basis(time_basis)
     start_utc, end_utc = period_bounds_utc(period_start_value, g)
+    co_ts = timeline_time_expr(time_basis=resolved_time_basis)
     rows = (
         session.execute(
             select(Video, Media)
@@ -795,11 +810,11 @@ def _playlist_videos(
             .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
             .where(
                 PlaylistMedia.playlist_id == playlist_uuid,
-                Video.published_at.is_not(None),
-                Video.published_at >= start_utc,
-                Video.published_at < end_utc,
+                co_ts.is_not(None),
+                co_ts >= start_utc,
+                co_ts < end_utc,
             )
-            .order_by(Video.published_at.asc(), Video.created_at.asc(), Video.id.asc())
+            .order_by(co_ts.asc(), Video.created_at.asc(), Video.id.asc())
             .limit(limit)
         )
         .all()
@@ -811,6 +826,7 @@ def get_playlist_videos(
     playlist_id: str | uuid.UUID,
     *,
     date: str | date,
+    time_basis: str = "content",
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
@@ -825,6 +841,7 @@ def get_playlist_videos(
                 granularity=granularity,
                 period_start_value=period_start_value,
                 limit=limit_value,
+                time_basis=time_basis,
             )
         )
 
@@ -1061,6 +1078,7 @@ def get_playlist_summary(
     playlist_id: str | uuid.UUID,
     *,
     date: str | date,
+    time_basis: str = "content",
     include_transcript: bool = False,
     limit: int = 50,
 ) -> dict[str, Any]:
@@ -1075,6 +1093,7 @@ def get_playlist_summary(
             granularity=granularity,
             period_start_value=period_start_value,
             limit=limit_value,
+            time_basis=time_basis,
         )
         transcript_ready_count = 0
         for item in videos:

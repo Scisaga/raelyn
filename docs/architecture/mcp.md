@@ -82,6 +82,8 @@ MCP 没有复制 API 路由逻辑，而是复用了抽出的共享 helper：
 - 所有返回值都是 JSON 可序列化对象
 - `UUID/date/datetime` 统一序列化为字符串
 - 任务型 tools 只返回 `accepted + job_id/job_ids`，不阻塞等待执行完成
+- 视频时间查询默认使用内容时间轴 `coalesce(content_published_at, published_at)`；`list_videos`、`get_playlist_videos`、`get_playlist_summary` 支持 `time_basis=content|platform`。
+- 视频 payload 保留平台时间 `published_at`，并返回 `content_published_at`、`timeline_at`、`time_source`、`time_status`、`time_confidence`。
 
 ## Resources
 

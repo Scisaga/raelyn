@@ -28,6 +28,8 @@ docker compose up --build
 
 打开：`http://127.0.0.1:8000/`
 
+Docker 单容器入口会直接守护 worker 子进程：某个 worker 崩溃退出时，只重启该 worker，默认等待 `WORKER_RESTART_DELAY_SECONDS=5` 秒；API 或 scheduler 退出仍视为关键进程故障，容器会退出并交给外层 Docker/Compose 策略处理。
+
 ## 本地启动（无 Docker）
 
 你需要自行准备：
@@ -172,6 +174,7 @@ B 站常见 352 风控、年龄验证、会员或私有内容等登录态相关�
 
 YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“公开采集默认不用 cookies”。当前 YouTube 同步 / 下载都会使用已保存的 `YTDLP_COOKIES_YOUTUBE`；是否局部关闭 cookies 必须经过相同 yt-dlp 版本、相同代理出口、相同目标类型的最小实测。完整判断与排障步骤见 [YouTube yt-dlp 同步与 Cookies 策略](youtube-ytdlp-strategy.md)。
 当前实测的下载路径在无 cookies 时会直接触发 `LOGIN_REQUIRED`，因此 YouTube 下载任务固定使用已保存的 `YTDLP_COOKIES_YOUTUBE`，并通过 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 尽量贴近浏览器请求形态。
+如果错误只是 `Sign in to confirm you're not a bot` 或频道 / 播放列表鉴权检查失败，系统会暂停 YouTube provider，但不再直接归类为 `YTDLP_COOKIES_YOUTUBE` 失效；只有 yt-dlp 明确报 cookies no longer valid 或 cookies 格式错误时，才提示更新 cookies。
 若失败信息是 `ERROR: unable to download video data: HTTP Error 403: Forbidden`，先检查格式选择器是否优先选中了 YouTube DASH video-only。2026-05-18 实测中，Bloomberg 样本的 360p+ DASH video-only URL 返回 403，但 HLS / combined MP4 format `96` 可下载；默认配置已改为优先 combined MP4/HLS。
 格式选择与验证步骤见 [yt-dlp 视频 / 音频格式选择策略](ytdlp-format-selection.md)。
 
@@ -203,10 +206,21 @@ YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“�
 说明：
 
 - `./scripts/dev/run-worker.sh download_youtube` / `download_bilibili` 每执行一次，只会启动 1 个对应 provider 的下载 worker 实例。
+- 手动多终端运行 `run-worker.sh` 时不会自动拉起崩溃进程；需要自动拉起时使用下面的 `devctl.sh`。
 - 若你手动多终端启动，并且希望兑现 `YOUTUBE_DOWNLOAD_CONCURRENCY=N` / `BILIBILI_DOWNLOAD_CONCURRENCY=N` 的真实下载并发，需要把对应 `download_*` worker 命令至少启动 `N` 次。
 - 若你手动多终端启动，并且希望兑现 `ASR_WORKER_CONCURRENCY=N` 的 ASR 请求并发，需要把 `./scripts/dev/run-worker.sh asr` 至少启动 `N` 次。
-- `embedding` worker 负责 `video.embed_transcript` 与 `playlist.backfill_embeddings`；历史补算只扫描缺失/失败/无向量的候选项，按 transcript 预取 + embedding HTTP batch 的有限流水线处理，空 transcript 会跳过。
-- `analysis` worker 负责 `playlist.build_analysis_snapshot`，默认单进程串行，避免多个重聚合任务同时压数据库和 CPU；快照成功后会自动清理旧 run；生产环境建议给该 worker 单独配置 systemd / cgroup `MemoryMax=6G`，与应用内 `ANALYSIS_MAX_RSS_BYTES` 保持一致。
+- `ai` worker 负责 `video.extract_events` 与 `playlist.backfill_events`，事件抽取读取 `plain` transcript 并调用 LLM。
+- `embedding` worker 负责 `event.embed`，只为 accepted 事件生成结构化事件 embedding。
+- `analysis` worker 负责 `playlist.build_event_regime_snapshot`，默认单进程串行，避免多个重聚合任务同时压数据库和 CPU；生产环境建议给该 worker 单独配置 systemd / cgroup `MemoryMax=6G`，与应用内 `ANALYSIS_MAX_RSS_BYTES` 保持一致。
+
+手动按播放列表时间范围投递事件抽取：
+
+```bash
+./scripts/enqueue-playlist-events.py a811f131-365e-44fe-8872-983a280299c7
+```
+
+默认按内容时间轴抽取最近 365 天。可用 `--since YYYY-MM-DD --until YYYY-MM-DD` 指定本地日期闭区间，用 `--dry-run` 先查看命中视频数。
+脚本会向数据库 `job` 表投递 `video.extract_events` 任务；默认按 `--progress-every` 的批大小分批提交，避免长时间运行时已投递任务不可见。
 
 打开 UI：`http://127.0.0.1:8000/`
 
@@ -225,6 +239,8 @@ YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“�
 - `devctl.sh start/restart` 会先执行一次 UI 构建（等价于 `./scripts/dev/build-ui.sh`）。如需跳过可设置 `SKIP_UI_BUILD=1`。
 - `devctl.sh start/restart` 会按 `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 自动扩展对应 provider 的下载 worker 数。
 - `devctl.sh start/restart` 会按 `ASR_WORKER_CONCURRENCY` / `EMBEDDING_WORKER_CONCURRENCY` / `ANALYSIS_WORKER_CONCURRENCY` 自动扩展 asr / embedding / analysis worker 数，默认均为 `1`；其中 `EMBEDDING_WORKER_CONCURRENCY=0` / `ANALYSIS_WORKER_CONCURRENCY=0` 表示当前节点不启动对应 worker。
+- `devctl.sh` 启动的 worker 会先进入轻量 supervisor；worker 子进程崩溃后会自动拉起，默认等待 `WORKER_RESTART_DELAY_SECONDS=5` 秒，也可用旧的 `DEV_WORKER_RESTART_DELAY_SECONDS` 覆盖本地等待时间。
+- 下载类 worker 的主执行心跳超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进时，会主动退出并交给 supervisor 重启，避免进程心跳仍在线但下载槽 advisory lock 长时间不释放。
 - 只有在 `.env` 里配置了 `API_BEARER_TOKEN` 时，主 API 进程才会额外挂载 `/mcp`；否则 `/mcp` 与 `/mcp/health` 返回 `404`。
 - 主 API 关闭 Uvicorn HTTP access log；WebSocket 握手日志中的 `token` / `access_token` / `api_key` query 值会被脱敏，避免 `devctl.sh logs` 暴露访问凭证。
 

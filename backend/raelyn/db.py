@@ -114,6 +114,96 @@ def _create_job_query_indexes(conn) -> None:
         _execute_best_effort_ddl(conn, statement)
 
 
+_LEGACY_ANALYSIS_JOB_TYPES = (
+    "video.embed_transcript",
+    "playlist.backfill_embeddings",
+    "playlist.build_analysis_snapshot",
+)
+
+_LEGACY_ANALYSIS_TABLES = (
+    "playlist_analysis_signal",
+    "playlist_analysis_period",
+    "playlist_analysis_candidate",
+    "playlist_analysis_state",
+    "playlist_analysis_run",
+    "video_embedding",
+)
+
+
+def _cancel_legacy_analysis_jobs(conn) -> None:
+    placeholders = ", ".join([f":t{i}" for i in range(len(_LEGACY_ANALYSIS_JOB_TYPES))])
+    params = {f"t{i}": value for i, value in enumerate(_LEGACY_ANALYSIS_JOB_TYPES)}
+    rows = conn.execute(
+        text(
+            f"""
+select id
+from job
+where type in ({placeholders})
+  and status in ('pending', 'running')
+"""
+        ),
+        params,
+    ).mappings().all()
+    conn.execute(
+        text(
+            f"""
+update job
+set status = 'canceled',
+    error_message = 'legacy transcript embedding / playlist analysis chain removed',
+    finished_at = coalesce(finished_at, {_timestamp_sql(conn.dialect.name)}),
+    lease_expires_at = null,
+    worker_id = null
+where type in ({placeholders})
+  and status in ('pending', 'running')
+"""
+        ),
+        params,
+    )
+
+    for row in rows:
+        data_expr = "cast(:data as jsonb)" if conn.dialect.name == "postgresql" else ":data"
+        conn.execute(
+            text(
+                f"""
+insert into job_event (job_id, ts, level, message, data)
+values (:job_id, {_timestamp_sql(conn.dialect.name)}, 'warning', 'legacy analysis job canceled by event-regime migration', {data_expr})
+"""
+            ),
+            {
+                "job_id": row["id"],
+                "data": json.dumps({"reason": "legacy_analysis_removed"}),
+            },
+        )
+
+
+def _drop_legacy_analysis_tables(conn) -> None:
+    for table_name in _LEGACY_ANALYSIS_TABLES:
+        suffix = " cascade" if conn.dialect.name == "postgresql" else ""
+        _execute_best_effort_ddl(conn, f"drop table if exists {table_name}{suffix}")
+
+
+def _create_event_analysis_indexes(conn) -> None:
+    statements = [
+        "create index if not exists market_event_source_video_idx on market_event(source_video_id)",
+        "create index if not exists market_event_status_time_idx on market_event(status, event_time_start)",
+        "create index if not exists market_event_type_time_idx on market_event(event_type, event_time_start)",
+        "create index if not exists market_event_available_at_idx on market_event(available_at)",
+        "create index if not exists market_event_evidence_event_idx on market_event_evidence(event_id)",
+        "create index if not exists market_event_evidence_video_idx on market_event_evidence(video_id)",
+        "create index if not exists market_event_entity_event_idx on market_event_entity(event_id)",
+        "create index if not exists market_event_entity_key_idx on market_event_entity(entity_type, normalized_key)",
+        "create index if not exists market_event_relation_event_idx on market_event_relation(event_id)",
+        "create index if not exists market_event_embedding_event_idx on market_event_embedding(event_id)",
+        "create index if not exists market_event_embedding_status_idx on market_event_embedding(status, embedding_model, embedding_dim)",
+        "create index if not exists event_regime_run_playlist_status_idx on event_regime_run(playlist_id, status)",
+        "create index if not exists event_regime_signal_run_granularity_period_idx on event_regime_signal(regime_run_id, granularity, period_date)",
+        "create index if not exists event_regime_signal_linked_candidate_idx on event_regime_signal(linked_candidate_id)",
+        "create index if not exists event_regime_candidate_run_status_idx on event_regime_candidate(regime_run_id, status)",
+    ]
+    for statement in statements:
+        _execute_best_effort_ddl(conn, statement)
+
+
 def _backfill_owned_image_assets(conn, *, owner_table: str, owner_id_col: str, asset_id_col: str, key_col: str, variant: str) -> None:
     try:
         rows = conn.execute(
@@ -306,6 +396,13 @@ where job.type = 'video.download'
             )
         )
         _create_job_query_indexes(conn)
+
+        try:
+            _cancel_legacy_analysis_jobs(conn)
+        except Exception:
+            pass
+        _drop_legacy_analysis_tables(conn)
+        tables = set(inspect(conn).get_table_names())
     # Worker heartbeats: add optional metadata columns (role) for UI observability.
     if "worker_heartbeat" in tables:
         cols = {c.get("name") for c in insp.get_columns("worker_heartbeat")}
@@ -314,110 +411,41 @@ where job.type = 'video.download'
                 conn.execute(text("alter table worker_heartbeat add column role varchar"))
             except Exception:
                 pass
+        if "active_at" not in cols:
+            try:
+                conn.execute(text("alter table worker_heartbeat add column active_at timestamptz"))
+                conn.execute(text("update worker_heartbeat set active_at = updated_at where active_at is null"))
+            except Exception:
+                pass
+        if "current_job_id" not in cols:
+            try:
+                conn.execute(text(f"alter table worker_heartbeat add column current_job_id {_uuid_column_sql(conn.dialect.name)}"))
+            except Exception:
+                pass
 
-    if "video_embedding" in tables:
-        _execute_best_effort_ddl(conn, "create index if not exists video_embedding_video_id_idx on video_embedding(video_id)")
+    if "market_event" in tables:
+        _create_event_analysis_indexes(conn)
+
+    if "video_time_evidence" in tables:
+        _execute_best_effort_ddl(conn, "create index if not exists video_time_evidence_video_id_idx on video_time_evidence(video_id)")
         _execute_best_effort_ddl(
             conn,
             (
-                "create index if not exists video_embedding_spec_status_video_idx "
-                "on video_embedding(transcript_variant, embedding_model, embedding_dim, status, video_id)"
+                "create index if not exists video_time_evidence_role_status_date_idx "
+                "on video_time_evidence(time_role, status, date_year, date_month, date_day)"
+            ),
+        )
+        _execute_best_effort_ddl(
+            conn,
+            (
+                "create unique index if not exists video_time_evidence_one_accepted_role_ux "
+                "on video_time_evidence(video_id, time_role) "
+                "where status = 'accepted'"
             ),
         )
 
     if "video" in tables:
         _execute_best_effort_ddl(conn, "create index if not exists video_media_id_idx on video(media_id)")
-
-    if "playlist_analysis_run" in tables:
-        _execute_best_effort_ddl(
-            conn,
-            "create index if not exists playlist_analysis_run_playlist_status_idx on playlist_analysis_run(playlist_id, status)",
-        )
-
-    if "playlist_analysis_period" in tables:
-        cols = {c.get("name") for c in insp.get_columns("playlist_analysis_period")}
-        for column_name in [
-            "drift_rolling_std",
-            "dispersion_std",
-            "dispersion_p25",
-            "dispersion_p75",
-            "projection_z",
-        ]:
-            if column_name not in cols:
-                try:
-                    conn.execute(text(f"alter table playlist_analysis_period add column {column_name} double precision"))
-                except Exception:
-                    pass
-        _execute_best_effort_ddl(
-            conn,
-            (
-                "create index if not exists playlist_analysis_period_run_period_idx "
-                "on playlist_analysis_period(analysis_run_id, period_date)"
-            ),
-        )
-
-    if "playlist_analysis_signal" in tables:
-        _execute_best_effort_ddl(
-            conn,
-            (
-                "create index if not exists playlist_analysis_signal_run_granularity_period_idx "
-                "on playlist_analysis_signal(analysis_run_id, granularity, period_date)"
-            ),
-        )
-        _execute_best_effort_ddl(
-            conn,
-            "create index if not exists playlist_analysis_signal_linked_event_idx on playlist_analysis_signal(linked_event_id)",
-        )
-
-    if "playlist_analysis_candidate" in tables:
-        cols = {c.get("name") for c in insp.get_columns("playlist_analysis_candidate")}
-        date_columns = ["peak_date", "event_start", "event_end"]
-        for column_name in date_columns:
-            if column_name not in cols:
-                try:
-                    conn.execute(text(f"alter table playlist_analysis_candidate add column {column_name} date"))
-                except Exception:
-                    pass
-        if "event_type" not in cols:
-            try:
-                conn.execute(text("alter table playlist_analysis_candidate add column event_type varchar not null default 'burst'"))
-            except Exception:
-                pass
-        for column_name in ["confidence", "uncertainty"]:
-            if column_name not in cols:
-                try:
-                    conn.execute(text(f"alter table playlist_analysis_candidate add column {column_name} double precision"))
-                except Exception:
-                    pass
-        if "summary" not in cols:
-            try:
-                conn.execute(text("alter table playlist_analysis_candidate add column summary text"))
-            except Exception:
-                pass
-        for column_name in ["top_terms", "evidence_video_ids"]:
-            if column_name not in cols:
-                try:
-                    if conn.dialect.name == "postgresql":
-                        conn.execute(text(f"alter table playlist_analysis_candidate add column {column_name} jsonb"))
-                    else:
-                        conn.execute(text(f"alter table playlist_analysis_candidate add column {column_name} json"))
-                except Exception:
-                    pass
-        if "available_at" not in cols:
-            try:
-                if conn.dialect.name == "postgresql":
-                    conn.execute(text("alter table playlist_analysis_candidate add column available_at timestamptz"))
-                else:
-                    conn.execute(text("alter table playlist_analysis_candidate add column available_at datetime"))
-            except Exception:
-                pass
-        _execute_best_effort_ddl(
-            conn,
-            (
-                "create index if not exists playlist_analysis_candidate_run_status_idx "
-                "on playlist_analysis_candidate(analysis_run_id, status)"
-            ),
-        )
 
     # Query performance indexes (best-effort).
     if "video" in tables:

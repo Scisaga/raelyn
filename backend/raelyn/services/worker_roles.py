@@ -29,9 +29,11 @@ WORKER_ROLE_TYPES: dict[str, list[str]] = {
     "process": ["video.normalize_subtitle"],
     "asr": ["video.asr_transcribe"],
     "sync": ["media.sync_profile", "media.sync_videos", "media.delete"],
-    "embedding": ["video.embed_transcript", "playlist.backfill_embeddings"],
-    "analysis": ["playlist.build_analysis_snapshot"],
+    "embedding": ["event.embed"],
+    "analysis": ["playlist.build_event_regime_snapshot"],
     "ai": [
+        "video.extract_events",
+        "playlist.backfill_events",
         "video.polish_transcript",
         "brief.generate_daily",
         "brief.generate_period",

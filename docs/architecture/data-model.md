@@ -31,18 +31,49 @@
 
 关键字段：
 
-- `published_at`：视频发布时间；只负责时间归属，不代表视频产物或文本已就绪。
+- `published_at`：平台原始发布时间；不覆盖历史回填出的内容真实日期，也不代表视频产物或文本已就绪。
 - `status`：当前下载 / 处理状态，例如 `discovered`、`members_only` 等。
 - `raw_info`：保留 provider 返回的原始元数据。
 
 播放列表 / 简报准入口径：
 
-- 播放列表时间轴：`published_at` 非空，且存在 `asset(type=video)`。
-- 简报周期聚合：`published_at` 非空，且存在可用于 transcript 读取的文本资产。
+- 播放列表时间轴：优先使用 `video_time_evidence` 选出的 `content_published_at`，缺失时回退 `published_at`，且存在 `asset(type=video)`。
+- 简报周期聚合：优先使用 `content_published_at`，缺失时回退 `published_at`，且存在可用于 transcript 读取的文本资产。
 
 约束：
 
 - `(provider, provider_video_id)` 唯一。
+
+### `video_time_evidence`
+
+当前职责：
+
+- 保存视频内容时间、事件时间或平台可用时间的候选证据，不覆盖 `video.published_at`。
+- 支持 Bloomberg 历史批量上传这类场景：平台上传时间可信，但不等于内容真实日期。
+- 同一视频可以有多条不同来源、不同置信度的时间证据，后续解析流程或人工审核再选择 accepted 记录。
+
+关键字段：
+
+- `video_id`：关联视频。
+- `time_role`：时间角色，例如 `content_published_at`、`event_time`、`platform_available_at`。
+- `source` / `source_version` / `evidence_key`：证据来源、解析器版本与幂等键。
+- `date_year` / `date_month` / `date_day`：可保存完整或部分日期；例如 Bloomberg description 只有 `May 12` 时只写月日。
+- `time_start` / `time_end` / `precision`：可保存完整时间点或时间区间，以及 `year | month | day | second | range | unknown` 等精度。
+- `confidence` / `status`：置信度与审核状态，`status='accepted'` 表示该 `time_role` 当前采用的时间证据。
+- `evidence_text` / `evidence_json` / `reliability_flags`：原始证据片段、结构化证据和可靠性标记，例如 `suspected_bulk_upload`、`year_inferred`。
+
+内容时间选择口径：
+
+- 只把完整年月日、`precision in ('day', 'second')` 且 `time_role='content_published_at'` 的证据纳入主时间轴。
+- 优先采用 `status='accepted'` 的记录；同一角色最多一条 accepted 由数据库约束保证。
+- 没有 accepted 时，只允许可信来源候选进入主时间轴：`source in ('codex_batch_publish_time_inference', 'external_title_search')` 且 `confidence >= 0.8`。
+- 排序规则为：accepted 优先、`confidence` 高优先、`updated_at` 新优先、`id` 大优先。
+- 对外保留 `published_at` 作为平台时间；查询与分析使用的有效时间记为 `timeline_at = coalesce(content_published_at, published_at)`。
+
+约束：
+
+- `(video_id, time_role, source, evidence_key)` 唯一，用于解析任务幂等写入。
+- 同一视频同一 `time_role` 最多一条 `status='accepted'` 记录。
 
 ### `asset`
 
@@ -94,54 +125,86 @@
 - `brief`：`(playlist_id, granularity, period_start)` 唯一。
 - `daily_brief`：`(playlist_id, brief_date)` 唯一。
 
-### `video_embedding`
+### `market_event`
 
 当前职责：
 
-- 保存视频 transcript 的 embedding 状态、向量、文本校验值与跳过原因。
+- 保存视频级 LLM 原子事件，是知识图谱与 Regime 分析的新事实源。
+- `confidence >= 0.8` 的事件自动进入 `accepted`，低置信事件先进入 `draft` 供人工查看。
 
 关键字段：
 
-- `transcript_variant` / `embedding_model` / `embedding_dim`：embedding 口径。
+- `event_time_start/end`、`time_precision`：事件实际发生时间；无法解析时 `time_precision=unknown`，自动 Regime 不消费。
+- `available_at`：该事件可被下游观察到的时间，供回测避免未来函数。
+- `event_type`、`title`、`summary`、`direction`、`magnitude`、`surprise_or_delta`：事件语义与强度。
+- `status`：`accepted | draft | rejected`。
+- `source_video_id`、`transcript_asset_id`、`extraction_model`、`prompt_version`、`source_hash`、`raw_payload`：抽取依据与复算口径。
+
+约束：
+
+- `(source_video_id, source_hash, prompt_version, event_key)` 唯一。
+
+### `market_event_evidence` / `market_event_entity` / `market_event_relation`
+
+当前职责：
+
+- `market_event_evidence` 保存事件到视频 transcript 的证据引用与证据文本。
+- `market_event_entity` 保存实体、资产、行业与宏观变量节点。
+- `market_event_relation` 保存事件内部的 `cause / effect / affects / mentions` 等边，第一版以关系表承载知识图谱，不接外部图数据库。
+
+关键字段：
+
+- `market_event_evidence.video_id`、`evidence_text`、`evidence_json`、`confidence`。
+- `market_event_entity.entity_type`、`name`、`normalized_key`、`role`、`confidence`。
+- `market_event_relation.source_entity_id`、`target_entity_id`、`relation_type`、`direction`、`magnitude`、`confidence`、`evidence_text`。
+
+约束：
+
+- `market_event_evidence`：`(event_id, video_id, evidence_key)` 唯一。
+- `market_event_entity`：`(event_id, entity_type, normalized_key, role)` 唯一。
+
+### `market_event_embedding`
+
+当前职责：
+
+- 基于结构化事件文本生成 embedding，供事件 Regime 分析使用。
+- 只对 `accepted` 事件生成；`draft` / `rejected` 不进入自动分析。
+
+关键字段：
+
+- `event_id`、`embedding_model`、`embedding_dim`：embedding 口径。
 - `status`：`ready`、`failed`、`skipped_over_budget` 等。
-- `vector`：ready 状态下的向量。
-- `text_checksum`：判断 transcript 是否需要刷新 embedding。
+- `vector`：ready 状态下的事件向量。
+- `text_checksum`：判断事件结构化文本是否需要刷新 embedding。
 
 约束：
 
-- `(video_id, transcript_variant, embedding_model, embedding_dim)` 唯一。
+- `(event_id, embedding_model, embedding_dim)` 唯一。
 
-### `playlist_analysis_run` / `playlist_analysis_signal` / `playlist_analysis_candidate`
+### `event_regime_run` / `event_regime_signal` / `event_regime_candidate`
 
 当前职责：
 
-- `playlist_analysis_run` 保存一次播放列表分析快照的状态、embedding 口径与覆盖率。
-- `playlist_analysis_signal` 保存多尺度连续信号面板，供 UI 与 quant-lab 读取。
-- `playlist_analysis_candidate` 保存事件序列和人工确认状态。
-- `playlist_analysis_period` 保留日级兼容视图，用于旧接口读取。
-- 新快照成功后，只保留当前 `last_ready_run` 与仍在 `pending/running` 的 run；同播放列表其它旧 run 会连同关联 period / signal / candidate 级联清理。
+- `event_regime_run` 保存一次播放列表事件 Regime 快照的状态、embedding 口径与覆盖率。
+- `event_regime_signal` 保存 day / week / month 多尺度事件 embedding 信号面板。
+- `event_regime_candidate` 保存候选 regime 变化和人工状态。
+- `event_regime_state` 保存播放列表级 dirty 状态与最新 ready run。
 
 关键字段：
 
-- `playlist_analysis_signal.granularity`：`day | week | month`。
-- `drift_score`、`drift_rolling_mean/std/z`：语义中心漂移及其 rolling z。
-- `dispersion_mean/std/p25/p75`：同一 period 内部 embedding 分散度，用作不确定性。
-- `projection_id/method/x/y/z/explained_variance_ratio`：PCA 解释层投影，不作为事件分数来源。
-- `linked_event_id`：该 signal period 命中的候选事件。
-- `playlist_analysis_candidate.candidate_date` / `event_start` / `event_end` / `peak_date`：事件日期与区间。
-- `event_type`：`burst | transition | regime`。
-- `score` / `confidence` / `uncertainty`：事件强度、置信度与不确定性；语义断点候选中 `score` 使用断点两侧 centroid drift 的 `boundary_z`，开放式主题候选中 `score` 使用窗口视频数、媒体数与向量聚合度。
-- `summary` / `top_terms` / `evidence_video_ids` / `evidence_json`：事件解释与证据视频；检测元数据写入 `evidence_json.detection`。语义断点使用 `two_window_centroid_drift_v1`，包含断点日期、前后窗口、`boundary_score`、`boundary_z` 与支持粒度；开放式主题使用 `open_topic_burst_v1`，包含窗口天数、主题种子词、视频数、媒体数、活跃天数、向量聚合度、代表标题与关键词。
-- `available_at`：事件信号可被下游观察到的时间，供回测避免未来函数。
-
-约束说明：
-
-- 当前仍复用 `(analysis_run_id, candidate_date)` 唯一约束；若未来需要同日多事件，再单独引入事件实体表或放宽唯一键。
+- `event_regime_signal.granularity`：`day | week | month`。
+- `event_count`、`ready_embedding_count`：当前周期事件数和 ready embedding 数。
+- `drift_score`、`drift_rolling_mean/std/z`：事件语义中心漂移及其 rolling z。
+- `dispersion_mean/std/p25/p75`：同一 period 内部事件 embedding 分散度。
+- `linked_candidate_id`：该 signal period 命中的候选 regime。
+- `event_regime_candidate.candidate_date` / `event_start` / `event_end` / `peak_date`：候选日期与区间。
+- `evidence_event_ids` / `evidence_video_ids` / `evidence_json`：候选解释与证据事件。
+- `available_at`：候选窗口中最早可观察证据时间。
 
 约束：
 
-- `playlist_analysis_signal`：`(analysis_run_id, granularity, period_date, rolling_window)` 唯一。
-- `playlist_analysis_candidate`：`(analysis_run_id, candidate_date)` 唯一。
+- `event_regime_signal`：`(regime_run_id, granularity, period_date, rolling_window)` 唯一。
+- `event_regime_candidate`：`(regime_run_id, candidate_date)` 唯一。
 
 ### `job` / `job_event`
 

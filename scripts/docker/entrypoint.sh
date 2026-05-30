@@ -39,6 +39,51 @@ start() {
   pids+=("$!")
 }
 
+worker_supervisor() {
+  local role="${1}"
+  local name="${2:-${role}}"
+  local restart_delay="${WORKER_RESTART_DELAY_SECONDS:-5}"
+  case "${restart_delay}" in
+    ''|*[!0-9]*) restart_delay=5 ;;
+  esac
+
+  local stopping=0
+  local child_pid=""
+
+  stop_child() {
+    stopping=1
+    if [[ -n "${child_pid}" ]] && kill -0 "${child_pid}" >/dev/null 2>&1; then
+      kill "${child_pid}" >/dev/null 2>&1 || true
+      wait "${child_pid}" >/dev/null 2>&1 || true
+    fi
+  }
+
+  trap stop_child SIGINT SIGTERM
+
+  local attempt=0
+  while [[ "${stopping}" -eq 0 ]]; do
+    attempt=$((attempt + 1))
+    echo "[entrypoint] starting ${name} worker role=${role} attempt=${attempt}"
+    env WORKER_ROLE="${role}" python -m raelyn.worker &
+    child_pid="$!"
+
+    set +e
+    wait "${child_pid}"
+    local exit_code="$?"
+    set -e
+    child_pid=""
+
+    if [[ "${stopping}" -ne 0 ]]; then
+      break
+    fi
+
+    echo "[entrypoint] ${name} worker exited code=${exit_code}; restart in ${restart_delay}s"
+    sleep "${restart_delay}"
+  done
+
+  echo "[entrypoint] ${name} worker supervisor stopped"
+}
+
 clamp_download_concurrency() {
   local raw="${1:-}"
   local default_value="${2:-1}"
@@ -86,7 +131,7 @@ start_download_workers() {
   echo "[entrypoint] starting ${count} ${role} worker(s)"
   local i
   for ((i=1; i<=count; i++)); do
-    start env WORKER_ROLE="${role}" python -m raelyn.worker
+    start worker_supervisor "${role}" "${role}-${i}"
   done
 }
 
@@ -100,7 +145,7 @@ start_role_workers() {
   echo "[entrypoint] starting ${count} ${role} worker(s)"
   local i
   for ((i=1; i<=count; i++)); do
-    start env WORKER_ROLE="${role}" python -m raelyn.worker
+    start worker_supervisor "${role}" "${role}-${i}"
   done
 }
 
@@ -123,13 +168,13 @@ start python -m raelyn.api_server
 # Workers (separate roles to avoid one queue starving others)
 start_download_workers "youtube" "download_youtube" "${YOUTUBE_DOWNLOAD_CONCURRENCY:-}" "${YOUTUBE_DOWNLOAD_CONCURRENCY_DEFAULT}"
 start_download_workers "bilibili" "download_bilibili" "${BILIBILI_DOWNLOAD_CONCURRENCY:-}" "${BILIBILI_DOWNLOAD_CONCURRENCY_DEFAULT}"
-start env WORKER_ROLE=audio python -m raelyn.worker
-start env WORKER_ROLE=process python -m raelyn.worker
+start worker_supervisor "audio" "audio-1"
+start worker_supervisor "process" "process-1"
 start_role_workers "asr" "${ASR_WORKER_CONCURRENCY:-}" "${ASR_WORKER_CONCURRENCY_DEFAULT}" "${ASR_WORKER_CONCURRENCY_MIN}"
-start env WORKER_ROLE=sync python -m raelyn.worker
+start worker_supervisor "sync" "sync-1"
 start_role_workers "embedding" "${EMBEDDING_WORKER_CONCURRENCY:-}" "${EMBEDDING_WORKER_CONCURRENCY_DEFAULT}" "${EMBEDDING_WORKER_CONCURRENCY_MIN}"
 start_role_workers "analysis" "${ANALYSIS_WORKER_CONCURRENCY:-}" "${ANALYSIS_WORKER_CONCURRENCY_DEFAULT}" "${ANALYSIS_WORKER_CONCURRENCY_MIN}"
-start env WORKER_ROLE=ai python -m raelyn.worker
+start worker_supervisor "ai" "ai-1"
 
 # Scheduler
 start python -m raelyn.scheduler

@@ -22,7 +22,6 @@ from raelyn.services.provider_pause import (
     set_provider_paused,
 )
 from raelyn.services.ytdlp import (
-    YtdlpCookiesInvalidError,
     _raise_if_provider_pause_messages,
     _raise_if_youtube_bot_check_messages,
 )
@@ -189,8 +188,8 @@ class BilibiliProviderPauseDetectionTests(unittest.TestCase):
 
 
 class YoutubeCookiesPauseDetectionTests(unittest.TestCase):
-    def test_raise_if_youtube_bot_check_messages_treats_as_cookie_expired(self) -> None:
-        with self.assertRaises(YtdlpCookiesInvalidError) as ctx:
+    def test_raise_if_youtube_bot_check_messages_requests_provider_pause(self) -> None:
+        with self.assertRaises(ProviderPauseRequestError) as ctx:
             _raise_if_youtube_bot_check_messages(
                 [
                     (
@@ -202,11 +201,12 @@ class YoutubeCookiesPauseDetectionTests(unittest.TestCase):
             )
 
         self.assertEqual(ctx.exception.provider, "youtube")
-        self.assertEqual(ctx.exception.reason, "ytdlp_cookies_expired")
-        self.assertIn("YTDLP_COOKIES_YOUTUBE 已失效", str(ctx.exception))
+        self.assertEqual(ctx.exception.reason, "youtube_bot_check")
+        self.assertIn("不一定是 YTDLP_COOKIES_YOUTUBE 失效", str(ctx.exception))
+        self.assertNotIn("YTDLP_COOKIES_YOUTUBE 已失效", str(ctx.exception))
 
     def test_raise_if_youtube_bot_check_messages_detects_chinese_locale(self) -> None:
-        with self.assertRaises(YtdlpCookiesInvalidError) as ctx:
+        with self.assertRaises(ProviderPauseRequestError) as ctx:
             _raise_if_youtube_bot_check_messages(
                 [
                     (
@@ -218,8 +218,9 @@ class YoutubeCookiesPauseDetectionTests(unittest.TestCase):
             )
 
         self.assertEqual(ctx.exception.provider, "youtube")
-        self.assertEqual(ctx.exception.reason, "ytdlp_cookies_expired")
-        self.assertIn("要求重新登录以确认不是机器人", str(ctx.exception))
+        self.assertEqual(ctx.exception.reason, "youtube_bot_check")
+        self.assertIn("使用 cookies 时仍触发人机验证", str(ctx.exception))
+        self.assertNotIn("YTDLP_COOKIES_YOUTUBE 已失效", str(ctx.exception))
 
     def test_raise_if_youtube_bot_check_without_cookies_requests_provider_pause(self) -> None:
         with self.assertRaises(ProviderPauseRequestError) as ctx:
@@ -239,8 +240,8 @@ class YoutubeCookiesPauseDetectionTests(unittest.TestCase):
         self.assertIn("无 cookies 下载仍触发人机验证", str(ctx.exception))
         self.assertNotIn("YTDLP_COOKIES_YOUTUBE 已失效", str(ctx.exception))
 
-    def test_raise_if_youtube_tab_authcheck_treats_as_cookie_expired(self) -> None:
-        with self.assertRaises(YtdlpCookiesInvalidError) as ctx:
+    def test_raise_if_youtube_tab_authcheck_requests_provider_pause(self) -> None:
+        with self.assertRaises(ProviderPauseRequestError) as ctx:
             _raise_if_youtube_bot_check_messages(
                 [
                     (
@@ -254,8 +255,9 @@ class YoutubeCookiesPauseDetectionTests(unittest.TestCase):
             )
 
         self.assertEqual(ctx.exception.provider, "youtube")
-        self.assertEqual(ctx.exception.reason, "ytdlp_cookies_expired")
+        self.assertEqual(ctx.exception.reason, "youtube_auth_check")
         self.assertIn("频道/播放列表鉴权检查失败", str(ctx.exception))
+        self.assertIn("不一定是 cookies 失效", str(ctx.exception))
 
 
 if __name__ == "__main__":

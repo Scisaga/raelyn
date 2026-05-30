@@ -283,7 +283,7 @@
                   <!-- Mobile tabs -->
                   <div
                     class="lg:hidden h-11 grid grid-cols-2 divide-x divide-slate-800 border-b border-slate-800 bg-slate-950/20"
-                    :style="playlistRow2Tab==='brief' ? playlistBriefPanelStyle() : playlistDayListPanelStyle()"
+                    :style="playlistRow2Tab==='events' ? '' : playlistDayListPanelStyle()"
                   >
                     <button
                       type="button"
@@ -296,10 +296,10 @@
                     <button
                       type="button"
                       class="h-11 text-sm inline-flex items-center justify-center"
-                      :class="playlistRow2Tab==='brief' ? 'bg-emerald-500/10 text-emerald-200' : 'text-slate-200 hover:bg-slate-800/40'"
-                      @click="playlistMediaPause(); playlistRow2Tab='brief'"
+                      :class="playlistRow2Tab==='events' ? 'bg-emerald-500/10 text-emerald-200' : 'text-slate-200 hover:bg-slate-800/40'"
+                      @click="playlistMediaPause(); playlistRow2Tab='events'; playlistLoadEventsPanel({ silent: true })"
                     >
-                      简报
+                      事件
                     </button>
                   </div>
 
@@ -308,7 +308,7 @@
                     <!-- Player panel -->
                     <div
                       class="bg-slate-950/10 border-b border-slate-800 2xl:border-b-0 lg:border-l lg:border-slate-800 lg:col-start-2 lg:row-start-1 2xl:col-start-3 2xl:row-start-1 flex flex-col min-h-0 shrink-0"
-                      :class="playlistRow2Tab==='brief' ? 'hidden lg:block' : ''"
+	                      :class="playlistRow2Tab==='events' ? 'hidden lg:block' : ''"
                       :style="playlistDayListSwipeEnabled() ? playlistDayListPanelStyle() : ''"
                     >
                       <template x-if="playlistDayVideosLoading || playlistDayVideosError || (Array.isArray(playlistDayVideos) && playlistDayVideos.length>0)">
@@ -574,7 +574,7 @@
                     <!-- Day videos list -->
                     <div
                       class="bg-slate-950/10 flex-1 min-h-0 flex flex-col lg:border-l lg:border-slate-800 lg:col-start-2 lg:row-start-2 2xl:col-start-2 2xl:row-start-1"
-                      :class="playlistRow2Tab==='brief' ? 'hidden lg:flex' : ''"
+	                      :class="playlistRow2Tab==='events' ? 'hidden lg:flex' : ''"
                       :style="playlistDayListSwipeEnabled() ? playlistDayListPanelStyle() : ''"
                     >
                       <div
@@ -606,110 +606,119 @@
                       </div>
                     </div>
 
-                    <!-- Brief -->
+                    <!-- Events -->
                     <div
                       class="relative bg-slate-950/10 flex-1 min-h-0 flex flex-col lg:col-start-1 lg:row-start-1 lg:row-span-2 2xl:col-start-1 2xl:row-start-1 2xl:row-span-1"
                       :class="playlistRow2Tab==='play' ? 'hidden lg:flex' : ''"
-                      :style="playlistBriefSwipeEnabled() ? playlistBriefPanelStyle() : ''"
                     >
-                      <div
-                        class="absolute top-14 right-4 z-10 inline-flex overflow-hidden rounded-md border border-slate-800 bg-slate-950/30 backdrop-blur divide-x divide-slate-800"
-                        role="group"
-                        aria-label="简报操作"
-                      >
-                        <button
-                          class="inline-flex h-8 w-8 items-center justify-center text-slate-200 transition hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-500/30"
-                          @click="playlistCopyBriefPrompt()"
-                          :disabled="!playlistBriefCanCopyPrompt()"
-                          :class="playlistBriefCanCopyPrompt() ? '' : 'opacity-60 cursor-not-allowed'"
-                          :title="playlistBriefPromptButtonTitle()"
-                          :aria-label="playlistBriefPromptButtonTitle()"
-                        >
-                          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                            <polyline points="16 3 21 3 21 8"></polyline>
-                            <line x1="8" y1="16" x2="21" y2="3"></line>
-                          </svg>
-                        </button>
-
-                        <button
-                          class="inline-flex h-8 w-8 items-center justify-center text-slate-200 transition hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-500/30"
-                          @click="playlistCopyBriefText()"
-                          :disabled="!playlistBriefCanCopy() || playlistBriefCopying"
-                          :class="(playlistBriefCanCopy() && !playlistBriefCopying) ? '' : 'opacity-60 cursor-not-allowed'"
-                          :title="playlistBriefCopying ? '复制中…' : '复制全部简报文本'"
-                          :aria-label="playlistBriefCopying ? '复制中' : '复制全部简报文本'"
-                        >
-                          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                          </svg>
-                        </button>
-                      </div>
-
                       <div class="h-12 shrink-0 flex items-center justify-between gap-3 px-4 border-b border-slate-800 bg-slate-950/20">
-                        <div class="min-w-0 flex items-center gap-3">
-                          <div class="text-md text-slate-300 truncate" x-text="playlistPeriodLabel() || '-'"></div>
+                        <div class="min-w-0 flex flex-wrap items-center gap-2">
+                          <div class="text-md text-slate-200 truncate">事件抽取</div>
+                          <span class="rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-200" x-text="playlistEventsSummary ? `${playlistEventsSummary.accepted} accepted` : '0 accepted'"></span>
+                          <span class="rounded-full border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-200" x-text="playlistEventsSummary ? `${playlistEventsSummary.draft} draft` : '0 draft'"></span>
                         </div>
                         <div class="shrink-0 flex items-center gap-2">
                           <button
-                            class="inline-flex items-center gap-2 rounded-md border border-emerald-500/40 bg-slate-950/20 px-3 py-1.5 text-xs font-medium text-emerald-200 hover:bg-emerald-500/10"
-                            @click="playlistSpeakBrief()"
-                            :disabled="!playlistBriefCanSpeak()"
-                            :class="playlistBriefCanSpeak() ? '' : 'opacity-60 cursor-not-allowed'"
-                            :title="playlistBriefSpeechButtonTitle()"
-                            :aria-label="playlistBriefSpeechButtonTitle()"
+                            class="inline-flex items-center gap-2 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-100 hover:bg-cyan-500/15 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="playlistExtractEvents()"
+                            :disabled="playlistEventsExtractSubmitting || !playlistDetail"
+                            title="投递当前播放列表的历史事件抽取任务"
                           >
-                            <svg x-show="!playlistBriefSpeakingForSelectedDate()" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                              <polygon points="11 5 6 9 3 9 3 15 6 15 11 19 11 5"></polygon>
-                              <path d="M15.5 8.5a5 5 0 0 1 0 7"></path>
-                              <path d="M18.5 5.5a9 9 0 0 1 0 13"></path>
-                            </svg>
-                            <svg x-show="playlistBriefSpeakingForSelectedDate()" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                              <rect x="6" y="6" width="12" height="12" rx="2"></rect>
-                            </svg>
-                            <span x-text="playlistBriefSpeechButtonLabel()"></span>
+                            <span x-show="!playlistEventsExtractSubmitting">抽取</span>
+                            <span x-show="playlistEventsExtractSubmitting">投递中…</span>
                           </button>
                           <button
-                            class="inline-flex items-center gap-2 rounded-md border border-slate-800 bg-slate-950/20 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800/60"
-                            @click="playlistGenerateBriefForSelectedDate()"
-                            :disabled="!playlistBriefCanGenerate()"
-                            :class="playlistBriefCanGenerate() ? '' : 'opacity-60 cursor-not-allowed'"
-                            :title="playlistBriefGenerateButtonTitle()"
-                            :aria-label="playlistBriefGenerateButtonTitle()"
+                            class="inline-flex items-center gap-2 rounded-md border border-slate-700 bg-slate-900/60 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800/70 disabled:opacity-60 disabled:cursor-not-allowed"
+                            @click="playlistAnalysisRebuild()"
+                            :disabled="playlistAnalysisRebuilding || !playlistDetail"
+                            title="基于 accepted 事件重建 Regime"
                           >
-                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                              <path d="M12 2v6"></path>
-                              <path d="M12 16v6"></path>
-                              <path d="M4.93 4.93l4.24 4.24"></path>
-                              <path d="M14.83 14.83l4.24 4.24"></path>
-                              <path d="M2 12h6"></path>
-                              <path d="M16 12h6"></path>
-                              <path d="M4.93 19.07l4.24-4.24"></path>
-                              <path d="M14.83 9.17l4.24-4.24"></path>
-                            </svg>
-                            <span x-show="!playlistBriefGeneratingForSelectedDate()">生成</span>
-                            <span x-show="playlistBriefGeneratingForSelectedDate()">生成中…</span>
+                            <span x-show="!playlistAnalysisRebuilding">重建 Regime</span>
+                            <span x-show="playlistAnalysisRebuilding">重建中…</span>
                           </button>
                         </div>
                       </div>
 
-                      <div
-                        x-ref="playlistBriefScroller"
-                        class="flex-1 min-h-0 overflow-auto raelyn-scrollbar p-4"
-                        style="touch-action: pan-y;"
-                        @pointerdown="playlistBriefPointerDown($event)"
-                      >
-                        <div class="text-xs text-slate-400" x-show="playlistBriefLoading" x-text="playlistBriefGeneratingForSelectedDate() ? '生成中…' : '加载中…'"></div>
-                        <div class="text-xs text-rose-200" x-show="playlistBriefError" x-text="playlistBriefError"></div>
-                        <div class="text-xs text-amber-200" x-show="playlistBriefSpeechError" x-text="playlistBriefSpeechError"></div>
-                        <div
-                          class="raelyn-brief prose prose-invert max-w-none text-md text-slate-400 prose-p:text-slate-400 prose-li:text-slate-400 prose-li:marker:text-slate-500 prose-strong:text-slate-200 prose-headings:text-slate-300 prose-hr:border-slate-700 prose-a:text-emerald-300 prose-a:hover:text-emerald-100"
-                          x-show="!playlistBriefLoading && !playlistBriefError"
-                          x-ref="playlistBriefContentEl"
-                          @click="playlistBriefClick($event)"
-                          x-html="playlistBriefHtml || (playlistBriefGeneratingForSelectedDate() ? '<div class=&quot;text-slate-400 text-sm&quot;>生成中…</div>' : '<div class=&quot;text-slate-400 text-sm&quot;>暂无简报（可能还在生成中，或本周期无可用文本）</div>')"
-                        ></div>
+                      <div class="shrink-0 border-b border-slate-800 bg-slate-950/15 px-4 py-2 grid grid-cols-1 gap-2 xl:grid-cols-[auto_minmax(0,1fr)]">
+                        <div class="flex flex-wrap items-center gap-2">
+                          <template x-for="option in playlistEventStatusOptions()" :key="option.key">
+                            <button type="button" class="rounded-md border px-2 py-1 text-[11px]" :class="playlistEventStatusFilter===option.key ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100' : 'border-slate-700 bg-slate-950/20 text-slate-300'" @click="playlistEventStatusFilter=option.key; playlistLoadEventsPanel()" x-text="option.label"></button>
+                          </template>
+                        </div>
+                        <input class="h-7 w-full rounded-md border border-slate-700 bg-slate-950/40 px-2 text-xs text-slate-200 outline-none placeholder:text-slate-500 focus:border-emerald-500/40" x-model.debounce.400ms="playlistEventEntityFilter" @input.debounce.450ms="playlistLoadEventsPanel()" placeholder="按实体过滤" />
+                      </div>
+
+                      <div class="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] divide-y xl:divide-y-0 xl:divide-x divide-slate-800">
+                        <div class="min-h-0 overflow-auto raelyn-scrollbar divide-y divide-slate-800">
+                          <div class="p-4 text-xs text-slate-400" x-show="playlistEventsLoading">加载中…</div>
+                          <div class="p-4 text-xs text-rose-200" x-show="playlistEventsError" x-text="playlistEventsError"></div>
+                          <template x-for="event in playlistEvents" :key="event.id">
+                            <button type="button" class="w-full p-4 text-left hover:bg-slate-900/45" :class="String(playlistSelectedEventId)===String(event.id) ? 'bg-emerald-500/10' : ''" @click="playlistSelectEvent(event.id)">
+                              <div class="flex items-start justify-between gap-3">
+                                <div class="min-w-0">
+                                  <div class="flex items-center gap-2 text-[11px]">
+                                    <span class="font-mono text-teal-400" x-text="playlistEventDateLabel(event)"></span>
+                                    <span class="rounded-full border px-1.5 py-0.5" :class="playlistEventStatusClass(event.status)" x-text="event.status"></span>
+                                  </div>
+                                  <div class="mt-1 truncate text-sm text-slate-100" x-text="event.title || event.event_type"></div>
+                                  <div class="mt-1 line-clamp-2 text-xs text-slate-400" x-text="playlistEventSummaryLine(event)"></div>
+                                  <div class="mt-2 truncate text-[11px] text-slate-500" x-text="playlistEventEntitiesLabel(event)"></div>
+                                </div>
+                                <div class="shrink-0 font-mono text-xs text-slate-400" x-text="event.confidence != null ? Number(event.confidence).toFixed(2) : '-'"></div>
+                              </div>
+                            </button>
+                          </template>
+                          <div class="p-4 text-sm text-slate-400" x-show="!playlistEventsLoading && !playlistEventsError && playlistEvents.length===0">暂无事件</div>
+                        </div>
+
+                        <div class="min-h-0 overflow-auto raelyn-scrollbar p-4">
+                          <template x-if="playlistEventDetail">
+                            <div class="space-y-4">
+                              <div>
+                                <div class="flex flex-wrap items-center gap-2 text-[11px]">
+                                  <span class="font-mono text-teal-400" x-text="playlistEventDateLabel(playlistEventDetail)"></span>
+                                  <span class="rounded-full border px-1.5 py-0.5" :class="playlistEventStatusClass(playlistEventDetail.status)" x-text="playlistEventDetail.status"></span>
+                                  <span class="rounded-full border border-slate-700 bg-slate-950/30 px-1.5 py-0.5 text-slate-300" x-text="playlistEventDetail.event_type"></span>
+                                </div>
+                                <div class="mt-2 text-base font-semibold text-slate-100" x-text="playlistEventDetail.title || '-'"></div>
+                                <div class="mt-2 text-sm leading-6 text-slate-300" x-text="playlistEventDetail.summary || '-'"></div>
+                              </div>
+                              <div class="grid grid-cols-3 gap-2 text-xs">
+                                <div class="rounded-md border border-slate-800 bg-slate-950/20 p-2">
+                                  <div class="text-slate-500">方向</div>
+                                  <div class="mt-1 text-slate-200" x-text="playlistEventDetail.direction || '-'"></div>
+                                </div>
+                                <div class="rounded-md border border-slate-800 bg-slate-950/20 p-2">
+                                  <div class="text-slate-500">幅度</div>
+                                  <div class="mt-1 text-slate-200" x-text="playlistEventDetail.magnitude && playlistEventDetail.magnitude.description ? playlistEventDetail.magnitude.description : '-'"></div>
+                                </div>
+                                <div class="rounded-md border border-slate-800 bg-slate-950/20 p-2">
+                                  <div class="text-slate-500">超预期</div>
+                                  <div class="mt-1 text-slate-200" x-text="playlistEventDetail.surprise_or_delta && playlistEventDetail.surprise_or_delta.description ? playlistEventDetail.surprise_or_delta.description : '-'"></div>
+                                </div>
+                              </div>
+                              <div class="flex flex-wrap gap-2">
+                                <template x-for="entity in (playlistEventDetail.entities || [])" :key="entity.id">
+                                  <span class="rounded-full border border-slate-700 bg-slate-950/30 px-2 py-0.5 text-[11px] text-slate-300" x-text="`${entity.entity_type}:${entity.name}`"></span>
+                                </template>
+                              </div>
+                              <div>
+                                <div class="mb-2 text-xs font-semibold text-slate-300">证据</div>
+                                <div class="space-y-2">
+                                  <template x-for="evidence in (playlistEventDetail.evidence || [])" :key="evidence.id">
+                                    <div class="rounded-md border border-slate-800 bg-slate-950/20 p-3 text-xs leading-5 text-slate-300" x-text="evidence.evidence_text || '-'"></div>
+                                  </template>
+                                </div>
+                              </div>
+                              <div class="flex flex-wrap gap-2">
+                                <button class="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-100 hover:bg-emerald-500/15" @click="playlistPatchEventStatus('accepted')">确认</button>
+                                <button class="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-100 hover:bg-amber-500/15" @click="playlistPatchEventStatus('draft')">恢复 draft</button>
+                                <button class="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-100 hover:bg-rose-500/15" @click="playlistPatchEventStatus('rejected')">拒绝</button>
+                              </div>
+                            </div>
+                          </template>
+                          <div class="text-sm text-slate-400" x-show="!playlistEventDetail">选择左侧事件查看证据</div>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -720,22 +729,22 @@
                   <div class="shrink-0 border-b border-slate-800 bg-slate-950/35">
                     <div class="px-4 py-2.5 grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
                       <div class="min-w-0 flex flex-wrap items-center gap-x-3 gap-y-2">
-                        <span class="text-sm font-semibold text-slate-100">Embedding / Regime 分析</span>
+                        <span class="text-sm font-semibold text-slate-100">事件 / Regime 分析</span>
                         <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="playlistAnalysisSummaryBadgeClass()">
                           <span x-text="playlistAnalysisSummary && playlistAnalysisSummary.running ? '重建中' : ((playlistAnalysisSummary && playlistAnalysisSummary.analysis_dirty) ? '待刷新' : '已就绪')"></span>
                         </span>
                         <span class="h-4 w-px bg-slate-800 hidden sm:inline-block"></span>
                         <span class="inline-flex items-center gap-1 text-xs text-slate-400">
-                          <span>覆盖率</span>
-                          <span class="font-mono tabular-nums text-slate-200" x-text="playlistAnalysisSummary ? `${playlistAnalysisSummary.video_embedded}/${playlistAnalysisSummary.video_total}` : '0/0'"></span>
+                          <span>事件 embedding</span>
+                          <span class="font-mono tabular-nums text-slate-200" x-text="playlistAnalysisSummary ? `${playlistAnalysisSummary.event_embedded}/${playlistAnalysisSummary.event_total}` : '0/0'"></span>
                         </span>
-                        <span class="inline-flex items-center gap-1 text-xs text-slate-400" title="文本超过 embedding 服务上下文预算时会标记为跳过。">
+                        <span class="inline-flex items-center gap-1 text-xs text-slate-400" title="低置信、未确认或时间不可解析的事件不会进入自动 Regime。">
                           <span>跳过</span>
-                          <span class="font-mono tabular-nums text-slate-200" x-text="playlistAnalysisSummary ? playlistAnalysisSummary.video_skipped : 0"></span>
+                          <span class="font-mono tabular-nums text-slate-200" x-text="playlistAnalysisSummary ? playlistAnalysisSummary.event_skipped : 0"></span>
                         </span>
-                        <span class="inline-flex items-center gap-1 text-xs text-slate-400" title="失败表示该视频的 video_embedding 状态为 failed，通常来自 embedding 服务调用异常；可在 Jobs 页查看对应 video.embed_transcript 或 playlist.backfill_embeddings 错误。">
+                        <span class="inline-flex items-center gap-1 text-xs text-slate-400" title="事件 embedding 失败会阻止对应事件进入 Regime；可在 Jobs 页查看 event.embed 错误。">
                           <span>失败</span>
-                          <span class="font-mono tabular-nums text-rose-200" x-text="playlistAnalysisSummary ? playlistAnalysisSummary.video_failed : 0"></span>
+                          <span class="font-mono tabular-nums text-rose-200" x-text="playlistAnalysisSummary ? playlistAnalysisSummary.event_failed : 0"></span>
                         </span>
                         <span class="h-4 w-px bg-slate-800 hidden md:inline-block"></span>
                         <div class="inline-flex shrink-0 rounded-md border border-slate-800 bg-slate-950/30 p-0.5">
@@ -749,9 +758,9 @@
                           class="px-3 py-1.5 rounded-md border border-cyan-500/30 bg-cyan-500/10 text-xs text-cyan-100 hover:bg-cyan-500/15 disabled:opacity-60 disabled:cursor-not-allowed whitespace-nowrap"
                           @click="playlistAnalysisBackfillEmbeddings()"
                           :disabled="playlistAnalysisBackfillSubmitting || playlistAnalysisActiveBackfillJob() || !playlistDetail"
-                          title="只补算当前播放列表里缺失、失败、跳过或 checksum 变化的视频 embedding；已就绪且 checksum 一致的视频会复用。"
+                          title="为当前播放列表中尚未抽取事件的视频投递 LLM 事件抽取任务。"
                         >
-                          <span x-show="!playlistAnalysisBackfillSubmitting">补算历史 embedding</span>
+                          <span x-show="!playlistAnalysisBackfillSubmitting">抽取历史事件</span>
                           <span x-show="playlistAnalysisBackfillSubmitting">投递中…</span>
                         </button>
                         <button
@@ -759,9 +768,9 @@
                           x-show="playlistAnalysisActiveBackfillJob()"
                           @click="playlistAnalysisCancelBackfill()"
                           :disabled="playlistAnalysisBackfillCanceling || (playlistAnalysisActiveBackfillJob() && playlistAnalysisActiveBackfillJob().cancel_requested_at)"
-                          title="停止当前历史 embedding 补算任务；任务会在下一个取消检查点退出。"
+                          title="停止当前事件抽取回填任务；任务会在下一个取消检查点退出。"
                         >
-                          <span x-show="!playlistAnalysisBackfillCanceling">停止补算任务</span>
+                          <span x-show="!playlistAnalysisBackfillCanceling">停止抽取任务</span>
                           <span x-show="playlistAnalysisBackfillCanceling">停止中…</span>
                         </button>
                         <button
@@ -784,7 +793,7 @@
                     <div class="border-t border-amber-500/20 bg-amber-500/10 px-4 py-2 text-xs text-amber-200" x-show="playlistAnalysisSummary && playlistAnalysisSummary.running">基于旧快照浏览，后台重建中。</div>
                     <div class="border-t border-cyan-500/20 bg-cyan-500/10 px-4 py-2 flex flex-wrap items-center gap-2 text-xs text-cyan-200" x-show="playlistAnalysisActiveBackfillJob()">
                       <span x-text="playlistAnalysisBackfillJobText()"></span>
-                      <span class="text-cyan-300/70">新补算需要先停止当前任务，或等待当前任务结束。</span>
+                      <span class="text-cyan-300/70">新抽取需要先停止当前任务，或等待当前任务结束。</span>
                     </div>
                     <div class="border-t border-rose-500/20 bg-rose-500/10 px-4 py-2 text-xs text-rose-200" x-show="playlistAnalysisError" x-text="playlistAnalysisError"></div>
                   </div>
@@ -971,7 +980,7 @@
                                 type="button"
                                 class="absolute rounded-full border transition-opacity hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
                                 :style="playlistAnalysisProjectionPointStyle(point)"
-                                :title="`${point.period_date} · 视频 ${point.video_count || 0} · 不确定性 ${point.dispersion_mean != null ? Number(point.dispersion_mean).toFixed(4) : '-'}`"
+                                :title="`${point.period_date} · 事件 ${point.event_count || point.video_count || 0} · 不确定性 ${point.dispersion_mean != null ? Number(point.dispersion_mean).toFixed(4) : '-'}`"
                                 @click="playlistAnalysisSelectEventFromDate(point.period_date)"
                               ></button>
                             </template>

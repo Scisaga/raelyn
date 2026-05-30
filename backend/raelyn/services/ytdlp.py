@@ -151,31 +151,30 @@ def _raise_if_youtube_bot_check_messages(
     if not combined:
         return
     if _is_youtube_tab_authcheck_error(combined):
-        raise YtdlpCookiesInvalidError(
-            "ytdlp_cookies_expired",
-            "YTDLP_COOKIES_YOUTUBE 已失效：YouTube 频道/播放列表鉴权检查失败。请在 UI -> 设置 更新 YouTube cookies.txt。",
+        raise ProviderPauseRequestError(
             provider="youtube",
+            reason="youtube_auth_check",
+            message=(
+                "YouTube同步任务已暂停：YouTube 频道/播放列表鉴权检查失败，但这不一定是 cookies 失效。"
+                "若不是私有内容，请优先检查 cookies 导出会话、YTDLP_PROXY 出口、bgutil PO Token Provider 和同步频率。"
+                f"环境信息：pot_provider={_youtube_pot_provider_desc()}，impersonate={_youtube_impersonate_desc()}。"
+            ),
         )
     if _is_youtube_bot_check_error(RuntimeError(combined)):
-        if not using_cookies:
-            raise ProviderPauseRequestError(
-                provider="youtube",
-                reason="youtube_bot_check",
-                message=(
-                    "YouTube下载任务已暂停：YouTube 无 cookies 下载仍触发人机验证。"
-                    "这通常不是 YTDLP_COOKIES_YOUTUBE 失效，而是出口 IP、PO Token 或下载频率被风控。"
-                    "请检查 YTDLP_PROXY、bgutil PO Token Provider 和下载并发。"
-                    f"环境信息：pot_provider={_youtube_pot_provider_desc()}。"
-                ),
-            )
-        raise YtdlpCookiesInvalidError(
-            "ytdlp_cookies_expired",
-            (
-                "YTDLP_COOKIES_YOUTUBE 已失效：YouTube 要求重新登录以确认不是机器人。"
-                "请在 UI -> 设置 更新 YouTube cookies.txt。"
-                f"环境信息：pot_provider={_youtube_pot_provider_desc()}。"
-            ),
+        cookie_part = (
+            "YouTube 无 cookies 下载仍触发人机验证。"
+            if not using_cookies
+            else "YouTube 在使用 cookies 时仍触发人机验证，但这不一定是 YTDLP_COOKIES_YOUTUBE 失效。"
+        )
+        raise ProviderPauseRequestError(
             provider="youtube",
+            reason="youtube_bot_check",
+            message=(
+                f"YouTube下载任务已暂停：{cookie_part}"
+                "更常见原因是出口 IP、请求频率、浏览器导出会话与运行出口不一致，或 PO Token 生成/使用失败。"
+                "请检查 YTDLP_PROXY、bgutil PO Token Provider、cookies 导出方式和下载/同步并发。"
+                f"环境信息：pot_provider={_youtube_pot_provider_desc()}，impersonate={_youtube_impersonate_desc()}。"
+            ),
         )
 
 

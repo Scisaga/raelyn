@@ -24,14 +24,12 @@ class EmbeddingTransientError(EmbeddingError):
 class EmbeddingSpec:
     model: str
     dim: int
-    transcript_variant: str
 
 
 def embedding_spec() -> EmbeddingSpec:
     return EmbeddingSpec(
         model=str(settings.embedding_model or "").strip() or "Qwen/Qwen3-Embedding-8B",
         dim=max(1, int(settings.embedding_dim or 1024)),
-        transcript_variant=str(settings.embedding_transcript_variant or "plain").strip().lower() or "plain",
     )
 
 

@@ -84,6 +84,11 @@ export function createPlaylistViewMethods() {
         this.playlistBriefSpeechText = "";
         this.playlistBriefSourceState = "";
         this.playlistBriefSourceMessage = "";
+        this.playlistEventsSummary = null;
+        this.playlistEvents = [];
+        this.playlistEventDetail = null;
+        this.playlistEventsError = "";
+        this.playlistSelectedEventId = "";
         this._abortCtrl("_playlistCountsAbortCtrl");
         this.playlistPeriodCounts = new Map();
         this.playlistPeriodCountsKey = "";
@@ -144,6 +149,7 @@ export function createPlaylistViewMethods() {
         this.playlistBriefError = "";
         this.playlistBriefSourceState = "";
         this.playlistBriefSourceMessage = "";
+        this.playlistEventsError = "";
         this.playlistPlayerNeedsDownload = false;
 
         const detail = await this.api(`/playlists/${encodeURIComponent(pid)}/detail`);
@@ -196,6 +202,7 @@ export function createPlaylistViewMethods() {
           await this.playlistLoadAnalysisView();
         } else {
           await this.playlistLoadDay(this.playlistSelectedDate, { autoPlay: false });
+          this.playlistLoadEventsPanel({ silent: true }).catch(() => {});
         }
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
@@ -3580,6 +3587,124 @@ export function createPlaylistViewMethods() {
       }
     },
 
+    playlistEventStatusOptions() {
+      return [
+        { key: "", label: "全部" },
+        { key: "accepted", label: "Accepted" },
+        { key: "draft", label: "Draft" },
+        { key: "rejected", label: "Rejected" },
+      ];
+    },
+
+    playlistEventStatusClass(status) {
+      const value = String(status || "").toLowerCase();
+      if (value === "accepted") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+      if (value === "rejected") return "border-rose-500/30 bg-rose-500/10 text-rose-200";
+      return "border-amber-500/30 bg-amber-500/10 text-amber-200";
+    },
+
+    playlistEventDateLabel(event) {
+      const value = String((event && (event.event_time_start || event.available_at)) || "");
+      return value ? value.slice(0, 10) : "unknown";
+    },
+
+    playlistEventEntitiesLabel(event) {
+      const entities = Array.isArray(event && event.entities) ? event.entities : [];
+      return entities.slice(0, 4).map((item) => item.name).filter(Boolean).join(" · ");
+    },
+
+    playlistEventSummaryLine(event) {
+      return String((event && (event.summary || event.title)) || "").trim();
+    },
+
+    playlistEventFilterQuery() {
+      const params = new URLSearchParams();
+      const status = String(this.playlistEventStatusFilter || "").trim();
+      const eventType = String(this.playlistEventTypeFilter || "").trim();
+      const entity = String(this.playlistEventEntityFilter || "").trim();
+      if (status) params.set("status", status);
+      if (eventType) params.set("event_type", eventType);
+      if (entity) params.set("entity", entity);
+      params.set("limit", "200");
+      const suffix = params.toString();
+      return suffix ? `?${suffix}` : "";
+    },
+
+    async playlistLoadEventsPanel({ silent = false } = {}) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return;
+      if (!silent) this.playlistEventsLoading = true;
+      this.playlistEventsError = "";
+      try {
+        const [summary, events] = await Promise.all([
+          this.api(`/playlists/${encodeURIComponent(pid)}/events/summary`),
+          this.api(`/playlists/${encodeURIComponent(pid)}/events${this.playlistEventFilterQuery()}`),
+        ]);
+        this.playlistEventsSummary = summary || null;
+        this.playlistEvents = Array.isArray(events) ? events : [];
+        const selectedId = String(this.playlistSelectedEventId || "").trim();
+        const target =
+          this.playlistEvents.find((item) => String(item.id) === selectedId) ||
+          this.playlistEvents[0] ||
+          null;
+        if (target) await this.playlistSelectEvent(target.id);
+        else {
+          this.playlistSelectedEventId = "";
+          this.playlistEventDetail = null;
+        }
+      } catch (e) {
+        this.playlistEventsError = e && e.message ? e.message : String(e);
+      } finally {
+        if (!silent) this.playlistEventsLoading = false;
+      }
+    },
+
+    async playlistSelectEvent(eventId) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const id = String(eventId || "").trim();
+      if (!pid || !id) {
+        this.playlistSelectedEventId = "";
+        this.playlistEventDetail = null;
+        return;
+      }
+      this.playlistSelectedEventId = id;
+      this.playlistEventDetail = await this.api(`/playlists/${encodeURIComponent(pid)}/events/${encodeURIComponent(id)}`);
+    },
+
+    async playlistExtractEvents() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid || this.playlistEventsExtractSubmitting) return;
+      try {
+        this.playlistEventsExtractSubmitting = true;
+        const result = await this.api(`/playlists/${encodeURIComponent(pid)}/events/extract`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ force: false }),
+        });
+        const jobId = result && result.job_id ? String(result.job_id).slice(0, 8) : "";
+        this.globalStatus = jobId ? `已投递事件抽取 ${jobId}` : "已投递事件抽取";
+        await this.playlistLoadEventsPanel({ silent: true });
+      } catch (e) {
+        this.playlistEventsError = e && e.message ? e.message : String(e);
+        this.globalStatus = `error: ${this.playlistEventsError}`;
+      } finally {
+        this.playlistEventsExtractSubmitting = false;
+      }
+    },
+
+    async playlistPatchEventStatus(status) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const eventId = String(this.playlistSelectedEventId || "").trim();
+      if (!pid || !eventId) return;
+      await this.api(`/playlists/${encodeURIComponent(pid)}/events/${encodeURIComponent(eventId)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      await Promise.all([this.playlistLoadEventsPanel({ silent: true }), this.playlistLoadAnalysisSummary().catch(() => null)]);
+      this.globalStatus = status === "accepted" ? "已确认事件" : status === "rejected" ? "已拒绝事件" : "已恢复为 draft";
+    },
+
     playlistAnalysisStopPolling() {
       try {
         clearTimeout(this.playlistAnalysisPollTimer);
@@ -3800,7 +3925,7 @@ export function createPlaylistViewMethods() {
           }
         }
         const minReadyCount = Number((metric && metric.minReadyCount) || 0);
-        const readyCount = Number(item.ready_embedding_count || item.video_count || 0);
+        const readyCount = Number(item.ready_embedding_count || item.event_count || item.video_count || 0);
         const rawValue = item[metric.field];
         const value = Number(rawValue);
         if ((minReadyCount > 0 && readyCount < minReadyCount) || rawValue == null || !Number.isFinite(value)) {
@@ -3870,7 +3995,7 @@ export function createPlaylistViewMethods() {
           color: "rgba(16, 185, 129, 0.95)",
           minReadyCount: 3,
           maxGapDays: 3,
-          description: "日级信号对低样本日期很敏感，默认隐藏；少于 3 个 embedding 的日期会断线。",
+          description: "日级信号对低样本日期很敏感，默认隐藏；少于 3 个事件 embedding 的日期会断线。",
         },
         { key: "week_z", title: "周语义漂移 z", granularity: "week", field: "drift_rolling_z", color: "rgba(56, 189, 248, 0.92)", maxGapDays: 21 },
         { key: "month_z", title: "月语义漂移 z", granularity: "month", field: "drift_rolling_z", color: "rgba(251, 191, 36, 0.88)", maxGapDays: 70 },
@@ -3936,16 +4061,14 @@ export function createPlaylistViewMethods() {
       if (!job) return "";
       const status = String(job.status || "").trim().toLowerCase() === "running" ? "执行中" : "排队中";
       const id = String(job.job_id || "").slice(0, 8);
-      const parts = [`历史 embedding 补算${status}`, `任务 ${id}`];
+      const parts = [`事件抽取${status}`, `任务 ${id}`];
       const scanned = Number(job.scanned || job.progress_current || 0);
-      const embedded = Number(job.embedded || 0);
-      const skipped = Number(job.skipped_over_budget || 0);
-      const batches = Number(job.embedding_batches || 0);
-      if (scanned || embedded || skipped || batches) {
+      const enqueued = Number(job.enqueued || 0);
+      const skipped = Number(job.skipped || 0);
+      if (scanned || enqueued || skipped) {
         parts.push(`扫描 ${scanned}`);
-        parts.push(`写入 ${embedded}`);
+        parts.push(`投递 ${enqueued}`);
         if (skipped) parts.push(`跳过 ${skipped}`);
-        if (batches) parts.push(`batch ${batches}`);
       }
       if (job.cancel_requested_at) parts.push("停止中");
       return parts.join(" · ");
@@ -3953,7 +4076,7 @@ export function createPlaylistViewMethods() {
 
     playlistAnalysisCandidateStatusClass(status) {
       const value = String(status || "").trim().toLowerCase();
-      if (value === "confirmed") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+      if (value === "accepted") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
       if (value === "rejected") return "border-rose-500/30 bg-rose-500/10 text-rose-200";
       return "border-amber-500/30 bg-amber-500/10 text-amber-200";
     },
@@ -4304,7 +4427,7 @@ export function createPlaylistViewMethods() {
         byEvent.set(id, { ...item, id, date, granularity, rank, sourceRank });
       };
       (Array.isArray(this.playlistAnalysisSignals) ? this.playlistAnalysisSignals : []).forEach((signal) => {
-        const id = String((signal && signal.linked_event_id) || "").trim();
+        const id = String((signal && (signal.linked_candidate_id || signal.linked_event_id)) || "").trim();
         if (!id) return;
         remember({
           id,
@@ -4795,9 +4918,8 @@ export function createPlaylistViewMethods() {
         if (!this.playlistAnalysisCandidatesLoaded) return "事件未加载";
         const items = Array.isArray(this.playlistAnalysisCandidates) ? this.playlistAnalysisCandidates : [];
         if (!items.length) return "暂无事件";
-        const confirmed = items.filter((item) => String(item.status || "").trim().toLowerCase() === "confirmed").length;
-        const topicBursts = items.filter((item) => String((item && item.detection_method) || "") === "open_topic_burst_v1").length;
-        return `${items.length} 个候选 · ${topicBursts} 事件候选 · ${confirmed} 已确认`;
+        const accepted = items.filter((item) => String(item.status || "").trim().toLowerCase() === "accepted").length;
+        return `${items.length} 个候选 · ${accepted} 已确认`;
       }
       const start = this.playlistAnalysisRangeStart || this.playlistAnalysisFullRangeStart || "";
       const end = this.playlistAnalysisRangeEnd || this.playlistAnalysisFullRangeEnd || "";
@@ -4995,7 +5117,7 @@ export function createPlaylistViewMethods() {
       if (this.playlistAnalysisCandidatesLoaded || this.playlistAnalysisCandidatesLoading) return;
       if (String(this.playlistAnalysisTab || "trend") !== "trend") return;
       const hasLinkedBreakpoints = (Array.isArray(this.playlistAnalysisSignals) ? this.playlistAnalysisSignals : []).some((item) =>
-        String((item && item.linked_event_id) || "").trim()
+        String((item && (item.linked_candidate_id || item.linked_event_id)) || "").trim()
       );
       if (!hasLinkedBreakpoints) return;
       const runId = this.playlistAnalysisSummary && this.playlistAnalysisSummary.last_ready_run_id ? String(this.playlistAnalysisSummary.last_ready_run_id) : "";
@@ -5570,6 +5692,7 @@ export function createPlaylistViewMethods() {
 
     playlistAnalysisEventTypeLabel(value) {
       const type = String(value || "").trim().toLowerCase();
+      if (type === "event_regime_shift") return "Regime Shift";
       if (type === "regime") return "Regime";
       if (type === "transition") return "Transition";
       return "Burst";
@@ -5577,6 +5700,7 @@ export function createPlaylistViewMethods() {
 
     playlistAnalysisEventTypeClass(value) {
       const type = String(value || "").trim().toLowerCase();
+      if (type === "event_regime_shift") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
       if (type === "regime") return "border-purple-500/30 bg-purple-500/10 text-purple-200";
       if (type === "transition") return "border-sky-500/30 bg-sky-500/10 text-sky-200";
       return "border-amber-500/30 bg-amber-500/10 text-amber-200";
@@ -5584,33 +5708,24 @@ export function createPlaylistViewMethods() {
 
     playlistAnalysisDetectionKindLabel(item) {
       const method = String((item && item.detection_method) || "").trim();
-      if (method === "open_topic_burst_v1") return "事件候选";
-      return "候选断点";
+      if (method === "event_embedding_regime_v1") return "事件 Regime";
+      return "候选";
     },
 
     playlistAnalysisDetectionKindClass(item) {
       const method = String((item && item.detection_method) || "").trim();
-      if (method === "open_topic_burst_v1") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
-      return "border-rose-500/30 bg-rose-500/10 text-rose-200";
+      if (method === "event_embedding_regime_v1") return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+      return "border-slate-500/30 bg-slate-500/10 text-slate-200";
     },
 
     playlistAnalysisDisplayCandidates() {
       return (Array.isArray(this.playlistAnalysisCandidates) ? this.playlistAnalysisCandidates : [])
         .slice()
         .sort((left, right) => {
-          const leftMethod = String((left && left.detection_method) || "");
-          const rightMethod = String((right && right.detection_method) || "");
           const leftDate = String((left && (left.event_date || left.candidate_date)) || "");
           const rightDate = String((right && (right.event_date || right.candidate_date)) || "");
           const dateOrder = rightDate.localeCompare(leftDate);
           if (dateOrder !== 0) return dateOrder;
-          const rank = (method) => {
-            if (method === "open_topic_burst_v1") return 0;
-            return 1;
-          };
-          const leftRank = rank(leftMethod);
-          const rightRank = rank(rightMethod);
-          if (leftRank !== rightRank) return leftRank - rightRank;
           return String((left && left.id) || "").localeCompare(String((right && right.id) || ""));
         });
     },
@@ -5635,7 +5750,7 @@ export function createPlaylistViewMethods() {
     async playlistLoadAnalysisSummary() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       if (!pid) return null;
-      const summary = await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/summary`);
+      const summary = await this.api(`/playlists/${encodeURIComponent(pid)}/regime/summary`);
       this.playlistAnalysisSummary = summary || null;
       if (summary && summary.last_ready_run_id) this.playlistAnalysisInitializeRangeFromSummary(summary);
       this.playlistAnalysisBackfillJob = summary && summary.backfill_job ? summary.backfill_job : null;
@@ -5647,7 +5762,7 @@ export function createPlaylistViewMethods() {
       if (!pid) return [];
       this.playlistAnalysisPeriodsLoading = true;
       try {
-        const payload = await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/periods`);
+        const payload = [];
         this.playlistAnalysisPeriods = Array.isArray(payload) ? payload : [];
         this.$nextTick(() => this.playlistAnalysisRequestChartRender());
         return this.playlistAnalysisPeriods;
@@ -5684,7 +5799,7 @@ export function createPlaylistViewMethods() {
         if (requestedStart) params.set("since", requestedStart);
         if (requestedEnd) params.set("until", requestedEnd);
         const suffix = params.toString() ? `?${params.toString()}` : "";
-        const payload = await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/signals${suffix}`, { signal: ctrl.signal });
+        const payload = await this.api(`/playlists/${encodeURIComponent(pid)}/regime/signals${suffix}`, { signal: ctrl.signal });
         if (Number(this._playlistAnalysisSignalsRequestToken || 0) !== token) return [];
         if (!this._playlistAnalysisSignalsResponseCache) this._playlistAnalysisSignalsResponseCache = new Map();
         this._playlistAnalysisSignalsResponseCache.set(cacheKey, Array.isArray(payload) ? payload : []);
@@ -5709,7 +5824,7 @@ export function createPlaylistViewMethods() {
       }
       this.playlistAnalysisCandidatesLoading = true;
       const request = (async () => {
-        const payload = await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/candidates`);
+        const payload = await this.api(`/playlists/${encodeURIComponent(pid)}/regime/candidates`);
         this.playlistAnalysisCandidates = Array.isArray(payload) ? payload : [];
         this.playlistAnalysisCandidatesLoaded = true;
         this.playlistAnalysisCandidatesVersion = Number(this.playlistAnalysisCandidatesVersion || 0) + 1;
@@ -5753,7 +5868,7 @@ export function createPlaylistViewMethods() {
       }
       this.playlistAnalysisSelectedCandidateId = id;
       this.playlistAnalysisCandidateDetail = await this.api(
-        `/playlists/${encodeURIComponent(pid)}/analysis/candidates/${encodeURIComponent(id)}`
+        `/playlists/${encodeURIComponent(pid)}/regime/candidates/${encodeURIComponent(id)}`
       );
     },
 
@@ -5806,7 +5921,7 @@ export function createPlaylistViewMethods() {
       if (!pid || this.playlistAnalysisRebuilding) return;
       try {
         this.playlistAnalysisRebuilding = true;
-        const result = await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/rebuild`, {
+        const result = await this.api(`/playlists/${encodeURIComponent(pid)}/regime/rebuild`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: "{}",
@@ -5829,14 +5944,14 @@ export function createPlaylistViewMethods() {
       if (!pid || this.playlistAnalysisBackfillSubmitting || this.playlistAnalysisActiveBackfillJob()) return;
       try {
         this.playlistAnalysisBackfillSubmitting = true;
-        const result = await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/backfill_embeddings`, {
+        const result = await this.api(`/playlists/${encodeURIComponent(pid)}/events/extract`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ force: false }),
         });
         this.playlistAnalysisBackfillJob = result && result.backfill_job ? result.backfill_job : result || null;
         const jobId = result && result.job_id ? String(result.job_id).slice(0, 8) : "";
-        this.globalStatus = result && result.created ? `已投递历史 embedding 补算 ${jobId}` : `已复用历史 embedding 补算 ${jobId}`;
+        this.globalStatus = `已投递事件抽取 ${jobId}`;
         await this.playlistLoadAnalysisSummary({ silent: true });
       } catch (e) {
         this.playlistAnalysisError = e && e.message ? e.message : String(e);
@@ -5854,7 +5969,7 @@ export function createPlaylistViewMethods() {
         this.playlistAnalysisBackfillCanceling = true;
         const result = await this.api(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
         const status = result && result.status ? String(result.status) : "";
-        this.globalStatus = status === "canceled" ? "已停止历史 embedding 补算任务" : "已请求停止历史 embedding 补算任务";
+        this.globalStatus = status === "canceled" ? "已停止事件抽取任务" : "已请求停止事件抽取任务";
         const summary = await this.playlistLoadAnalysisSummary({ silent: true });
         if (summary && (summary.running || this.playlistAnalysisActiveBackfillJob())) this.playlistAnalysisSchedulePoll();
         else this.playlistAnalysisStopPolling();
@@ -5870,7 +5985,7 @@ export function createPlaylistViewMethods() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       const candidateId = String(this.playlistAnalysisSelectedCandidateId || "").trim();
       if (!pid || !candidateId) return;
-      await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/candidates/${encodeURIComponent(candidateId)}`, {
+      await this.api(`/playlists/${encodeURIComponent(pid)}/regime/candidates/${encodeURIComponent(candidateId)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(patch || {}),
@@ -5879,7 +5994,7 @@ export function createPlaylistViewMethods() {
     },
 
     async playlistAnalysisConfirmCandidate() {
-      await this.playlistAnalysisPatchCandidate({ status: "confirmed" });
+      await this.playlistAnalysisPatchCandidate({ status: "accepted" });
       this.globalStatus = "已确认候选事件";
     },
 
@@ -5891,8 +6006,8 @@ export function createPlaylistViewMethods() {
     async playlistAnalysisOpenExport() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       if (!pid) return;
-      const events = await this.api(`/playlists/${encodeURIComponent(pid)}/analysis/events`);
-      this.playlistAnalysisExportPayload = { events: Array.isArray(events) ? events : [] };
+      const payload = await this.api(`/playlists/${encodeURIComponent(pid)}/regime/export/events`);
+      this.playlistAnalysisExportPayload = payload && typeof payload === "object" ? payload : { events: [] };
       this.playlistAnalysisExportOpen = true;
     },
 

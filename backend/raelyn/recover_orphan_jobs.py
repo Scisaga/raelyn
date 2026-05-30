@@ -17,6 +17,7 @@ def recover() -> dict[str, int]:
         orphaned = requeue_orphan_running_jobs(
             session,
             stale_after_seconds=settings.worker_stale_after_seconds,
+            execution_stale_after_seconds=settings.worker_execution_stale_after_seconds,
             priority_bump=settings.orphan_requeue_priority_bump,
         )
         session.flush()
@@ -30,4 +31,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

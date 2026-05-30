@@ -35,7 +35,7 @@
 - 字幕下载是否开启由运行时配置 `ytdlp_subtitles` 决定。
 - YouTube 会员视频默认不会下载；只有配置 `ytdlp_members_only.enabled=true` 时才会尝试。
 - Cookies 来自 `app_config`，运行时会写入 `tmp/` 下的 provider 专属 `cookies.txt` 文件。
-- 新视频 transcript 生成后默认不会自动投递 `video.embed_transcript`；只有环境变量 `AUTO_EMBED_NEW_VIDEO_TRANSCRIPTS=true` 时才会开启。历史 embedding 补算仍通过 `playlist.backfill_embeddings` 显式触发。
+- 新视频 transcript 生成后，若 `AUTO_EXTRACT_NEW_VIDEO_EVENTS=true` 且 LLM 已配置，会自动投递 `video.extract_events`；历史事件回填通过播放列表事件面板显式触发 `playlist.backfill_events`。
 
 ## 资产访问与分发
 
@@ -61,12 +61,14 @@
 - 支持为单个播放列表配置独立的简报提示词。
 - 支持获取按日期 / 按周期的视频列表与周期视频计数。
 - 支持按单周期生成简报，也支持按区间批量重建。
+- 播放列表主界面提供事件抽取 / 证据面板，支持历史事件抽取、事件确认 / 拒绝与 Regime 重建。
 
 实现要点：
 
-- 播放列表媒体变更会调用 `schedule_brief_refresh_for_media_change()` 触发相关周期简报刷新。
-- 简报调度策略由 `brief_generation_policy` 决定，区分“最新周期冷却时间”和“历史周期每日批处理时间”。
+- `AUTO_GENERATE_BRIEFS=true` 时，播放列表媒体变更会调用 `schedule_brief_refresh_for_media_change()` 触发相关周期简报刷新；默认关闭自动简报投递。
+- 简报调度策略由 `brief_generation_policy` 决定，区分“最新周期冷却时间”和“历史周期每日批处理时间”；该策略只在自动简报开启或手动简报任务创建时生效。
 - `brief` 是当前主表，`daily_brief` 仅用于历史兼容读取。
+- 事件抽取由 `playlist.backfill_events` 扫描播放列表并投递 `video.extract_events`；accepted 事件再通过 `event.embed` 进入 `playlist.build_event_regime_snapshot`。
 
 ## 系统运维与观测
 

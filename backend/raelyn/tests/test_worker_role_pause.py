@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -280,6 +281,27 @@ class WorkersApiTests(unittest.TestCase):
         self.assertTrue(by_role["sync"]["controllable"])
         self.assertFalse(by_role["all"]["paused"])
         self.assertFalse(by_role["all"]["controllable"])
+
+    def test_list_workers_exposes_execution_heartbeat(self) -> None:
+        now = datetime(2026, 3, 28, 1, 2, 3, tzinfo=timezone.utc)
+        job_id = uuid.uuid4()
+        hb = WorkerHeartbeat(
+            worker_id="host-a:1234:abcd",
+            role="download_youtube",
+            updated_at=now,
+            active_at=now,
+            current_job_id=job_id,
+        )
+        session = _FakeConfigSession(worker_rows=[hb])
+
+        with patch("raelyn.api.workers.utcnow", return_value=now):
+            with patch("raelyn.api.workers.session_scope", lambda: _fake_session_scope(session)):
+                payload = workers_api.list_workers()
+
+        self.assertEqual(payload["execution_stale_after_seconds"], workers_api.settings.worker_execution_stale_after_seconds)
+        self.assertEqual(payload["workers"][0]["active_at"], now.isoformat())
+        self.assertEqual(payload["workers"][0]["current_job_id"], str(job_id))
+        self.assertTrue(payload["workers"][0]["execution_online"])
 
     def test_pause_and_resume_worker_role_api(self) -> None:
         session = _FakeConfigSession()

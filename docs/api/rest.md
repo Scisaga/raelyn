@@ -160,9 +160,15 @@
   - `q`
   - `published_since`
   - `published_until`
+  - `time_basis`：`content | platform`，默认 `content`。`content` 使用 `video_time_evidence` 中已采纳或高置信候选的 `content_published_at`，没有证据时回退到 `video.published_at`；`platform` 仅使用平台原始发布时间。
   - `limit`
   - `offset`
 - 返回视频列表、媒体名称、媒体头像、缩略图资产和视频资产引用。
+- 时间字段：
+  - `published_at`：平台原始发布时间。
+  - `content_published_at`：内容真实发布时间证据，可能为空。
+  - `timeline_at`：本次查询和排序使用的时间。
+  - `time_source` / `time_status` / `time_confidence`：`timeline_at` 的来源、审核状态与置信度；平台回退时 `time_status=platform_fallback`。
 
 ### `GET /api/videos/{video_id}`
 
@@ -338,64 +344,83 @@
 
 ### `GET /api/playlists/{playlist_id}/videos_by_date`
 
-- query：`date=YYYY-MM-DD`
-- 返回指定本地日期的可播放视频列表；仅包含已发布时间且已落视频资产的视频。
+- query：`date=YYYY-MM-DD`、`time_basis=content|platform`（默认 `content`）
+- 返回指定本地日期的可播放视频列表；默认按内容时间轴归属，缺少内容时间证据时回退到平台发布时间，且仅包含已落视频资产的视频。
 
 ### `GET /api/playlists/{playlist_id}/video_counts_by_period`
 
-- query：`granularity`、`start`、`end`
-- 返回可播放视频的周期计数，用于日 / 周 / 月时间轴。
+- query：`granularity`、`start`、`end`、`time_basis=content|platform`（默认 `content`）
+- 返回可播放视频的周期计数，用于日 / 周 / 月时间轴；默认按内容时间轴聚合。
 
 ### `GET /api/playlists/{playlist_id}/videos_by_period`
 
-- query：`granularity`、`date`、`limit`
-- 返回某个周期内的可播放视频列表；仅包含已发布时间且已落视频资产的视频。
+- query：`granularity`、`date`、`limit`、`time_basis=content|platform`（默认 `content`）
+- 返回某个周期内的可播放视频列表；默认按内容时间轴归属，且仅包含已落视频资产的视频。
 
-### `GET /api/playlists/{playlist_id}/analysis/summary`
+### `POST /api/playlists/{playlist_id}/events/extract`
 
-- 返回播放列表分析覆盖率、快照状态与候选数量。
-- 若已有 ready 快照，覆盖率计数直接来自该 ready run 的快照统计，避免首屏为了展示 summary 重新扫描大播放列表的视频与 embedding。
-- 若存在 ready 快照，返回 `signal_start_date` / `signal_end_date`，表示 day 级分析信号的全量日期边界，供 UI 初始化时间轴与默认查询范围。
-- 若当前播放列表存在 `pending/running` 的 `playlist.backfill_embeddings`，返回 `backfill_job`，包含任务 ID、状态、扫描/写入/跳过数量与取消请求时间。
-- 该接口只读取状态并展示 `analysis_dirty`，不会自动创建分析任务。
+- 手动创建 `playlist.backfill_events` 任务，按播放列表扫描视频并投递 `video.extract_events` 子任务。
+- body：`{ "force": false }`；`force=true` 会重新抽取同一 prompt / model 口径下的视频事件。
+- 返回任务 ID、任务状态与进度。新 transcript 生成后也可由 `AUTO_EXTRACT_NEW_VIDEO_EVENTS=true` 自动投递单视频抽取。
 
-### `POST /api/playlists/{playlist_id}/analysis/backfill_embeddings`
+### `GET /api/playlists/{playlist_id}/events/summary`
 
-- 手动创建 `playlist.backfill_embeddings` 任务。
-- 同一播放列表已有 `pending/running` 的历史 embedding 补算时，不创建新任务；返回现有任务的 `job_id`、`created=false` 与 `backfill_job`。需要等待现有任务结束，或通过任务取消接口停止现有任务后再创建新任务。
+- 返回事件抽取覆盖率与状态计数：`video_total`、`video_with_events`、`event_total`、`accepted`、`draft`、`rejected`、`coverage_ratio`。
+- 返回当前活跃的历史抽取任务 `backfill_job`，便于 UI 展示扫描 / 投递进度。
 
-### `POST /api/playlists/{playlist_id}/analysis/rebuild`
+### `GET /api/playlists/{playlist_id}/events`
 
-- 手动创建 `playlist.build_analysis_snapshot` 任务；只有显式调用该接口才会投递分析重建。
-- 同一播放列表已有 `pending/running` 的分析重建任务时，不创建新任务；返回现有任务的 `job_id` 与 `created=false`。
-- 分析 worker 会分批流式读取 ready embedding；可用内存低于 `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES` 或进程 RSS 高于 `ANALYSIS_MAX_RSS_BYTES` 时直接失败并记录原因。
-- 新快照成功后会自动清理同播放列表旧的非运行中 analysis run，只保留当前可读取的 `last_ready_run` 和仍在 `pending/running` 的 run。
+- query：可选 `status=accepted|draft|rejected`、`event_type`、`entity`、`min_confidence`、`limit`、`offset`。
+- 返回播放列表内的视频级 LLM 原子事件，默认按 `event_time_start` 倒序排列。
+- 关键字段：`event_time_start/end`、`time_precision`、`available_at`、`event_type`、`title`、`summary`、`direction`、`magnitude`、`surprise_or_delta`、`confidence`、`status`、`source_video_id`、`entities`。
 
-### `GET /api/playlists/{playlist_id}/analysis/signals`
+### `GET /api/playlists/{playlist_id}/events/{event_id}`
+
+- 返回单个事件详情，包含实体、证据视频文本、事件内 cause/effect/affects/mentions 边与原始抽取载荷。
+
+### `PATCH /api/playlists/{playlist_id}/events/{event_id}`
+
+- body：`{ "status": "accepted|draft|rejected" }`。
+- 将低置信或人工审核事件改为 accepted 后，会投递 `event.embed` 并标记播放列表 event-regime dirty；rejected/draft 不进入自动 Regime 分析。
+
+### `GET /api/playlists/{playlist_id}/events/graph`
+
+- 返回第一版关系图数据：`nodes` 包含事件与实体，`edges` 包含事件证据、事件-实体关系以及事件内因果/影响边。
+- 该接口基于关系表生成，不依赖外部图数据库。
+
+### `POST /api/playlists/{playlist_id}/regime/rebuild`
+
+- 手动创建 `playlist.build_event_regime_snapshot` 任务。
+- Regime 只消费 `accepted`、`event_time_start` 可解析且 `market_event_embedding.status=ready` 的事件。
+- 同一播放列表已有 `pending/running` 的重建 run 时复用现有 run。
+
+### `GET /api/playlists/{playlist_id}/regime/summary`
+
+- 返回事件 Regime 覆盖率、dirty 状态、ready run、signal 日期边界、候选数量与活跃重建任务。
+
+### `GET /api/playlists/{playlist_id}/regime/signals`
 
 - query：可选 `granularity=day|week|month`、`since=YYYY-MM-DD`、`until=YYYY-MM-DD`。
-- 返回当前 ready 快照的连续多尺度信号面板。
-- 关键字段：`granularity`、`period_date`、`rolling_window`、`video_count`、`ready_embedding_count`、`drift_score`、`drift_rolling_mean/std/z`、`dispersion_mean/std/p25/p75`、`projection_id`、`projection_method`、`projection_x/y/z`、`projection_explained_variance_ratio`、`linked_event_id`。
-- `projection_*` 仅用于解释与 UI 可视化，不作为事件分数来源。
+- 返回当前 ready event-regime run 的连续多尺度信号面板。
+- 关键字段：`granularity`、`period_date`、`rolling_window`、`event_count`、`ready_embedding_count`、`drift_score`、`drift_rolling_mean/std/z`、`dispersion_mean/std/p25/p75`、`projection_*`、`linked_candidate_id`。
 
-### `GET /api/playlists/{playlist_id}/analysis/events`
+### `GET /api/playlists/{playlist_id}/regime/candidates`
 
-- 返回当前 ready 快照的事件序列，等价于候选事件的新主口径；默认按 `event_date / candidate_date` 倒序排列。
-- 关键字段：`event_id`、`event_date`、`peak_date`、`event_start`、`event_end`、`effective_trade_date`、`event_type`、`status`、`score`、`confidence`、`uncertainty`、`summary`、`top_terms`、`evidence_video_ids`、`available_at`。
-- `detection_method` 区分检测来源：`open_topic_burst_v1` 表示基于 ready embedding 的开放式主题候选，覆盖 3 日短爆发与 14 日持续主题窗口；`two_window_centroid_drift_v1` 表示语义漂移候选断点。
-- 语义断点候选会额外返回 `breakpoint_date`、`detection_granularity`、`boundary_score`、`boundary_z`、`before_start`、`before_end`、`after_start`、`after_end`、`supporting_granularities`。
-- `open_topic_burst_v1` 的 `score` 来自窗口视频数、媒体数与向量聚合度，检测元数据会包含 `window_days`、`cohesion`、`available_media_count`、`required_media_count` 与解释用 `top_terms`；候选由窗口内 ready embedding 的高响应维度自动语义桶生成，再用完整向量 cohesion 过滤，不使用标题 seed 或固定事件目录。媒体数门槛按候选窗口附近 90 天实际活跃媒体数自适应，媒体稀疏期还要求主题窗口密度明显高于附近背景密度，避免把长期单源栏目误判为事件；最终候选按年份设置上限，避免近年高密度媒体覆盖挤掉历史年份。`summary` 采用结构化摘要，`evidence` 优先保留跨媒体代表标题；`two_window_centroid_drift_v1` 的 `score` 使用 `boundary_z`，`drift_score` 使用 `boundary_score`。
-- 不包含 `train_start / train_end / valid_start / valid_end / test_start / test_end`；训练窗口、验证窗口与回测 horizon 由 quant-lab 按实验目标自行决定。
+- 返回当前 ready event-regime run 的候选 regime 变化，默认按 `candidate_date` 倒序排列。
+- 候选证据来自 LLM 事件与 KG 实体，不再来自整段 transcript embedding 的视频候选。
 
-### `GET /api/playlists/{playlist_id}/analysis/evidence`
+### `GET /api/playlists/{playlist_id}/regime/candidates/{candidate_id}`
 
-- query：可选 `event_id`。
-- 返回事件证据视频列表，包含 `event_id`、`video_id`、`media_id`、标题、媒体名、发布时间、到 period centroid 或事件 centroid 的距离与 shift score。`open_topic_burst_v1` 的 `shift_score` 表示视频向量与事件 centroid 的相似度。
+- 返回候选详情，包含候选窗口、分数、证据事件 ID、证据视频 ID 与检测元数据。
 
-### `GET /api/playlists/{playlist_id}/analysis/export/explicit-event-windows`
+### `PATCH /api/playlists/{playlist_id}/regime/candidates/{candidate_id}`
 
-- legacy 接口，返回 `{ "legacy": true, "window_mode": "explicit_event", "explicit_event_windows": [...] }`。
-- 仅用于兼容旧 quant-lab train planner 请求；新的主接口应使用 `analysis/events` 与 `analysis/signals`。
+- body：`{ "status": "draft|accepted|rejected", "event_type": "event_regime_shift|transition|regime|burst" }`，字段均可选。
+
+### `GET /api/playlists/{playlist_id}/regime/export/events`
+
+- 返回 `{ "window_mode": "event_regime", "events": [...] }`，供下游 quant-lab / 回测使用。
+- 每个事件窗口包含 `available_at`，下游应以它作为可观察时间，避免未来函数。
 
 ### `POST /api/briefs/generate`
 

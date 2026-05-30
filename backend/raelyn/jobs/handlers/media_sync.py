@@ -17,7 +17,7 @@ from raelyn.services.provider import build_media_videos_url
 from raelyn.services.transcripts import TRANSCRIPT_VARIANTS
 from raelyn.services.video_actions import schedule_video_download
 from raelyn.services.video_meta import parse_published_at
-from raelyn.services.playlist_analysis import mark_playlists_analysis_dirty_for_video
+from raelyn.services.event_analysis import mark_playlists_event_regime_dirty_for_video
 from raelyn.services.ytdlp import YtdlpCookiesInvalidError, ytdlp_extract_info
 from raelyn.services.ytdlp_errors import is_provider_media_unavailable_error
 from raelyn.timeutil import utcnow
@@ -310,7 +310,7 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
             created += 1
             session.flush()
             if video.published_at:
-                mark_playlists_analysis_dirty_for_video(session, video.id)
+                mark_playlists_event_regime_dirty_for_video(session, video.id)
 
             has_transcript = (
                 session.execute(

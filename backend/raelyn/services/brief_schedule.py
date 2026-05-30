@@ -19,6 +19,7 @@ from raelyn.services.video_admission import (
     brief_admitted_video_expr,
     ensure_video_published_at_backfilled,
 )
+from raelyn.services.video_time import resolve_video_timeline, timeline_time_expr
 from raelyn.timeutil import utcnow
 
 DEFAULT_BRIEF_GENERATION_POLICY = {
@@ -146,6 +147,10 @@ def _brief_job_priority(trigger_mode: str) -> int:
     return 5 if str(trigger_mode or "").strip().lower() == "manual" else 2
 
 
+def _auto_brief_generation_enabled() -> bool:
+    return bool(getattr(settings, "auto_generate_briefs", False))
+
+
 def _create_brief_job(
     session: Session,
     *,
@@ -204,6 +209,8 @@ def schedule_brief_refresh(
     trigger_mode = str(trigger_mode or "auto").strip().lower() or "auto"
     if trigger_mode not in {"auto", "manual"}:
         trigger_mode = "auto"
+    if trigger_mode == "auto" and not _auto_brief_generation_enabled():
+        return None
 
     dedupe_key, base_params = _brief_normalize_date_and_params(
         "brief.generate_period",
@@ -320,12 +327,14 @@ def schedule_brief_refresh(
 
 
 def schedule_brief_refresh_for_video(session: Session, *, video: Video, reason: str) -> int:
+    if not _auto_brief_generation_enabled():
+        return 0
     if not llm_enabled():
         return 0
 
     ensure_video_published_at_backfilled(session)
-    ts = video.published_at
-    day = _local_date(ts)
+    timeline = resolve_video_timeline(session, video)
+    day = _local_date(timeline.timeline_at)
     if not day:
         return 0
     admitted = session.execute(select(Video.id).where(Video.id == video.id, brief_admitted_video_expr()).limit(1)).scalar_one_or_none()
@@ -373,6 +382,8 @@ def schedule_brief_refresh_for_media_change(
     changed_media_ids: list[uuid.UUID],
     change_type: str,
 ) -> int:
+    if not _auto_brief_generation_enabled():
+        return 0
     if not llm_enabled():
         return 0
 
@@ -385,7 +396,7 @@ def schedule_brief_refresh_for_media_change(
         return 0
 
     ensure_video_published_at_backfilled(session)
-    co_ts = Video.published_at
+    co_ts = timeline_time_expr()
     timestamps = session.execute(
         select(co_ts).where(Video.media_id.in_(list(media_ids)), brief_admitted_video_expr())
     ).scalars().all()

@@ -15,7 +15,15 @@ from raelyn.models import Asset, Media, Video
 from raelyn.services.downloads import build_download_filename, content_disposition_attachment
 from raelyn.services.transcripts import TRANSCRIPT_VARIANT_SET, build_transcript_payload
 from raelyn.services.video_actions import schedule_video_download, schedule_video_retranscribe
-from raelyn.services.video_meta import backfill_video_published_at, parse_published_at
+from raelyn.services.video_meta import backfill_video_published_at
+from raelyn.services.video_time import (
+    content_published_at_expr,
+    normalize_time_basis,
+    timeline_confidence_expr,
+    timeline_source_expr,
+    timeline_status_expr,
+    timeline_time_expr,
+)
 
 
 router = APIRouter(tags=["videos"])
@@ -51,6 +59,11 @@ class VideoListOut(BaseModel):
     media_avatar_asset: AssetRef | None = None
     video_asset: AssetRef | None = None
     published_at: Any | None = None
+    content_published_at: Any | None = None
+    timeline_at: Any | None = None
+    time_source: str | None = None
+    time_status: str | None = None
+    time_confidence: float | None = None
     duration_sec: int | None = None
     status: str
     error_message: str | None = None
@@ -65,9 +78,15 @@ def list_videos(
     q: str | None = None,
     published_since: datetime | None = None,
     published_until: datetime | None = None,
+    time_basis: str = "content",
     limit: int = 20,
     offset: int = 0,
 ) -> list[VideoListOut]:
+    try:
+        resolved_time_basis = normalize_time_basis(time_basis)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
     with session_scope() as session:
         global _PUBLISHED_AT_BACKFILLED  # noqa: PLW0603
         if (published_since or published_until) and not _PUBLISHED_AT_BACKFILLED:
@@ -76,7 +95,15 @@ def list_videos(
             backfill_video_published_at(session)
             _PUBLISHED_AT_BACKFILLED = True
 
-        stmt = select(Video, Media).join(Media, Media.id == Video.media_id)
+        content_ts_expr = content_published_at_expr().label("content_published_at")
+        timeline_ts_expr = timeline_time_expr(time_basis=resolved_time_basis).label("timeline_at")
+        time_source = timeline_source_expr(time_basis=resolved_time_basis).label("time_source")
+        time_status = timeline_status_expr(time_basis=resolved_time_basis).label("time_status")
+        time_confidence = timeline_confidence_expr(time_basis=resolved_time_basis).label("time_confidence")
+
+        stmt = select(Video, Media, content_ts_expr, timeline_ts_expr, time_source, time_status, time_confidence).join(
+            Media, Media.id == Video.media_id
+        )
         if provider:
             stmt = stmt.where(Video.provider == provider)
         media_ids: list[uuid.UUID] = []
@@ -99,19 +126,19 @@ def list_videos(
             like = f"%{q}%"
             stmt = stmt.where(Video.title.ilike(like))
         if published_since:
-            stmt = stmt.where(Video.published_at.is_not(None), Video.published_at >= published_since)
+            stmt = stmt.where(timeline_ts_expr.is_not(None), timeline_ts_expr >= published_since)
         if published_until:
-            stmt = stmt.where(Video.published_at.is_not(None), Video.published_at < published_until)
+            stmt = stmt.where(timeline_ts_expr.is_not(None), timeline_ts_expr < published_until)
 
         stmt = (
-            stmt.order_by(Video.published_at.desc().nullslast(), Video.created_at.desc(), Video.id.desc())
+            stmt.order_by(timeline_ts_expr.desc().nullslast(), Video.created_at.desc(), Video.id.desc())
             .limit(limit)
             .offset(offset)
         )
         rows = session.execute(stmt).all()
 
         out: list[VideoListOut] = []
-        for v, m in rows:
+        for v, m, content_published_at, timeline_at, time_source_value, time_status_value, time_confidence_value in rows:
             thumb = session.execute(
                 select(Asset).where(Asset.video_id == v.id, Asset.type == "thumbnail").order_by(Asset.created_at.desc()).limit(1)
             ).scalar_one_or_none()
@@ -147,6 +174,11 @@ def list_videos(
                     media_avatar_asset=build_asset_ref(media_avatar_asset),
                     video_asset=video_asset_ref,
                     published_at=v.published_at,
+                    content_published_at=content_published_at,
+                    timeline_at=timeline_at,
+                    time_source=time_source_value,
+                    time_status=time_status_value,
+                    time_confidence=time_confidence_value,
                     duration_sec=v.duration_sec,
                     status=v.status,
                     error_message=v.error_message,

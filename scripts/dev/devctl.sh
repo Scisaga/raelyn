@@ -393,7 +393,7 @@ start_worker_role() {
   local pid_file="$2"
   local log_file="$3"
   local role="$4"
-  start_one "$name" "$pid_file" "$log_file" bash scripts/dev/run-worker.sh "$role"
+  start_one "$name" "$pid_file" "$log_file" bash scripts/dev/run-supervised-worker.sh "$role" "$name"
 }
 
 start_download_workers() {

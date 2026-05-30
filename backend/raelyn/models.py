@@ -73,8 +73,49 @@ class Video(Base):
 
     media: Mapped["Media"] = relationship(back_populates="videos")
     assets: Mapped[list["Asset"]] = relationship(back_populates="video", cascade="all, delete-orphan")
+    time_evidence: Mapped[list["VideoTimeEvidence"]] = relationship(back_populates="video", cascade="all, delete-orphan")
 
     __table_args__ = (UniqueConstraint("provider", "provider_video_id", name="video_provider_video_id_ux"),)
+
+
+class VideoTimeEvidence(Base):
+    __tablename__ = "video_time_evidence"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    video_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("video.id", ondelete="CASCADE"), nullable=False)
+
+    time_role: Mapped[str] = mapped_column(String, nullable=False, default="content_published_at")
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    source_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    evidence_key: Mapped[str] = mapped_column(String, nullable=False, default="")
+
+    date_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    date_month: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    date_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    time_start: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    time_end: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    precision: Mapped[str] = mapped_column(String, nullable=False, default="unknown")
+
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="candidate")
+    evidence_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    reliability_flags: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    video: Mapped["Video"] = relationship(back_populates="time_evidence")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "video_id",
+            "time_role",
+            "source",
+            "evidence_key",
+            name="video_time_evidence_source_ux",
+        ),
+    )
 
 
 class Asset(Base):
@@ -143,12 +184,109 @@ class PlaylistMedia(Base):
     media: Mapped["Media"] = relationship()
 
 
-class VideoEmbedding(Base):
-    __tablename__ = "video_embedding"
+class MarketEvent(Base):
+    __tablename__ = "market_event"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_time_start: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    event_time_end: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    time_precision: Mapped[str] = mapped_column(String, nullable=False, default="unknown")
+    available_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    event_type: Mapped[str] = mapped_column(String, nullable=False, default="other")
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    direction: Mapped[str | None] = mapped_column(String, nullable=True)
+    magnitude: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    surprise_or_delta: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="draft")
+    source_video_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("video.id", ondelete="CASCADE"), nullable=False)
+    transcript_asset_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("asset.id", ondelete="SET NULL"), nullable=True)
+    extraction_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_hash: Mapped[str] = mapped_column(String, nullable=False, default="")
+    event_key: Mapped[str] = mapped_column(String, nullable=False, default="")
+    raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source_video_id",
+            "source_hash",
+            "prompt_version",
+            "event_key",
+            name="market_event_source_event_ux",
+        ),
+    )
+
+
+class MarketEventEvidence(Base):
+    __tablename__ = "market_event_evidence"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("market_event.id", ondelete="CASCADE"), nullable=False)
     video_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("video.id", ondelete="CASCADE"), nullable=False)
-    transcript_variant: Mapped[str] = mapped_column(String, nullable=False, default="plain")
+    transcript_asset_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("asset.id", ondelete="SET NULL"), nullable=True)
+    evidence_key: Mapped[str] = mapped_column(String, nullable=False, default="")
+    evidence_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (UniqueConstraint("event_id", "video_id", "evidence_key", name="market_event_evidence_ux"),)
+
+
+class MarketEventEntity(Base):
+    __tablename__ = "market_event_entity"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("market_event.id", ondelete="CASCADE"), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    normalized_key: Mapped[str] = mapped_column(String, nullable=False, default="")
+    role: Mapped[str | None] = mapped_column(String, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("event_id", "entity_type", "normalized_key", "role", name="market_event_entity_ux"),
+    )
+
+
+class MarketEventRelation(Base):
+    __tablename__ = "market_event_relation"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("market_event.id", ondelete="CASCADE"), nullable=False)
+    source_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("market_event_entity.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    target_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("market_event_entity.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    relation_type: Mapped[str] = mapped_column(String, nullable=False, default="mentions")
+    direction: Mapped[str | None] = mapped_column(String, nullable=True)
+    magnitude: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class MarketEventEmbedding(Base):
+    __tablename__ = "market_event_embedding"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("market_event.id", ondelete="CASCADE"), nullable=False)
     embedding_model: Mapped[str] = mapped_column(String, nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
@@ -159,19 +297,11 @@ class VideoEmbedding(Base):
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
-    __table_args__ = (
-        UniqueConstraint(
-            "video_id",
-            "transcript_variant",
-            "embedding_model",
-            "embedding_dim",
-            name="video_embedding_ux",
-        ),
-    )
+    __table_args__ = (UniqueConstraint("event_id", "embedding_model", "embedding_dim", name="market_event_embedding_ux"),)
 
 
-class PlaylistAnalysisRun(Base):
-    __tablename__ = "playlist_analysis_run"
+class EventRegimeRun(Base):
+    __tablename__ = "event_regime_run"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     playlist_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("playlist.id", ondelete="CASCADE"), nullable=False)
@@ -179,25 +309,24 @@ class PlaylistAnalysisRun(Base):
     analysis_clock: Mapped[str] = mapped_column(String, nullable=False, default="day")
     embedding_model: Mapped[str] = mapped_column(String, nullable=False)
     embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
-    transcript_variant: Mapped[str] = mapped_column(String, nullable=False, default="plain")
-    video_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    video_embedded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    video_skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    video_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    event_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    event_embedded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    event_skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    event_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     started_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
-class PlaylistAnalysisState(Base):
-    __tablename__ = "playlist_analysis_state"
+class EventRegimeState(Base):
+    __tablename__ = "event_regime_state"
 
     playlist_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("playlist.id", ondelete="CASCADE"), primary_key=True)
     analysis_dirty: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_ready_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("playlist_analysis_run.id", ondelete="SET NULL"),
+        ForeignKey("event_regime_run.id", ondelete="SET NULL"),
         nullable=True,
     )
     last_requested_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -206,48 +335,19 @@ class PlaylistAnalysisState(Base):
     updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
-class PlaylistAnalysisPeriod(Base):
-    __tablename__ = "playlist_analysis_period"
+class EventRegimeSignal(Base):
+    __tablename__ = "event_regime_signal"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
+    regime_run_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("playlist_analysis_run.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    period_date: Mapped[Any] = mapped_column(Date, nullable=False)
-    video_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    centroid_vector: Mapped[list[float] | None] = mapped_column(JSONB, nullable=True)
-    drift_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    dispersion_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    drift_rolling_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
-    drift_rolling_std: Mapped[float | None] = mapped_column(Float, nullable=True)
-    drift_rolling_z: Mapped[float | None] = mapped_column(Float, nullable=True)
-    dispersion_std: Mapped[float | None] = mapped_column(Float, nullable=True)
-    dispersion_p25: Mapped[float | None] = mapped_column(Float, nullable=True)
-    dispersion_p75: Mapped[float | None] = mapped_column(Float, nullable=True)
-    projection_x: Mapped[float | None] = mapped_column(Float, nullable=True)
-    projection_y: Mapped[float | None] = mapped_column(Float, nullable=True)
-    projection_z: Mapped[float | None] = mapped_column(Float, nullable=True)
-    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
-
-    __table_args__ = (UniqueConstraint("analysis_run_id", "period_date", name="playlist_analysis_period_ux"),)
-
-
-class PlaylistAnalysisSignal(Base):
-    __tablename__ = "playlist_analysis_signal"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("playlist_analysis_run.id", ondelete="CASCADE"),
+        ForeignKey("event_regime_run.id", ondelete="CASCADE"),
         nullable=False,
     )
     granularity: Mapped[str] = mapped_column(String, nullable=False)
     period_date: Mapped[Any] = mapped_column(Date, nullable=False)
     rolling_window: Mapped[int] = mapped_column(Integer, nullable=False)
-    video_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    event_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     ready_embedding_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     centroid_vector: Mapped[list[float] | None] = mapped_column(JSONB, nullable=True)
     drift_score: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -264,9 +364,9 @@ class PlaylistAnalysisSignal(Base):
     projection_y: Mapped[float | None] = mapped_column(Float, nullable=True)
     projection_z: Mapped[float | None] = mapped_column(Float, nullable=True)
     projection_explained_variance_ratio: Mapped[list[float] | None] = mapped_column(JSONB, nullable=True)
-    linked_event_id: Mapped[uuid.UUID | None] = mapped_column(
+    linked_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("playlist_analysis_candidate.id", ondelete="SET NULL"),
+        ForeignKey("event_regime_candidate.id", ondelete="SET NULL"),
         nullable=True,
     )
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
@@ -274,22 +374,22 @@ class PlaylistAnalysisSignal(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "analysis_run_id",
+            "regime_run_id",
             "granularity",
             "period_date",
             "rolling_window",
-            name="playlist_analysis_signal_ux",
+            name="event_regime_signal_ux",
         ),
     )
 
 
-class PlaylistAnalysisCandidate(Base):
-    __tablename__ = "playlist_analysis_candidate"
+class EventRegimeCandidate(Base):
+    __tablename__ = "event_regime_candidate"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    analysis_run_id: Mapped[uuid.UUID] = mapped_column(
+    regime_run_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("playlist_analysis_run.id", ondelete="CASCADE"),
+        ForeignKey("event_regime_run.id", ondelete="CASCADE"),
         nullable=False,
     )
     candidate_date: Mapped[Any] = mapped_column(Date, nullable=False)
@@ -297,7 +397,7 @@ class PlaylistAnalysisCandidate(Base):
     peak_date: Mapped[Any | None] = mapped_column(Date, nullable=True)
     event_start: Mapped[Any | None] = mapped_column(Date, nullable=True)
     event_end: Mapped[Any | None] = mapped_column(Date, nullable=True)
-    event_type: Mapped[str] = mapped_column(String, nullable=False, default="burst")
+    event_type: Mapped[str] = mapped_column(String, nullable=False, default="regime_shift")
     status: Mapped[str] = mapped_column(String, nullable=False, default="draft")
     score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -307,6 +407,7 @@ class PlaylistAnalysisCandidate(Base):
     drift_rolling_z: Mapped[float | None] = mapped_column(Float, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     top_terms: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    evidence_event_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     evidence_video_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     evidence_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     available_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -319,7 +420,7 @@ class PlaylistAnalysisCandidate(Base):
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
-    __table_args__ = (UniqueConstraint("analysis_run_id", "candidate_date", name="playlist_analysis_candidate_ux"),)
+    __table_args__ = (UniqueConstraint("regime_run_id", "candidate_date", name="event_regime_candidate_ux"),)
 
 
 class DailyBrief(Base):
@@ -402,6 +503,8 @@ class WorkerHeartbeat(Base):
     worker_id: Mapped[str] = mapped_column(String, primary_key=True)
     role: Mapped[str | None] = mapped_column(String, nullable=True)
     updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    active_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    current_job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
 
 class AppConfig(Base):

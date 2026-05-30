@@ -21,6 +21,7 @@ from raelyn.services.periods import (
     period_start as compute_period_start,
 )
 from raelyn.services.s3 import s3_get_bytes
+from raelyn.services.video_time import timeline_time_expr
 
 
 router = APIRouter(tags=["stats"])
@@ -180,10 +181,11 @@ def _build_stats() -> dict:
                 }
             )
 
+        recent_video_timeline = timeline_time_expr().label("timeline_at")
         recent_video_rows = session.execute(
-            select(Video, Media)
+            select(Video, Media, recent_video_timeline)
             .join(Media, Media.id == Video.media_id)
-            .order_by(Video.published_at.desc().nullslast(), Video.created_at.desc(), Video.id.desc())
+            .order_by(recent_video_timeline.desc().nullslast(), Video.created_at.desc(), Video.id.desc())
             .limit(7)
         ).all()
         recent_videos = [
@@ -192,11 +194,12 @@ def _build_stats() -> dict:
                 "url": v.url,
                 "title": v.title,
                 "published_at": v.published_at,
+                "timeline_at": timeline_at,
                 "status": v.status,
                 "media_id": str(v.media_id),
                 "media_name": m.name,
             }
-            for v, m in recent_video_rows
+            for v, m, timeline_at in recent_video_rows
         ]
 
         # S3 size: "tracked" by the Asset table (fast, no S3 listing).
@@ -228,8 +231,8 @@ def _build_stats() -> dict:
             if usage["call_count"] <= 0 and job_type in {"brief.generate_period", "brief.generate_daily"}:
                 llm_calls += 1
 
-        # Top playlists by "latest video timestamp" (coalesce published_at -> created_at), for the overview page.
-        co_ts = func.coalesce(Video.published_at, Video.created_at)
+        # Top playlists by content timeline timestamp, with platform and creation time fallbacks.
+        co_ts = func.coalesce(timeline_time_expr(), Video.created_at)
         latest_ts_subq = (
             select(PlaylistMedia.playlist_id.label("playlist_id"), func.max(co_ts).label("latest_ts"))
             .join(Video, Video.media_id == PlaylistMedia.media_id)
@@ -314,7 +317,9 @@ def _build_stats() -> dict:
                         t = (title or "").strip() or (url or "").strip()
                         if not t:
                             continue
-                        latest_period_videos.append({"title": t, "url": (url or "").strip() or None, "published_at": published_at})
+                        latest_period_videos.append(
+                            {"title": t, "url": (url or "").strip() or None, "published_at": published_at, "timeline_at": _ts}
+                        )
                     if latest_period_videos:
                         latest_period_video_title = latest_period_videos[0].get("title") or ""
                     else:
