@@ -73,7 +73,7 @@ def list_video_assets(
     video_id: uuid.UUID,
     presign: bool = True,
     download: bool = True,
-    localize_title: bool = True,
+    localize_title: bool = False,
 ) -> list[VideoAssetOut]:
     with session_scope() as session:
         row = session.execute(select(Video, Media).join(Media, Media.id == Video.media_id).where(Video.id == video_id)).first()

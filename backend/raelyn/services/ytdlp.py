@@ -75,6 +75,12 @@ _LEGACY_YOUTUBE_DASH_FIRST_FORMATS = {
         "/best"
     ),
 }
+_CHINESE_SUBTITLE_LANGS = ["zh-Hant", "zh-Hans", "zh-CN", "zh-TW", "zh-HK", "zh"]
+_ENGLISH_SUBTITLE_LANGS = ["en"]
+_DEFAULT_SUBTITLE_LANGS = [*_CHINESE_SUBTITLE_LANGS, *_ENGLISH_SUBTITLE_LANGS]
+_BILIBILI_CHINESE_SUBTITLE_LANGS = ["ai-zh", *_CHINESE_SUBTITLE_LANGS]
+_BILIBILI_ENGLISH_SUBTITLE_LANGS = ["ai-en", *_ENGLISH_SUBTITLE_LANGS]
+_BILIBILI_DEFAULT_SUBTITLE_LANGS = [*_BILIBILI_CHINESE_SUBTITLE_LANGS, *_BILIBILI_ENGLISH_SUBTITLE_LANGS]
 
 
 class _YtdlpCaptureLogger:
@@ -757,7 +763,7 @@ def ytdlp_download(
         # - If mp4 isn't available, yt-dlp will fall back to the best format.
         "writesubtitles": False,
         "writeautomaticsub": False,
-        "subtitleslangs": subtitles_langs or ["zh.*", "en.*", "zh", "en"],
+        "subtitleslangs": subtitles_langs or _DEFAULT_SUBTITLE_LANGS,
         "writeinfojson": True,
         "writethumbnail": True,
         "noplaylist": True,
@@ -897,6 +903,94 @@ def ytdlp_download(
     if last_error:
         raise last_error
     raise RuntimeError("yt-dlp download failed without error")
+
+
+def ytdlp_download_subtitles(
+    *,
+    url: str,
+    out_dir: Path,
+    provider: str | None = None,
+    use_provider_cookies: bool = True,
+    subtitles_langs: list[str] | None = None,
+) -> dict[str, Any]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    outtmpl = str(out_dir / "%(id)s.%(ext)s")
+    cookie_provider = cookie_provider_for_target(url, provider)
+    logger = _YtdlpCaptureLogger()
+    opts: dict[str, Any] = {
+        "ignoreconfig": True,
+        "outtmpl": {"default": outtmpl},
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "logger": logger,
+        "skip_download": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": subtitles_langs or _DEFAULT_SUBTITLE_LANGS,
+        "subtitlesformat": "vtt/srt/best",
+        "writeinfojson": True,
+        "noplaylist": True,
+        "continuedl": True,
+        "retries": 8,
+        "fragment_retries": 8,
+        "socket_timeout": 30,
+    }
+    if js := _js_runtimes():
+        opts["js_runtimes"] = js
+    _apply_common_ytdlp_opts(
+        opts,
+        url=url,
+        provider=cookie_provider,
+        use_provider_cookies=use_provider_cookies,
+    )
+    try:
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+    except (DownloadError, ExtractorError) as e:
+        msgs = logger.warnings + logger.errors + [str(e)]
+        _raise_if_cookie_invalid_messages(msgs, provider=cookie_provider)
+        _raise_if_youtube_bot_check_messages(
+            msgs,
+            provider=cookie_provider,
+            using_cookies=bool(use_provider_cookies),
+        )
+        _raise_if_provider_pause_messages(msgs)
+        if _is_youtube_bot_check_error(e):
+            raise RuntimeError(_youtube_bot_check_hint()) from e
+        if _is_youtube_js_challenge_failed_messages(msgs):
+            raise RuntimeError(_youtube_js_challenge_hint()) from e
+        if _is_bilibili_risk_control_error(e) or _is_bilibili_precondition_failed_error(e):
+            raise RuntimeError(_bilibili_risk_control_hint()) from e
+        last = logger.errors[-1] if logger.errors else str(e)
+        raise RuntimeError(last) from e
+
+    if info is None:
+        last = logger.errors[-1] if logger.errors else "yt-dlp subtitle extraction returned no result"
+        msgs = logger.warnings + logger.errors + [last]
+        _raise_if_cookie_invalid_messages(msgs, provider=cookie_provider)
+        _raise_if_youtube_bot_check_messages(msgs, provider=cookie_provider)
+        _raise_if_provider_pause_messages(msgs)
+        raise RuntimeError(last)
+
+    _raise_if_cookie_invalid_messages(logger.warnings + logger.errors, provider=cookie_provider)
+    _raise_if_youtube_bot_check_messages(logger.warnings + logger.errors, provider=cookie_provider)
+    _raise_if_provider_pause_messages(logger.warnings + logger.errors)
+    return info
+
+
+def ytdlp_available_subtitle_languages(info: dict[str, Any] | None) -> dict[str, list[str]]:
+    data = info if isinstance(info, dict) else {}
+
+    def keys(value: Any) -> list[str]:
+        if not isinstance(value, dict):
+            return []
+        return sorted(str(k) for k in value if str(k or "").strip())
+
+    return {
+        "manual": keys(data.get("subtitles")),
+        "automatic": keys(data.get("automatic_captions")),
+    }
 
 
 def load_info_json(path: Path) -> dict[str, Any] | None:

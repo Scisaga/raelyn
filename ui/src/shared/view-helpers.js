@@ -1,5 +1,13 @@
 import { getCachedValue, setCachedValue } from "../services/cache.js";
-import { formatBytes, formatDateTime, formatDateTimeShort, formatDuration, formatInteger } from "./format.js";
+import {
+  formatBytes,
+  formatCompactInteger,
+  formatDateTime,
+  formatDateTimeShort,
+  formatDateTimeShortWithSeconds,
+  formatDuration,
+  formatInteger,
+} from "./format.js";
 import {
   addUniqueMediaId,
   filterUnselectedMediaOptions,
@@ -164,12 +172,20 @@ export function createCommonViewMethods() {
       return formatDateTimeShort(ts);
     },
 
+    formatDateTimeShortWithSeconds(ts) {
+      return formatDateTimeShortWithSeconds(ts);
+    },
+
     formatBytes(n) {
       return formatBytes(n);
     },
 
     formatInteger(n) {
       return formatInteger(n);
+    },
+
+    formatCompactInteger(n) {
+      return formatCompactInteger(n);
     },
 
     mdLabel(iso) {

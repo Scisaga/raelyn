@@ -32,6 +32,35 @@ def _scalars_all(values):
 
 
 class WorkerRetryMergeTests(unittest.TestCase):
+    def test_claim_skips_job_query_when_worker_role_paused(self) -> None:
+        session = Mock()
+
+        with patch("raelyn.jobs.claim.is_paused", return_value=False):
+            with patch("raelyn.jobs.claim.is_worker_role_paused", return_value=True):
+                claimed = claim.claim_next_job(
+                    session,
+                    worker_id="worker-1",
+                    type_in=["video.extract_events", "playlist.backfill_events_range"],
+                )
+
+        self.assertIsNone(claimed)
+        session.execute.assert_not_called()
+
+    def test_claim_skips_job_query_when_direct_provider_paused(self) -> None:
+        session = Mock()
+
+        with patch("raelyn.jobs.claim.is_paused", return_value=False):
+            with patch("raelyn.jobs.claim.is_worker_role_paused", return_value=False):
+                with patch("raelyn.jobs.claim.is_provider_paused", return_value=True):
+                    claimed = claim.claim_next_job(
+                        session,
+                        worker_id="worker-1",
+                        type_in=["video.download.youtube"],
+                    )
+
+        self.assertIsNone(claimed)
+        session.execute.assert_not_called()
+
     def test_asr_capacity_defer_skips_claim_for_asr_only_worker(self) -> None:
         defer = AsrBackendDefer(reason="asr backend is busy", delay_seconds=30)
 
@@ -159,7 +188,7 @@ class WorkerRetryMergeTests(unittest.TestCase):
 
 
 class WorkerRecoveryMergeTests(unittest.TestCase):
-    def test_requeue_orphan_running_jobs_checks_execution_heartbeat_for_downloads(self) -> None:
+    def test_requeue_orphan_running_jobs_checks_execution_heartbeat_for_provider_jobs(self) -> None:
         captured_sql: list[str] = []
         captured_params: list[dict] = []
         session = Mock()
@@ -178,6 +207,10 @@ class WorkerRecoveryMergeTests(unittest.TestCase):
         self.assertIn("worker_heartbeat.active_at", captured_sql[0])
         self.assertIn(
             "video.download.youtube",
+            set(captured_params[0].get("type_1") or []),
+        )
+        self.assertIn(
+            "media.sync_videos",
             set(captured_params[0].get("type_1") or []),
         )
 
@@ -269,7 +302,7 @@ class WorkerRecoveryMergeTests(unittest.TestCase):
 
 
 class WorkerHeartbeatTests(unittest.TestCase):
-    def test_download_execution_stale_reason_exits_even_after_job_requeued(self) -> None:
+    def test_execution_stale_reason_exits_even_after_job_requeued(self) -> None:
         worker_id = "host:1234:abcd"
         job_id = uuid.uuid4()
         now = datetime(2026, 3, 20, 1, 2, 3, tzinfo=timezone.utc)
@@ -279,7 +312,7 @@ class WorkerHeartbeatTests(unittest.TestCase):
         session.get.side_effect = lambda model, key: hb if model.__name__ == "WorkerHeartbeat" else job
 
         with patch("raelyn.worker.utcnow", return_value=now):
-            reason = worker._download_execution_stale_reason(
+            reason = worker._execution_stale_reason(
                 session,
                 worker_id=worker_id,
                 stale_after_seconds=120,
@@ -289,7 +322,26 @@ class WorkerHeartbeatTests(unittest.TestCase):
         self.assertIn(str(job_id), reason or "")
         self.assertIn("job_status=pending", reason or "")
 
-    def test_download_execution_stale_reason_ignores_fresh_download_activity(self) -> None:
+    def test_execution_stale_reason_exits_for_stale_sync_activity(self) -> None:
+        worker_id = "host:1234:abcd"
+        job_id = uuid.uuid4()
+        now = datetime(2026, 3, 20, 1, 2, 3, tzinfo=timezone.utc)
+        hb = Mock(current_job_id=job_id, active_at=now - timedelta(seconds=121))
+        job = Job(id=job_id, type="media.sync_videos", status="running")
+        session = Mock()
+        session.get.side_effect = lambda model, key: hb if model.__name__ == "WorkerHeartbeat" else job
+
+        with patch("raelyn.worker.utcnow", return_value=now):
+            reason = worker._execution_stale_reason(
+                session,
+                worker_id=worker_id,
+                stale_after_seconds=120,
+            )
+
+        self.assertIsNotNone(reason)
+        self.assertIn("media.sync_videos", reason or "")
+
+    def test_execution_stale_reason_ignores_fresh_download_activity(self) -> None:
         worker_id = "host:1234:abcd"
         job_id = uuid.uuid4()
         now = datetime(2026, 3, 20, 1, 2, 3, tzinfo=timezone.utc)
@@ -299,7 +351,7 @@ class WorkerHeartbeatTests(unittest.TestCase):
         session.get.side_effect = lambda model, key: hb if model.__name__ == "WorkerHeartbeat" else job
 
         with patch("raelyn.worker.utcnow", return_value=now):
-            reason = worker._download_execution_stale_reason(
+            reason = worker._execution_stale_reason(
                 session,
                 worker_id=worker_id,
                 stale_after_seconds=120,
@@ -307,10 +359,11 @@ class WorkerHeartbeatTests(unittest.TestCase):
 
         self.assertIsNone(reason)
 
-    def test_worker_may_run_downloads_matches_all_and_download_roles(self) -> None:
-        self.assertTrue(worker._worker_may_run_downloads(None))
-        self.assertTrue(worker._worker_may_run_downloads(["video.download.youtube"]))
-        self.assertFalse(worker._worker_may_run_downloads(["video.asr_transcribe"]))
+    def test_worker_needs_execution_watchdog_matches_provider_roles(self) -> None:
+        self.assertTrue(worker._worker_needs_execution_watchdog(None))
+        self.assertTrue(worker._worker_needs_execution_watchdog(["video.download.youtube"]))
+        self.assertTrue(worker._worker_needs_execution_watchdog(["media.sync_videos"]))
+        self.assertFalse(worker._worker_needs_execution_watchdog(["video.asr_transcribe"]))
 
     def test_touch_worker_heartbeat_can_update_execution_activity(self) -> None:
         worker_id = "host:1234:abcd"

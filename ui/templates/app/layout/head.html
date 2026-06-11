@@ -148,6 +148,7 @@
       }
 
       .raelyn-startup-screen {
+        isolation: isolate;
         background:
           radial-gradient(circle at 50% -10%, rgba(14, 165, 233, 0.22), transparent 30%),
           radial-gradient(circle at 20% 22%, rgba(16, 185, 129, 0.14), transparent 24%),
@@ -156,6 +157,7 @@
       }
 
       .raelyn-startup-screen::before,
+      .raelyn-startup-screen::after,
       .raelyn-startup-overlay {
         content: "";
         position: absolute;
@@ -164,25 +166,55 @@
       }
 
       .raelyn-startup-screen::before {
+        z-index: 0;
         background:
           radial-gradient(circle at center, rgba(2, 6, 23, 0) 0%, rgba(2, 6, 23, 0.24) 56%, rgba(2, 6, 23, 0.72) 100%),
           linear-gradient(180deg, rgba(2, 6, 23, 0.08), rgba(2, 6, 23, 0.32));
       }
 
+      .raelyn-startup-screen::after {
+        z-index: 0;
+        opacity: 0.72;
+        background:
+          conic-gradient(from 120deg at 50% 48%, transparent 0deg, rgba(56, 189, 248, 0.1) 70deg, transparent 142deg, rgba(16, 185, 129, 0.08) 220deg, transparent 310deg),
+          linear-gradient(115deg, transparent 18%, rgba(125, 211, 252, 0.08) 38%, transparent 58%);
+        mix-blend-mode: screen;
+        animation: raelyn-startup-ambient 10s ease-in-out infinite alternate;
+      }
+
       .raelyn-startup-overlay {
+        z-index: 1;
         background:
           linear-gradient(180deg, rgba(2, 6, 23, 0.18), rgba(2, 6, 23, 0.52)),
           radial-gradient(circle at center, rgba(2, 6, 23, 0) 0%, rgba(2, 6, 23, 0.24) 68%, rgba(2, 6, 23, 0.74) 100%);
       }
 
+      .raelyn-startup-screen-fluid .raelyn-startup-overlay {
+        background:
+          linear-gradient(180deg, rgba(2, 6, 23, 0.08), rgba(2, 6, 23, 0.34)),
+          radial-gradient(circle at center, rgba(2, 6, 23, 0) 0%, rgba(2, 6, 23, 0.12) 68%, rgba(2, 6, 23, 0.56) 100%);
+      }
+
       .raelyn-startup-canvas {
         display: block;
+        z-index: 2;
         opacity: 0;
         transition: opacity 220ms ease;
       }
 
       .raelyn-startup-screen-fluid .raelyn-startup-canvas {
         opacity: 1;
+      }
+
+      @keyframes raelyn-startup-ambient {
+        0% {
+          transform: translate3d(-1.5%, -1%, 0) scale(1.02);
+          opacity: 0.48;
+        }
+        100% {
+          transform: translate3d(1.5%, 1%, 0) scale(1.06);
+          opacity: 0.78;
+        }
       }
 
       .raelyn-startup-stage {
@@ -207,6 +239,8 @@
         display: flex;
         align-items: center;
         justify-content: center;
+        position: relative;
+        isolation: isolate;
         width: 5.25rem;
         height: 5.25rem;
         margin: 0 auto;
@@ -221,13 +255,85 @@
         backdrop-filter: blur(12px);
       }
 
-      .raelyn-startup-logo-image {
-        width: 50px;
-        height: 50px;
+      .raelyn-startup-logo::before {
+        content: "";
+        position: absolute;
+        inset: 0.62rem;
+        z-index: -1;
+        border-radius: inherit;
+        background: radial-gradient(circle, rgba(56, 189, 248, 0.32), rgba(16, 185, 129, 0.14) 44%, transparent 72%);
+        filter: blur(10px);
+        opacity: 0.82;
+      }
+
+      .raelyn-startup-orb {
+        position: relative;
+        width: 3.55rem;
+        height: 3.55rem;
+        border-radius: 9999px;
+        background:
+          radial-gradient(circle at 32% 25%, rgba(255, 255, 255, 0.96) 0%, rgba(236, 253, 245, 0.76) 8%, rgba(125, 211, 252, 0.22) 20%, transparent 38%),
+          radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.44), transparent 1.38rem),
+          radial-gradient(circle at 70% 76%, rgba(14, 165, 233, 0.9), rgba(20, 184, 166, 0.72) 42%, rgba(15, 23, 42, 0.78) 78%, rgba(2, 6, 23, 0.96) 100%);
+        box-shadow:
+          0 0 0 1px rgba(186, 230, 253, 0.3),
+          0 0 22px rgba(45, 212, 191, 0.22),
+          0 14px 34px rgba(14, 165, 233, 0.18),
+          inset 0.58rem 0.5rem 1rem rgba(255, 255, 255, 0.16),
+          inset -0.78rem -0.9rem 1.15rem rgba(2, 6, 23, 0.42);
+        animation: raelyn-startup-orb 3.2s ease-in-out infinite;
+      }
+
+      .raelyn-startup-orb::before,
+      .raelyn-startup-orb::after {
+        content: "";
+        position: absolute;
+        pointer-events: none;
+        border-radius: 9999px;
+      }
+
+      .raelyn-startup-orb::before {
+        top: 0.58rem;
+        left: 0.74rem;
+        width: 1.12rem;
+        height: 0.64rem;
+        background: radial-gradient(ellipse at center, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.12) 68%, transparent 72%);
+        transform: rotate(-24deg);
+        filter: blur(0.2px);
+      }
+
+      .raelyn-startup-orb::after {
+        inset: -0.44rem;
+        border: 1px solid rgba(125, 211, 252, 0.22);
+        box-shadow:
+          0 0 18px rgba(56, 189, 248, 0.18),
+          inset 0 0 14px rgba(16, 185, 129, 0.1);
+        opacity: 0.9;
+      }
+
+      .raelyn-startup-orb-mark {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        z-index: 1;
+        width: 3.12rem;
+        height: 3.12rem;
         object-fit: contain;
+        transform: translate(-50%, -50%);
+        opacity: 0.72;
         filter:
-          drop-shadow(0 0 12px rgba(125, 211, 252, 0.28))
-          drop-shadow(0 0 24px rgba(59, 130, 246, 0.18));
+          drop-shadow(0 1px 1px rgba(255, 255, 255, 0.18))
+          drop-shadow(0 0 8px rgba(186, 230, 253, 0.16));
+      }
+
+      @keyframes raelyn-startup-orb {
+        0%,
+        100% {
+          transform: translateY(0) scale(1);
+        }
+        50% {
+          transform: translateY(-0.08rem) scale(1.015);
+        }
       }
 
       .raelyn-startup-dots {
@@ -276,13 +382,12 @@
         .raelyn-startup-shell {
           transition: none;
         }
+        .raelyn-startup-screen::after,
         .raelyn-startup-canvas,
+        .raelyn-startup-orb,
         .raelyn-startup-dots span {
           animation: none !important;
           transition: none !important;
-        }
-        .raelyn-startup-screen-fluid .raelyn-startup-canvas {
-          opacity: 0;
         }
       }
 

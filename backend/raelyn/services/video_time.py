@@ -37,7 +37,7 @@ def normalize_time_basis(value: str | None, *, default: TimeBasis = "content") -
     return cast(TimeBasis, basis)
 
 
-def _selected_content_time_filter(video_model: Any = Video):
+def _selected_content_time_filter(video_model: Any | None = Video):
     full_date = and_(
         VideoTimeEvidence.date_year.is_not(None),
         VideoTimeEvidence.date_month.is_not(None),
@@ -52,12 +52,14 @@ def _selected_content_time_filter(video_model: Any = Video):
             VideoTimeEvidence.confidence >= CONTENT_TIME_CANDIDATE_MIN_CONFIDENCE,
         ),
     )
-    return and_(
-        VideoTimeEvidence.video_id == video_model.id,
+    clauses = [
         VideoTimeEvidence.time_role == CONTENT_PUBLISHED_AT_ROLE,
         full_date,
         adopted,
-    )
+    ]
+    if video_model is not None:
+        clauses.insert(0, VideoTimeEvidence.video_id == video_model.id)
+    return and_(*clauses)
 
 
 def _selected_content_time_ordering():
@@ -91,6 +93,46 @@ def content_published_at_expr(video_model: Any = Video):
         literal("UTC"),
     )
     return selected_content_time_field_expr(selected_date, video_model)
+
+
+def selected_content_time_subquery(name: str = "selected_content_time"):
+    selected_date = func.make_timestamptz(
+        VideoTimeEvidence.date_year,
+        VideoTimeEvidence.date_month,
+        VideoTimeEvidence.date_day,
+        0,
+        0,
+        0,
+        literal("UTC"),
+    )
+    ranked = (
+        select(
+            VideoTimeEvidence.video_id.label("video_id"),
+            selected_date.label("content_published_at"),
+            VideoTimeEvidence.source.label("time_source"),
+            VideoTimeEvidence.status.label("time_status"),
+            VideoTimeEvidence.confidence.label("time_confidence"),
+            func.row_number()
+            .over(
+                partition_by=VideoTimeEvidence.video_id,
+                order_by=_selected_content_time_ordering(),
+            )
+            .label("time_rank"),
+        )
+        .where(_selected_content_time_filter(None))
+        .subquery(f"{name}_ranked")
+    )
+    return (
+        select(
+            ranked.c.video_id,
+            ranked.c.content_published_at,
+            ranked.c.time_source,
+            ranked.c.time_status,
+            ranked.c.time_confidence,
+        )
+        .where(ranked.c.time_rank == 1)
+        .subquery(name)
+    )
 
 
 def timeline_time_expr(video_model: Any = Video, *, time_basis: str | None = "content"):

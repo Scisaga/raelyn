@@ -35,6 +35,23 @@ export function formatDateTimeShort(ts) {
   }
 }
 
+export function formatDateTimeShortWithSeconds(ts) {
+  if (!ts) return "";
+  try {
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleString(undefined, {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
+
 export function formatBytes(n) {
   const v = Number(n);
   if (!Number.isFinite(v) || v < 0) return "-";
@@ -50,4 +67,17 @@ export function formatInteger(n) {
   const v = Number(n);
   if (!Number.isFinite(v) || v < 0) return "0";
   return Math.trunc(v).toLocaleString();
+}
+
+export function formatCompactInteger(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v < 0) return "0";
+  const value = Math.trunc(v);
+  if (value < 1000) return String(value);
+
+  const units = ["", "K", "M", "G", "T", "P"];
+  const unitIndex = Math.min(units.length - 1, Math.floor(Math.log(value) / Math.log(1000)));
+  const scaled = value / Math.pow(1000, unitIndex);
+  const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2;
+  return `${scaled.toFixed(digits).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1")}${units[unitIndex]}`;
 }

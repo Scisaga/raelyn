@@ -38,11 +38,12 @@
 播放列表 / 简报准入口径：
 
 - 播放列表时间轴：优先使用 `video_time_evidence` 选出的 `content_published_at`，缺失时回退 `published_at`，且存在 `asset(type=video)`。
+- 播放列表按日期列视频、日历计数和详情统计使用集合化的已选内容时间子查询；不要在这些大范围查询里重复嵌套逐行 `video_time_evidence` scalar subquery。
 - 简报周期聚合：优先使用 `content_published_at`，缺失时回退 `published_at`，且存在可用于 transcript 读取的文本资产。
 
 约束：
 
-- `(provider, provider_video_id)` 唯一。
+- `(provider, provider_video_id)` 唯一，视频发现写入以该约束作为幂等锚点。
 
 ### `video_time_evidence`
 
@@ -130,13 +131,14 @@
 当前职责：
 
 - 保存视频级 LLM 原子事件，是知识图谱与 Regime 分析的新事实源。
-- `confidence >= 0.8` 的事件自动进入 `accepted`，低置信事件先进入 `draft` 供人工查看。
+- `confidence >= 0.8` 且至少有 1 条 verified provenance 的事件自动进入 `accepted`，低置信或无合法 provenance 的事件先进入 `draft` 供人工查看。
 
 关键字段：
 
-- `event_time_start/end`、`time_precision`：事件实际发生时间；无法解析时 `time_precision=unknown`，自动 Regime 不消费。
-- `available_at`：该事件可被下游观察到的时间，供回测避免未来函数。
+- `event_time_start/end`、`time_precision`：事件目标时间；无法解析时 `time_precision=unknown`，自动 Regime 不消费。
+- `available_at`：该事件可被下游观察到的时间，供回测避免未来函数；事件 Regime 信号按该时间聚合。
 - `event_type`、`title`、`summary`、`direction`、`magnitude`、`surprise_or_delta`：事件语义与强度。
+- `title` / `summary` 应保留具体市场对象；例如房地产、住房、楼市语境不能只写“市场”，必须与实体、资产、行业标签保持同一对象口径。
 - `status`：`accepted | draft | rejected`。
 - `source_video_id`、`transcript_asset_id`、`extraction_model`、`prompt_version`、`source_hash`、`raw_payload`：抽取依据与复算口径。
 
@@ -148,13 +150,14 @@
 
 当前职责：
 
-- `market_event_evidence` 保存事件到视频 transcript 的证据引用与证据文本。
+- `market_event_evidence` 保存事件到视频标题、描述或 transcript source 的可验证证据引用与证据文本。
 - `market_event_entity` 保存实体、资产、行业与宏观变量节点。
 - `market_event_relation` 保存事件内部的 `cause / effect / affects / mentions` 等边，第一版以关系表承载知识图谱，不接外部图数据库。
 
 关键字段：
 
 - `market_event_evidence.video_id`、`evidence_text`、`evidence_json`、`confidence`。
+- `market_event_evidence.evidence_json` 的 v2 provenance 结构为 `schema_version=event_provenance_v1`、`source_id`、`source_kind=title|description|transcript`、`source_label`、`char_start`、`char_end`、`source_sha256`、`verified=true`；`evidence_text` 由后端根据 source map 写入原文段，不直接信任 LLM 生成的证据文本。
 - `market_event_entity.entity_type`、`name`、`normalized_key`、`role`、`confidence`。
 - `market_event_relation.source_entity_id`、`target_entity_id`、`relation_type`、`direction`、`magnitude`、`confidence`、`evidence_text`。
 
@@ -162,6 +165,25 @@
 
 - `market_event_evidence`：`(event_id, video_id, evidence_key)` 唯一。
 - `market_event_entity`：`(event_id, entity_type, normalized_key, role)` 唯一。
+
+### `video_event_extraction_run`
+
+当前职责：
+
+- 记录单个视频在某个 `source_hash / prompt_version / extraction_model` 口径下的事件抽取运行结果。
+- `force=false` 命中 `status=succeeded` 时跳过重复抽取；即使 `event_count=0` 也表示该视频已经按当前口径完成抽取。
+
+关键字段：
+
+- `video_id`、`transcript_asset_id`：运行对应的视频和 transcript 资产。
+- `source_hash`：视频标题、描述、媒体名、发布时间、内容时间、transcript asset 与 transcript sha256 的复算口径。
+- `prompt_version`、`extraction_model`：抽取提示词和模型口径。
+- `status`：`succeeded | failed`。
+- `event_count`、`warning_count`、`usage_json`、`error_message`：抽取结果与排障信息。
+
+约束：
+
+- `(video_id, source_hash, prompt_version, extraction_model)` 唯一。
 
 ### `market_event_embedding`
 
@@ -193,6 +215,7 @@
 关键字段：
 
 - `event_regime_signal.granularity`：`day | week | month`。
+- `event_regime_signal.period_date`：按事件 `available_at` 归属后的周期起点。
 - `event_count`、`ready_embedding_count`：当前周期事件数和 ready embedding 数。
 - `drift_score`、`drift_rolling_mean/std/z`：事件语义中心漂移及其 rolling z。
 - `dispersion_mean/std/p25/p75`：同一 period 内部事件 embedding 分散度。

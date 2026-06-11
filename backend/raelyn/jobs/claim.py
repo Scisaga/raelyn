@@ -12,7 +12,7 @@ from raelyn.models import Job, JobEvent, WorkerHeartbeat
 from raelyn.services.provider_pause import is_provider_paused, job_provider
 from raelyn.services.system_pause import is_paused
 from raelyn.services.worker_role_pause import is_worker_role_paused
-from raelyn.services.worker_roles import worker_role_for_job
+from raelyn.services.worker_roles import job_type_worker_role, worker_role_for_job
 from raelyn.timeutil import utcnow
 
 
@@ -23,7 +23,46 @@ _JOB_TYPE_RANK = {
     "video.normalize_subtitle": 1,
     "video.extract_audio": 2,
 }
-_EXECUTION_HEARTBEAT_JOB_TYPES = {"video.download", "video.download.youtube", "video.download.bilibili"}
+_EXECUTION_HEARTBEAT_JOB_TYPES = {
+    "media.sync_profile",
+    "media.sync_videos",
+    "video.download",
+    "video.download.youtube",
+    "video.download.bilibili",
+    "video.backfill_subtitles",
+    "video.backfill_subtitles.youtube",
+    "video.backfill_subtitles.bilibili",
+}
+_DIRECT_PROVIDER_JOB_TYPES = {
+    "video.download.youtube": "youtube",
+    "video.download.bilibili": "bilibili",
+    "video.backfill_subtitles.youtube": "youtube",
+    "video.backfill_subtitles.bilibili": "bilibili",
+}
+
+
+def _all_claim_types_worker_role_paused(session: Session, type_in: list[str] | None) -> bool:
+    if not type_in:
+        return False
+    roles: set[str] = set()
+    for job_type in type_in:
+        role = job_type_worker_role(job_type)
+        if not role:
+            return False
+        roles.add(role)
+    return bool(roles) and all(is_worker_role_paused(session, role) for role in roles)
+
+
+def _all_claim_types_provider_paused(session: Session, type_in: list[str] | None) -> bool:
+    if not type_in:
+        return False
+    providers: set[str] = set()
+    for job_type in type_in:
+        provider = _DIRECT_PROVIDER_JOB_TYPES.get(str(job_type or "").strip())
+        if not provider:
+            return False
+        providers.add(provider)
+    return bool(providers) and all(is_provider_paused(session, provider) for provider in providers)
 
 
 def _merge_requeue_into_existing_pending_job(
@@ -198,6 +237,10 @@ def claim_next_job(
     skip_type_in: set[str] | None = None,
 ) -> Job | None:
     if is_paused(session):
+        return None
+    if _all_claim_types_worker_role_paused(session, type_in):
+        return None
+    if _all_claim_types_provider_paused(session, type_in):
         return None
     now = utcnow()
     rank = case(*[(Job.type == t, r) for t, r in _JOB_TYPE_RANK.items()], else_=10)

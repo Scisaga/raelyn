@@ -112,10 +112,12 @@ MCP 没有复制 API 路由逻辑，而是复用了抽出的共享 helper：
 transcript 选择顺序统一为：
 
 1. 先按 variant 选择：`polished` 优先于 `plain`
-2. 同一 variant 内优先 `subtitle + zh`
+2. 同一 variant 内优先 `subtitle` 的中文字幕：`zh`、`zh-hant`、`zh-hans`、`zh-cn`、`zh-tw`、`zh-hk`
 3. 然后是 `qwen3-asr + zh`
 4. 然后是历史遗留 source：`speaches + zh`
 5. 以上都没有时，回退到最新的 transcript asset
+
+其中 `qwen3-asr` 新资产不再强制保存为 `zh`；ASR 自动识别到的 `en` 或未知语言资产会通过第 5 步回退返回。
 
 MCP transcript 输出字段固定包含：
 

@@ -7,11 +7,10 @@ from typing import Any
 
 from dateutil import tz
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from raelyn.config import settings
-from raelyn.jobs.enqueue import _brief_normalize_date_and_params
+from raelyn.jobs.enqueue import _brief_normalize_date_and_params, enqueue_job
 from raelyn.models import AppConfig, Brief, Job, JobEvent, Playlist, PlaylistMedia, Video
 from raelyn.services.brief_prompt import brief_period_start
 from raelyn.services.llm import llm_enabled
@@ -155,40 +154,17 @@ def _create_brief_job(
     session: Session,
     *,
     type_: str,
-    dedupe_key: str,
     params: dict[str, Any],
     scheduled_for: datetime,
     priority: int,
 ) -> uuid.UUID:
-    job = Job(
-        type=type_,
-        status="pending",
-        priority=priority,
-        dedupe_key=dedupe_key,
+    return enqueue_job(
+        session,
+        type_=type_,
         params=params,
         scheduled_for=scheduled_for,
+        priority=priority,
     )
-    try:
-        with session.begin_nested():
-            session.add(job)
-            session.flush([job])
-    except IntegrityError:
-        try:
-            session.expunge(job)
-        except Exception:
-            pass
-        pending = session.execute(
-            select(Job)
-            .where(Job.dedupe_key == dedupe_key, Job.status == "pending")
-            .order_by(Job.created_at.asc(), Job.id.asc())
-            .limit(1)
-        ).scalar_one_or_none()
-        if pending:
-            return pending.id
-        raise
-
-    session.add(JobEvent(job_id=job.id, level="info", message="enqueued", data={"type": type_, "dedupe_key": dedupe_key}))
-    return job.id
 
 
 def schedule_brief_refresh(
@@ -309,7 +285,6 @@ def schedule_brief_refresh(
     job_id = _create_brief_job(
         session,
         type_="brief.generate_period",
-        dedupe_key=dedupe_key,
         params=params,
         scheduled_for=desired_scheduled_for,
         priority=desired_priority,

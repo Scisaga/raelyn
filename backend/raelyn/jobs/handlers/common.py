@@ -257,7 +257,11 @@ def _looks_like_bilibili_face_url(url: str | None) -> bool:
 
 
 def _best_language_subtitle(assets: list[Asset]) -> Asset | None:
-    zh = [asset for asset in assets if asset.type == "subtitle" and (asset.language or "").lower().startswith("zh")]
+    zh = [
+        asset
+        for asset in assets
+        if asset.type == "subtitle" and ((asset.language or "").lower().startswith("zh") or (asset.language or "").lower() == "ai-zh")
+    ]
     if zh:
         return zh[0]
     subs = [asset for asset in assets if asset.type == "subtitle"]

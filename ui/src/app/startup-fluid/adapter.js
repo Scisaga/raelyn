@@ -27,14 +27,9 @@ const INACTIVE_HANDLE = {
   destroy() {},
 };
 
-export function mountStartupFluid({ canvas, interactive = true } = {}) {
+export function mountStartupFluid({ canvas, interactive = true, interactiveTarget = null } = {}) {
   if (!canvas || typeof canvas.getContext !== "function") return INACTIVE_HANDLE;
-
-  const prefersReducedMotion =
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (prefersReducedMotion) return INACTIVE_HANDLE;
+  const inputTarget = interactiveTarget && typeof interactiveTarget.addEventListener === "function" ? interactiveTarget : canvas;
 
   let destroyed = false;
   let rafId = 0;
@@ -1332,50 +1327,75 @@ export function mountStartupFluid({ canvas, interactive = true } = {}) {
       return radius;
   }
 
-  if (interactive) listen(canvas, 'mousedown', e => {
-      let posX = scaleByPixelRatio(e.offsetX);
-      let posY = scaleByPixelRatio(e.offsetY);
+  function isControlEvent (event) {
+      try {
+          const target = event && event.target && typeof event.target.closest === "function" ? event.target : null;
+          return !!(target && target.closest('input, textarea, select, button, a, [role="button"]'));
+      } catch {
+          return false;
+      }
+  }
+
+  function eventPositionOnCanvas (event) {
+      const rect = canvas.getBoundingClientRect();
+      const clientX = event && Number.isFinite(event.clientX) ? event.clientX : 0;
+      const clientY = event && Number.isFinite(event.clientY) ? event.clientY : 0;
+      return {
+          x: scaleByPixelRatio(clientX - rect.left),
+          y: scaleByPixelRatio(clientY - rect.top),
+      };
+  }
+
+  function touchPositionOnCanvas (touch) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+          x: scaleByPixelRatio(touch.clientX - rect.left),
+          y: scaleByPixelRatio(touch.clientY - rect.top),
+      };
+  }
+
+  if (interactive) listen(inputTarget, 'mousedown', e => {
+      if (isControlEvent(e)) return;
+      let pos = eventPositionOnCanvas(e);
       let pointer = pointers.find(p => p.id == -1);
       if (pointer == null)
           pointer = new pointerPrototype();
-      updatePointerDownData(pointer, -1, posX, posY);
+      updatePointerDownData(pointer, -1, pos.x, pos.y);
   });
 
-  if (interactive) listen(canvas, 'mousemove', e => {
+  if (interactive) listen(inputTarget, 'mousemove', e => {
       let pointer = pointers[0];
       if (!pointer.down) return;
-      let posX = scaleByPixelRatio(e.offsetX);
-      let posY = scaleByPixelRatio(e.offsetY);
-      updatePointerMoveData(pointer, posX, posY);
+      let pos = eventPositionOnCanvas(e);
+      updatePointerMoveData(pointer, pos.x, pos.y);
   });
 
   if (interactive) listen(window, 'mouseup', () => {
       updatePointerUpData(pointers[0]);
   });
 
-  if (interactive) listen(canvas, 'touchstart', e => {
+  if (interactive) listen(inputTarget, 'touchstart', e => {
+      if (isControlEvent(e)) return;
       e.preventDefault();
       const touches = e.targetTouches;
       while (touches.length >= pointers.length)
           pointers.push(new pointerPrototype());
       for (let i = 0; i < touches.length; i++) {
-          let posX = scaleByPixelRatio(touches[i].pageX);
-          let posY = scaleByPixelRatio(touches[i].pageY);
-          updatePointerDownData(pointers[i + 1], touches[i].identifier, posX, posY);
+          let pos = touchPositionOnCanvas(touches[i]);
+          updatePointerDownData(pointers[i + 1], touches[i].identifier, pos.x, pos.y);
       }
-  });
+  }, { passive: false });
 
-  if (interactive) listen(canvas, 'touchmove', e => {
+  if (interactive) listen(inputTarget, 'touchmove', e => {
       e.preventDefault();
       const touches = e.targetTouches;
       for (let i = 0; i < touches.length; i++) {
           let pointer = pointers[i + 1];
           if (!pointer.down) continue;
-          let posX = scaleByPixelRatio(touches[i].pageX);
-          let posY = scaleByPixelRatio(touches[i].pageY);
-          updatePointerMoveData(pointer, posX, posY);
+          let pos = touchPositionOnCanvas(touches[i]);
+          updatePointerMoveData(pointer, pos.x, pos.y);
       }
-  }, false);
+  }, { passive: false });
 
   if (interactive) listen(window, 'touchend', e => {
       const touches = e.changedTouches;

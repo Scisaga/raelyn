@@ -430,6 +430,21 @@ def cancel_job(job_id: uuid.UUID) -> dict:
         return {"ok": True, "job_id": str(job_id), "status": "canceled" if action == "canceled" else "cancel_requested"}
 
 
+def _pending_duplicate_for_retry(session, job: Job) -> Job | None:
+    dedupe_key = str(getattr(job, "dedupe_key", "") or "").strip()
+    if not dedupe_key:
+        return None
+    return (
+        session.execute(
+            select(Job)
+            .where(Job.dedupe_key == dedupe_key, Job.status == "pending", Job.id != job.id)
+            .order_by(Job.created_at.asc(), Job.id.asc())
+            .limit(1)
+        )
+        .scalar_one_or_none()
+    )
+
+
 @router.post("/jobs/{job_id:uuid}/retry")
 def retry_job(job_id: uuid.UUID) -> dict:
     with session_scope() as session:
@@ -441,6 +456,25 @@ def retry_job(job_id: uuid.UUID) -> dict:
 
         previous_status = str(job.status or "")
         previous_attempt = int(job.attempt or 0)
+        retry_at = utcnow()
+        pending_duplicate = _pending_duplicate_for_retry(session, job)
+        if pending_duplicate:
+            pending_duplicate.status = "canceled"
+            pending_duplicate.finished_at = retry_at
+            pending_duplicate.worker_id = None
+            pending_duplicate.lease_expires_at = None
+            pending_duplicate.cancel_requested_at = retry_at
+            pending_duplicate.error_message = "superseded by manual retry"
+            session.add(
+                JobEvent(
+                    job_id=pending_duplicate.id,
+                    level="warn",
+                    message="canceled; superseded by manual retry",
+                    data={"retry_job_id": str(job.id)},
+                )
+            )
+            session.flush([pending_duplicate])
+
         job.status = "pending"
         job.attempt = 0
         params = dict(job.params or {})
@@ -456,13 +490,16 @@ def retry_job(job_id: uuid.UUID) -> dict:
         job.finished_at = None
         job.lease_expires_at = None
         job.worker_id = None
-        job.scheduled_for = utcnow()
+        job.scheduled_for = retry_at
+        event_data = {"previous_status": previous_status, "previous_attempt": previous_attempt}
+        if pending_duplicate:
+            event_data["superseded_pending_job_id"] = str(pending_duplicate.id)
         session.add(
             JobEvent(
                 job_id=job.id,
                 level="info",
                 message="manual retry requested",
-                data={"previous_status": previous_status, "previous_attempt": previous_attempt},
+                data=event_data,
             )
         )
     return {"ok": True, "job_id": str(job_id), "status": "pending"}

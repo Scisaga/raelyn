@@ -14,6 +14,7 @@ const defaultGlyphScale = 0.94;
 
 const negativeLogoPath = resolve(root, "static/brand/logo.png");
 const positiveLogoPath = resolve(root, "static/brand/logo-y.png");
+const glyphLogoPath = resolve(root, "static/brand/logo-r.png");
 
 function resolveFfmpegBinary() {
   const candidates = [
@@ -36,6 +37,7 @@ function parseArgs(argv) {
   const options = {
     negativeSourcePath: negativeLogoPath,
     positiveSourcePath: positiveLogoPath,
+    glyphOutputPath: glyphLogoPath,
     glyphScale: defaultGlyphScale,
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -47,6 +49,11 @@ function parseArgs(argv) {
     }
     if (arg === "--positive-source") {
       options.positiveSourcePath = resolve(process.cwd(), argv[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (arg === "--glyph-output") {
+      options.glyphOutputPath = resolve(process.cwd(), argv[index + 1]);
       index += 1;
       continue;
     }
@@ -536,6 +543,19 @@ function buildNegativeLogo(plaqueAlpha, scaledGlyphLayer, gradient) {
   return output;
 }
 
+function buildStandaloneGlyph(scaledGlyphLayer) {
+  const output = new Uint8ClampedArray(scaledGlyphLayer.length);
+  for (let index = 0; index < scaledGlyphLayer.length; index += 4) {
+    const alpha = scaledGlyphLayer[index + 3];
+    if (alpha === 0) continue;
+    output[index] = 3;
+    output[index + 1] = 7;
+    output[index + 2] = 18;
+    output[index + 3] = alpha;
+  }
+  return output;
+}
+
 function measureAlphaBox(rgba) {
   const alpha = buildAlpha(rgba);
   let minX = size;
@@ -554,7 +574,7 @@ function measureAlphaBox(rgba) {
   return { bbox: [minX, minY, maxX + 1, maxY + 1] };
 }
 
-const { negativeSourcePath, positiveSourcePath, glyphScale } = parseArgs(process.argv.slice(2));
+const { negativeSourcePath, positiveSourcePath, glyphOutputPath, glyphScale } = parseArgs(process.argv.slice(2));
 const ffmpegBin = resolveFfmpegBinary();
 const negativeSource = readPngRgba(ffmpegBin, negativeSourcePath, size, size);
 const positiveSource = readPngRgba(ffmpegBin, positiveSourcePath, size, size);
@@ -566,9 +586,11 @@ const positiveLogo = compositeOver(borderLayer, scaledGlyphLayer);
 const gradient = fitLinearGradient(negativeSource, size, size);
 const plaqueAlpha = buildPlaqueAlpha(negativeSource);
 const negativeLogo = buildNegativeLogo(plaqueAlpha, scaledGlyphLayer, gradient);
+const standaloneGlyph = buildStandaloneGlyph(scaledGlyphLayer);
 
 writePngRgba(ffmpegBin, positiveLogoPath, size, size, positiveLogo);
 writePngRgba(ffmpegBin, negativeLogoPath, size, size, negativeLogo);
+writePngRgba(ffmpegBin, glyphOutputPath, size, size, standaloneGlyph);
 
 console.log(
   JSON.stringify(
@@ -576,9 +598,11 @@ console.log(
       glyphScale,
       negativeSourcePath,
       positiveSourcePath,
+      glyphOutputPath,
       glyphBox,
       logo: measureAlphaBox(negativeLogo),
       logoY: measureAlphaBox(positiveLogo),
+      logoR: measureAlphaBox(standaloneGlyph),
     },
     null,
     2

@@ -93,6 +93,7 @@ class Settings(BaseSettings):
     asr_endpoint: str = Field(default="", validation_alias=AliasChoices("ASR_ENDPOINT", "SPEACHES_ENDPOINT"))
     asr_model: str = Field(default="", validation_alias=AliasChoices("ASR_MODEL", "SPEACHES_MODEL"))
     asr_prompt: str = Field(default="", validation_alias=AliasChoices("ASR_PROMPT", "SPEACHES_PROMPT"))
+    asr_language: str = Field(default="", validation_alias=AliasChoices("ASR_LANGUAGE"))
     asr_temperature: float | None = Field(default=None, validation_alias=AliasChoices("ASR_TEMPERATURE"))
     # "verbose_json" returns segments; empty means "verbose_json".
     asr_response_format: str = Field(
@@ -131,6 +132,7 @@ class Settings(BaseSettings):
     embedding_timeout_seconds: int = 120
     embedding_worker_concurrency: int = 1
     analysis_worker_concurrency: int = 1
+    ai_worker_concurrency: int = Field(default=1, validation_alias=AliasChoices("AI_WORKER_CONCURRENCY"))
     analysis_min_available_memory_bytes: int = 1024 * 1024 * 1024
     analysis_max_rss_bytes: int = 6 * 1024 * 1024 * 1024
     analysis_stream_batch_size: int = 2000

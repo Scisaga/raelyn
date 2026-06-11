@@ -198,17 +198,40 @@
                     <div class="mt-1 text-xs text-slate-400 truncate" x-show="services.s3.error" x-text="services.s3.error"></div>
                   </div>
 
-                  <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-                    <div class="flex items-center justify-between gap-3">
-                      <div class="text-xs text-slate-400">ASR</div>
-                      <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.asr.ok)" x-text="serviceText(services.asr)"></span>
+                  <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4 space-y-2">
+                    <div class="grid grid-cols-2 gap-3">
+                      <div class="flex items-center justify-between gap-2 min-w-0">
+                        <div class="text-xs text-slate-400 truncate">ASR</div>
+                        <span class="inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.asr.ok)" x-text="serviceText(services.asr)"></span>
+                      </div>
+                      <div class="flex items-center justify-between gap-2 min-w-0">
+                        <div class="text-xs text-slate-400 truncate">EMBEDDING</div>
+                        <span class="inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.embedding.ok)" x-text="serviceText(services.embedding)"></span>
+                      </div>
                     </div>
-                    <div class="mt-2 text-xs text-slate-400 truncate" x-show="services.asr.url" x-text="services.asr.url"></div>
-                    <div class="mt-1 text-xs text-slate-400 truncate" x-show="services.asr.configured">
-                      <span class="text-slate-300">调用:</span>
-                      <span x-text="stats.asrCalls || 0"></span>
+                    <div class="grid grid-cols-2 gap-3 text-xs text-slate-400">
+                      <div class="truncate" :title="services.asr.url || ''">
+                        <span class="text-slate-300">ASR:</span>
+                        <span x-text="services.asr.url || '-'"></span>
+                      </div>
+                      <div class="truncate" :title="services.embedding.url || ''">
+                        <span class="text-slate-300">EMB:</span>
+                        <span x-text="services.embedding.url || '-'"></span>
+                      </div>
                     </div>
-                    <div class="mt-1 text-xs text-slate-400 truncate" x-show="services.asr.error && services.asr.configured" x-text="services.asr.error"></div>
+                    <div class="grid grid-cols-2 gap-3 text-xs text-slate-400">
+                      <div class="truncate" :title="services.asr.error && services.asr.configured ? services.asr.error : ''">
+                        <span class="text-slate-300">调用:</span>
+                        <span x-text="formatCompactInteger(stats.asrCalls || 0)"></span>
+                        <span x-show="services.asr.error && services.asr.configured" x-text="' · ' + services.asr.error"></span>
+                      </div>
+                      <div class="truncate" :title="services.embedding.error && services.embedding.configured ? services.embedding.error : ''">
+                        <span class="text-slate-300">模型:</span>
+                        <span x-text="services.embedding.model || '-'"></span>
+                        <span x-show="services.embedding.dim" x-text="' / ' + services.embedding.dim"></span>
+                        <span x-show="services.embedding.error && services.embedding.configured" x-text="' · ' + services.embedding.error"></span>
+                      </div>
+                    </div>
                   </div>
 
                   <div class="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
@@ -219,13 +242,13 @@
                     <div class="mt-2 text-xs text-slate-400 truncate" x-show="services.llm.url" x-text="services.llm.url"></div>
                     <div class="mt-1 overflow-x-auto text-xs text-slate-400 whitespace-nowrap" x-show="services.llm.configured">
                       <span class="text-slate-300">调用:</span>
-                      <span x-text="formatInteger(stats.llmCalls || 0)"></span>
+                      <span x-text="formatCompactInteger(stats.llmCalls || 0)"></span>
                       <span class="text-slate-300">输入:</span>
-                      <span x-text="formatInteger(stats.llmInputTokens || 0)"></span>
+                      <span x-text="formatCompactInteger(stats.llmInputTokens || 0)"></span>
                       <span class="text-slate-300">输出:</span>
-                      <span x-text="formatInteger(stats.llmOutputTokens || 0)"></span>
+                      <span x-text="formatCompactInteger(stats.llmOutputTokens || 0)"></span>
                       <span class="text-slate-300">总 token:</span>
-                      <span x-text="formatInteger(stats.llmTotalTokens || 0)"></span>
+                      <span x-text="formatCompactInteger(stats.llmTotalTokens || 0)"></span>
                     </div>
                     <div class="mt-1 text-xs text-slate-400 truncate" x-show="services.llm.error && services.llm.configured" x-text="services.llm.error"></div>
                   </div>

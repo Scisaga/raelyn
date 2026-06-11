@@ -12,7 +12,7 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn.models import Video
-from raelyn.services.video_time import normalize_time_basis, timeline_time_expr
+from raelyn.services.video_time import normalize_time_basis, selected_content_time_subquery, timeline_time_expr
 
 
 class VideoTimeTests(unittest.TestCase):
@@ -35,6 +35,17 @@ class VideoTimeTests(unittest.TestCase):
 
         self.assertIn("video.published_at", compiled)
         self.assertNotIn("video_time_evidence", compiled)
+
+    def test_selected_content_time_subquery_uses_set_based_ranking(self) -> None:
+        selected = selected_content_time_subquery("selected_video_time")
+        stmt = select(selected.c.video_id, selected.c.content_published_at)
+        compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
+
+        self.assertIn("row_number() over", compiled)
+        self.assertIn("partition by video_time_evidence.video_id", compiled)
+        self.assertIn("content_published_at", compiled)
+        self.assertIn("codex_batch_publish_time_inference", compiled)
+        self.assertIn("external_title_search", compiled)
 
     def test_normalize_time_basis_rejects_unknown_values(self) -> None:
         self.assertEqual(normalize_time_basis(None), "content")

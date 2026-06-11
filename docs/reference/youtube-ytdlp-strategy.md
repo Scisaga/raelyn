@@ -12,6 +12,7 @@
 - YouTube 的 `yt-dlp` 同步 / 下载可显式使用 `YTDLP_PROXY`；这只影响 YouTube 访问出口，不代表 ASR / LLM / Embedding / 头像抓取也走代理。
 - 不要从“cookies 会被轮换 / 会增加账号风险”推导出“cookies 不需要”。正确结论是：降低同步频率、降低并发、保持导出 cookies 的浏览器环境干净，并增加 PO Token Provider / impersonation，而不是盲目切到无 cookies。
 - `video.download.youtube` 默认使用 `YTDLP_COOKIES_YOUTUBE`，并通过 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 启用浏览器 impersonation；当前实测这是比单纯重启代理更接近浏览器成功路径的组合。
+- YouTube 频道 flat 列表有时只返回 `id/title/url/duration`，不返回 `timestamp/upload_date`。同步新发现视频时，若 flat 条目缺少发布时间，系统会对该单视频补一次 metadata 解析，用来填充 `video.published_at/raw_info`，避免新视频已入库但被时间筛选隐藏。
 - 当同步任务持续触发 bot check 或 cookies 失效时，优先降低请求波峰，而不是反复更换 cookies。
 
 ## 2026-05-18 排障复盘

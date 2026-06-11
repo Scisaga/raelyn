@@ -143,7 +143,13 @@ def _extract_llm_usage(payload: Any, *, mode: str) -> dict[str, int]:
     }
 
 
-def llm_generate(*, prompt: str, think: bool | str | None = None) -> dict[str, Any]:
+def llm_generate(
+    *,
+    prompt: str,
+    think: bool | str | None = None,
+    response_format: Literal["json"] | None = None,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not llm_enabled():
         raise RuntimeError("llm is not configured")
 
@@ -157,6 +163,10 @@ def llm_generate(*, prompt: str, think: bool | str | None = None) -> dict[str, A
         payload: dict[str, Any] = {"model": model or "qwen2.5:7b", "prompt": prompt, "stream": False}
         if think is not None:
             payload["think"] = think
+        if response_format == "json":
+            payload["format"] = "json"
+        if options is not None:
+            payload["options"] = options
     elif mode == "openai_chat":
         if not model:
             raise RuntimeError("LLM_MODEL is required for /chat/completions endpoints")

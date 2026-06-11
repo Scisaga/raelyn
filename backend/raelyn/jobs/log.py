@@ -10,8 +10,9 @@ from raelyn.models import Job, JobEvent
 
 
 def job_log(session: Session, job: Job, message: str, *, level: str = "info", data: dict[str, Any] | None = None) -> None:
-    session.add(JobEvent(job_id=job.id, level=level, message=message, data=data))
-    session.flush()
+    event = JobEvent(job_id=job.id, level=level, message=message, data=data)
+    session.add(event)
+    session.flush([event])
 
     # Also echo to stdout so operators can see worker activity in log files.
     # Default behavior:

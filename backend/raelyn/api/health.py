@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from raelyn.config import settings
 from raelyn.db import session_scope
+from raelyn.services.embeddings import check_embedding_health
 from raelyn.services.inference import build_inference_status
 from raelyn.services.inference import check_asr_health
 from raelyn.services.inference import check_llm_health
@@ -51,6 +52,7 @@ def health() -> dict:
     s3 = s3_check_bucket()
 
     asr = check_asr_health()
+    embedding = check_embedding_health()
     llm = check_llm_health()
     inference = build_inference_status()
 
@@ -59,6 +61,16 @@ def health() -> dict:
         db.get("ok")
         and s3.get("ok")
         and (asr.get("ok") or asr.get("configured") is False)
+        and (embedding.get("ok") or embedding.get("configured") is False)
         and (llm.get("ok") or llm.get("configured") is False)
     )
-    return {"ok": ok, "deps_ok": deps_ok, "db": db, "s3": s3, "asr": asr, "llm": llm, "inference": inference}
+    return {
+        "ok": ok,
+        "deps_ok": deps_ok,
+        "db": db,
+        "s3": s3,
+        "asr": asr,
+        "embedding": embedding,
+        "llm": llm,
+        "inference": inference,
+    }

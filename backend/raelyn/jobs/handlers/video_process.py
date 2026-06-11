@@ -7,6 +7,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from raelyn.config import settings
 from raelyn.jobs.enqueue import enqueue_in, enqueue_job
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
@@ -27,6 +28,66 @@ from .common import _best_language_subtitle
 
 _ASR_TERMINAL_HTTP_STATUS_CODES = {400, 401, 403, 404, 413, 415, 422, 507}
 _ASR_TRANSIENT_HTTP_STATUS_CODES = {429, 502, 503, 504}
+_ASR_AUTO_LANGUAGE_VALUES = {"", "auto", "detect", "mixed", "multilingual", "und", "unknown"}
+_SUBTITLE_LANGUAGE_ALIASES = {
+    "ai-zh": "zh",
+    "ai-en": "en",
+}
+
+
+def _normalize_asr_language(value: object) -> str | None:
+    text = str(value or "").strip().lower().replace("_", "-")
+    if text in _ASR_AUTO_LANGUAGE_VALUES:
+        return None
+    aliases = {
+        "chinese": "zh",
+        "mandarin": "zh",
+        "zh-cn": "zh",
+        "zh-hans": "zh",
+        "english": "en",
+        "en-us": "en",
+        "en-gb": "en",
+    }
+    text = aliases.get(text, text)
+    if "-" in text:
+        text = text.split("-", 1)[0]
+    return text or None
+
+
+def _configured_asr_language() -> str | None:
+    return _normalize_asr_language(settings.asr_language)
+
+
+def _normalize_subtitle_language(value: object) -> str:
+    text = str(value or "und").strip().lower().replace("_", "-") or "und"
+    return _SUBTITLE_LANGUAGE_ALIASES.get(text, text)
+
+
+def _asr_payload_language(resp: dict) -> str | None:
+    for key in ("language", "detected_language", "language_code", "detected_language_code"):
+        language = _normalize_asr_language(resp.get(key))
+        if language:
+            return language
+
+    segments = resp.get("segments")
+    if isinstance(segments, list):
+        for item in segments:
+            if not isinstance(item, dict):
+                continue
+            for key in ("language", "detected_language", "language_code", "detected_language_code"):
+                language = _normalize_asr_language(item.get(key))
+                if language:
+                    return language
+
+    raw = resp.get("raw")
+    if isinstance(raw, dict):
+        result = raw.get("result")
+        if isinstance(result, dict):
+            for key in ("language", "detected_language", "language_code", "detected_language_code"):
+                language = _normalize_asr_language(result.get(key))
+                if language:
+                    return language
+    return None
 
 
 def _asr_error_detail(exc: httpx.HTTPStatusError) -> str:
@@ -102,23 +163,13 @@ def video_extract_audio(session: Session, job: Job) -> dict | None:
         )
 
     if asr_enabled():
-        has_zh_subtitle = session.execute(
+        has_transcript_source = session.execute(
             select(Asset.id).where(
                 Asset.video_id == video.id,
-                Asset.type == "subtitle",
-                Asset.language.is_not(None),
-                Asset.language.ilike("zh%"),
+                Asset.type.in_(["subtitle", "transcript"]),
             ).limit(1)
         ).scalar_one_or_none()
-        has_zh_transcript = session.execute(
-            select(Asset.id).where(
-                Asset.video_id == video.id,
-                Asset.type == "transcript",
-                Asset.language.is_not(None),
-                Asset.language.ilike("zh%"),
-            ).limit(1)
-        ).scalar_one_or_none()
-        if not has_zh_subtitle and not has_zh_transcript:
+        if not has_transcript_source:
             enqueue_job(
                 session,
                 type_="video.asr_transcribe",
@@ -153,7 +204,7 @@ def video_normalize_subtitle(session: Session, job: Job) -> dict | None:
         seg_path.write_text(segments_json, encoding="utf-8")
         txt_path.write_text(plain, encoding="utf-8")
 
-        lang = (sub.language or "und").lower()
+        lang = _normalize_subtitle_language(sub.language)
         base = f"{video.provider}/{video.media_id}/{video.provider_video_id}/transcript/{lang}"
         force = bool(job.params.get("force"))
 
@@ -240,11 +291,16 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
             reason=defer.reason,
         )
 
+    requested_language = _configured_asr_language()
     with job_workdir(job.id) as wd:
         local_audio = wd / f"audio.{audio_asset.format}"
         s3_download_file(bucket=audio_asset.s3_bucket, key=audio_asset.s3_key, local_path=local_audio)
         try:
-            resp = asr_transcribe(audio_path=local_audio, language="zh", media_duration_seconds=video.duration_sec)
+            resp = asr_transcribe(
+                audio_path=local_audio,
+                language=requested_language,
+                media_duration_seconds=video.duration_sec,
+            )
         except httpx.HTTPStatusError as exc:
             status_code = int(exc.response.status_code)
             detail = _asr_error_detail(exc)
@@ -269,7 +325,9 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
             segments_path.write_text("[]", encoding="utf-8")
         plain_path.write_text(str(text), encoding="utf-8")
 
-        base = f"{video.provider}/{video.media_id}/{video.provider_video_id}/transcript/zh"
+        transcript_language = _asr_payload_language(resp) or requested_language
+        transcript_language_slug = transcript_language or "und"
+        base = f"{video.provider}/{video.media_id}/{video.provider_video_id}/transcript/{transcript_language_slug}"
         force = bool(job.params.get("force"))
 
         ensure_asset(
@@ -277,7 +335,7 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
             video_id=video.id,
             type_="transcript",
             format_="json",
-            language="zh",
+            language=transcript_language,
             source="qwen3-asr",
             variant="segments",
             local_path=segments_path,
@@ -290,7 +348,7 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
             video_id=video.id,
             type_="transcript",
             format_="txt",
-            language="zh",
+            language=transcript_language,
             source="qwen3-asr",
             variant="plain",
             local_path=plain_path,
@@ -306,7 +364,7 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
         parent_job_id=str(job.id),
     )
     _enqueue_brief_for_video_playlists(session, video=video)
-    if llm_enabled():
+    if llm_enabled() and transcript_language == "zh":
         enqueue_job(
             session,
             type_="video.polish_transcript",
@@ -321,4 +379,4 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
         )
 
     video.status = "ready"
-    return {"ok": True}
+    return {"ok": True, "language": transcript_language, "requested_language": requested_language}

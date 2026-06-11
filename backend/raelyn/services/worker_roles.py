@@ -23,17 +23,19 @@ CONTROLLABLE_WORKER_ROLES: tuple[str, ...] = (
 KNOWN_WORKER_ROLES: tuple[str, ...] = CONTROLLABLE_WORKER_ROLES + (WORKER_ROLE_ALL,)
 
 WORKER_ROLE_TYPES: dict[str, list[str]] = {
-    "download_youtube": ["video.download.youtube"],
-    "download_bilibili": ["video.download.bilibili"],
+    "download_youtube": ["video.download.youtube", "video.backfill_subtitles.youtube"],
+    "download_bilibili": ["video.download.bilibili", "video.backfill_subtitles.bilibili"],
     "audio": ["video.extract_audio"],
     "process": ["video.normalize_subtitle"],
     "asr": ["video.asr_transcribe"],
     "sync": ["media.sync_profile", "media.sync_videos", "media.delete"],
     "embedding": ["event.embed"],
-    "analysis": ["playlist.build_event_regime_snapshot"],
+    "analysis": ["playlist.mark_event_regime_dirty", "playlist.build_event_regime_snapshot"],
     "ai": [
         "video.extract_events",
+        "video.extract_events_batch",
         "playlist.backfill_events",
+        "playlist.backfill_events_range",
         "video.polish_transcript",
         "brief.generate_daily",
         "brief.generate_period",
@@ -91,7 +93,7 @@ def worker_role_for_job(session: Session, job: Job | Any) -> str | None:
     if direct:
         return direct
 
-    if job_type != "video.download":
+    if job_type not in {"video.download", "video.backfill_subtitles"}:
         return None
 
     params = getattr(job, "params", None) or {}
@@ -115,9 +117,9 @@ def worker_role_for_job(session: Session, job: Job | Any) -> str | None:
 
 def provider_for_job(session: Session, job: Job | Any) -> str | None:
     job_type = str(getattr(job, "type", "") or "").strip()
-    if job_type == "video.download.youtube":
+    if job_type in {"video.download.youtube", "video.backfill_subtitles.youtube"}:
         return "youtube"
-    if job_type == "video.download.bilibili":
+    if job_type in {"video.download.bilibili", "video.backfill_subtitles.bilibili"}:
         return "bilibili"
 
     params = getattr(job, "params", None) or {}
@@ -134,7 +136,7 @@ def provider_for_job(session: Session, job: Job | Any) -> str | None:
         provider = str(getattr(media, "provider", "") or "").strip().lower()
         return provider or None
 
-    if job_type == "video.download":
+    if job_type in {"video.download", "video.backfill_subtitles"}:
         raw_video_id = params.get("video_id")
         try:
             video_id = uuid.UUID(str(raw_video_id))

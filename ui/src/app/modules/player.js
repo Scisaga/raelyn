@@ -220,7 +220,7 @@ export function createPlayerModule() {
 
       try {
         const [assets, transcript, detail] = await Promise.all([
-          this.api(`/videos/${encodeURIComponent(nextId)}/assets?presign=true&download=true`),
+          this.api(`/videos/${encodeURIComponent(nextId)}/assets?presign=true&download=true&localize_title=false`),
           this.api(`/videos/${encodeURIComponent(nextId)}/transcript`),
           this.api(`/videos/${encodeURIComponent(nextId)}`),
         ]);

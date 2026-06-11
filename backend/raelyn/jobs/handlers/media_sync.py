@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from sqlalchemy import String, cast, exists, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from raelyn.config import settings
@@ -10,14 +12,14 @@ from raelyn.jobs.enqueue import enqueue_in, enqueue_job
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
 from raelyn.models import Asset, Job, Media, Video
-from raelyn.services.pg_lock import advisory_lock_any
+from raelyn.services.pg_lock import advisory_lock_any, try_xact_lock
 from raelyn.services.provider_pause import ProviderPauseRequestError
 from raelyn.services.profile_fetch import fetch_media_profile
 from raelyn.services.provider import build_media_videos_url
 from raelyn.services.transcripts import TRANSCRIPT_VARIANTS
 from raelyn.services.video_actions import schedule_video_download
 from raelyn.services.video_meta import parse_published_at
-from raelyn.services.event_analysis import mark_playlists_event_regime_dirty_for_video
+from raelyn.services.event_analysis import schedule_playlists_event_regime_dirty_for_video
 from raelyn.services.ytdlp import YtdlpCookiesInvalidError, ytdlp_extract_info
 from raelyn.services.ytdlp_errors import is_provider_media_unavailable_error
 from raelyn.timeutil import utcnow
@@ -39,6 +41,20 @@ from .common import (
 _AUTO_DISCOVERED_DOWNLOAD_PRIORITY = 7
 _DOWNLOAD_JOB_TYPES = ("video.download", "video.download.youtube", "video.download.bilibili")
 _AUTO_DISABLED_SOURCE_UNAVAILABLE_REASON = "source_unavailable"
+_RAW_INFO_KEEP_KEYS = [
+    "id",
+    "title",
+    "original_title",
+    "description",
+    "uploader",
+    "channel",
+    "upload_date",
+    "timestamp",
+    "release_timestamp",
+    "release_date",
+    "duration",
+    "webpage_url",
+]
 
 
 def _auto_disable_media_source_unavailable(session: Session, *, job: Job, media: Media, err: Exception) -> dict:
@@ -105,6 +121,90 @@ def _job_download_priority(job: Job) -> int:
         return int(job.params.get("download_priority", _AUTO_DISCOVERED_DOWNLOAD_PRIORITY))
     except Exception:
         return _AUTO_DISCOVERED_DOWNLOAD_PRIORITY
+
+
+def _compact_raw_info(info: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(info, dict):
+        return None
+    return {key: info.get(key) for key in _RAW_INFO_KEEP_KEYS}
+
+
+def _media_sync_lock_name(media_id: uuid.UUID) -> str:
+    return f"media:{media_id}:sync"
+
+
+def _insert_discovered_video_if_new(
+    session: Session,
+    *,
+    media: Media,
+    provider_video_id: str,
+    url: str,
+    metadata_entry: dict[str, Any],
+    is_members_only: bool,
+    allow_members_only_download: bool,
+) -> Video | None:
+    video_id = uuid.uuid4()
+    status = "discovered"
+    error_message = None
+    if is_members_only and not allow_members_only_download:
+        status = "members_only"
+        error_message = "members-only video; not enqueued"
+
+    published_at = parse_published_at(metadata_entry)
+    raw_info = _compact_raw_info(metadata_entry)
+    values = {
+        "id": video_id,
+        "provider": media.provider,
+        "provider_video_id": provider_video_id,
+        "media_id": media.id,
+        "url": url,
+        "title": metadata_entry.get("title"),
+        "thumbnail_url": metadata_entry.get("thumbnail"),
+        "duration_sec": metadata_entry.get("duration"),
+        "published_at": published_at,
+        "raw_info": raw_info,
+        "status": status,
+        "error_message": error_message,
+    }
+    inserted_id = session.execute(
+        pg_insert(Video)
+        .values(**values)
+        .on_conflict_do_nothing(constraint="video_provider_video_id_ux")
+        .returning(Video.id)
+    ).scalar_one_or_none()
+    if not inserted_id:
+        return None
+
+    return Video(**{**values, "id": inserted_id})
+
+
+def _enrich_youtube_entry_if_missing_published_at(
+    *,
+    session: Session,
+    job: Job,
+    entry: dict[str, Any],
+    url: str,
+) -> dict[str, Any]:
+    if parse_published_at(entry) is not None:
+        return entry
+    try:
+        info = ytdlp_extract_info(url, provider="youtube", flat=False, max_entries=1)
+    except Exception as e:
+        job_log(session, job, f"youtube metadata enrich failed for {url}: {e}", level="warn")
+        return entry
+
+    if not isinstance(info, dict):
+        return entry
+    if str(info.get("id") or "").strip() != str(entry.get("id") or "").strip():
+        return entry
+    enriched = dict(entry)
+    for key in _RAW_INFO_KEEP_KEYS:
+        value = info.get(key)
+        if value is not None:
+            enriched[key] = value
+    if info.get("thumbnail") and not enriched.get("thumbnail"):
+        enriched["thumbnail"] = info.get("thumbnail")
+    return enriched
 
 
 @registry.register("media.sync_profile")
@@ -200,6 +300,11 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
     if (not force) and (not media.monitor_enabled):
         return {"skipped": "monitor_disabled"}
 
+    if not try_xact_lock(session, _media_sync_lock_name(media.id)):
+        job_log(session, job, "media sync locked; reschedule", level="warn")
+        enqueue_in(session, seconds=30, type_=job.type, params=job.params, priority=job.priority)
+        return {"rescheduled": True}
+
     with advisory_lock_any(session, _provider_guard_names(media.provider, "sync")) as lock_name:
         if not lock_name:
             job_log(session, job, "provider sync locked (all slots busy); reschedule", level="warn")
@@ -271,11 +376,6 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
             provider_video_id = str(provider_video_id)
             if media.provider == "youtube" and len(provider_video_id) != 11:
                 continue
-            exists = session.execute(
-                select(Video.id).where(Video.provider == media.provider, Video.provider_video_id == provider_video_id)
-            ).scalar_one_or_none()
-            if exists:
-                continue
 
             url = entry.get("webpage_url") or entry.get("url") or ""
             if not url:
@@ -291,26 +391,36 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
             elif media.provider == "bilibili":
                 url = _normalize_bilibili_video_url(url)
 
-            video = Video(
-                provider=media.provider,
-                provider_video_id=provider_video_id,
-                media_id=media.id,
-                url=url,
-                title=entry.get("title"),
-                thumbnail_url=entry.get("thumbnail"),
-                duration_sec=entry.get("duration"),
-                status="discovered",
-            )
-            video.published_at = parse_published_at(entry)
+            metadata_entry = entry
+            if media.provider == "youtube":
+                metadata_entry = _enrich_youtube_entry_if_missing_published_at(
+                    session=session,
+                    job=job,
+                    entry=entry,
+                    url=url,
+                )
+
             is_members_only = _is_members_only_entry(media.provider, entry)
-            if is_members_only and not allow_members_only_download:
-                video.status = "members_only"
-                video.error_message = "members-only video; not enqueued"
-            session.add(video)
+            video = _insert_discovered_video_if_new(
+                session,
+                media=media,
+                provider_video_id=provider_video_id,
+                url=url,
+                metadata_entry=metadata_entry,
+                is_members_only=is_members_only,
+                allow_members_only_download=allow_members_only_download,
+            )
+            if not video:
+                continue
             created += 1
-            session.flush()
             if video.published_at:
-                mark_playlists_event_regime_dirty_for_video(session, video.id)
+                schedule_playlists_event_regime_dirty_for_video(
+                    session,
+                    video_id=video.id,
+                    reason="video_published_at_changed",
+                    source_job_id=job.id,
+                    priority=job.priority,
+                )
 
             has_transcript = (
                 session.execute(

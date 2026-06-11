@@ -16,10 +16,12 @@ DOWNLOAD_CONCURRENCY_MIN=1
 DOWNLOAD_CONCURRENCY_MAX=10
 EMBEDDING_WORKER_CONCURRENCY_DEFAULT=1
 ANALYSIS_WORKER_CONCURRENCY_DEFAULT=1
+AI_WORKER_CONCURRENCY_DEFAULT=1
 ASR_WORKER_CONCURRENCY_DEFAULT=1
 ASR_WORKER_CONCURRENCY_MIN=1
 EMBEDDING_WORKER_CONCURRENCY_MIN=0
 ANALYSIS_WORKER_CONCURRENCY_MIN=0
+AI_WORKER_CONCURRENCY_MIN=1
 ROLE_WORKER_CONCURRENCY_MAX=10
 
 API_PID_FILE="${PID_DIR}/api.pid"
@@ -206,6 +208,9 @@ scaled_worker_count() {
     analysis)
       clamp_role_worker_concurrency "${ANALYSIS_WORKER_CONCURRENCY:-}" "${ANALYSIS_WORKER_CONCURRENCY_DEFAULT}" "${ANALYSIS_WORKER_CONCURRENCY_MIN}"
       ;;
+    ai)
+      clamp_role_worker_concurrency "${AI_WORKER_CONCURRENCY:-}" "${AI_WORKER_CONCURRENCY_DEFAULT}" "${AI_WORKER_CONCURRENCY_MIN}"
+      ;;
     *)
       echo "1"
       ;;
@@ -251,6 +256,8 @@ scaled_worker_indices() {
   done
   if [[ "$role" == "asr" ]] && [[ -f "$WORKER_ASR_PID_FILE" ]]; then
     values+=( "legacy" )
+  elif [[ "$role" == "ai" ]] && [[ -f "$WORKER_AI_PID_FILE" ]]; then
+    values+=( "legacy" )
   fi
 
   local uniq=()
@@ -290,6 +297,8 @@ Commands:
   start     Start api/worker/scheduler in background
   stop      Stop all started processes
   restart   Stop then start
+  restart-api
+            Rebuild UI and restart api only; keep worker/scheduler running
   reset     Stop + clear DB/S3 (DANGEROUS)
   status    Show running status + pids
   logs      Tail logs (api/workers/scheduler)
@@ -388,6 +397,30 @@ wait_for_http_ok() {
   return 1
 }
 
+start_api() {
+  ensure_ui_built
+  start_one "api" "$API_PID_FILE" "$API_LOG" bash scripts/dev/run-api.sh
+  local -a api_wait_args=()
+  if [[ -n "${API_BEARER_TOKEN:-}" ]]; then
+    api_wait_args=(-H "Authorization: Bearer ${API_BEARER_TOKEN}")
+  fi
+  wait_for_http_ok "api" "http://127.0.0.1:8000/api/health" "$API_PID_FILE" "$API_LOG" 120 "${api_wait_args[@]}"
+}
+
+kill_api_strays() {
+  local pids=()
+  while IFS= read -r pid; do
+    [[ -n "${pid:-}" ]] && pids+=( "$pid" )
+  done < <(pgrep -f "python.*-m raelyn\\.api_server" 2>/dev/null || true)
+  if [[ "${#pids[@]}" -eq 0 ]]; then
+    return 0
+  fi
+  echo "[stop] stray api pids: ${pids[*]}"
+  kill "${pids[@]}" >/dev/null 2>&1 || true
+  sleep 0.2
+  kill -9 "${pids[@]}" >/dev/null 2>&1 || true
+}
+
 start_worker_role() {
   local name="$1"
   local pid_file="$2"
@@ -426,10 +459,12 @@ start_scaled_workers() {
   local legacy_pid=""
   if [[ "$role" == "asr" ]]; then
     legacy_pid="$(read_pid "$WORKER_ASR_PID_FILE")"
+  elif [[ "$role" == "ai" ]]; then
+    legacy_pid="$(read_pid "$WORKER_AI_PID_FILE")"
   fi
   local i
   for ((i=1; i<=count; i++)); do
-    if [[ "$role" == "asr" ]] && (( i == 1 )) && is_running "$legacy_pid"; then
+    if [[ "$role" =~ ^(asr|ai)$ ]] && (( i == 1 )) && is_running "$legacy_pid"; then
       echo "[start] $(scaled_worker_name "$role" "$i"): legacy instance already running (pid=${legacy_pid})"
       continue
     fi
@@ -498,6 +533,8 @@ stop_scaled_workers() {
     [[ -n "${index:-}" ]] || continue
     if [[ "$role" == "asr" && "$index" == "legacy" ]]; then
       stop_one "worker-asr" "$WORKER_ASR_PID_FILE"
+    elif [[ "$role" == "ai" && "$index" == "legacy" ]]; then
+      stop_one "worker-ai" "$WORKER_AI_PID_FILE"
     else
       stop_one \
         "$(scaled_worker_name "$role" "$index")" \
@@ -541,12 +578,11 @@ kill_strays() {
 }
 
 do_status() {
-  local api_pid audio_pid process_pid sync_pid ai_pid sched_pid
+  local api_pid audio_pid process_pid sync_pid sched_pid
   api_pid="$(read_pid "$API_PID_FILE")"
   audio_pid="$(read_pid "$WORKER_AUDIO_PID_FILE")"
   process_pid="$(read_pid "$WORKER_PROCESS_PID_FILE")"
   sync_pid="$(read_pid "$WORKER_SYNC_PID_FILE")"
-  ai_pid="$(read_pid "$WORKER_AI_PID_FILE")"
   sched_pid="$(read_pid "$SCHED_PID_FILE")"
 
   if is_running "$api_pid"; then
@@ -599,7 +635,7 @@ do_status() {
   fi
 
   local scaled_role scaled_index scaled_pid scaled_pid_file scaled_log_file scaled_count
-  for scaled_role in asr embedding analysis; do
+  for scaled_role in asr embedding analysis ai; do
     scaled_count="$(scaled_worker_count "$scaled_role")"
     echo "[status] worker-${scaled_role}: configured_concurrency=${scaled_count}"
     while IFS= read -r scaled_index; do
@@ -607,6 +643,9 @@ do_status() {
       if [[ "$scaled_role" == "asr" && "$scaled_index" == "legacy" ]]; then
         scaled_pid_file="$WORKER_ASR_PID_FILE"
         scaled_log_file="$WORKER_ASR_LOG"
+      elif [[ "$scaled_role" == "ai" && "$scaled_index" == "legacy" ]]; then
+        scaled_pid_file="$WORKER_AI_PID_FILE"
+        scaled_log_file="$WORKER_AI_LOG"
       else
         scaled_pid_file="$(scaled_worker_pid_file "$scaled_role" "$scaled_index")"
         scaled_log_file="$(scaled_worker_log_file "$scaled_role" "$scaled_index")"
@@ -615,24 +654,22 @@ do_status() {
       if is_running "$scaled_pid"; then
         if [[ "$scaled_role" == "asr" && "$scaled_index" == "legacy" ]]; then
           echo "[status] worker-asr: running pid=${scaled_pid} log=${scaled_log_file}"
+        elif [[ "$scaled_role" == "ai" && "$scaled_index" == "legacy" ]]; then
+          echo "[status] worker-ai: running pid=${scaled_pid} log=${scaled_log_file}"
         else
           echo "[status] $(scaled_worker_name "$scaled_role" "$scaled_index"): running pid=${scaled_pid} log=${scaled_log_file}"
         fi
       else
         if [[ "$scaled_role" == "asr" && "$scaled_index" == "legacy" ]]; then
           echo "[status] worker-asr: stopped"
+        elif [[ "$scaled_role" == "ai" && "$scaled_index" == "legacy" ]]; then
+          echo "[status] worker-ai: stopped"
         else
           echo "[status] $(scaled_worker_name "$scaled_role" "$scaled_index"): stopped"
         fi
       fi
     done < <(scaled_worker_indices "$scaled_role")
   done
-
-  if is_running "$ai_pid"; then
-    echo "[status] worker-ai: running pid=${ai_pid} log=${WORKER_AI_LOG}"
-  else
-    echo "[status] worker-ai: stopped"
-  fi
 
   if is_running "$sched_pid"; then
     echo "[status] scheduler: running pid=${sched_pid} log=${SCHED_LOG}"
@@ -644,13 +681,7 @@ do_status() {
 cmd="${1:-}"
 case "$cmd" in
   start)
-    ensure_ui_built
-    start_one "api" "$API_PID_FILE" "$API_LOG" bash scripts/dev/run-api.sh
-    api_wait_args=()
-    if [[ -n "${API_BEARER_TOKEN:-}" ]]; then
-      api_wait_args=(-H "Authorization: Bearer ${API_BEARER_TOKEN}")
-    fi
-    if ! wait_for_http_ok "api" "http://127.0.0.1:8000/api/health" "$API_PID_FILE" "$API_LOG" 30 "${api_wait_args[@]}"; then
+    if ! start_api; then
       do_status
       exit 1
     fi
@@ -662,13 +693,13 @@ case "$cmd" in
     start_scaled_workers "asr"
     start_scaled_workers "embedding"
     start_scaled_workers "analysis"
-    start_worker_role "worker-ai" "$WORKER_AI_PID_FILE" "$WORKER_AI_LOG" "ai"
+    start_scaled_workers "ai"
     start_one "scheduler" "$SCHED_PID_FILE" "$SCHED_LOG" bash scripts/dev/run-scheduler.sh
     do_status
     ;;
   stop)
     stop_one "scheduler" "$SCHED_PID_FILE"
-    stop_one "worker-ai" "$WORKER_AI_PID_FILE"
+    stop_scaled_workers "ai"
     stop_scaled_workers "analysis"
     stop_scaled_workers "embedding"
     stop_scaled_workers "asr"
@@ -684,6 +715,15 @@ case "$cmd" in
   restart)
     "$0" stop
     "$0" start
+    ;;
+  restart-api)
+    stop_one "api" "$API_PID_FILE"
+    kill_api_strays
+    if ! start_api; then
+      do_status
+      exit 1
+    fi
+    do_status
     ;;
   reset)
     if [[ "${2:-}" != "--yes" ]]; then
@@ -708,17 +748,19 @@ case "$cmd" in
         fi
       done < <(download_worker_indices "$provider")
     done
-    for scaled_role in asr embedding analysis; do
+    for scaled_role in asr embedding analysis ai; do
       while IFS= read -r index; do
         [[ -n "${index:-}" ]] || continue
         if [[ "$scaled_role" == "asr" && "$index" == "legacy" ]]; then
           log_files+=("$WORKER_ASR_LOG")
+        elif [[ "$scaled_role" == "ai" && "$index" == "legacy" ]]; then
+          log_files+=("$WORKER_AI_LOG")
         else
           log_files+=("$(scaled_worker_log_file "$scaled_role" "$index")")
         fi
       done < <(scaled_worker_indices "$scaled_role")
     done
-    log_files+=("$WORKER_AUDIO_LOG" "$WORKER_PROCESS_LOG" "$WORKER_SYNC_LOG" "$WORKER_AI_LOG" "$SCHED_LOG")
+    log_files+=("$WORKER_AUDIO_LOG" "$WORKER_PROCESS_LOG" "$WORKER_SYNC_LOG" "$SCHED_LOG")
     touch "${log_files[@]}"
     echo "[logs] tail -f ${log_files[*]}"
     tail -n 200 -f "${log_files[@]}"

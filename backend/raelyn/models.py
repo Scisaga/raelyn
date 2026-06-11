@@ -300,6 +300,34 @@ class MarketEventEmbedding(Base):
     __table_args__ = (UniqueConstraint("event_id", "embedding_model", "embedding_dim", name="market_event_embedding_ux"),)
 
 
+class VideoEventExtractionRun(Base):
+    __tablename__ = "video_event_extraction_run"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    video_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("video.id", ondelete="CASCADE"), nullable=False)
+    transcript_asset_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("asset.id", ondelete="SET NULL"), nullable=True)
+    source_hash: Mapped[str] = mapped_column(String, nullable=False)
+    prompt_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    extraction_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="succeeded")
+    event_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    warning_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    usage_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "video_id",
+            "source_hash",
+            "prompt_version",
+            "extraction_model",
+            name="video_event_extraction_run_ux",
+        ),
+    )
+
+
 class EventRegimeRun(Base):
     __tablename__ = "event_regime_run"
 

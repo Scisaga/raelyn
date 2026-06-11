@@ -105,6 +105,7 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
       db: { ok: false, url: "", error: null },
       s3: { ok: false, bucket: "", error: null },
       asr: { ok: false, configured: false, url: "", error: null },
+      embedding: { ok: false, configured: false, url: "", error: null, model: "", dim: 0 },
       llm: { ok: false, configured: false, url: "", error: null },
     },
     navItems: createNavItems(),
@@ -323,7 +324,8 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
       try {
         const canvas = this.$refs && this.$refs.startupFluidCanvas ? this.$refs.startupFluidCanvas : null;
         if (!canvas) return;
-        const handle = mountStartupFluid({ canvas, interactive: true });
+        const interactiveTarget = this.$refs && this.$refs.startupGate ? this.$refs.startupGate : canvas;
+        const handle = mountStartupFluid({ canvas, interactive: true, interactiveTarget });
         if (!handle || typeof handle.destroy !== "function") return;
         this._startupFluidHandle = handle;
         this.startupFluidActive = handle.active !== false;

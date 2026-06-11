@@ -85,8 +85,16 @@ export function createPlaylistViewMethods() {
         this.playlistBriefSourceState = "";
         this.playlistBriefSourceMessage = "";
         this.playlistEventsSummary = null;
+        this.playlistEventsAllSummary = null;
+        this.playlistEventsAllSummaryLoading = false;
+        this.playlistEventsAllSummaryError = "";
         this.playlistEvents = [];
         this.playlistEventDetail = null;
+        this.playlistEventDetailLoading = false;
+        this.playlistEventEntitySuggestions = [];
+        this.playlistEventEntitySuggestOpen = false;
+        this.playlistEventEntitySuggestLoading = false;
+        this.playlistEventEntitySuggestToken = 0;
         this.playlistEventsError = "";
         this.playlistSelectedEventId = "";
         this._abortCtrl("_playlistCountsAbortCtrl");
@@ -100,6 +108,8 @@ export function createPlaylistViewMethods() {
         this.playlistDescEditing = false;
         this.playlistDescDraft = "";
         this.playlistAnalysisSummary = null;
+        this.playlistAnalysisSummaryLoading = false;
+        this.playlistAnalysisSummaryError = "";
         this.playlistAnalysisPeriods = [];
         this.playlistAnalysisSignals = [];
         this.playlistAnalysisInvalidateSignalCaches();
@@ -150,6 +160,16 @@ export function createPlaylistViewMethods() {
         this.playlistBriefSourceState = "";
         this.playlistBriefSourceMessage = "";
         this.playlistEventsError = "";
+        this.playlistEventsSummary = null;
+        this.playlistEventsAllSummary = null;
+        this.playlistEventsAllSummaryLoading = false;
+        this.playlistEventsAllSummaryError = "";
+        this.playlistEventDetail = null;
+        this.playlistEventDetailLoading = false;
+        this.playlistEventEntitySuggestions = [];
+        this.playlistEventEntitySuggestOpen = false;
+        this.playlistEventEntitySuggestLoading = false;
+        this.playlistEventEntitySuggestToken = 0;
         this.playlistPlayerNeedsDownload = false;
 
         const detail = await this.api(`/playlists/${encodeURIComponent(pid)}/detail`);
@@ -1292,6 +1312,13 @@ export function createPlaylistViewMethods() {
         }
       } else if (this.playlistSubview === "analysis") {
         await this.playlistLoadAnalysisView();
+      } else if (this.playlistSubview === "settings") {
+        const [, summary] = await Promise.all([
+          this.playlistLoadEventsAllSummary({ silent: true }).catch(() => null),
+          this.playlistLoadAnalysisSummary({ silent: true }).catch(() => null),
+        ]);
+        if (summary && (summary.running || this.playlistAnalysisActiveBackfillJob())) this.playlistAnalysisSchedulePoll();
+        else this.playlistAnalysisStopPolling();
       }
       this._syncUrl({ push: false });
     },
@@ -1342,6 +1369,8 @@ export function createPlaylistViewMethods() {
       this.playlistTranscriptUpdatedAt = "";
       this.playlistTranscriptSwitching = false;
       this.playlistAnalysisSummary = null;
+      this.playlistAnalysisSummaryLoading = false;
+      this.playlistAnalysisSummaryError = "";
       this.playlistAnalysisPeriods = [];
       this.playlistAnalysisSignals = [];
       this.playlistAnalysisInvalidateSignalCaches();
@@ -1711,6 +1740,7 @@ export function createPlaylistViewMethods() {
       }
       this._syncUrl({ push: false });
       this.playlistLoadDay(clamped, { autoPlay });
+      this.playlistLoadEventsPanel({ silent: true }).catch(() => null);
     },
 
     playlistTranscriptCacheKey(videoId, { variant = "", source = "" } = {}) {
@@ -3007,42 +3037,55 @@ export function createPlaylistViewMethods() {
         return s;
       };
 
-      const BRIEF_REF_MAX_CHARS = 8;
+      const BRIEF_REF_MAX_UNITS = 10;
+      const briefRefCharUnits = (ch) => {
+        const code = String(ch || "").codePointAt(0) || 0;
+        return code > 0x7f ? 2 : 1;
+      };
       const briefTruncLabel = (value) => {
         const raw = String(value || "").trim().replace(/\s+/g, " ");
         if (!raw) return "";
-        const chars = Array.from(raw);
-        const max = Math.max(1, Number(BRIEF_REF_MAX_CHARS || 0) || 8);
-        if (chars.length <= max) return raw;
-        if (max === 1) return "…";
-        return chars.slice(0, max - 1).join("") + "…";
+        const max = Math.max(1, Number(BRIEF_REF_MAX_UNITS || 0) || 10);
+        let used = 0;
+        let text = "";
+        for (const ch of Array.from(raw)) {
+          const units = briefRefCharUnits(ch);
+          if (used + units > max) break;
+          used += units;
+          text += ch;
+        }
+        return text === raw ? raw : `${text || "…"}${text ? "…" : ""}`;
       };
 
-      const briefUrlLabel = (url) => {
+      const briefUrlTitle = (url) => {
         try {
           const u = String(url || "").trim();
-          if (!u) return "视频...";
+          if (!u) return "";
           const items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
           const hit = items.find((v) => v && String(v.url || "").trim() === u);
           const title = hit && hit.title ? String(hit.title).trim() : "";
-          if (!title) return "视频...";
-          return briefTruncLabel(title) || "视频...";
+          return title;
         } catch {
-          return "视频...";
+          return "";
         }
       };
+
+      const briefLooksLikeUrl = (value) => /^https?:\/\//i.test(String(value || "").trim());
 
       const briefRefPill = ({ label, url }) => {
         const u = String(url || "").trim();
         if (!u) return "";
         const enc = encodeURIComponent(u);
         const safeUrl = this._escapeHtml(u);
-        const rawText = String(label || "").trim() || briefUrlLabel(u);
+        const title = briefUrlTitle(u);
+        const rawLabel = String(label || "").trim();
+        const rawText = title || (rawLabel && !briefLooksLikeUrl(rawLabel) ? rawLabel : "") || "视频...";
         const text = briefTruncLabel(rawText) || "视频...";
         const safeText = formatInlineEsc(this._escapeHtml(text));
+        const safeTitle = this._escapeHtml(title || rawText || u);
         return [
           '<span class="inline-flex items-stretch rounded-md border border-slate-700 bg-slate-950/30 overflow-hidden align-middle ml-1 mr-1">',
-          `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" title="${safeUrl}" class="min-w-0 max-w-xs pl-1.5 pr-1 py-0.5 text-[11px] text-slate-200 hover:bg-slate-800/60 truncate no-underline">${safeText}</a>`,
+          `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" title="${safeTitle}" class="min-w-0 max-w-xs pl-1.5 pr-1 py-0.5 text-[11px] text-slate-200 hover:bg-slate-800/60 truncate no-underline">${safeText}</a>`,
           `<button type="button" class="shrink-0 pl-1.5 pr-1.5 py-0.5 border-l border-slate-700 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20 text-[11px]" data-play-url="${enc}" title="播放该视频">▶</button>`,
           "</span>",
         ].join("");
@@ -3603,9 +3646,67 @@ export function createPlaylistViewMethods() {
       return "border-amber-500/30 bg-amber-500/10 text-amber-200";
     },
 
+    playlistEventProvenanceLabel(event) {
+      const status = String((event && event.provenance_status) || "").trim().toLowerCase();
+      const count = Number(event && event.evidence_count);
+      const countText = Number.isFinite(count) && count > 0 ? ` ${Math.trunc(count)}` : "";
+      if (status === "verified") return `证据已定位${countText}`;
+      if (status === "unverified") return `证据未校验${countText}`;
+      return "缺少证据";
+    },
+
+    playlistEventProvenanceClass(event) {
+      const status = String((event && event.provenance_status) || "").trim().toLowerCase();
+      if (status === "verified") return "border-sky-500/30 bg-sky-500/10 text-sky-200";
+      if (status === "unverified") return "border-amber-500/30 bg-amber-500/10 text-amber-200";
+      return "border-rose-500/30 bg-rose-500/10 text-rose-200";
+    },
+
+    playlistEventSourceLabel(event) {
+      const media = String((event && event.source_media_name) || "").trim();
+      const title = String((event && event.source_video_title) || "").trim();
+      if (media && title) return `${media} · ${title}`;
+      return title || media || "";
+    },
+
+    playlistEventDateOnly(value) {
+      const text = String(value || "").trim();
+      return text ? text.slice(0, 10) : "";
+    },
+
+    playlistEventPrecisionLabel(precision) {
+      const value = String(precision || "").trim().toLowerCase();
+      if (value === "year") return "年";
+      if (value === "month") return "月";
+      if (value === "day") return "日";
+      if (value === "second") return "秒";
+      if (value === "range") return "区间";
+      return "未知";
+    },
+
     playlistEventDateLabel(event) {
-      const value = String((event && (event.event_time_start || event.available_at)) || "");
-      return value ? value.slice(0, 10) : "unknown";
+      const eventDate = this.playlistEventDateOnly(event && event.event_time_start);
+      const precision = String((event && event.time_precision) || "").trim().toLowerCase();
+      if (eventDate) {
+        if (precision === "year") return `${eventDate.slice(0, 4)}年`;
+        if (precision === "month") return eventDate.slice(0, 7);
+        return eventDate;
+      }
+
+      const availableDate = this.playlistEventDateOnly(event && event.available_at);
+      return availableDate ? `观测 ${availableDate}` : "unknown";
+    },
+
+    playlistEventDateTitle(event) {
+      const eventDate = this.playlistEventDateOnly(event && event.event_time_start);
+      const availableDate = this.playlistEventDateOnly(event && event.available_at);
+      const precision = this.playlistEventPrecisionLabel(event && event.time_precision);
+      if (eventDate) {
+        const target = this.playlistEventDateLabel(event);
+        return availableDate ? `事件目标时间：${target}（精度：${precision}）；可观察时间：${availableDate}` : `事件目标时间：${target}（精度：${precision}）`;
+      }
+      if (availableDate) return `事件时间未解析；可观察时间：${availableDate}`;
+      return "事件时间未解析";
     },
 
     playlistEventEntitiesLabel(event) {
@@ -3613,12 +3714,147 @@ export function createPlaylistViewMethods() {
       return entities.slice(0, 4).map((item) => item.name).filter(Boolean).join(" · ");
     },
 
+    playlistEventEntitiesPreview(event) {
+      const entities = Array.isArray(event && event.entities) ? event.entities : [];
+      return entities.slice(0, 6);
+    },
+
+    playlistEventEntityTypeLabel(entity) {
+      return String((entity && (entity.entity_type || entity.type)) || "").trim();
+    },
+
+    playlistEventEntityNameLabel(entity) {
+      return String((entity && entity.name) || "").trim();
+    },
+
+    playlistEventEntityTagTitle(entity) {
+      const type = this.playlistEventEntityTypeLabel(entity);
+      const name = this.playlistEventEntityNameLabel(entity);
+      return [type, name].filter(Boolean).join(" ");
+    },
+
     playlistEventSummaryLine(event) {
       return String((event && (event.summary || event.title)) || "").trim();
     },
 
-    playlistEventFilterQuery() {
+    playlistEventEntityLabelById(eventDetail, entityId) {
+      const id = String(entityId || "").trim();
+      if (!id) return "";
+      const entities = Array.isArray(eventDetail && eventDetail.entities) ? eventDetail.entities : [];
+      const entity = entities.find((item) => String(item && item.id) === id);
+      if (!entity) return "";
+      const type = String(entity.entity_type || "").trim();
+      const name = String(entity.name || "").trim();
+      return type && name ? `${type}:${name}` : name || type;
+    },
+
+    playlistEventRelationTitle(relation) {
+      const source = this.playlistEventEntityLabelById(this.playlistEventDetail, relation && relation.source_entity_id);
+      const target = this.playlistEventEntityLabelById(this.playlistEventDetail, relation && relation.target_entity_id);
+      if (source && target) return `${source} -> ${target}`;
+      if (source) return source;
+      if (target) return target;
+      return String((relation && relation.relation_type) || "relation");
+    },
+
+    playlistEventRelationMeta(relation) {
+      const parts = [];
+      const relationType = String((relation && relation.relation_type) || "").trim();
+      const direction = String((relation && relation.direction) || "").trim();
+      const magnitude =
+        relation && relation.magnitude && relation.magnitude.description
+          ? String(relation.magnitude.description).trim()
+          : "";
+      const confidence = relation && relation.confidence != null ? Number(relation.confidence) : null;
+      if (relationType) parts.push(relationType);
+      if (direction) parts.push(direction);
+      if (magnitude) parts.push(magnitude);
+      if (Number.isFinite(confidence)) parts.push(confidence.toFixed(2));
+      return parts.join(" · ");
+    },
+
+    playlistEvidenceSourceLabel(evidence) {
+      const kind = String((evidence && evidence.source_kind) || "").trim();
+      const label = String((evidence && evidence.source_label) || "").trim();
+      if (label) return label;
+      if (kind === "title") return "标题";
+      if (kind === "description") return "描述";
+      if (kind === "transcript") return "转写片段";
+      return kind || "证据";
+    },
+
+    playlistEventsMaintenanceSummary() {
+      return this.playlistEventsAllSummary || {};
+    },
+
+    playlistEventsAllSummaryLoaded() {
+      return Boolean(this.playlistEventsAllSummary && typeof this.playlistEventsAllSummary === "object");
+    },
+
+    playlistEventsCoverageNumber(key) {
+      const summary = this.playlistEventsMaintenanceSummary();
+      const value = Number(summary[key] || 0);
+      if (!Number.isFinite(value) || value < 0) return 0;
+      return Math.trunc(value);
+    },
+
+    playlistEventsCoverageLabel() {
+      if (!this.playlistEventsAllSummaryLoaded()) {
+        if (this.playlistEventsAllSummaryLoading) return "事件覆盖 加载中";
+        if (this.playlistEventsAllSummaryError) return "事件覆盖 加载失败";
+        return "事件覆盖 未加载";
+      }
+      const withEvents = this.playlistEventsCoverageNumber("video_with_events");
+      const total = this.playlistEventsCoverageNumber("video_total");
+      if (total <= 0) return "事件覆盖 暂无视频";
+      return `事件覆盖 ${this.formatInteger(withEvents)}/${this.formatInteger(total)} 视频`;
+    },
+
+    playlistEventsCoverageTitle() {
+      if (!this.playlistEventsAllSummaryLoaded()) {
+        if (this.playlistEventsAllSummaryLoading) return "事件覆盖数据加载中";
+        if (this.playlistEventsAllSummaryError) return `事件覆盖数据加载失败：${this.playlistEventsAllSummaryError}`;
+        return "事件覆盖数据尚未加载";
+      }
+      const withEvents = this.playlistEventsCoverageNumber("video_with_events");
+      const total = this.playlistEventsCoverageNumber("video_total");
+      const eventTotal = this.playlistEventsCoverageNumber("event_total");
+      if (total <= 0) return "播放列表暂无可统计视频";
+      const ratio = total > 0 ? (withEvents / total) * 100 : 0;
+      const ratioText = total > 0 ? `${ratio.toFixed(ratio >= 10 ? 0 : 1)}%` : "0%";
+      return `已有事件的视频 ${this.formatInteger(withEvents)}/${this.formatInteger(total)}（${ratioText}），事件总数 ${this.formatInteger(eventTotal)}`;
+    },
+
+    playlistEventsAllStatusLabel(key, statusLabel) {
+      const label = String(statusLabel || "").trim();
+      if (!this.playlistEventsAllSummaryLoaded()) {
+        if (this.playlistEventsAllSummaryLoading) return `全量 ${label} 加载中`;
+        if (this.playlistEventsAllSummaryError) return `全量 ${label} 加载失败`;
+        return `全量 ${label} 未加载`;
+      }
+      return `全量 ${this.formatInteger(this.playlistEventsCoverageNumber(key))} ${label}`;
+    },
+
+    playlistEventsAcceptedSummaryLabel() {
+      return this.playlistEventsAllStatusLabel("accepted", "accepted");
+    },
+
+    playlistEventsDraftSummaryLabel() {
+      return this.playlistEventsAllStatusLabel("draft", "draft");
+    },
+
+    playlistEventPeriodParams() {
       const params = new URLSearchParams();
+      const periodStart = String(this.playlistSelectedDate || "").trim();
+      if (periodStart) {
+        params.set("period_start", periodStart);
+        params.set("granularity", this.playlistGranularity());
+      }
+      return params;
+    },
+
+    playlistEventFilterQuery() {
+      const params = this.playlistEventPeriodParams();
       const status = String(this.playlistEventStatusFilter || "").trim();
       const eventType = String(this.playlistEventTypeFilter || "").trim();
       const entity = String(this.playlistEventEntityFilter || "").trim();
@@ -3630,6 +3866,94 @@ export function createPlaylistViewMethods() {
       return suffix ? `?${suffix}` : "";
     },
 
+    playlistEventPeriodSummaryQuery() {
+      const params = this.playlistEventPeriodParams();
+      const suffix = params.toString();
+      return suffix ? `?${suffix}` : "";
+    },
+
+    playlistEventEntitySuggestionQuery() {
+      const params = this.playlistEventPeriodParams();
+      const status = String(this.playlistEventStatusFilter || "").trim();
+      const q = String(this.playlistEventEntityFilter || "").trim();
+      if (status) params.set("status", status);
+      if (q) params.set("q", q);
+      params.set("limit", "18");
+      const suffix = params.toString();
+      return suffix ? `?${suffix}` : "";
+    },
+
+    async playlistLoadEventEntitySuggestions({ silent = false } = {}) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return;
+      const token = Number(this.playlistEventEntitySuggestToken || 0) + 1;
+      this.playlistEventEntitySuggestToken = token;
+      this.playlistEventEntitySuggestLoading = true;
+      try {
+        const suggestions = await this.api(
+          `/playlists/${encodeURIComponent(pid)}/events/entities${this.playlistEventEntitySuggestionQuery()}`
+        );
+        if (Number(this.playlistEventEntitySuggestToken || 0) !== token) return;
+        this.playlistEventEntitySuggestions = Array.isArray(suggestions) ? suggestions : [];
+      } catch (e) {
+        if (!silent) this.playlistEventsError = e && e.message ? e.message : String(e);
+      } finally {
+        if (Number(this.playlistEventEntitySuggestToken || 0) === token) {
+          this.playlistEventEntitySuggestLoading = false;
+        }
+      }
+    },
+
+    playlistOpenEventEntitySuggestions() {
+      this.playlistEventEntitySuggestOpen = true;
+      this.playlistLoadEventEntitySuggestions({ silent: true }).catch(() => null);
+    },
+
+    playlistCloseEventEntitySuggestions() {
+      setTimeout(() => {
+        this.playlistEventEntitySuggestOpen = false;
+      }, 120);
+    },
+
+    async playlistApplyEventEntitySuggestion(item) {
+      const name = String((item && item.name) || "").trim();
+      if (!name) return;
+      this.playlistEventEntityFilter = name;
+      this.playlistEventEntitySuggestOpen = false;
+      await Promise.all([
+        this.playlistLoadEventsPanel({ silent: true }),
+        this.playlistLoadEventEntitySuggestions({ silent: true }).catch(() => null),
+      ]);
+    },
+
+    async playlistClearEventEntityFilter() {
+      this.playlistEventEntityFilter = "";
+      this.playlistEventEntitySuggestOpen = false;
+      await Promise.all([
+        this.playlistLoadEventsPanel({ silent: true }),
+        this.playlistLoadEventEntitySuggestions({ silent: true }).catch(() => null),
+      ]);
+    },
+
+    async playlistLoadEventsAllSummary({ silent = false } = {}) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return null;
+      this.playlistEventsAllSummaryLoading = true;
+      this.playlistEventsAllSummaryError = "";
+      try {
+        const summary = await this.api(`/playlists/${encodeURIComponent(pid)}/events/summary`);
+        this.playlistEventsAllSummary = summary || null;
+        return this.playlistEventsAllSummary;
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.playlistEventsAllSummaryError = msg;
+        if (!silent) this.playlistEventsError = msg;
+        throw e;
+      } finally {
+        this.playlistEventsAllSummaryLoading = false;
+      }
+    },
+
     async playlistLoadEventsPanel({ silent = false } = {}) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       if (!pid) return;
@@ -3637,26 +3961,36 @@ export function createPlaylistViewMethods() {
       this.playlistEventsError = "";
       try {
         const [summary, events] = await Promise.all([
-          this.api(`/playlists/${encodeURIComponent(pid)}/events/summary`),
+          this.api(`/playlists/${encodeURIComponent(pid)}/events/summary${this.playlistEventPeriodSummaryQuery()}`),
           this.api(`/playlists/${encodeURIComponent(pid)}/events${this.playlistEventFilterQuery()}`),
         ]);
         this.playlistEventsSummary = summary || null;
         this.playlistEvents = Array.isArray(events) ? events : [];
         const selectedId = String(this.playlistSelectedEventId || "").trim();
-        const target =
-          this.playlistEvents.find((item) => String(item.id) === selectedId) ||
-          this.playlistEvents[0] ||
-          null;
+        const target = this.playlistEvents.find((item) => String(item.id) === selectedId) || null;
         if (target) await this.playlistSelectEvent(target.id);
         else {
           this.playlistSelectedEventId = "";
           this.playlistEventDetail = null;
         }
+        this.playlistLoadEventEntitySuggestions({ silent: true }).catch(() => null);
       } catch (e) {
         this.playlistEventsError = e && e.message ? e.message : String(e);
       } finally {
         if (!silent) this.playlistEventsLoading = false;
       }
+    },
+
+    async playlistToggleEventDetail(eventId) {
+      const id = String(eventId || "").trim();
+      if (!id) return;
+      if (String(this.playlistSelectedEventId || "") === id && this.playlistEventDetail) {
+        this.playlistSelectedEventId = "";
+        this.playlistEventDetail = null;
+        this.playlistEventDetailLoading = false;
+        return;
+      }
+      await this.playlistSelectEvent(id);
     },
 
     async playlistSelectEvent(eventId) {
@@ -3665,43 +3999,96 @@ export function createPlaylistViewMethods() {
       if (!pid || !id) {
         this.playlistSelectedEventId = "";
         this.playlistEventDetail = null;
+        this.playlistEventDetailLoading = false;
         return;
       }
       this.playlistSelectedEventId = id;
-      this.playlistEventDetail = await this.api(`/playlists/${encodeURIComponent(pid)}/events/${encodeURIComponent(id)}`);
+      this.playlistEventDetail = null;
+      this.playlistEventDetailLoading = true;
+      try {
+        const detail = await this.api(`/playlists/${encodeURIComponent(pid)}/events/${encodeURIComponent(id)}`);
+        if (String(this.playlistSelectedEventId || "") === id) this.playlistEventDetail = detail || null;
+      } catch (e) {
+        this.playlistEventsError = e && e.message ? e.message : String(e);
+        throw e;
+      } finally {
+        if (String(this.playlistSelectedEventId || "") === id) this.playlistEventDetailLoading = false;
+      }
     },
 
-    async playlistExtractEvents() {
+    async playlistSubmitEventExtraction({ force = false } = {}) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
-      if (!pid || this.playlistEventsExtractSubmitting) return;
+      const shouldForce = Boolean(force);
+      if (!pid || this.playlistAnalysisBackfillSubmitting) return;
+      if (!shouldForce && this.playlistAnalysisActiveBackfillJob()) return;
+      if (shouldForce && this.playlistAnalysisActiveForceBackfillJob()) return;
       try {
+        this.playlistAnalysisBackfillSubmitting = true;
         this.playlistEventsExtractSubmitting = true;
         const result = await this.api(`/playlists/${encodeURIComponent(pid)}/events/extract`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ force: false }),
+          body: JSON.stringify({ force: shouldForce }),
         });
+        this.playlistAnalysisBackfillJob = result && result.backfill_job ? result.backfill_job : result || null;
         const jobId = result && result.job_id ? String(result.job_id).slice(0, 8) : "";
-        this.globalStatus = jobId ? `已投递事件抽取 ${jobId}` : "已投递事件抽取";
-        await this.playlistLoadEventsPanel({ silent: true });
+        const label = shouldForce ? "全部重新抽取" : "事件抽取";
+        this.globalStatus = jobId ? `已投递${label} ${jobId}` : `已投递${label}`;
+        await Promise.all([
+          this.playlistLoadEventsPanel({ silent: true }).catch(() => null),
+          this.playlistLoadEventsAllSummary({ silent: true }).catch(() => null),
+          this.playlistLoadAnalysisSummary({ silent: true }).catch(() => null),
+        ]);
+        if (this.playlistAnalysisActiveBackfillJob()) this.playlistAnalysisSchedulePoll();
       } catch (e) {
-        this.playlistEventsError = e && e.message ? e.message : String(e);
-        this.globalStatus = `error: ${this.playlistEventsError}`;
+        const msg = e && e.message ? e.message : String(e);
+        this.playlistEventsError = msg;
+        this.playlistAnalysisError = msg;
+        this.globalStatus = `error: ${msg}`;
       } finally {
+        this.playlistAnalysisBackfillSubmitting = false;
         this.playlistEventsExtractSubmitting = false;
       }
     },
 
+    async playlistExtractEvents() {
+      await this.playlistSubmitEventExtraction({ force: false });
+    },
+
+    async playlistSettingsBackfillEvents() {
+      await this.playlistSubmitEventExtraction({ force: false });
+    },
+
+    async playlistSettingsForceExtractEvents() {
+      const ok =
+        typeof window === "undefined" ||
+        window.confirm(
+          "全部重新抽取会先停止当前播放列表相关的事件抽取、事件 embedding 与 Regime 重建任务，然后重新抽取所有已有 plain transcript 的视频事件。任务历史会保留。确认继续？"
+        );
+      if (!ok) return;
+      await this.playlistSubmitEventExtraction({ force: true });
+    },
+
     async playlistPatchEventStatus(status) {
+      await this.playlistPatchEventStatusFor(this.playlistSelectedEventId, status);
+    },
+
+    async playlistPatchEventStatusFor(eventId, status) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
-      const eventId = String(this.playlistSelectedEventId || "").trim();
-      if (!pid || !eventId) return;
-      await this.api(`/playlists/${encodeURIComponent(pid)}/events/${encodeURIComponent(eventId)}`, {
+      const id = String(eventId || "").trim();
+      if (!pid || !id) return;
+      this.playlistSelectedEventId = id;
+      await this.api(`/playlists/${encodeURIComponent(pid)}/events/${encodeURIComponent(id)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ status }),
       });
-      await Promise.all([this.playlistLoadEventsPanel({ silent: true }), this.playlistLoadAnalysisSummary().catch(() => null)]);
+      await Promise.all([
+        this.playlistLoadEventsPanel({ silent: true }),
+        this.playlistLoadEventEntitySuggestions({ silent: true }).catch(() => null),
+        this.playlistLoadEventsAllSummary({ silent: true }).catch(() => null),
+        this.playlistLoadAnalysisSummary().catch(() => null),
+      ]);
       this.globalStatus = status === "accepted" ? "已确认事件" : status === "rejected" ? "已拒绝事件" : "已恢复为 draft";
     },
 
@@ -4040,10 +4427,70 @@ export function createPlaylistViewMethods() {
 
     playlistAnalysisSummaryBadgeClass() {
       const summary = this.playlistAnalysisSummary;
-      if (!summary) return "border-slate-700 bg-slate-900/40 text-slate-300";
+      if (!summary) {
+        if (this.playlistAnalysisSummaryError) return "border-rose-500/30 bg-rose-500/10 text-rose-200";
+        return "border-slate-700 bg-slate-900/40 text-slate-300";
+      }
       if (summary.running) return "border-amber-500/30 bg-amber-500/10 text-amber-200";
       if (summary.analysis_dirty) return "border-sky-500/30 bg-sky-500/10 text-sky-200";
+      if (!summary.last_ready_run_id) {
+        const eventTotal = Number(summary.event_total || 0);
+        return eventTotal > 0
+          ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
+          : "border-slate-700 bg-slate-900/40 text-slate-300";
+      }
+      if (Number(summary.event_total || 0) <= 0) return "border-slate-700 bg-slate-900/40 text-slate-300";
       return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
+    },
+
+    playlistAnalysisSummaryBadgeText({ short = false } = {}) {
+      const prefix = short ? "" : "Regime ";
+      const summary = this.playlistAnalysisSummary;
+      if (!summary) {
+        if (this.playlistAnalysisSummaryLoading) return `${prefix}加载中`;
+        if (this.playlistAnalysisSummaryError) return `${prefix}加载失败`;
+        return `${prefix}未加载`;
+      }
+      if (summary.running) return `${prefix}重建中`;
+      if (summary.analysis_dirty) return `${prefix}待刷新`;
+      const eventTotal = Number(summary.event_total || 0);
+      if (!summary.last_ready_run_id) return eventTotal > 0 ? `${prefix}未构建` : `${prefix}无事件`;
+      if (eventTotal <= 0) return `${prefix}无事件`;
+      return `${prefix}已就绪`;
+    },
+
+    playlistAnalysisSummaryShortBadgeLabel() {
+      return this.playlistAnalysisSummaryBadgeText({ short: true });
+    },
+
+    playlistAnalysisSummaryBadgeLabel() {
+      return this.playlistAnalysisSummaryBadgeText();
+    },
+
+    playlistAnalysisSummaryMetricLabel(key) {
+      const summary = this.playlistAnalysisSummary;
+      if (!summary) {
+        if (this.playlistAnalysisSummaryLoading) return "加载中";
+        if (this.playlistAnalysisSummaryError) return "加载失败";
+        return "未加载";
+      }
+      const value = Number(summary[key] || 0);
+      if (!Number.isFinite(value) || value < 0) return "0";
+      return this.formatInteger(Math.trunc(value));
+    },
+
+    playlistAnalysisEmbeddingCoverageLabel() {
+      const summary = this.playlistAnalysisSummary;
+      if (!summary) {
+        if (this.playlistAnalysisSummaryLoading) return "加载中";
+        if (this.playlistAnalysisSummaryError) return "加载失败";
+        return "未加载";
+      }
+      const embedded = Number(summary.event_embedded || 0);
+      const total = Number(summary.event_total || 0);
+      const safeEmbedded = Math.max(0, Math.trunc(Number.isFinite(embedded) ? embedded : 0));
+      const safeTotal = Math.max(0, Math.trunc(Number.isFinite(total) ? total : 0));
+      return `${this.formatInteger(safeEmbedded)}/${this.formatInteger(safeTotal)}`;
     },
 
     playlistAnalysisActiveBackfillJob() {
@@ -4056,22 +4503,85 @@ export function createPlaylistViewMethods() {
       return job;
     },
 
+    playlistAnalysisActiveForceBackfillJob() {
+      const job = this.playlistAnalysisActiveBackfillJob();
+      return job && job.force ? job : null;
+    },
+
+    playlistAnalysisBackfillVideoProgressText() {
+      const job = this.playlistAnalysisActiveBackfillJob();
+      if (!job) return "";
+      const extracted = Math.max(0, Number(job.video_extracted || 0));
+      const total = Math.max(0, Number(job.video_total || 0));
+      const failed = Math.max(0, Number(job.video_failed || 0));
+      if (!total && !extracted && !failed) return "";
+      const running = Math.max(0, Number(job.video_running || 0));
+      const pending = Math.max(0, Number(job.video_pending || 0));
+      const parts = [`视频已抽取 ${this.formatInteger(extracted)} / 已投递待抽取 ${this.formatInteger(pending)}`];
+      if (total) parts.push(`已投递视频 ${this.formatInteger(total)}`);
+      if (running) parts.push(`视频执行中 ${this.formatInteger(running)}`);
+      if (failed) parts.push(`视频失败 ${this.formatInteger(failed)}`);
+      return parts.join(" · ");
+    },
+
+    playlistAnalysisBackfillRangeProgressText() {
+      const job = this.playlistAnalysisActiveBackfillJob();
+      if (!job) return "";
+      const finished = Math.max(0, Number(job.range_finished || 0));
+      const pending = Math.max(0, Number(job.range_pending || 0));
+      const running = Math.max(0, Number(job.range_running || 0));
+      const failed = Math.max(0, Number(job.range_failed || 0));
+      const total = Math.max(0, Number(job.range_total || 0));
+      if (!total && !finished && !pending && !running && !failed) return "";
+      const parts = [`月任务完成 ${this.formatInteger(finished)} / 待执行 ${this.formatInteger(pending)}`];
+      if (total) parts.push(`总月任务 ${this.formatInteger(total)}`);
+      if (running) parts.push(`月任务执行中 ${this.formatInteger(running)}`);
+      if (failed) parts.push(`月任务失败 ${this.formatInteger(failed)}`);
+      return parts.join(" · ");
+    },
+
+    playlistAnalysisBackfillTimeProgressText() {
+      const job = this.playlistAnalysisActiveBackfillJob();
+      if (!job) return "";
+      const elapsed = Number(job.elapsed_seconds);
+      if (!Number.isFinite(elapsed) || elapsed < 0) return "";
+      const estimated = Number(job.estimated_total_seconds);
+      const elapsedText = this.formatDuration(elapsed) || "0:00";
+      const estimatedText = Number.isFinite(estimated) && estimated > 0 ? this.formatDuration(estimated) : "估算中";
+      return `已运行 ${elapsedText} / 预估总时长 ${estimatedText}`;
+    },
+
     playlistAnalysisBackfillJobText() {
       const job = this.playlistAnalysisActiveBackfillJob();
       if (!job) return "";
       const status = String(job.status || "").trim().toLowerCase() === "running" ? "执行中" : "排队中";
       const id = String(job.job_id || "").slice(0, 8);
-      const parts = [`事件抽取${status}`, `任务 ${id}`];
+      const mode = job.force ? "全部重抽" : "事件抽取";
+      const parts = [`${mode}${status}`, `任务 ${id}`];
       const scanned = Number(job.scanned || job.progress_current || 0);
       const enqueued = Number(job.enqueued || 0);
       const skipped = Number(job.skipped || 0);
+      const rangeProgress = this.playlistAnalysisBackfillRangeProgressText();
+      if (rangeProgress) parts.push(rangeProgress);
       if (scanned || enqueued || skipped) {
-        parts.push(`扫描 ${scanned}`);
-        parts.push(`投递 ${enqueued}`);
-        if (skipped) parts.push(`跳过 ${skipped}`);
+        parts.push(`累计扫描视频 ${this.formatInteger(scanned)}`);
+        parts.push(`累计投递视频 ${this.formatInteger(enqueued)}`);
+        if (skipped) parts.push(`累计跳过视频 ${this.formatInteger(skipped)}`);
       }
+      const videoProgress = this.playlistAnalysisBackfillVideoProgressText();
+      if (videoProgress) parts.push(videoProgress);
+      const timeProgress = this.playlistAnalysisBackfillTimeProgressText();
+      if (timeProgress) parts.push(timeProgress);
       if (job.cancel_requested_at) parts.push("停止中");
       return parts.join(" · ");
+    },
+
+    playlistAnalysisNeedsMaintenance() {
+      const summary = this.playlistAnalysisSummary;
+      return Boolean(
+        this.playlistAnalysisActiveBackfillJob() ||
+          (summary && (summary.analysis_dirty || !summary.last_ready_run_id || summary.event_total === 0))
+      );
     },
 
     playlistAnalysisCandidateStatusClass(status) {
@@ -5741,20 +6251,39 @@ export function createPlaylistViewMethods() {
     playlistAnalysisSchedulePoll() {
       this.playlistAnalysisStopPolling();
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
-      if (!pid || this.activeView !== "playlist" || this.playlistSubview !== "analysis") return;
-      this.playlistAnalysisPollTimer = setTimeout(() => {
+      const subview = String(this.playlistSubview || "");
+      if (!pid || this.activeView !== "playlist" || !["analysis", "settings"].includes(subview)) return;
+      this.playlistAnalysisPollTimer = setTimeout(async () => {
+        if (String(this.playlistSubview || "") === "settings") {
+          const summary = await this.playlistLoadAnalysisSummary({ silent: true }).catch(() => null);
+          await this.playlistLoadEventsAllSummary({ silent: true }).catch(() => null);
+          if (summary && (summary.running || this.playlistAnalysisActiveBackfillJob())) this.playlistAnalysisSchedulePoll();
+          else this.playlistAnalysisStopPolling();
+          return;
+        }
         this.playlistLoadAnalysisView({ silent: true });
       }, 3000);
     },
 
-    async playlistLoadAnalysisSummary() {
+    async playlistLoadAnalysisSummary({ silent = false } = {}) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       if (!pid) return null;
-      const summary = await this.api(`/playlists/${encodeURIComponent(pid)}/regime/summary`);
-      this.playlistAnalysisSummary = summary || null;
-      if (summary && summary.last_ready_run_id) this.playlistAnalysisInitializeRangeFromSummary(summary);
-      this.playlistAnalysisBackfillJob = summary && summary.backfill_job ? summary.backfill_job : null;
-      return summary || null;
+      this.playlistAnalysisSummaryLoading = true;
+      this.playlistAnalysisSummaryError = "";
+      try {
+        const summary = await this.api(`/playlists/${encodeURIComponent(pid)}/regime/summary`);
+        this.playlistAnalysisSummary = summary || null;
+        if (summary && summary.last_ready_run_id) this.playlistAnalysisInitializeRangeFromSummary(summary);
+        this.playlistAnalysisBackfillJob = summary && summary.backfill_job ? summary.backfill_job : null;
+        return summary || null;
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        this.playlistAnalysisSummaryError = msg;
+        if (!silent) this.playlistAnalysisError = msg;
+        throw e;
+      } finally {
+        this.playlistAnalysisSummaryLoading = false;
+      }
     },
 
     async playlistLoadAnalysisPeriods() {
@@ -5940,25 +6469,7 @@ export function createPlaylistViewMethods() {
     },
 
     async playlistAnalysisBackfillEmbeddings() {
-      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
-      if (!pid || this.playlistAnalysisBackfillSubmitting || this.playlistAnalysisActiveBackfillJob()) return;
-      try {
-        this.playlistAnalysisBackfillSubmitting = true;
-        const result = await this.api(`/playlists/${encodeURIComponent(pid)}/events/extract`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ force: false }),
-        });
-        this.playlistAnalysisBackfillJob = result && result.backfill_job ? result.backfill_job : result || null;
-        const jobId = result && result.job_id ? String(result.job_id).slice(0, 8) : "";
-        this.globalStatus = `已投递事件抽取 ${jobId}`;
-        await this.playlistLoadAnalysisSummary({ silent: true });
-      } catch (e) {
-        this.playlistAnalysisError = e && e.message ? e.message : String(e);
-        this.globalStatus = `error: ${this.playlistAnalysisError}`;
-      } finally {
-        this.playlistAnalysisBackfillSubmitting = false;
-      }
+      await this.playlistSubmitEventExtraction({ force: false });
     },
 
     async playlistAnalysisCancelBackfill() {
@@ -6066,7 +6577,8 @@ export function createPlaylistViewMethods() {
         this.pageTitle = (updated && updated.name) || next;
         await this.loadPlaylists();
         this.globalStatus = "已更新标题";
-        this.playlistCancelEditName();
+        this.playlistNameEditing = false;
+        this.playlistNameDraft = "";
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
       } finally {
@@ -6118,7 +6630,8 @@ export function createPlaylistViewMethods() {
         if (this.playlistDetail) this.playlistDetail.description = updated.description || null;
         await this.loadPlaylists();
         this.globalStatus = "已更新描述";
-        this.playlistCancelEditDescription();
+        this.playlistDescEditing = false;
+        this.playlistDescDraft = "";
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
       } finally {

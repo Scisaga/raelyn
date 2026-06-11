@@ -117,7 +117,13 @@
   - 可设为 `0`，表示当前节点不启动 `embedding` worker；事件 embedding 任务会保留在 `pending`，直到有 embedding worker 可领取。
 - `ANALYSIS_WORKER_CONCURRENCY`
   - `devctl.sh` / Docker 单容器入口启动 `analysis` worker 的进程数，默认 `1`。
-  - 可设为 `0`，表示当前节点不启动 `analysis` worker；事件 Regime 快照任务会保留在 `pending`，直到有 analysis worker 可领取。
+  - 可设为 `0`，表示当前节点不启动 `analysis` worker；`playlist.mark_event_regime_dirty` 与事件 Regime 快照任务会保留在 `pending`，直到有 analysis worker 可领取。
+  - 事件抽取、embedding 状态变化和人工事件状态修改后的 dirty 合并也由 `analysis` worker 处理；需要事件 Regime 链路正常推进时至少保留 1 个。
+- `AI_WORKER_CONCURRENCY`
+  - `devctl.sh` / Docker 单容器入口启动 `ai` worker 的进程数，默认 `1`。
+  - 每个 `ai` worker 同一时间执行一个 LLM 任务，例如 `video.extract_events`、播放列表事件回填范围扫描、转写润色或简报生成。
+  - 大型同播放列表事件回填可适当提高该值；AI worker 只竞争单个视频自己的事件写入，播放列表 dirty 由 `analysis` worker 的 `playlist.mark_event_regime_dirty` 延迟合并。
+  - 该配置只增加 worker 进程数，不改变 LLM 请求认证、连接复用或模型参数；提升前应确认 LLM 服务可承受对应并发。
 - `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES`
   - `playlist.build_event_regime_snapshot` 开始和处理中允许继续执行的最低 `MemAvailable`，默认 `1073741824`。
   - 低于该值时任务直接失败并记录原因，不进入重试队列。
@@ -148,7 +154,7 @@
 - `ORPHAN_REQUEUE_PRIORITY_BUMP`
   - 孤儿 `running` 任务被回收后提升的优先级基数，默认 `1000`，用于让回收任务回到队头。
 
-### ASR / LLM
+### ASR / LLM / Embedding
 
 本地模式：
 
@@ -156,6 +162,7 @@
 - `ASR_ENDPOINT`
 - `ASR_MODEL`
 - `ASR_PROMPT`
+- `ASR_LANGUAGE`
 - `ASR_TEMPERATURE`
 - `ASR_RESPONSE_FORMAT`
 - `ASR_TIMEOUT_SECONDS`
@@ -174,10 +181,13 @@
 - `EMBEDDING_MODEL`
 - `EMBEDDING_DIM`
 - `EMBEDDING_TIMEOUT_SECONDS`
+- `EMBEDDING_WORKER_CONCURRENCY`
 - `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES`
 - `ANALYSIS_MAX_RSS_BYTES`
 - `ANALYSIS_STREAM_BATCH_SIZE`
 - `AUTO_GENERATE_BRIEFS`
+
+Embedding 健康检查固定探测 `${EMBEDDING_URL}/health`；实际向量请求才使用 `EMBEDDING_ENDPOINT`，默认 `/v1/embeddings`。
 
 火山模式默认值：
 
@@ -196,6 +206,9 @@
 
 - `local` 模式只读取本地 `.env` 与自托管推理服务配置。
 - `volcengine` 模式优先读取运行时配置 `app_config`；若某些字段未配置，则回退到对应的 `VOLCENGINE_*` 环境变量默认值。
+- `ASR_LANGUAGE` 是本地 OpenAI-compatible ASR 的可选输入语言提示，默认空值。空值时请求体不传 `language`，由模型自动识别；明确知道音频全英文时可设为 `en`；混合语音应保持空值。
+- `video.asr_transcribe` 保存 `qwen3-asr` 的 `plain` / `segments` transcript 时，优先使用 ASR 响应里的实际语言；响应未返回语言时才使用 `ASR_LANGUAGE` 提示值。两者都没有时，资产 `language` 为空，S3 路径使用 `transcript/und/`。
+- 现有 `video.polish_transcript` 提示词仍是中文整理口径；自动 ASR 链路只在 transcript 语言为 `zh` 时继续投递 polish，非中文 plain transcript 先保持原文。
 - ASR / LLM / Embedding 的健康检查、容量门控、实际请求与配置测试连接都会忽略进程环境中的 `HTTP_PROXY` / `HTTPS_PROXY`；对应 URL 应直接指向可达服务地址。
 - UI 不直接修改 `.env`；保存设置后只影响新任务，不会中断正在运行的任务。
 
@@ -250,6 +263,9 @@
 说明：
 
 - `ytdlp_subtitles` 控制是否下载字幕 / 自动字幕。
+- 字幕下载默认请求明确语言码 `zh-Hant`、`zh-Hans`、`zh-CN`、`zh-TW`、`zh-HK`、`zh`、`en`，避免使用通配符抓取大量机器翻译派生字幕。
+- B 站自动字幕在 yt-dlp metadata 中可能暴露为 `ai-zh` / `ai-en`；字幕回补任务会在 B 站目标语言列表里显式加入这些语言码。
+- 显式字幕回补任务 `video.backfill_subtitles.*` 不受 `ytdlp_subtitles.enabled` 限制：它只用 yt-dlp `skip_download` 抓字幕 / 自动字幕，不下载视频文件，成功后写入 `asset(type=subtitle, source=ytdlp, variant=raw)`，再投递 `video.normalize_subtitle`。
 - `ytdlp_members_only` 控制是否尝试下载 YouTube 会员专享视频。
 
 ### 下载格式
@@ -285,6 +301,26 @@
 - 默认提示词定位为“可回溯证据的保真整理稿”：按原文顺序近逐句整理，保留金融、宏观、政策、地缘、企业、行业、资产价格、利率、信用、商品、库存、财报、订单、指引、风险偏好等证据粒度；不得把长转写压缩成摘要；数字表达按原文保留，不做中文数字改写或单位换算。
 - `video.polish_transcript` 默认按约 `1500` 字符切分原始转写后逐段调用 LLM；若单段调用超时，会继续二分该段，直到最小重试粒度仍失败时再让任务失败，降低保真输出过长导致单次调用超时的概率。
 - 调用 LLM 前会对阿拉伯数字和英文数字短语做临时占位保护，返回后还原原文数字表达，避免模型把 `four point seven eight percent`、`ten billion` 等证据改写成中文数字或换算金额。
+
+### 事件抽取提示词
+
+- `llm_event_extraction_prompt`
+
+值结构：
+
+```json
+{ "text": "<prompt template>" }
+```
+
+说明：
+
+- 用于 `video.extract_events` / `video.extract_events_batch` 从视频标题、描述与 transcript source map 抽取结构化市场原子事件。
+- 当前事件抽取最终请求会追加 v2 输出协议：顶层为 `videos[]`，事件证据使用 `evidence_source_ids` 引用输入 source id，后端再写入 verified provenance。自定义 prompt 若描述旧 `events[]` 或 `evidence_quotes` 格式，以最终追加的 v2 协议为准。
+- 默认提示词要求 `title`、`summary`、`assets`、`sectors`、`entities` 的对象口径一致；房地产、住房、楼市等具体市场对象不能泛化成单独的“市场”。
+- 默认提示词要求股票事件在可可靠判断时写明上市市场、交易所或代码，并拆分发行公司、可交易证券、行业、国家和交易所实体；普通词不能误标成公司或资产。
+- 默认提示词会过滤操作策略、荐股建议、观察名单、族群归类、关注提醒与纯预测；只有其中包含已发生事实变化时，才抽取事实变化本身。
+- `evidence_source_ids` 必须命中本次请求 source map；若原文使用 `the market`、`market`、`市场` 这类泛称，应选择包含足够上下文的 source id，让读者能判断具体市场对象。
+- 修改并保存该配置后会改变 `prompt_version`；重新投递播放列表事件抽取时，系统会按新的 prompt / model 口径生成事件。
 
 ### 简报调度策略
 

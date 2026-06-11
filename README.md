@@ -19,12 +19,12 @@
 - Worker 编排：provider 级下载并发控制、失败退避、孤儿任务回收、心跳观测
 - Web 运维界面：概览、媒体、视频、播放列表、任务、设置、MCP Server 指南
 
-## 它比“下载器”多走了一步
+## 设计取向
 
-- 它不是把所有事情都塞进一个进程里，而是把 `api / scheduler / worker` 拆成清晰的执行面，便于长期运行和维护
-- 它会按 provider 与处理阶段分配不同 worker，让下载、处理、转写与生成各自保持节奏
-- 它会持续记录任务状态、进度、重试、暂停、心跳与恢复信息，让系统在运行过程中始终可观察、可追踪
-- 它关心的不只是把文件取回本地，也包括播放列表聚合、文本处理、简报生成，以及后续可继续交给智能体使用的内容资产
+- 面向长期运行：`api / scheduler / worker` 拆分执行面，下载、处理、转写、分析与生成任务可以按角色独立扩展和重启
+- 面向可恢复任务：所有重活都进入 Job 体系，记录状态、进度、重试、暂停、心跳与错误信息，便于排障和恢复
+- 面向内容资产沉淀：围绕媒体、视频、字幕、音频、transcript、笔记和简报建立统一索引，而不是只保存一次性下载文件
+- 面向智能体协作：通过 Web UI 和 MCP 暴露可检索、可引用、可继续加工的媒体上下文，让后续整理、分析和发布可以接上同一套数据
 
 ## 合规边界
 
@@ -46,23 +46,77 @@
 
 ## 快速开始
 
-推荐直接查看 [运行与部署](docs/reference/run-and-deploy.md)。如果你只想快速启动：
+下面是可直接照着执行的部署步骤；更多排障与配置细节见 [运行与部署](docs/reference/run-and-deploy.md)。
 
-- 准备 `ffmpeg` / `ffprobe` / `node`
-- 复制配置：`cp .env.example .env`
-- Docker 启动：`docker compose up --build`
-- 或本地启动：按 [运行与部署](docs/reference/run-and-deploy.md) 中的 `api / worker / scheduler` 方式拆分进程
-
-常用入口：
+### Docker Compose 部署
 
 ```bash
+git clone <REPO_URL> raelyn
+cd raelyn
+
+# 准备镜像构建需要复制进去的外部二进制。
 ./scripts/dev/download-ffmpeg.sh
 ./scripts/dev/download-node.sh
-cp .env.example .env
+
+# 构建前端静态资源。若当前系统没有 npm，先执行下一行安装 Node/npm。
+./scripts/dev/bootstrap-node-wsl.sh
+./scripts/dev/build-ui.sh
+
+# 启动 Postgres、MinIO、bgutil PO Token Provider、API、worker、scheduler。
 docker compose up --build
 ```
 
+后台启动：
+
+```bash
+docker compose up -d --build
+docker compose logs -f app
+```
+
+停止：
+
+```bash
+docker compose down
+```
+
 打开：`http://127.0.0.1:8000/`
+
+### 本地部署
+
+```bash
+git clone <REPO_URL> raelyn
+cd raelyn
+
+# 启动本地依赖；如果你已有 PostgreSQL / MinIO，可跳过这一步并自行修改 .env。
+docker compose up -d postgres minio minio-init bgutil-pot
+
+# 准备 Python、Node/npm、ffmpeg/ffprobe。
+./scripts/dev/bootstrap-ubuntu.sh
+./scripts/dev/bootstrap-node-wsl.sh
+./scripts/dev/download-ffmpeg.sh
+
+# 准备配置。
+cp .env.example .env
+${EDITOR:-nano} .env
+
+# 构建 UI。
+./scripts/dev/build-ui.sh
+
+# 后台启动 api / worker / scheduler。
+./scripts/dev/devctl.sh start
+./scripts/dev/devctl.sh status
+./scripts/dev/devctl.sh logs
+```
+
+打开：`http://127.0.0.1:8000/`
+
+重启 / 停止：
+
+```bash
+./scripts/dev/devctl.sh restart
+./scripts/dev/devctl.sh restart-api
+./scripts/dev/devctl.sh stop
+```
 
 更多技术细节：
 

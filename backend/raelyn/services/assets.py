@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -51,7 +50,7 @@ def ensure_asset(
             if metadata is not None:
                 existing.meta = metadata
             session.add(existing)
-            session.flush()
+            session.flush([existing])
             return existing
 
     result = s3_upload_file(local_path=local_path, bucket=settings.s3_bucket, key=s3_key, content_type=content_type)
@@ -68,7 +67,7 @@ def ensure_asset(
         meta=metadata,
     )
     session.add(asset)
-    session.flush()
+    session.flush([asset])
     return asset
 
 
@@ -99,7 +98,7 @@ def replace_standalone_asset(
         existing.size_bytes = result.size_bytes
         existing.meta = metadata
         session.add(existing)
-        session.flush()
+        session.flush([existing])
         return existing
 
     asset = Asset(
@@ -115,5 +114,5 @@ def replace_standalone_asset(
         meta=metadata,
     )
     session.add(asset)
-    session.flush()
+    session.flush([asset])
     return asset

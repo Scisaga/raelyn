@@ -45,6 +45,7 @@ export function createAppInitMethods() {
         this.services.db = health.db || this.services.db;
         this.services.s3 = health.s3 || this.services.s3;
         this.services.asr = health.asr || this.services.asr;
+        this.services.embedding = health.embedding || this.services.embedding;
         this.services.llm = health.llm || this.services.llm;
         this.inference = health.inference || this.inference;
         this.globalStatus = health.deps_ok ? "" : "部分依赖不可用";
@@ -160,12 +161,7 @@ export function createAppInitMethods() {
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
         if (String(msg).startsWith("401:")) {
-          this.startupGateVisible = true;
-          try {
-            if (this.$nextTick) this.$nextTick(() => this.focusStartupTokenInput());
-          } catch {
-            setTimeout(() => this.focusStartupTokenInput(), 0);
-          }
+          this.handleApiUnauthorized({ message: "访问 token 无效，请重新输入。", preserveDraft: true });
           return false;
         }
         this.healthOk = false;

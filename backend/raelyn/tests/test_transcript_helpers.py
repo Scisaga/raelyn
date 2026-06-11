@@ -57,6 +57,43 @@ class TranscriptHelperTests(unittest.TestCase):
         self.assertIs(result, preferred)
         self.assertEqual(session.execute.call_count, 1)
 
+    def test_pick_transcript_asset_prefers_traditional_chinese_subtitle_over_asr(self) -> None:
+        subtitle = Asset(
+            id=uuid.uuid4(),
+            video_id=uuid.uuid4(),
+            type="transcript",
+            format="txt",
+            language="zh-hant",
+            source="subtitle",
+            variant="plain",
+            s3_bucket="bucket",
+            s3_key="subtitle.txt",
+            created_at=datetime(2026, 6, 6, tzinfo=timezone.utc),
+        )
+        asr = Asset(
+            id=uuid.uuid4(),
+            video_id=subtitle.video_id,
+            type="transcript",
+            format="txt",
+            language="zh",
+            source="qwen3-asr",
+            variant="plain",
+            s3_bucket="bucket",
+            s3_key="asr.txt",
+            created_at=datetime(2026, 6, 5, tzinfo=timezone.utc),
+        )
+        session = Mock()
+        session.execute.side_effect = [
+            _scalar_one_or_none(None),
+            _scalar_one_or_none(subtitle),
+            _scalar_one_or_none(asr),
+        ]
+
+        result = pick_transcript_asset(session, subtitle.video_id, variant="plain")
+
+        self.assertIs(result, subtitle)
+        self.assertEqual(session.execute.call_count, 2)
+
     def test_pick_transcript_asset_falls_back_to_latest_variant(self) -> None:
         latest = Asset(
             id=uuid.uuid4(),
@@ -78,13 +115,24 @@ class TranscriptHelperTests(unittest.TestCase):
             _scalar_one_or_none(None),
             _scalar_one_or_none(None),
             _scalar_one_or_none(None),
+            _scalar_one_or_none(None),
+            _scalar_one_or_none(None),
+            _scalar_one_or_none(None),
+            _scalar_one_or_none(None),
+            _scalar_one_or_none(None),
+            _scalar_one_or_none(None),
+            _scalar_one_or_none(None),
+            _scalar_one_or_none(None),
+            _scalar_one_or_none(None),
+            _scalar_one_or_none(None),
+            _scalar_one_or_none(None),
             _scalar_one_or_none(latest),
         ]
 
         result = pick_transcript_asset(session, latest.video_id)
 
         self.assertIs(result, latest)
-        self.assertEqual(session.execute.call_count, 7)
+        self.assertEqual(session.execute.call_count, 18)
 
     def test_pick_transcript_asset_respects_requested_variant_and_source(self) -> None:
         exact = Asset(

@@ -14,6 +14,7 @@
       </div>
 
       <div
+        x-ref="startupGate"
         class="fixed inset-0 z-50 overflow-hidden raelyn-startup-screen"
         x-show="startupGateVisible"
         x-transition.opacity.duration.300ms
@@ -25,11 +26,13 @@
         <canvas x-ref="startupFluidCanvas" class="absolute inset-0 h-full w-full raelyn-startup-canvas" aria-hidden="true"></canvas>
         <div class="absolute inset-0 raelyn-startup-overlay" aria-hidden="true"></div>
 
-        <div class="pointer-events-none relative z-[1] flex min-h-screen items-center justify-center px-6 py-8">
+        <div class="pointer-events-none relative z-[3] flex min-h-screen items-center justify-center px-6 py-8">
           <div class="raelyn-startup-stage w-full max-w-md">
             <div class="raelyn-startup-panel">
-              <div class="raelyn-startup-logo">
-                <img src="/static/brand/logo.png" alt="" class="raelyn-startup-logo-image" loading="eager" decoding="async" />
+              <div class="raelyn-startup-logo" aria-hidden="true">
+                <div class="raelyn-startup-orb">
+                  <img src="/static/brand/logo-r.png" alt="" class="raelyn-startup-orb-mark" loading="eager" decoding="async" />
+                </div>
               </div>
 
               <div class="mt-7 text-center">

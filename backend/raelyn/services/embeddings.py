@@ -45,6 +45,54 @@ def _embedding_endpoint_url() -> str:
     return f"{base_url}{endpoint if endpoint.startswith('/') else f'/{endpoint}'}"
 
 
+def _embedding_health_url() -> str:
+    if not embedding_enabled():
+        raise EmbeddingError("embedding service not configured")
+    return f"{str(settings.embedding_url or '').rstrip('/')}/health"
+
+
+def check_embedding_health() -> dict[str, Any]:
+    spec = embedding_spec()
+    if not embedding_enabled():
+        return {
+            "ok": False,
+            "configured": False,
+            "url": "",
+            "error": "not configured",
+            "provider": "local",
+            "source": "env",
+            "model": spec.model,
+            "dim": spec.dim,
+        }
+
+    url = _embedding_health_url()
+    try:
+        with httpx.Client(timeout=httpx.Timeout(2.0), trust_env=False) as client:
+            response = client.get(url)
+            response.raise_for_status()
+        return {
+            "ok": True,
+            "configured": True,
+            "url": url,
+            "error": None,
+            "provider": "local",
+            "source": "env",
+            "model": spec.model,
+            "dim": spec.dim,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "configured": True,
+            "url": url,
+            "error": str(exc),
+            "provider": "local",
+            "source": "env",
+            "model": spec.model,
+            "dim": spec.dim,
+        }
+
+
 def _embedding_error_detail(response: httpx.Response, body: Any) -> str:
     detail = ""
     if isinstance(body, dict):

@@ -15,8 +15,8 @@
 
 ### `GET /api/health`
 
-- 返回 DB、S3、ASR、LLM 的健康状态。
-- `deps_ok` 表示运行主链路是否整体可用。
+- 返回 DB、S3、ASR、Embedding、LLM 的健康状态。
+- `deps_ok` 表示运行主链路是否整体可用；ASR / Embedding / LLM 未配置时不计为依赖失败，已配置但健康检查失败时计为依赖失败。
 
 ### `GET /api/system`
 
@@ -195,6 +195,7 @@
 
 - query：`presign`、`download`、`localize_title`
 - 返回该视频的全部资产列表，可包含 presigned URL 和下载文件名。
+- `localize_title` 默认 `false`；只有显式传 `true` 时才会额外调用 yt-dlp 尝试补充 YouTube 本地化标题，避免详情页资产加载被外部视频站请求拖慢。
 
 ### `GET /api/assets/{asset_id}`
 
@@ -265,6 +266,7 @@
 ### `POST /api/jobs/{job_id}/retry`
 
 - 将已完成 / 失败任务重置为 `pending` 并重新调度。
+- 若同一 `dedupe_key` 已存在其他 `pending` 任务，手动重试会先将该 pending 任务标记为 `canceled`，再重置当前任务，避免重复 pending 任务触发唯一约束冲突。
 
 ### `POST /api/jobs/cancel_active`
 
@@ -359,24 +361,35 @@
 
 ### `POST /api/playlists/{playlist_id}/events/extract`
 
-- 手动创建 `playlist.backfill_events` 任务，按播放列表扫描视频并投递 `video.extract_events` 子任务。
-- body：`{ "force": false }`；`force=true` 会重新抽取同一 prompt / model 口径下的视频事件。
+- 手动创建 `playlist.backfill_events` 父任务；父任务按播放列表内容时间轴拆分月份范围并投递 `playlist.backfill_events_range` 子任务，范围任务运行时再查询该月内已有 `plain` transcript 的视频并投递 `video.extract_events_batch` 或 `video.extract_events` 子任务。
+- 事件抽取在 Ollama `/api/generate` 模式下使用 JSON 输出约束与低温度采样，降低标题、实体和证据之间的结构化抽取漂移。v2 协议要求 LLM 只返回 `evidence_source_ids`，后端用 source map 写入可验证证据。
+- 月份范围任务的优先级低于它投递的视频事件抽取任务；同一批回填中，一旦 `video.extract_events_batch` 或 `video.extract_events` 入队，worker 会优先消费事件抽取，再继续领取后续月份范围任务。
+- body：`{ "force": false }`；`force=false` 只补齐缺失当前 transcript / prompt / model 口径事件的视频，`force=true` 会先取消当前播放列表相关的活跃事件抽取、事件 embedding 与 Regime 重建任务，再重新抽取同一 prompt / model 口径下的视频事件。
+- `force=true` 的任务清理只取消 `pending/running` 任务并保留历史记录：`pending` 立即变为 `canceled`，`running` 设置取消请求；同时将当前播放列表 `pending/running` 的 event-regime run 收敛为 `canceled` 并保持 dirty。
 - 返回任务 ID、任务状态与进度。新 transcript 生成后也可由 `AUTO_EXTRACT_NEW_VIDEO_EVENTS=true` 自动投递单视频抽取。
 
 ### `GET /api/playlists/{playlist_id}/events/summary`
 
 - 返回事件抽取覆盖率与状态计数：`video_total`、`video_with_events`、`event_total`、`accepted`、`draft`、`rejected`、`coverage_ratio`。
-- 返回当前活跃的历史抽取任务 `backfill_job`，便于 UI 展示扫描 / 投递进度。
+- query：可选 `period_start=YYYY-MM-DD`、`granularity=day|week|month`；传入后按事件 `available_at` 过滤到对应可观察周期。未传时返回播放列表全量。
+- 返回当前活跃的历史抽取任务 `backfill_job`，便于 UI 展示扫描 / 投递进度；其中 `range_finished`、`range_pending`、`range_running`、`range_failed`、`range_total` 用于展示月份范围任务进度，`scanned`、`enqueued`、`skipped` 是已执行月份范围任务累计扫描 / 投递 / 跳过的视频数，`video_extracted`、`video_pending`、`video_running`、`video_failed`、`video_total` 用于展示已投递视频抽取子任务进度，`elapsed_seconds` 与 `estimated_total_seconds` 用于展示已运行时间和预估总时长。若还有月份范围未完成，`estimated_total_seconds` 会按已完成月份的平均投递视频数估算未扫描月份的未来视频抽取工作；样本不足时返回 `null`，前端显示估算中。
 
 ### `GET /api/playlists/{playlist_id}/events`
 
-- query：可选 `status=accepted|draft|rejected`、`event_type`、`entity`、`min_confidence`、`limit`、`offset`。
-- 返回播放列表内的视频级 LLM 原子事件，默认按 `event_time_start` 倒序排列。
-- 关键字段：`event_time_start/end`、`time_precision`、`available_at`、`event_type`、`title`、`summary`、`direction`、`magnitude`、`surprise_or_delta`、`confidence`、`status`、`source_video_id`、`entities`。
+- query：可选 `status=accepted|draft|rejected`、`event_type`、`entity`、`min_confidence`、`period_start=YYYY-MM-DD`、`granularity=day|week|month`、`limit`、`offset`。
+- 返回播放列表内的视频级 LLM 原子事件，默认按 `available_at` 倒序排列，同一可观察时间内再按 `event_time_start` 倒序排列。
+- 关键字段：`event_time_start/end`、`time_precision`、`available_at`、`event_type`、`title`、`summary`、`direction`、`magnitude`、`surprise_or_delta`、`confidence`、`status`、`source_video_id`、`evidence_count`、`provenance_status`、`source_video_title`、`source_media_name`、`entities`。
+
+### `GET /api/playlists/{playlist_id}/events/entities`
+
+- query：可选 `q`、`status=accepted|draft|rejected`、`period_start=YYYY-MM-DD`、`granularity=day|week|month`、`limit`。
+- 返回当前播放列表事件实体推荐，用于事件审核页实体过滤自动补全；传入周期参数时按事件 `available_at` 限定到当前可观察周期。
+- 返回字段：`entity_type`、`name`、`normalized_key`、`count`，其中 `count` 是命中该实体的事件数。
 
 ### `GET /api/playlists/{playlist_id}/events/{event_id}`
 
 - 返回单个事件详情，包含实体、证据视频文本、事件内 cause/effect/affects/mentions 边与原始抽取载荷。
+- `evidence[]` 额外返回 `source_id`、`source_kind`、`source_label`、`verified`；v2 证据按标题、描述、转写片段定位，`verified=true` 表示 source id 已命中当前请求 source map 且写入 source sha256。
 
 ### `PATCH /api/playlists/{playlist_id}/events/{event_id}`
 
@@ -391,17 +404,18 @@
 ### `POST /api/playlists/{playlist_id}/regime/rebuild`
 
 - 手动创建 `playlist.build_event_regime_snapshot` 任务。
-- Regime 只消费 `accepted`、`event_time_start` 可解析且 `market_event_embedding.status=ready` 的事件。
+- Regime 只消费 `accepted`、`event_time_start` 与 `available_at` 均可解析且 `market_event_embedding.status=ready` 的事件。
+- Regime 信号按 `available_at` 归入 day / week / month 周期；`event_time_start` 作为事件目标时间保留在事件详情与导出序列中。
 - 同一播放列表已有 `pending/running` 的重建 run 时复用现有 run。
 
 ### `GET /api/playlists/{playlist_id}/regime/summary`
 
-- 返回事件 Regime 覆盖率、dirty 状态、ready run、signal 日期边界、候选数量与活跃重建任务。
+- 返回事件 Regime 覆盖率、dirty 状态、ready run、signal 日期边界、候选数量、活跃重建任务与当前活跃历史抽取任务 `backfill_job`。
 
 ### `GET /api/playlists/{playlist_id}/regime/signals`
 
 - query：可选 `granularity=day|week|month`、`since=YYYY-MM-DD`、`until=YYYY-MM-DD`。
-- 返回当前 ready event-regime run 的连续多尺度信号面板。
+- 返回当前 ready event-regime run 的连续多尺度信号面板，日期轴使用事件 `available_at`。
 - 关键字段：`granularity`、`period_date`、`rolling_window`、`event_count`、`ready_embedding_count`、`drift_score`、`drift_rolling_mean/std/z`、`dispersion_mean/std/p25/p75`、`projection_*`、`linked_candidate_id`。
 
 ### `GET /api/playlists/{playlist_id}/regime/candidates`
@@ -411,7 +425,7 @@
 
 ### `GET /api/playlists/{playlist_id}/regime/candidates/{candidate_id}`
 
-- 返回候选详情，包含候选窗口、分数、证据事件 ID、证据视频 ID 与检测元数据。
+- 返回候选详情，包含候选窗口、分数、证据事件 ID、证据视频 ID 与检测元数据；`evidence.videos` 会按证据视频 ID 展开视频标题、媒体名、发布时间与 URL，供 UI 展示证据视频列表。
 
 ### `PATCH /api/playlists/{playlist_id}/regime/candidates/{candidate_id}`
 
@@ -462,6 +476,7 @@
 
 - 返回默认配置模板，目前包括：
   - `llm_transcript_polish_prompt`
+  - `llm_event_extraction_prompt`
   - `brief_generation_policy`
 
 ### `PUT /api/config/{key}`
@@ -471,6 +486,7 @@
   - `ytdlp_cookies_youtube`
   - `ytdlp_cookies_bilibili`
   - `llm_transcript_polish_prompt`
+  - `llm_event_extraction_prompt`
   - `brief_generation_policy`
 
 ## 非 API 根路径

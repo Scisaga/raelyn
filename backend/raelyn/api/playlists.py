@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import tempfile
 import uuid
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import Date, cast, func, select
+from sqlalchemy import Date, case, cast, func, literal, or_, select
 
 from raelyn.api.asset_refs import AssetRef, build_asset_ref
 from raelyn.api.orm import OrmModel
@@ -47,16 +48,13 @@ from raelyn.services.event_analysis import (
 )
 from raelyn.services.video_admission import (
     ensure_video_published_at_backfilled,
-    playback_admitted_video_expr,
+    video_has_playback_asset_expr,
 )
 from raelyn.services.video_time import (
-    content_published_at_expr,
     normalize_time_basis,
-    timeline_confidence_expr,
-    timeline_source_expr,
-    timeline_status_expr,
-    timeline_time_expr,
+    selected_content_time_subquery,
 )
+from raelyn.timeutil import utcnow
 
 
 router = APIRouter(tags=["playlists"])
@@ -125,6 +123,18 @@ class PlaylistEventBackfillJobOut(BaseModel):
     enqueued: int = 0
     skipped: int = 0
     force: bool = False
+    range_finished: int = 0
+    range_pending: int = 0
+    range_running: int = 0
+    range_failed: int = 0
+    range_total: int = 0
+    video_extracted: int = 0
+    video_pending: int = 0
+    video_running: int = 0
+    video_failed: int = 0
+    video_total: int = 0
+    elapsed_seconds: int | None = None
+    estimated_total_seconds: int | None = None
 
 
 class PlaylistEventsSummaryOut(BaseModel):
@@ -153,12 +163,23 @@ class MarketEventEntityOut(BaseModel):
     confidence: float | None = None
 
 
+class PlaylistEventEntitySuggestionOut(BaseModel):
+    entity_type: str
+    name: str
+    normalized_key: str
+    count: int = 0
+
+
 class MarketEventEvidenceOut(BaseModel):
     id: uuid.UUID
     video_id: uuid.UUID
     evidence_text: str | None = None
     evidence_json: dict[str, Any] | None = None
     confidence: float | None = None
+    source_id: str | None = None
+    source_kind: str | None = None
+    source_label: str | None = None
+    verified: bool = False
 
 
 class MarketEventRelationOut(BaseModel):
@@ -193,6 +214,10 @@ class MarketEventOut(BaseModel):
     source_hash: str
     created_at: Any
     updated_at: Any
+    evidence_count: int = 0
+    provenance_status: str = "missing"
+    source_video_title: str | None = None
+    source_media_name: str | None = None
     entities: list[MarketEventEntityOut] = Field(default_factory=list)
 
 
@@ -210,6 +235,7 @@ class EventRegimeSummaryOut(BaseModel):
     playlist_id: uuid.UUID
     analysis_dirty: bool
     running: bool
+    backfill_job: PlaylistEventBackfillJobOut | None = None
     active_run_id: uuid.UUID | None = None
     last_ready_run_id: uuid.UUID | None = None
     last_requested_at: Any | None = None
@@ -297,6 +323,87 @@ def _media_avatar_asset(session, m: Any) -> AssetRef | None:
     return build_asset_ref(session.get(Asset, asset_id)) if asset_id else None
 
 
+def _media_avatar_asset_map(session, media_items: list[Any]) -> dict[uuid.UUID, AssetRef | None]:
+    asset_ids = {getattr(m, "avatar_asset_id", None) for m in media_items if getattr(m, "avatar_asset_id", None)}
+    assets_by_id: dict[uuid.UUID, Asset] = {}
+    if asset_ids:
+        assets_by_id = {
+            asset.id: asset
+            for asset in session.execute(select(Asset).where(Asset.id.in_(list(asset_ids)))).scalars().all()
+        }
+    return {
+        m.id: build_asset_ref(assets_by_id.get(getattr(m, "avatar_asset_id", None)))
+        if getattr(m, "avatar_asset_id", None)
+        else None
+        for m in media_items
+    }
+
+
+@dataclass(frozen=True)
+class _PlaylistTimelineColumns:
+    selected_content_time: Any | None
+    timeline_at: Any
+    content_published_at: Any
+    time_source: Any
+    time_status: Any
+    time_confidence: Any
+
+
+def _playlist_timeline_columns(time_basis: str | None = "content", *, name: str = "playlist_selected_content_time") -> _PlaylistTimelineColumns:
+    basis = normalize_time_basis(time_basis)
+    if basis == "platform":
+        return _PlaylistTimelineColumns(
+            selected_content_time=None,
+            timeline_at=Video.published_at,
+            content_published_at=literal(None),
+            time_source=case((Video.published_at.is_(None), None), else_=literal("video.published_at")),
+            time_status=case((Video.published_at.is_(None), None), else_=literal("platform")),
+            time_confidence=literal(None),
+        )
+
+    selected = selected_content_time_subquery(name)
+    timeline_at = func.coalesce(selected.c.content_published_at, Video.published_at)
+    return _PlaylistTimelineColumns(
+        selected_content_time=selected,
+        timeline_at=timeline_at,
+        content_published_at=selected.c.content_published_at,
+        time_source=case(
+            (timeline_at.is_(None), None),
+            else_=func.coalesce(selected.c.time_source, literal("video.published_at")),
+        ),
+        time_status=case(
+            (timeline_at.is_(None), None),
+            else_=func.coalesce(selected.c.time_status, literal("platform_fallback")),
+        ),
+        time_confidence=selected.c.time_confidence,
+    )
+
+
+def _join_playlist_timeline(stmt: Any, columns: _PlaylistTimelineColumns):
+    if columns.selected_content_time is None:
+        return stmt
+    return stmt.outerjoin(columns.selected_content_time, columns.selected_content_time.c.video_id == Video.id)
+
+
+def _playlist_playback_clauses(columns: _PlaylistTimelineColumns) -> tuple[Any, Any]:
+    return (columns.timeline_at.is_not(None), video_has_playback_asset_expr())
+
+
+def _playlist_video_stats(session, playlist_id: uuid.UUID) -> tuple[int, Any | None, Any | None]:
+    columns = _playlist_timeline_columns("content", name="playlist_stats_content_time")
+    stmt = (
+        select(func.count(Video.id), func.min(columns.timeline_at), func.max(columns.timeline_at))
+        .select_from(Video)
+        .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
+    )
+    stmt = _join_playlist_timeline(stmt, columns).where(
+        PlaylistMedia.playlist_id == playlist_id,
+        *_playlist_playback_clauses(columns),
+    )
+    count, min_ts, max_ts = session.execute(stmt).one()
+    return int(count or 0), min_ts, max_ts
+
+
 def _playlist_out(session, p: Playlist, *, preview: list[PlaylistMediaOut] | None = None) -> PlaylistOut:
     _ensure_playlist_published_at_backfilled(session)
     out = PlaylistOut.model_validate(p)
@@ -306,8 +413,12 @@ def _playlist_out(session, p: Playlist, *, preview: list[PlaylistMediaOut] | Non
         build_asset_ref(session.get(Asset, getattr(p, "background_asset_id", None))) if getattr(p, "background_asset_id", None) else None
     )
 
-    media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == p.id)).scalars().all()
-    out.media_count = len(media_ids)
+    out.media_count = int(
+        session.execute(
+            select(func.count(PlaylistMedia.media_id)).where(PlaylistMedia.playlist_id == p.id)
+        ).scalar_one()
+        or 0
+    )
     if preview is not None:
         out.media_preview = preview
     else:
@@ -333,14 +444,8 @@ def _playlist_out(session, p: Playlist, *, preview: list[PlaylistMediaOut] | Non
             )
             for m in rows
         ]
-    if media_ids:
-        admitted_expr = playback_admitted_video_expr()
-        co_ts = timeline_time_expr()
-        vcnt, min_ts, max_ts = session.execute(
-            select(func.count(), func.min(co_ts), func.max(co_ts))
-            .select_from(Video)
-            .where(Video.media_id.in_(list(media_ids)), admitted_expr)
-        ).one()
+    if out.media_count:
+        vcnt, min_ts, max_ts = _playlist_video_stats(session, p.id)
         out.video_count = int(vcnt or 0)
         out.latest_video_at = max_ts
         out.earliest_date = local_date(min_ts)
@@ -354,10 +459,11 @@ def _playlist_out(session, p: Playlist, *, preview: list[PlaylistMediaOut] | Non
 
 
 def _active_playlist_event_backfill_job(session, playlist_id: uuid.UUID) -> Job | None:
+    active_statuses = ["pending", "running"]
     jobs = (
         session.execute(
             select(Job)
-            .where(Job.type == "playlist.backfill_events", Job.status.in_(["pending", "running"]))
+            .where(Job.type.in_(["playlist.backfill_events", "playlist.backfill_events_range"]), Job.status.in_(active_statuses))
             .order_by(Job.created_at.desc(), Job.id.desc())
             .limit(50)
         )
@@ -368,11 +474,50 @@ def _active_playlist_event_backfill_job(session, playlist_id: uuid.UUID) -> Job 
         params = job.params if isinstance(job.params, dict) else {}
         if str(params.get("playlist_id") or "") == str(playlist_id):
             return job
+
+    video_jobs = (
+        session.execute(
+            select(Job)
+            .where(
+                Job.type.in_(["video.extract_events", "video.extract_events_batch"]),
+                Job.status.in_(active_statuses),
+                Job.parent_job_id.is_not(None),
+            )
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(200)
+        )
+        .scalars()
+        .all()
+    )
+    for job in video_jobs:
+        parent_job = session.get(Job, job.parent_job_id)
+        if not parent_job or parent_job.type != "playlist.backfill_events_range":
+            continue
+        params = parent_job.params if isinstance(parent_job.params, dict) else {}
+        if str(params.get("playlist_id") or "") == str(playlist_id):
+            return job
     return None
 
 
-def _playlist_events_summary(session, playlist_id: uuid.UUID) -> PlaylistEventsSummaryOut:
-    coverage = playlist_event_coverage(session, playlist_id)
+def _playlist_event_period_bounds(period: date | None, granularity: str | None) -> tuple[Any | None, Any | None]:
+    if period is None:
+        return None, None
+    try:
+        normalized = normalize_granularity(granularity or "day")
+        pstart = period_start(period, normalized)
+        return period_bounds_utc(pstart, normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _playlist_events_summary(
+    session,
+    playlist_id: uuid.UUID,
+    *,
+    available_start: Any | None = None,
+    available_end: Any | None = None,
+) -> PlaylistEventsSummaryOut:
+    coverage = playlist_event_coverage(session, playlist_id, available_start=available_start, available_end=available_end)
     backfill_job = _active_playlist_event_backfill_job(session, playlist_id)
     return PlaylistEventsSummaryOut(
         playlist_id=playlist_id,
@@ -384,12 +529,231 @@ def _playlist_events_summary(session, playlist_id: uuid.UUID) -> PlaylistEventsS
         rejected=int(coverage.get("rejected") or 0),
         failed=0,
         coverage_ratio=float(coverage.get("coverage_ratio") or 0.0),
-        backfill_job=_playlist_event_backfill_job_out(backfill_job) if backfill_job else None,
+        backfill_job=_playlist_event_backfill_job_out(session, backfill_job) if backfill_job else None,
     )
 
 
-def _playlist_event_backfill_job_out(job: Job) -> PlaylistEventBackfillJobOut:
+def _playlist_event_backfill_progress(session, job: Job) -> dict[str, int | None]:
+    range_job_ids: list[uuid.UUID] = []
+    elapsed_job = job
+    parent_job: Job | None = job if job.type == "playlist.backfill_events" else None
+    if job.type == "playlist.backfill_events":
+        range_job_ids = (
+            session.execute(
+                select(Job.id).where(
+                    Job.parent_job_id == job.id,
+                    Job.type == "playlist.backfill_events_range",
+                )
+            )
+            .scalars()
+            .all()
+        )
+    elif job.type == "playlist.backfill_events_range":
+        parent_job = session.get(Job, job.parent_job_id) if job.parent_job_id else None
+        if parent_job:
+            elapsed_job = parent_job
+            range_job_ids = (
+                session.execute(
+                    select(Job.id).where(
+                        Job.parent_job_id == parent_job.id,
+                        Job.type == "playlist.backfill_events_range",
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        if not range_job_ids:
+            range_job_ids = [job.id]
+    elif job.type in {"video.extract_events", "video.extract_events_batch"}:
+        range_job = session.get(Job, job.parent_job_id) if job.parent_job_id else None
+        if range_job and range_job.type == "playlist.backfill_events_range":
+            parent_job = session.get(Job, range_job.parent_job_id) if range_job.parent_job_id else None
+            if parent_job:
+                elapsed_job = parent_job
+                range_job_ids = (
+                    session.execute(
+                        select(Job.id).where(
+                            Job.parent_job_id == parent_job.id,
+                            Job.type == "playlist.backfill_events_range",
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            if not range_job_ids:
+                range_job_ids = [range_job.id]
+
     result = job.result if isinstance(job.result, dict) else {}
+    progress: dict[str, int | None] = {
+        "scanned": int(result.get("scanned") or 0),
+        "enqueued": int(result.get("enqueued") or 0),
+        "skipped": int(result.get("skipped") or 0),
+        "range_finished": 0,
+        "range_pending": 0,
+        "range_running": 0,
+        "range_failed": 0,
+        "range_total": 0,
+        "video_extracted": 0,
+        "video_pending": 0,
+        "video_running": 0,
+        "video_failed": 0,
+        "video_total": 0,
+        "elapsed_seconds": None,
+        "estimated_total_seconds": None,
+    }
+
+    if not range_job_ids:
+        planned_total = int(getattr(parent_job, "progress_total", None) or 0) if parent_job else 0
+        if planned_total > 0:
+            progress["range_pending"] = planned_total
+            progress["range_total"] = planned_total
+        return progress
+
+    range_rows = (
+        session.execute(
+            select(Job.status, Job.result)
+            .where(Job.type == "playlist.backfill_events_range", Job.id.in_(range_job_ids))
+        )
+        .all()
+    )
+    range_counts: dict[str, int] = {}
+    scanned = enqueued = skipped = 0
+    for status, range_result in range_rows:
+        status_key = str(status or "").lower()
+        range_counts[status_key] = range_counts.get(status_key, 0) + 1
+        if isinstance(range_result, dict):
+            scanned += int(range_result.get("scanned") or 0)
+            enqueued += int(range_result.get("enqueued") or 0)
+            skipped += int(range_result.get("skipped") or 0)
+
+    known_range_total = sum(range_counts.values())
+    planned_range_total = known_range_total
+    if parent_job and parent_job.progress_total is not None:
+        planned_range_total = max(planned_range_total, int(parent_job.progress_total or 0))
+    missing_range_count = max(0, planned_range_total - known_range_total)
+    progress.update(
+        {
+            "scanned": scanned,
+            "enqueued": enqueued,
+            "skipped": skipped,
+            "range_finished": range_counts.get("succeeded", 0),
+            "range_pending": range_counts.get("pending", 0) + missing_range_count,
+            "range_running": range_counts.get("running", 0),
+            "range_failed": range_counts.get("failed", 0),
+            "range_total": planned_range_total,
+        }
+    )
+
+    child_jobs = (
+        session.execute(
+            select(Job)
+            .where(
+                Job.type.in_(["video.extract_events", "video.extract_events_batch"]),
+                Job.parent_job_id.in_(range_job_ids),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    counts: dict[str, int] = {}
+    for child in child_jobs:
+        params = child.params if isinstance(child.params, dict) else {}
+        video_count = 1
+        if child.type == "video.extract_events_batch":
+            raw_video_ids = params.get("video_ids")
+            video_count = len(raw_video_ids) if isinstance(raw_video_ids, list) else 0
+            result = child.result if isinstance(child.result, dict) else {}
+            if child.status == "succeeded":
+                video_count = int(result.get("videos") or result.get("cached_videos") or video_count or 0)
+        if video_count <= 0:
+            video_count = 1
+        status_key = str(child.status or "").lower()
+        counts[status_key] = counts.get(status_key, 0) + video_count
+    extracted = counts.get("succeeded", 0)
+    pending = counts.get("pending", 0)
+    running = counts.get("running", 0)
+    failed = counts.get("failed", 0)
+    canceled = counts.get("canceled", 0)
+    total = sum(counts.values())
+
+    started_at = elapsed_job.started_at or elapsed_job.created_at
+    elapsed_seconds = None
+    estimated_total_seconds = None
+    if started_at:
+        elapsed_seconds = max(0, int((utcnow() - started_at).total_seconds()))
+        finished = extracted + failed + canceled
+        estimated_total_seconds = _playlist_event_backfill_estimated_total_seconds(
+            elapsed_seconds=elapsed_seconds,
+            range_finished=int(progress.get("range_finished") or 0),
+            range_failed=int(progress.get("range_failed") or 0),
+            range_total=int(progress.get("range_total") or 0),
+            video_finished=finished,
+            video_total=total,
+        )
+
+    progress.update(
+        {
+            "video_extracted": extracted,
+            "video_pending": pending,
+            "video_running": running,
+            "video_failed": failed,
+            "video_total": total,
+            "elapsed_seconds": elapsed_seconds,
+            "estimated_total_seconds": estimated_total_seconds,
+        }
+    )
+    return progress
+
+
+def _playlist_event_backfill_estimated_total_seconds(
+    *,
+    elapsed_seconds: int | None,
+    range_finished: int,
+    range_failed: int,
+    range_total: int,
+    video_finished: int,
+    video_total: int,
+) -> int | None:
+    if elapsed_seconds is None:
+        return None
+
+    elapsed = max(0, int(elapsed_seconds))
+    known_video_total = max(0, int(video_total))
+    completed_videos = max(0, int(video_finished))
+    planned_ranges = max(0, int(range_total))
+    succeeded_ranges = max(0, int(range_finished))
+    terminal_ranges = max(0, int(range_finished)) + max(0, int(range_failed))
+    if planned_ranges > 0:
+        terminal_ranges = min(planned_ranges, terminal_ranges)
+    remaining_ranges = max(0, planned_ranges - terminal_ranges)
+
+    if remaining_ranges <= 0:
+        if known_video_total > 0 and completed_videos > 0:
+            return max(elapsed, int(round(elapsed * known_video_total / completed_videos)))
+        if planned_ranges > 0 and terminal_ranges > 0:
+            return elapsed
+        return None
+
+    if known_video_total > 0:
+        if completed_videos <= 0 or succeeded_ranges <= 0:
+            return None
+        avg_videos_per_succeeded_range = known_video_total / succeeded_ranges
+    elif terminal_ranges > 0:
+        avg_videos_per_succeeded_range = 0.0
+    else:
+        return None
+
+    estimated_video_total = known_video_total + remaining_ranges * avg_videos_per_succeeded_range
+    estimated_total_work = planned_ranges + estimated_video_total
+    completed_work = terminal_ranges + completed_videos
+    if completed_work <= 0:
+        return None
+    return max(elapsed, int(round(elapsed * estimated_total_work / completed_work)))
+
+
+def _playlist_event_backfill_job_out(session, job: Job) -> PlaylistEventBackfillJobOut:
+    result = job.result if isinstance(job.result, dict) else {}
+    progress = _playlist_event_backfill_progress(session, job)
     return PlaylistEventBackfillJobOut(
         job_id=job.id,
         status=str(job.status or ""),
@@ -398,10 +762,22 @@ def _playlist_event_backfill_job_out(job: Job) -> PlaylistEventBackfillJobOut:
         created_at=job.created_at,
         started_at=job.started_at,
         cancel_requested_at=job.cancel_requested_at,
-        scanned=int(result.get("scanned") or 0),
-        enqueued=int(result.get("enqueued") or 0),
-        skipped=int(result.get("skipped") or 0),
+        scanned=int(progress.get("scanned") or result.get("scanned") or 0),
+        enqueued=int(progress.get("enqueued") or result.get("enqueued") or 0),
+        skipped=int(progress.get("skipped") or result.get("skipped") or 0),
         force=bool(result.get("force") or (job.params or {}).get("force")),
+        range_finished=int(progress.get("range_finished") or 0),
+        range_pending=int(progress.get("range_pending") or 0),
+        range_running=int(progress.get("range_running") or 0),
+        range_failed=int(progress.get("range_failed") or 0),
+        range_total=int(progress.get("range_total") or 0),
+        video_extracted=int(progress.get("video_extracted") or 0),
+        video_pending=int(progress.get("video_pending") or 0),
+        video_running=int(progress.get("video_running") or 0),
+        video_failed=int(progress.get("video_failed") or 0),
+        video_total=int(progress.get("video_total") or 0),
+        elapsed_seconds=progress.get("elapsed_seconds"),
+        estimated_total_seconds=progress.get("estimated_total_seconds"),
     )
 
 
@@ -433,7 +809,52 @@ def _event_entities(session, event_id: uuid.UUID) -> list[MarketEventEntityOut]:
     ]
 
 
+def _event_evidence_rows(session, event_id: uuid.UUID) -> list[MarketEventEvidence]:
+    return (
+        session.execute(
+            select(MarketEventEvidence)
+            .where(MarketEventEvidence.event_id == event_id)
+            .order_by(MarketEventEvidence.created_at.asc(), MarketEventEvidence.id.asc())
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _event_provenance_status(evidence_rows: list[MarketEventEvidence]) -> str:
+    if not evidence_rows:
+        return "missing"
+    for row in evidence_rows:
+        payload = row.evidence_json if isinstance(row.evidence_json, dict) else {}
+        if payload.get("schema_version") == "event_provenance_v1" and payload.get("verified") is True:
+            return "verified"
+    return "unverified"
+
+
+def _event_source_labels(session, event: MarketEvent) -> tuple[str | None, str | None]:
+    video = session.get(Video, event.source_video_id)
+    media = session.get(Media, video.media_id) if video and video.media_id else None
+    return (video.title if video else None, media.name if media else None)
+
+
+def _event_evidence_out(row: MarketEventEvidence) -> MarketEventEvidenceOut:
+    payload = row.evidence_json if isinstance(row.evidence_json, dict) else {}
+    return MarketEventEvidenceOut(
+        id=row.id,
+        video_id=row.video_id,
+        evidence_text=row.evidence_text,
+        evidence_json=row.evidence_json,
+        confidence=row.confidence,
+        source_id=str(payload.get("source_id") or "") or None,
+        source_kind=str(payload.get("source_kind") or "") or None,
+        source_label=str(payload.get("source_label") or "") or None,
+        verified=bool(payload.get("verified") is True),
+    )
+
+
 def _event_out(session, event: MarketEvent, *, include_entities: bool = True) -> MarketEventOut:
+    evidence_rows = _event_evidence_rows(session, event.id)
+    source_video_title, source_media_name = _event_source_labels(session, event)
     return MarketEventOut(
         id=event.id,
         event_time_start=event.event_time_start,
@@ -455,21 +876,17 @@ def _event_out(session, event: MarketEvent, *, include_entities: bool = True) ->
         source_hash=event.source_hash,
         created_at=event.created_at,
         updated_at=event.updated_at,
+        evidence_count=len(evidence_rows),
+        provenance_status=_event_provenance_status(evidence_rows),
+        source_video_title=source_video_title,
+        source_media_name=source_media_name,
         entities=_event_entities(session, event.id) if include_entities else [],
     )
 
 
 def _event_detail_out(session, event: MarketEvent) -> MarketEventDetailOut:
     base = _event_out(session, event).model_dump()
-    evidence_rows = (
-        session.execute(
-            select(MarketEventEvidence)
-            .where(MarketEventEvidence.event_id == event.id)
-            .order_by(MarketEventEvidence.created_at.asc(), MarketEventEvidence.id.asc())
-        )
-        .scalars()
-        .all()
-    )
+    evidence_rows = _event_evidence_rows(session, event.id)
     relation_rows = (
         session.execute(
             select(MarketEventRelation)
@@ -481,16 +898,7 @@ def _event_detail_out(session, event: MarketEvent) -> MarketEventDetailOut:
     )
     return MarketEventDetailOut(
         **base,
-        evidence=[
-            MarketEventEvidenceOut(
-                id=row.id,
-                video_id=row.video_id,
-                evidence_text=row.evidence_text,
-                evidence_json=row.evidence_json,
-                confidence=row.confidence,
-            )
-            for row in evidence_rows
-        ],
+        evidence=[_event_evidence_out(row) for row in evidence_rows],
         relations=[
             MarketEventRelationOut(
                 id=row.id,
@@ -526,6 +934,7 @@ def _event_regime_summary(session, playlist_id: uuid.UUID) -> EventRegimeSummary
     state = ensure_event_regime_state(session, playlist_id)
     active_run = active_event_regime_run(session, playlist_id)
     pending_job = pending_event_regime_job(session, playlist_id)
+    backfill_job = _active_playlist_event_backfill_job(session, playlist_id)
     last_ready_run = session.get(EventRegimeRun, state.last_ready_run_id) if state.last_ready_run_id else None
     event_total = event_embedded = event_skipped = event_failed = 0
     candidate_count = 0
@@ -571,6 +980,7 @@ def _event_regime_summary(session, playlist_id: uuid.UUID) -> EventRegimeSummary
         playlist_id=playlist_id,
         analysis_dirty=bool(state.analysis_dirty),
         running=active_run is not None or pending_job is not None,
+        backfill_job=_playlist_event_backfill_job_out(session, backfill_job) if backfill_job else None,
         active_run_id=getattr(active_run, "id", None),
         last_ready_run_id=state.last_ready_run_id,
         last_requested_at=state.last_requested_at,
@@ -633,11 +1043,72 @@ def _candidate_out(candidate: EventRegimeCandidate) -> EventRegimeCandidateOut:
     )
 
 
-def _candidate_detail_out(candidate: EventRegimeCandidate) -> EventRegimeCandidateDetailOut:
+def _candidate_evidence_videos(session: Any, candidate: EventRegimeCandidate, evidence: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_ids = getattr(candidate, "evidence_video_ids", None)
+    if not isinstance(raw_ids, list) or not raw_ids:
+        videos = evidence.get("videos")
+        return [item for item in videos if isinstance(item, dict)] if isinstance(videos, list) else []
+
+    video_ids: list[uuid.UUID] = []
+    for raw_id in raw_ids:
+        try:
+            video_ids.append(uuid.UUID(str(raw_id)))
+        except (TypeError, ValueError):
+            continue
+    if not video_ids:
+        return []
+
+    existing_videos = evidence.get("videos")
+    existing_by_id = (
+        {
+            str(item.get("video_id")): item
+            for item in existing_videos
+            if isinstance(item, dict) and item.get("video_id")
+        }
+        if isinstance(existing_videos, list)
+        else {}
+    )
+
+    rows = (
+        session.execute(
+            select(Video, Media)
+            .join(Media, Media.id == Video.media_id)
+            .where(Video.id.in_(video_ids))
+        )
+        .all()
+    )
+    by_id = {str(video.id): (video, media) for video, media in rows}
+    out: list[dict[str, Any]] = []
+    for raw_id in raw_ids:
+        item = by_id.get(str(raw_id))
+        if not item:
+            continue
+        video, media = item
+        existing = existing_by_id.get(str(video.id), {})
+        out.append(
+            {
+                "video_id": str(video.id),
+                "title": video.title,
+                "url": video.url,
+                "published_at": video.published_at,
+                "media_id": str(media.id),
+                "media_name": media.name,
+                "shift_score": existing.get("shift_score") if isinstance(existing, dict) else None,
+            }
+        )
+    return out
+
+
+def _candidate_detail_out(candidate: EventRegimeCandidate, session: Any | None = None) -> EventRegimeCandidateDetailOut:
     base = _candidate_out(candidate)
+    evidence = dict(candidate.evidence_json) if isinstance(candidate.evidence_json, dict) else {}
+    if session is not None:
+        videos = _candidate_evidence_videos(session, candidate, evidence)
+        if videos:
+            evidence["videos"] = videos
     return EventRegimeCandidateDetailOut(
         **base.model_dump(),
-        evidence=candidate.evidence_json if isinstance(candidate.evidence_json, dict) else {},
+        evidence=evidence,
     )
 
 
@@ -695,19 +1166,24 @@ def list_playlists(limit: int = 100, offset: int = 0) -> list[PlaylistOut]:
             ).all():
                 media_count_map[pid] = int(cnt or 0)
 
-            admitted_expr = playback_admitted_video_expr()
             # video counts + time range: playback list uses content timeline, with platform time fallback.
-            co_ts = timeline_time_expr()
-            for pid, vcnt, min_ts, max_ts in session.execute(
+            timeline_columns = _playlist_timeline_columns("content", name="playlist_list_content_time")
+            stat_stmt = (
                 select(
                     PlaylistMedia.playlist_id,
                     func.count(Video.id),
-                    func.min(co_ts),
-                    func.max(co_ts),
+                    func.min(timeline_columns.timeline_at),
+                    func.max(timeline_columns.timeline_at),
                 )
+                .select_from(PlaylistMedia)
                 .join(Video, Video.media_id == PlaylistMedia.media_id)
-                .where(PlaylistMedia.playlist_id.in_(playlist_ids), admitted_expr)
-                .group_by(PlaylistMedia.playlist_id)
+            )
+            stat_stmt = _join_playlist_timeline(stat_stmt, timeline_columns).where(
+                PlaylistMedia.playlist_id.in_(playlist_ids),
+                *_playlist_playback_clauses(timeline_columns),
+            )
+            for pid, vcnt, min_ts, max_ts in session.execute(
+                stat_stmt.group_by(PlaylistMedia.playlist_id)
             ).all():
                 video_stat_map[pid] = {"video_count": int(vcnt or 0), "min_ts": min_ts, "max_ts": max_ts}
 
@@ -805,7 +1281,6 @@ def get_playlist_detail(playlist_id: uuid.UUID) -> PlaylistDetailOut:
 
         out = PlaylistDetailOut.model_validate(_playlist_out(session, playlist).model_dump())
         out.brief_prompt = (getattr(playlist, "brief_prompt", None) or "").strip() or None
-        preview_avatar_by_media_id = {item.id: item.avatar_asset for item in out.media_preview if item.avatar_asset}
         rows = (
             session.execute(
                 select(Media)
@@ -816,6 +1291,7 @@ def get_playlist_detail(playlist_id: uuid.UUID) -> PlaylistDetailOut:
             .scalars()
             .all()
         )
+        avatar_by_media_id = _media_avatar_asset_map(session, rows)
         media_out: list[PlaylistMediaOut] = []
         for m in rows:
             media_out.append(
@@ -824,7 +1300,7 @@ def get_playlist_detail(playlist_id: uuid.UUID) -> PlaylistDetailOut:
                     provider=m.provider,
                     url=m.url,
                     name=m.name,
-                    avatar_asset=preview_avatar_by_media_id.get(m.id),
+                    avatar_asset=avatar_by_media_id.get(m.id),
                 )
             )
         out.media = media_out
@@ -845,16 +1321,21 @@ def extract_playlist_events(
             "ok": True,
             "playlist_id": str(playlist_id),
             "job_id": str(job.id),
-            "backfill_job": _playlist_event_backfill_job_out(job).model_dump(),
+            "backfill_job": _playlist_event_backfill_job_out(session, job).model_dump(),
         }
 
 
 @router.get("/playlists/{playlist_id}/events/summary", response_model=PlaylistEventsSummaryOut)
-def get_playlist_events_summary(playlist_id: uuid.UUID) -> PlaylistEventsSummaryOut:
+def get_playlist_events_summary(
+    playlist_id: uuid.UUID,
+    period: Annotated[date | None, Query(alias="period_start")] = None,
+    granularity: str | None = "day",
+) -> PlaylistEventsSummaryOut:
+    available_start, available_end = _playlist_event_period_bounds(period, granularity)
     with session_scope() as session:
         if not session.get(Playlist, playlist_id):
             raise HTTPException(status_code=404, detail="playlist not found")
-        return _playlist_events_summary(session, playlist_id)
+        return _playlist_events_summary(session, playlist_id, available_start=available_start, available_end=available_end)
 
 
 @router.get("/playlists/{playlist_id}/events", response_model=list[MarketEventOut])
@@ -864,9 +1345,12 @@ def list_playlist_events(
     event_type: str | None = None,
     entity: str | None = None,
     min_confidence: float | None = None,
+    period: Annotated[date | None, Query(alias="period_start")] = None,
+    granularity: str | None = "day",
     limit: int = 200,
     offset: int = 0,
 ) -> list[MarketEventOut]:
+    available_start, available_end = _playlist_event_period_bounds(period, granularity)
     with session_scope() as session:
         if not session.get(Playlist, playlist_id):
             raise HTTPException(status_code=404, detail="playlist not found")
@@ -876,6 +1360,8 @@ def list_playlist_events(
             event_type=event_type,
             entity=entity,
             min_confidence=min_confidence,
+            available_start=available_start,
+            available_end=available_end,
         )
         rows = (
             session.execute(
@@ -884,8 +1370,8 @@ def list_playlist_events(
                 .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
                 .where(*clauses)
                 .order_by(
-                    MarketEvent.event_time_start.desc().nullslast(),
                     MarketEvent.available_at.desc().nullslast(),
+                    MarketEvent.event_time_start.desc().nullslast(),
                     MarketEvent.created_at.desc(),
                     MarketEvent.id.desc(),
                 )
@@ -896,6 +1382,63 @@ def list_playlist_events(
             .all()
         )
         return [_event_out(session, row) for row in rows]
+
+
+@router.get("/playlists/{playlist_id}/events/entities", response_model=list[PlaylistEventEntitySuggestionOut])
+def list_playlist_event_entity_suggestions(
+    playlist_id: uuid.UUID,
+    q: str | None = None,
+    status: str | None = None,
+    period: Annotated[date | None, Query(alias="period_start")] = None,
+    granularity: str | None = "day",
+    limit: int = 20,
+) -> list[PlaylistEventEntitySuggestionOut]:
+    available_start, available_end = _playlist_event_period_bounds(period, granularity)
+    query = str(q or "").strip()
+    with session_scope() as session:
+        if not session.get(Playlist, playlist_id):
+            raise HTTPException(status_code=404, detail="playlist not found")
+        clauses = event_filter_clause(
+            playlist_id=playlist_id,
+            status=status,
+            available_start=available_start,
+            available_end=available_end,
+        )
+        if query:
+            normalized = query.lower().replace(" ", "_")
+            clauses.append(
+                or_(
+                    MarketEventEntity.name.ilike(f"%{query}%"),
+                    MarketEventEntity.normalized_key.ilike(f"%{normalized}%"),
+                    MarketEventEntity.entity_type.ilike(f"%{query}%"),
+                )
+            )
+        event_count = func.count(func.distinct(MarketEventEntity.event_id))
+        rows = session.execute(
+            select(
+                MarketEventEntity.entity_type,
+                MarketEventEntity.name,
+                MarketEventEntity.normalized_key,
+                event_count.label("count"),
+            )
+            .join(MarketEvent, MarketEvent.id == MarketEventEntity.event_id)
+            .join(Video, Video.id == MarketEvent.source_video_id)
+            .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
+            .where(*clauses)
+            .group_by(MarketEventEntity.entity_type, MarketEventEntity.name, MarketEventEntity.normalized_key)
+            .order_by(event_count.desc(), MarketEventEntity.entity_type.asc(), MarketEventEntity.name.asc())
+            .limit(max(1, min(50, int(limit or 20))))
+        ).all()
+        return [
+            PlaylistEventEntitySuggestionOut(
+                entity_type=str(entity_type or "other"),
+                name=str(name or ""),
+                normalized_key=str(normalized_key or ""),
+                count=int(count or 0),
+            )
+            for entity_type, name, normalized_key, count in rows
+            if str(name or "").strip()
+        ]
 
 
 @router.get("/playlists/{playlist_id}/events/graph")
@@ -1103,7 +1646,7 @@ def get_playlist_event_regime_candidate(playlist_id: uuid.UUID, candidate_id: uu
         candidate = session.get(EventRegimeCandidate, candidate_id)
         if not candidate or candidate.regime_run_id != last_ready_run_id:
             raise HTTPException(status_code=404, detail="candidate not found")
-        return _candidate_detail_out(candidate)
+        return _candidate_detail_out(candidate, session=session)
 
 
 @router.patch("/playlists/{playlist_id}/regime/candidates/{candidate_id}", response_model=EventRegimeCandidateDetailOut)
@@ -1135,7 +1678,7 @@ def patch_playlist_event_regime_candidate(
             if field in payload.model_fields_set:
                 setattr(candidate, field, getattr(payload, field))
         session.flush([candidate])
-        return _candidate_detail_out(candidate)
+        return _candidate_detail_out(candidate, session=session)
 
 
 @router.get("/playlists/{playlist_id}/regime/export/events")
@@ -1409,8 +1952,7 @@ class PlaylistPeriodCountOut(BaseModel):
     count: int
 
 
-def _playlist_video_ts_expr(time_basis: str | None = "content"):
-    return timeline_time_expr(time_basis=time_basis)
+_MISSING_AVATAR = object()
 
 
 def _ensure_playlist_published_at_backfilled(session) -> None:
@@ -1441,7 +1983,9 @@ def _playlist_video_out(
     time_source: str | None = None,
     time_status: str | None = None,
     time_confidence: float | None = None,
+    media_avatar_asset: AssetRef | None | object = _MISSING_AVATAR,
 ) -> PlaylistVideoOut:
+    avatar_asset = _media_avatar_asset(session, media) if media_avatar_asset is _MISSING_AVATAR else media_avatar_asset
     return PlaylistVideoOut(
         id=video.id,
         media_id=video.media_id,
@@ -1459,7 +2003,7 @@ def _playlist_video_out(
         status=video.status,
         error_message=video.error_message,
         media_name=media.name,
-        media_avatar_asset=_media_avatar_asset(session, media),
+        media_avatar_asset=avatar_asset,
     )
 
 
@@ -1488,26 +2032,36 @@ def list_playlist_videos_by_date(playlist_id: uuid.UUID, date: date, time_basis:
 
     with session_scope() as session:
         _ensure_playlist_published_at_backfilled(session)
-        media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == playlist_id)).scalars().all()
-        if not media_ids:
-            return []
         start, end = day_bounds_utc(date)
-        ts_expr = _playlist_video_ts_expr(resolved_time_basis)
-        content_ts_expr = content_published_at_expr().label("content_published_at")
-        time_source = timeline_source_expr(time_basis=resolved_time_basis).label("time_source")
-        time_status = timeline_status_expr(time_basis=resolved_time_basis).label("time_status")
-        time_confidence = timeline_confidence_expr(time_basis=resolved_time_basis).label("time_confidence")
-        admitted_expr = playback_admitted_video_expr()
+        timeline_columns = _playlist_timeline_columns(resolved_time_basis, name="playlist_date_content_time")
+        stmt = (
+            select(
+                Video,
+                Media,
+                timeline_columns.timeline_at.label("timeline_at"),
+                timeline_columns.content_published_at.label("content_published_at"),
+                timeline_columns.time_source.label("time_source"),
+                timeline_columns.time_status.label("time_status"),
+                timeline_columns.time_confidence.label("time_confidence"),
+            )
+            .select_from(Video)
+            .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
+            .join(Media, Media.id == Video.media_id)
+        )
+        stmt = _join_playlist_timeline(stmt, timeline_columns).where(
+            PlaylistMedia.playlist_id == playlist_id,
+            *_playlist_playback_clauses(timeline_columns),
+            timeline_columns.timeline_at >= start,
+            timeline_columns.timeline_at < end,
+        )
         rows = (
             session.execute(
-                select(Video, Media, ts_expr.label("timeline_at"), content_ts_expr, time_source, time_status, time_confidence)
-                .join(Media, Media.id == Video.media_id)
-                .where(Video.media_id.in_(list(media_ids)), admitted_expr, ts_expr >= start, ts_expr < end)
-                .order_by(ts_expr.asc(), Video.created_at.asc(), Video.id.asc())
+                stmt.order_by(timeline_columns.timeline_at.asc(), Video.created_at.asc(), Video.id.asc())
             )
             .all()
         )
 
+        avatar_by_media_id = _media_avatar_asset_map(session, list({m.id: m for _, m, *_ in rows}.values()))
         out: list[PlaylistVideoOut] = []
         for v, m, timeline_at, content_published_at, time_source_value, time_status_value, time_confidence_value in rows:
             out.append(
@@ -1520,6 +2074,7 @@ def list_playlist_videos_by_date(playlist_id: uuid.UUID, date: date, time_basis:
                     time_source=time_source_value,
                     time_status=time_status_value,
                     time_confidence=time_confidence_value,
+                    media_avatar_asset=avatar_by_media_id.get(m.id),
                 )
             )
         return out
@@ -1560,8 +2115,7 @@ def list_playlist_video_counts_by_period(
 
     with session_scope() as session:
         _ensure_playlist_published_at_backfilled(session)
-        ts_expr = _playlist_video_ts_expr(resolved_time_basis)
-        admitted_expr = playback_admitted_video_expr()
+        timeline_columns = _playlist_timeline_columns(resolved_time_basis, name="playlist_counts_content_time")
         dialect_name = ""
         try:
             dialect_name = str(session.bind.dialect.name or "").strip().lower()
@@ -1569,25 +2123,26 @@ def list_playlist_video_counts_by_period(
             dialect_name = ""
 
         if dialect_name == "postgresql":
-            local_ts = func.timezone(tzname, ts_expr)
+            local_ts = func.timezone(tzname, timeline_columns.timeline_at)
             bucket = func.date_trunc(unit, local_ts)
             period_start_expr = cast(bucket, Date)
+            stmt = (
+                select(
+                    period_start_expr.label("period_start"),
+                    func.count(Video.id).label("count"),
+                )
+                .select_from(Video)
+                .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
+            )
+            stmt = _join_playlist_timeline(stmt, timeline_columns).where(
+                PlaylistMedia.playlist_id == playlist_id,
+                *_playlist_playback_clauses(timeline_columns),
+                timeline_columns.timeline_at >= start_utc,
+                timeline_columns.timeline_at < end_utc,
+            )
             rows = (
                 session.execute(
-                    select(
-                        period_start_expr.label("period_start"),
-                        func.count(Video.id).label("count"),
-                    )
-                    .select_from(Video)
-                    .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
-                    .where(
-                        PlaylistMedia.playlist_id == playlist_id,
-                        admitted_expr,
-                        ts_expr >= start_utc,
-                        ts_expr < end_utc,
-                    )
-                    .group_by(period_start_expr)
-                    .order_by(period_start_expr.asc())
+                    stmt.group_by(period_start_expr).order_by(period_start_expr.asc())
                 )
                 .all()
             )
@@ -1602,16 +2157,19 @@ def list_playlist_video_counts_by_period(
 
         rows = (
             session.execute(
-                select(ts_expr.label("timeline_at"))
-                .select_from(Video)
-                .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
+                _join_playlist_timeline(
+                    select(timeline_columns.timeline_at.label("timeline_at"))
+                    .select_from(Video)
+                    .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id),
+                    timeline_columns,
+                )
                 .where(
                     PlaylistMedia.playlist_id == playlist_id,
-                    admitted_expr,
-                    ts_expr >= start_utc,
-                    ts_expr < end_utc,
+                    *_playlist_playback_clauses(timeline_columns),
+                    timeline_columns.timeline_at >= start_utc,
+                    timeline_columns.timeline_at < end_utc,
                 )
-                .order_by(ts_expr.asc(), Video.id.asc())
+                .order_by(timeline_columns.timeline_at.asc(), Video.id.asc())
             )
             .all()
         )
@@ -1638,31 +2196,35 @@ def list_playlist_videos_by_period(
     n = max(1, min(int(limit or 200), 500))
     with session_scope() as session:
         _ensure_playlist_published_at_backfilled(session)
-        media_ids = session.execute(select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == playlist_id)).scalars().all()
-        if not media_ids:
-            return []
-        ts_expr = _playlist_video_ts_expr(resolved_time_basis)
-        content_ts_expr = content_published_at_expr().label("content_published_at")
-        time_source = timeline_source_expr(time_basis=resolved_time_basis).label("time_source")
-        time_status = timeline_status_expr(time_basis=resolved_time_basis).label("time_status")
-        time_confidence = timeline_confidence_expr(time_basis=resolved_time_basis).label("time_confidence")
-        admitted_expr = playback_admitted_video_expr()
+        timeline_columns = _playlist_timeline_columns(resolved_time_basis, name="playlist_period_content_time")
+        stmt = (
+            select(
+                Video,
+                Media,
+                timeline_columns.timeline_at.label("timeline_at"),
+                timeline_columns.content_published_at.label("content_published_at"),
+                timeline_columns.time_source.label("time_source"),
+                timeline_columns.time_status.label("time_status"),
+                timeline_columns.time_confidence.label("time_confidence"),
+            )
+            .select_from(Video)
+            .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
+            .join(Media, Media.id == Video.media_id)
+        )
+        stmt = _join_playlist_timeline(stmt, timeline_columns).where(
+            PlaylistMedia.playlist_id == playlist_id,
+            *_playlist_playback_clauses(timeline_columns),
+            timeline_columns.timeline_at >= start,
+            timeline_columns.timeline_at < end,
+        )
         rows = (
             session.execute(
-                select(Video, Media, ts_expr.label("timeline_at"), content_ts_expr, time_source, time_status, time_confidence)
-                .join(Media, Media.id == Video.media_id)
-                .where(
-                    Video.media_id.in_(list(media_ids)),
-                    admitted_expr,
-                    ts_expr >= start,
-                    ts_expr < end,
-                )
-                .order_by(ts_expr.asc(), Video.created_at.asc(), Video.id.asc())
-                .limit(n)
+                stmt.order_by(timeline_columns.timeline_at.asc(), Video.created_at.asc(), Video.id.asc()).limit(n)
             )
             .all()
         )
 
+        avatar_by_media_id = _media_avatar_asset_map(session, list({m.id: m for _, m, *_ in rows}.values()))
         out: list[PlaylistVideoOut] = []
         for v, m, timeline_at, content_published_at, time_source_value, time_status_value, time_confidence_value in rows:
             out.append(
@@ -1675,6 +2237,7 @@ def list_playlist_videos_by_period(
                     time_source=time_source_value,
                     time_status=time_status_value,
                     time_confidence=time_confidence_value,
+                    media_avatar_asset=avatar_by_media_id.get(m.id),
                 )
             )
         return out

@@ -171,7 +171,16 @@
                               @error="clearAssetRef(v, 'cover_asset')"
                             />
                           </template>
-                          <template x-if="!v.cover_asset">
+                          <template x-if="!v.cover_asset && v.thumbnail_url">
+                            <img
+                              class="w-full h-full object-cover"
+                              :src="v.thumbnail_url"
+                              alt=""
+                              loading="lazy"
+                              @error="v.thumbnail_url=''"
+                            />
+                          </template>
+                          <template x-if="!v.cover_asset && !v.thumbnail_url">
                             <div class="w-full h-full flex items-center justify-center text-sm text-slate-500">无封面</div>
                           </template>
                         </div>

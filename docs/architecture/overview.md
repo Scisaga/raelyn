@@ -64,7 +64,7 @@
 - 支持按 `WORKER_ROLE` 或 `WORKER_TYPES` 拆分角色，例如 `download_youtube`、`download_bilibili`、`audio`、`process`、`asr`、`sync`、`embedding`、`analysis`、`ai`。
 - `download_youtube` / `download_bilibili` 是 provider 专属下载执行面；其 worker 进程数默认与 `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 强绑定，用来兑现真实下载并发语义。
 - `asr` 负责 `video.asr_transcribe`；其 worker 进程数默认与 `ASR_WORKER_CONCURRENCY` 绑定，每个进程同一时间执行一个远端 ASR 请求。对 qwen3-asr-openai 这类会在 `/health` 暴露后端 replica 与队列状态的服务，worker 会在领取 ASR 任务前做容量门控，后端已满时不从 DB claim 新 ASR 任务，避免继续把请求打进 502/503。
-- `ai` 负责 `video.extract_events`、`playlist.backfill_events`、转写润色与简报生成；`embedding` 负责 `event.embed`；`analysis` 负责 `playlist.build_event_regime_snapshot`。三类执行面可通过对应 worker 并发或角色暂停分开治理，避免 LLM 抽取、事件向量化与 Regime 聚合互相堵塞。
+- `ai` 负责 `video.extract_events`、`playlist.backfill_events`、`playlist.backfill_events_range`、转写润色与简报生成；其 worker 进程数可通过 `AI_WORKER_CONCURRENCY` 扩展。`embedding` 负责 `event.embed`；`analysis` 负责 `playlist.mark_event_regime_dirty` 与 `playlist.build_event_regime_snapshot`。三类执行面可通过对应 worker 并发或角色暂停分开治理，避免 LLM 抽取、事件向量化、dirty 合并与 Regime 聚合互相堵塞。
 - provider 下载 handler 内仍保留 advisory lock 作为最终并发上限保护；它是内部实现，不是对外配置语义。
 - 负责任务领取、心跳、孤儿任务回收、失败退避与实际处理逻辑执行。
 
@@ -103,9 +103,11 @@
 ### 3. 下载与文本处理
 
 - `video.download.*` 下载视频、缩略图、字幕等原始产物。
+- `video.backfill_subtitles.*` 可对已采集视频只回补字幕 / 自动字幕，成功后写入 raw subtitle asset。
 - `video.extract_audio` 生成音频资产。
 - `video.normalize_subtitle` 生成 transcript，并可继续触发 `video.polish_transcript`。
-- 若没有可用中文字幕且配置了 ASR，则进入 `video.asr_transcribe`。
+- 若没有可用字幕 transcript 且配置了 ASR，则进入 `video.asr_transcribe`。
+- ASR 默认不传 `language`，由模型自动识别；`qwen3-asr` 的 `plain` / `segments` transcript 按响应里的实际语言保存。现有 polish 仍保持中文整理口径，只在 ASR transcript 语言为 `zh` 时自动投递。
 
 ### 4. 播放列表聚合与简报
 

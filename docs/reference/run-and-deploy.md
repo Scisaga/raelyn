@@ -209,9 +209,10 @@ YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“�
 - 手动多终端运行 `run-worker.sh` 时不会自动拉起崩溃进程；需要自动拉起时使用下面的 `devctl.sh`。
 - 若你手动多终端启动，并且希望兑现 `YOUTUBE_DOWNLOAD_CONCURRENCY=N` / `BILIBILI_DOWNLOAD_CONCURRENCY=N` 的真实下载并发，需要把对应 `download_*` worker 命令至少启动 `N` 次。
 - 若你手动多终端启动，并且希望兑现 `ASR_WORKER_CONCURRENCY=N` 的 ASR 请求并发，需要把 `./scripts/dev/run-worker.sh asr` 至少启动 `N` 次。
-- `ai` worker 负责 `video.extract_events` 与 `playlist.backfill_events`，事件抽取读取 `plain` transcript 并调用 LLM。
+- 若你手动多终端启动，并且希望兑现 `AI_WORKER_CONCURRENCY=N` 的 LLM 任务并发，需要把 `./scripts/dev/run-worker.sh ai` 至少启动 `N` 次。
+- `ai` worker 负责 `video.extract_events`、`video.extract_events_batch`、`playlist.backfill_events` 与 `playlist.backfill_events_range`，播放列表回填父任务先按月拆分范围任务，范围任务再按 source 字符数投递批量或单视频抽取；事件抽取读取 `plain` transcript 并调用 LLM。大型同播放列表回填可提升 `AI_WORKER_CONCURRENCY`，因为 AI worker 不再直接竞争播放列表级 `event_regime_state` dirty 热行。
 - `embedding` worker 负责 `event.embed`，只为 accepted 事件生成结构化事件 embedding。
-- `analysis` worker 负责 `playlist.build_event_regime_snapshot`，默认单进程串行，避免多个重聚合任务同时压数据库和 CPU；生产环境建议给该 worker 单独配置 systemd / cgroup `MemoryMax=6G`，与应用内 `ANALYSIS_MAX_RSS_BYTES` 保持一致。
+- `analysis` worker 负责 `playlist.mark_event_regime_dirty` 与 `playlist.build_event_regime_snapshot`。即使临时提高 AI 并发，也至少保留 1 个 analysis worker 用于 dirty 合并和 Regime 重建；生产环境建议给该 worker 单独配置 systemd / cgroup `MemoryMax=6G`，与应用内 `ANALYSIS_MAX_RSS_BYTES` 保持一致。
 
 手动按播放列表时间范围投递事件抽取：
 
@@ -220,7 +221,31 @@ YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“�
 ```
 
 默认按内容时间轴抽取最近 365 天。可用 `--since YYYY-MM-DD --until YYYY-MM-DD` 指定本地日期闭区间，用 `--dry-run` 先查看命中视频数。
-脚本会向数据库 `job` 表投递 `video.extract_events` 任务；默认按 `--progress-every` 的批大小分批提交，避免长时间运行时已投递任务不可见。
+脚本会向数据库 `job` 表投递 `video.extract_events` 任务；播放列表页面的历史回填会优先使用 `video.extract_events_batch` 合并短视频抽取。脚本默认按 `--progress-every` 的批大小分批提交，避免长时间运行时已投递任务不可见。
+
+事件 v2 清库重抽维护命令：
+
+```bash
+PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.reset_event_extraction_v2
+PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.reset_event_extraction_v2 --yes
+```
+
+默认命令只 dry-run 并输出将删除的事件、Regime 派生数据、事件管线 job 与 `video_event_extraction_run` 计数；只有显式 `--yes` 才执行删除。执行前应保持 `ai`、`embedding`、`analysis` 队列暂停，并确认没有事件抽取管线 running；该命令只清理事件管线 job，不删除 ASR、下载、字幕润色或简报任务。
+
+手动探测并投递字幕回补：
+
+```bash
+./scripts/analyze-subtitle-availability.py --scope downloaded --provider youtube --media-limit 10 --limit-per-media 2
+./scripts/enqueue-subtitle-backfill.py --scope downloaded --target-language auto --limit 100 --yes
+```
+
+说明：
+
+- `analyze-subtitle-availability.py` 只用 yt-dlp metadata 提取探测字幕语言，不下载媒体文件；输出按媒体统计目标字幕命中、人工字幕命中、自动字幕命中和错误数。
+- `enqueue-subtitle-backfill.py` 默认 dry-run，必须传 `--yes` 才会向 `job` 表投递 `video.backfill_subtitles.youtube` / `video.backfill_subtitles.bilibili`。
+- `--scope downloaded` 只处理已有 raw video asset 的视频；也可用 `--scope transcribed` 优先处理已有 plain transcript 的视频，或用 `--scope all` 扫描全部视频记录。
+- `--target-language auto` 会按 provider、视频标题 / 描述、媒体名称 / 描述推断中文或英文；YouTube 中文目标会请求 `zh-Hant`、`zh-Hans`、`zh-CN`、`zh-TW`、`zh-HK`、`zh`，英文目标请求 `en`；B 站还会针对中文 / 英文分别请求 `ai-zh` / `ai-en`。
+- 精确验证或回补单个视频时可加 `--video-id <uuid>`。
 
 打开 UI：`http://127.0.0.1:8000/`
 
@@ -231,14 +256,17 @@ YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“�
 ./scripts/dev/devctl.sh status
 ./scripts/dev/devctl.sh logs
 ./scripts/dev/devctl.sh restart
+./scripts/dev/devctl.sh restart-api
 ./scripts/dev/devctl.sh stop
 ```
 
 说明：
 
 - `devctl.sh start/restart` 会先执行一次 UI 构建（等价于 `./scripts/dev/build-ui.sh`）。如需跳过可设置 `SKIP_UI_BUILD=1`。
+- `devctl.sh restart-api` 只重启 API 进程并保留 worker / scheduler 运行；它同样会先执行一次 UI 构建，适合只更新 Web/API 代码后的快速重启。
+- `devctl.sh start/restart/restart-api` 会等待 API 健康检查最多 120 秒；API 启动阶段需要执行数据库初始化、对象存储检查和 orphan job 恢复，偶尔超过 30 秒不代表启动失败。
 - `devctl.sh start/restart` 会按 `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 自动扩展对应 provider 的下载 worker 数。
-- `devctl.sh start/restart` 会按 `ASR_WORKER_CONCURRENCY` / `EMBEDDING_WORKER_CONCURRENCY` / `ANALYSIS_WORKER_CONCURRENCY` 自动扩展 asr / embedding / analysis worker 数，默认均为 `1`；其中 `EMBEDDING_WORKER_CONCURRENCY=0` / `ANALYSIS_WORKER_CONCURRENCY=0` 表示当前节点不启动对应 worker。
+- `devctl.sh start/restart` 会按 `ASR_WORKER_CONCURRENCY` / `EMBEDDING_WORKER_CONCURRENCY` / `ANALYSIS_WORKER_CONCURRENCY` / `AI_WORKER_CONCURRENCY` 自动扩展 asr / embedding / analysis / ai worker 数，默认均为 `1`；其中 `EMBEDDING_WORKER_CONCURRENCY=0` / `ANALYSIS_WORKER_CONCURRENCY=0` 表示当前节点不启动对应 worker。事件 Regime 链路需要 dirty/rebuild 正常推进时，不要把 `ANALYSIS_WORKER_CONCURRENCY` 设为 `0`。
 - `devctl.sh` 启动的 worker 会先进入轻量 supervisor；worker 子进程崩溃后会自动拉起，默认等待 `WORKER_RESTART_DELAY_SECONDS=5` 秒，也可用旧的 `DEV_WORKER_RESTART_DELAY_SECONDS` 覆盖本地等待时间。
 - 下载类 worker 的主执行心跳超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进时，会主动退出并交给 supervisor 重启，避免进程心跳仍在线但下载槽 advisory lock 长时间不释放。
 - 只有在 `.env` 里配置了 `API_BEARER_TOKEN` 时，主 API 进程才会额外挂载 `/mcp`；否则 `/mcp` 与 `/mcp/health` 返回 `404`。

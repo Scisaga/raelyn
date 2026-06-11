@@ -70,7 +70,9 @@ def _resolve_worker_types() -> list[str] | None:
     return None
 
 
+_SYNC_JOB_TYPES = {"media.sync_profile", "media.sync_videos"}
 _DOWNLOAD_JOB_TYPES = {"video.download", "video.download.youtube", "video.download.bilibili"}
+_EXECUTION_WATCHDOG_JOB_TYPES = _SYNC_JOB_TYPES | _DOWNLOAD_JOB_TYPES
 _ASR_JOB_TYPE = "video.asr_transcribe"
 _ASR_CLAIM_DEFER_SLEEP_SECONDS = 5.0
 
@@ -236,13 +238,13 @@ class _HeartbeatThread(threading.Thread):
                 pass
 
 
-def _download_execution_stale_reason(session, *, worker_id: str, stale_after_seconds: int) -> str | None:
+def _execution_stale_reason(session, *, worker_id: str, stale_after_seconds: int) -> str | None:
     hb = session.get(WorkerHeartbeat, worker_id)
     if not hb or not hb.current_job_id or not hb.active_at:
         return None
 
     job = session.get(Job, hb.current_job_id)
-    if not job or str(getattr(job, "type", "") or "").strip() not in _DOWNLOAD_JOB_TYPES:
+    if not job or str(getattr(job, "type", "") or "").strip() not in _EXECUTION_WATCHDOG_JOB_TYPES:
         return None
 
     age_seconds = int((utcnow() - hb.active_at).total_seconds())
@@ -251,8 +253,9 @@ def _download_execution_stale_reason(session, *, worker_id: str, stale_after_sec
         return None
 
     return (
-        "download execution heartbeat stale; "
+        "worker execution heartbeat stale; "
         f"worker_id={worker_id} job_id={hb.current_job_id} "
+        f"job_type={getattr(job, 'type', None)} "
         f"job_status={getattr(job, 'status', None)} "
         f"age_seconds={age_seconds} stale_after_seconds={threshold}"
     )
@@ -273,7 +276,7 @@ class _ExecutionWatchdogThread(threading.Thread):
         while not self._stop_event.wait(self._interval):
             try:
                 with session_scope() as session:
-                    reason = _download_execution_stale_reason(
+                    reason = _execution_stale_reason(
                         session,
                         worker_id=self._worker_id,
                         stale_after_seconds=self._stale_after_seconds,
@@ -286,10 +289,10 @@ class _ExecutionWatchdogThread(threading.Thread):
                 os._exit(70)
 
 
-def _worker_may_run_downloads(type_in: list[str] | None) -> bool:
+def _worker_needs_execution_watchdog(type_in: list[str] | None) -> bool:
     if type_in is None:
         return True
-    return bool(set(type_in) & _DOWNLOAD_JOB_TYPES)
+    return bool(set(type_in) & _EXECUTION_WATCHDOG_JOB_TYPES)
 
 
 def run_loop() -> None:
@@ -312,7 +315,7 @@ def run_loop() -> None:
 
     hb = _HeartbeatThread(worker_id=worker_id, interval_seconds=settings.worker_heartbeat_interval_seconds, role=role)
     hb.start()
-    if _worker_may_run_downloads(type_in):
+    if _worker_needs_execution_watchdog(type_in):
         _ExecutionWatchdogThread(
             worker_id=worker_id,
             interval_seconds=settings.worker_heartbeat_interval_seconds,

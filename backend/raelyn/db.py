@@ -195,6 +195,8 @@ def _create_event_analysis_indexes(conn) -> None:
         "create index if not exists market_event_relation_event_idx on market_event_relation(event_id)",
         "create index if not exists market_event_embedding_event_idx on market_event_embedding(event_id)",
         "create index if not exists market_event_embedding_status_idx on market_event_embedding(status, embedding_model, embedding_dim)",
+        "create index if not exists video_event_extraction_run_video_idx on video_event_extraction_run(video_id)",
+        "create index if not exists video_event_extraction_run_status_idx on video_event_extraction_run(status, updated_at)",
         "create index if not exists event_regime_run_playlist_status_idx on event_regime_run(playlist_id, status)",
         "create index if not exists event_regime_signal_run_granularity_period_idx on event_regime_signal(regime_run_id, granularity, period_date)",
         "create index if not exists event_regime_signal_linked_candidate_idx on event_regime_signal(linked_candidate_id)",
@@ -423,7 +425,7 @@ where job.type = 'video.download'
             except Exception:
                 pass
 
-    if "market_event" in tables:
+    if "market_event" in tables and "video_event_extraction_run" in tables:
         _create_event_analysis_indexes(conn)
 
     if "video_time_evidence" in tables:

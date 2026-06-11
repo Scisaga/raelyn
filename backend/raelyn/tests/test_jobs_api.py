@@ -46,6 +46,14 @@ class _FakeRowsResult:
         return list(self._rows)
 
 
+class _FakeScalarResult:
+    def __init__(self, value) -> None:
+        self.value = value
+
+    def scalar_one_or_none(self):
+        return self.value
+
+
 class _FakeCountsSession:
     def __init__(self, rows) -> None:
         self.rows = list(rows)
@@ -151,6 +159,66 @@ class JobsApiTests(unittest.TestCase):
         self.assertEqual(event.job_id, job_id)
         self.assertEqual(event.message, "manual retry requested")
         self.assertEqual(event.data, {"previous_status": "failed", "previous_attempt": 2})
+
+    def test_retry_job_supersedes_existing_pending_dedupe_job(self) -> None:
+        failed_id = uuid.uuid4()
+        pending_id = uuid.uuid4()
+        retry_at = datetime(2026, 6, 11, 1, 30, tzinfo=timezone.utc)
+        dedupe_key = f"media.sync_videos:{uuid.uuid4()}"
+        failed_job = Job(
+            id=failed_id,
+            type="media.sync_videos",
+            status="failed",
+            priority=1,
+            dedupe_key=dedupe_key,
+            params={"media_id": str(uuid.uuid4())},
+            error_message="deadlock detected",
+            attempt=2,
+            max_attempts=2,
+        )
+        pending_job = Job(
+            id=pending_id,
+            type="media.sync_videos",
+            status="pending",
+            priority=1,
+            dedupe_key=dedupe_key,
+            params=failed_job.params,
+        )
+        session = _FakeSession(failed_job)
+        session.execute = lambda _stmt: _FakeScalarResult(pending_job)
+        session.flushed: list[list[object]] = []
+        session.flush = lambda objects=None: session.flushed.append(list(objects or []))
+
+        with patch("raelyn.api.jobs.session_scope", lambda: _fake_session_scope(session)):
+            with patch("raelyn.api.jobs.utcnow", return_value=retry_at):
+                payload = jobs_api.retry_job(failed_id)
+
+        self.assertEqual(payload, {"ok": True, "job_id": str(failed_id), "status": "pending"})
+        self.assertEqual(pending_job.status, "canceled")
+        self.assertEqual(pending_job.finished_at, retry_at)
+        self.assertEqual(pending_job.cancel_requested_at, retry_at)
+        self.assertEqual(pending_job.error_message, "superseded by manual retry")
+        self.assertEqual(session.flushed, [[pending_job]])
+        self.assertEqual(failed_job.status, "pending")
+        self.assertEqual(failed_job.attempt, 0)
+        self.assertIsNone(failed_job.error_message)
+        self.assertEqual(failed_job.scheduled_for, retry_at)
+
+        self.assertEqual(len(session.added), 2)
+        pending_event, retry_event = session.added
+        self.assertEqual(pending_event.job_id, pending_id)
+        self.assertEqual(pending_event.message, "canceled; superseded by manual retry")
+        self.assertEqual(pending_event.data, {"retry_job_id": str(failed_id)})
+        self.assertEqual(retry_event.job_id, failed_id)
+        self.assertEqual(retry_event.message, "manual retry requested")
+        self.assertEqual(
+            retry_event.data,
+            {
+                "previous_status": "failed",
+                "previous_attempt": 2,
+                "superseded_pending_job_id": str(pending_id),
+            },
+        )
 
     def test_retry_job_is_noop_for_active_job(self) -> None:
         job_id = uuid.uuid4()

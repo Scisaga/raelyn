@@ -15,6 +15,12 @@ TRANSCRIPT_VARIANT_SET = frozenset(TRANSCRIPT_VARIANTS)
 # Keep the legacy "speaches" source name for backward compatibility with old assets.
 TRANSCRIPT_SOURCE_LANGUAGE_ORDER = (
     ("subtitle", "zh"),
+    ("subtitle", "zh-hant"),
+    ("subtitle", "zh-hans"),
+    ("subtitle", "zh-cn"),
+    ("subtitle", "zh-tw"),
+    ("subtitle", "zh-hk"),
+    ("subtitle", "ai-zh"),
     ("qwen3-asr", "zh"),
     ("speaches", "zh"),
 )

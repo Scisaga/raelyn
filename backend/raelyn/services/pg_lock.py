@@ -20,6 +20,13 @@ def try_lock(session: Session, name: str) -> bool:
     return bool(row["ok"])
 
 
+def try_xact_lock(session: Session, name: str) -> bool:
+    """获取 PostgreSQL 事务级 advisory lock，随当前事务 commit/rollback 自动释放。"""
+    key = lock_key(name)
+    row = session.execute(text("select pg_try_advisory_xact_lock(:k) as ok").bindparams(k=key)).mappings().one()
+    return bool(row["ok"])
+
+
 def unlock(session: Session, name: str) -> None:
     key = lock_key(name)
     session.execute(text("select pg_advisory_unlock(:k)").bindparams(k=key))

@@ -133,6 +133,7 @@ class BriefScheduleTests(unittest.TestCase):
             _scalar_one_or_none(None),
             _scalar_one_or_none(None),
             _scalar_one_or_none(running_job),
+            _scalar_one_or_none(None),
         ]
 
         with patch("raelyn.services.brief_schedule.settings.auto_generate_briefs", True):
