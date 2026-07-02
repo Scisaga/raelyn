@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     mcp_allowed_origins: str = ""
 
     database_url: str = "postgresql+psycopg://raelyn:raelyn@127.0.0.1:5432/raelyn"
+    database_pool_size: int = Field(default=2, validation_alias=AliasChoices("DATABASE_POOL_SIZE"))
+    database_max_overflow: int = Field(default=2, validation_alias=AliasChoices("DATABASE_MAX_OVERFLOW"))
+    database_pool_timeout_seconds: int = Field(default=30, validation_alias=AliasChoices("DATABASE_POOL_TIMEOUT_SECONDS"))
 
     s3_endpoint: str = "http://127.0.0.1:9000"
     s3_access_key: str = "minioadmin"
@@ -29,7 +32,7 @@ class Settings(BaseSettings):
     asset_direct_probe_url: str = ""
     asset_direct_probe_timeout_ms: int = 1000
     asset_proxy_base_path: str = "/api/assets"
-    asset_presign_enabled: bool = True
+    asset_presign_enabled: bool = False
 
     ffmpeg_bin: str = "./bin/ffmpeg"
 
@@ -67,6 +70,9 @@ class Settings(BaseSettings):
     sync_interval_jitter_minutes: int = 15
     sync_batch_size: int = 20
     sync_max_entries: int = 10
+    sync_public_discovery_enabled: bool = Field(default=True, validation_alias=AliasChoices("SYNC_PUBLIC_DISCOVERY_ENABLED"))
+    sync_public_discovery_max_entries: int = Field(default=200, validation_alias=AliasChoices("SYNC_PUBLIC_DISCOVERY_MAX_ENTRIES"))
+    sync_cookie_recovery_max_entries: int = Field(default=200, validation_alias=AliasChoices("SYNC_COOKIE_RECOVERY_MAX_ENTRIES"))
     auto_download_new_videos: bool = True
     stats_cache_ttl_seconds: int = Field(default=60, validation_alias=AliasChoices("STATS_CACHE_TTL_SECONDS"))
     auto_generate_briefs: bool = Field(default=False, validation_alias=AliasChoices("AUTO_GENERATE_BRIEFS"))
@@ -122,6 +128,21 @@ class Settings(BaseSettings):
 
     # --- Event extraction / event regime analysis ---
     event_extraction_chunk_max_chars: int = Field(default=12000, validation_alias=AliasChoices("EVENT_EXTRACTION_CHUNK_MAX_CHARS"))
+    event_extraction_ollama_stream: bool = Field(default=True, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_STREAM"))
+    event_extraction_ollama_num_ctx: int = Field(default=8192, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_NUM_CTX"))
+    event_extraction_ollama_num_predict: int = Field(default=2500, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_NUM_PREDICT"))
+    event_extraction_ollama_idle_timeout_seconds: int = Field(
+        default=120,
+        validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_IDLE_TIMEOUT_SECONDS"),
+    )
+    event_extraction_ollama_busy_defer_seconds: int = Field(
+        default=15,
+        validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_BUSY_DEFER_SECONDS"),
+    )
+    event_extraction_ollama_chunk_max_chars: int = Field(
+        default=6000,
+        validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_CHUNK_MAX_CHARS"),
+    )
     auto_extract_new_video_events: bool = Field(default=True, validation_alias=AliasChoices("AUTO_EXTRACT_NEW_VIDEO_EVENTS"))
 
     # --- Event embeddings (OpenAI-compatible embedding servers) ---

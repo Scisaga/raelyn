@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import multiprocessing
 import uuid
+from queue import Empty
 from typing import Any
 
 from sqlalchemy import String, cast, exists, select
@@ -11,6 +13,7 @@ from raelyn.config import settings
 from raelyn.jobs.enqueue import enqueue_in, enqueue_job
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
+from raelyn.jobs.worker_activity import touch_current_worker_activity
 from raelyn.models import Asset, Job, Media, Video
 from raelyn.services.pg_lock import advisory_lock_any, try_xact_lock
 from raelyn.services.provider_pause import ProviderPauseRequestError
@@ -39,6 +42,9 @@ from .common import (
 )
 
 _AUTO_DISCOVERED_DOWNLOAD_PRIORITY = 7
+_YOUTUBE_METADATA_ENRICH_JOB_TYPE = "video.enrich_metadata.youtube"
+_YOUTUBE_METADATA_ENRICH_PRIORITY = 0
+_YOUTUBE_METADATA_ENRICH_TIMEOUT_SECONDS = 45
 _DOWNLOAD_JOB_TYPES = ("video.download", "video.download.youtube", "video.download.bilibili")
 _AUTO_DISABLED_SOURCE_UNAVAILABLE_REASON = "source_unavailable"
 _RAW_INFO_KEEP_KEYS = [
@@ -133,6 +139,10 @@ def _media_sync_lock_name(media_id: uuid.UUID) -> str:
     return f"media:{media_id}:sync"
 
 
+def _youtube_video_url(provider_video_id: str) -> str:
+    return f"https://www.youtube.com/watch?v={provider_video_id}"
+
+
 def _insert_discovered_video_if_new(
     session: Session,
     *,
@@ -178,33 +188,185 @@ def _insert_discovered_video_if_new(
     return Video(**{**values, "id": inserted_id})
 
 
-def _enrich_youtube_entry_if_missing_published_at(
-    *,
-    session: Session,
-    job: Job,
-    entry: dict[str, Any],
-    url: str,
-) -> dict[str, Any]:
-    if parse_published_at(entry) is not None:
-        return entry
+def _find_video_by_provider_id(session: Session, *, provider: str, provider_video_id: str) -> Video | None:
+    return session.execute(
+        select(Video)
+        .where(
+            Video.provider == provider,
+            Video.provider_video_id == provider_video_id,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def _enqueue_youtube_metadata_enrichment_if_needed(session: Session, *, video: Video) -> bool:
+    if str(video.provider or "").strip().lower() != "youtube":
+        return False
+    if video.published_at is not None:
+        return False
+    if _youtube_metadata_enrichment_terminal_failed(session, video_id=video.id):
+        return False
+    enqueue_job(
+        session,
+        type_=_YOUTUBE_METADATA_ENRICH_JOB_TYPE,
+        params={"video_id": str(video.id)},
+        priority=_YOUTUBE_METADATA_ENRICH_PRIORITY,
+    )
+    return True
+
+
+def _youtube_metadata_enrichment_terminal_failed(session: Session, *, video_id: uuid.UUID) -> bool:
+    dedupe_key = f"{_YOUTUBE_METADATA_ENRICH_JOB_TYPE}:{video_id}"
+    return (
+        session.execute(
+            select(Job.id)
+            .where(
+                Job.type == _YOUTUBE_METADATA_ENRICH_JOB_TYPE,
+                Job.dedupe_key == dedupe_key,
+                Job.status == "failed",
+                Job.attempt >= Job.max_attempts,
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
+def _compact_youtube_metadata_info(info: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(info, dict):
+        return {}
+    payload = _compact_raw_info(info) or {}
+    if info.get("thumbnail"):
+        payload["thumbnail"] = info.get("thumbnail")
+    return payload
+
+
+def _ytdlp_extract_info_child(queue, *, url: str) -> None:
     try:
         info = ytdlp_extract_info(url, provider="youtube", flat=False, max_entries=1)
-    except Exception as e:
-        job_log(session, job, f"youtube metadata enrich failed for {url}: {e}", level="warn")
-        return entry
+    except YtdlpCookiesInvalidError as e:
+        queue.put(("cookies_invalid", {"provider": e.provider, "reason": e.reason, "message": str(e)}))
+    except ProviderPauseRequestError as e:
+        queue.put(("provider_pause", {"provider": e.provider, "reason": e.reason, "message": str(e)}))
+    except BaseException as e:
+        queue.put(("error", {"type": type(e).__name__, "message": str(e)}))
+    else:
+        queue.put(("ok", _compact_youtube_metadata_info(info)))
 
+
+def _extract_youtube_video_metadata_with_timeout(
+    *,
+    url: str,
+) -> dict[str, Any]:
+    ctx = multiprocessing.get_context("spawn")
+    queue = ctx.Queue(maxsize=1)
+    process = ctx.Process(target=_ytdlp_extract_info_child, kwargs={"queue": queue, "url": url})
+    process.start()
+    process.join(_YOUTUBE_METADATA_ENRICH_TIMEOUT_SECONDS)
+    if process.is_alive():
+        process.terminate()
+        process.join(5)
+        raise TimeoutError(f"youtube metadata enrich timed out after {_YOUTUBE_METADATA_ENRICH_TIMEOUT_SECONDS}s")
+
+    try:
+        status, payload = queue.get_nowait()
+    except Empty as e:
+        raise RuntimeError(f"youtube metadata enrich child exited without result; exitcode={process.exitcode}") from e
+    finally:
+        queue.close()
+        queue.join_thread()
+
+    if status == "ok":
+        if isinstance(payload, dict):
+            return payload
+        raise RuntimeError("youtube metadata enrich returned non-dict result")
+    if status == "cookies_invalid":
+        raise YtdlpCookiesInvalidError(
+            str(payload.get("reason") or "ytdlp_cookies_invalid"),
+            str(payload.get("message") or "yt-dlp cookies invalid"),
+            provider=str(payload.get("provider") or "youtube"),
+        )
+    if status == "provider_pause":
+        raise ProviderPauseRequestError(
+            provider=str(payload.get("provider") or "youtube"),
+            reason=str(payload.get("reason") or "provider_pause_requested"),
+            message=str(payload.get("message") or "provider pause requested"),
+        )
+    raise RuntimeError(str(payload.get("message") or "youtube metadata enrich failed"))
+
+
+def _update_video_from_youtube_metadata(video: Video, info: dict[str, Any]) -> bool:
     if not isinstance(info, dict):
-        return entry
-    if str(info.get("id") or "").strip() != str(entry.get("id") or "").strip():
-        return entry
-    enriched = dict(entry)
-    for key in _RAW_INFO_KEEP_KEYS:
-        value = info.get(key)
-        if value is not None:
-            enriched[key] = value
-    if info.get("thumbnail") and not enriched.get("thumbnail"):
-        enriched["thumbnail"] = info.get("thumbnail")
-    return enriched
+        return False
+
+    video.raw_info = _compact_raw_info(info)
+    if not video.thumbnail_url and info.get("thumbnail"):
+        video.thumbnail_url = info.get("thumbnail")
+    if video.duration_sec is None and info.get("duration") is not None:
+        video.duration_sec = info.get("duration")
+
+    published_at = parse_published_at(info)
+    if published_at is None or video.published_at is not None:
+        return False
+    video.published_at = published_at
+    return True
+
+
+@registry.register(_YOUTUBE_METADATA_ENRICH_JOB_TYPE)
+def youtube_metadata_enrich(session: Session, job: Job) -> dict | None:
+    raw_video_id = (job.params or {}).get("video_id") if isinstance(job.params, dict) else None
+    try:
+        video_id = uuid.UUID(str(raw_video_id))
+    except Exception:
+        return {"skipped": "invalid video_id"}
+
+    video = session.get(Video, video_id)
+    if not video:
+        return {"skipped": "video not found"}
+    if str(video.provider or "").strip().lower() != "youtube":
+        return {"skipped": "not youtube"}
+    if video.published_at is not None:
+        return {"skipped": "published_at already present"}
+
+    with advisory_lock_any(session, _provider_guard_names("youtube", "sync")) as lock_name:
+        if not lock_name:
+            job_log(session, job, "provider sync locked (all slots busy); reschedule metadata enrich", level="warn")
+            enqueue_in(session, seconds=30, type_=job.type, params=job.params, priority=job.priority)
+            return {"rescheduled": True}
+
+        url = str(video.url or "").strip()
+        if not url.startswith("http"):
+            provider_video_id = str(video.provider_video_id or "").strip()
+            if not provider_video_id:
+                return {"skipped": "missing video url"}
+            url = _youtube_video_url(provider_video_id)
+
+        try:
+            touch_current_worker_activity()
+            info = _extract_youtube_video_metadata_with_timeout(url=url)
+            touch_current_worker_activity()
+        except YtdlpCookiesInvalidError as e:
+            _pause_all_jobs_for_cookies(session, job=job, err=e)
+            raise
+        except ProviderPauseRequestError as e:
+            _pause_provider_jobs(session, job=job, err=e)
+            raise
+
+        provider_video_id = str(video.provider_video_id or "").strip()
+        if provider_video_id and str(info.get("id") or "").strip() not in {"", provider_video_id}:
+            return {"skipped": "metadata id mismatch"}
+
+        published_at_updated = _update_video_from_youtube_metadata(video, info)
+        if published_at_updated:
+            schedule_playlists_event_regime_dirty_for_video(
+                session,
+                video_id=video.id,
+                reason="video_published_at_changed",
+                source_job_id=job.id,
+                priority=job.priority,
+            )
+        job_log(session, job, f"youtube metadata enrich done published_at_updated={published_at_updated}", level="info")
+        return {"ok": True, "published_at_updated": published_at_updated}
 
 
 @registry.register("media.sync_profile")
@@ -300,6 +462,8 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
     if (not force) and (not media.monitor_enabled):
         return {"skipped": "monitor_disabled"}
 
+    public_discovery = bool((job.params or {}).get("public_discovery")) if isinstance(job.params, dict) else False
+
     if not try_xact_lock(session, _media_sync_lock_name(media.id)):
         job_log(session, job, "media sync locked; reschedule", level="warn")
         enqueue_in(session, seconds=30, type_=job.type, params=job.params, priority=job.priority)
@@ -330,7 +494,11 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
         job_log(
             session,
             job,
-            f"sync start url={sync_url} max_entries={process_limit if raw_max is None else playlist_limit}",
+            (
+                f"sync start url={sync_url} "
+                f"max_entries={process_limit if raw_max is None else playlist_limit} "
+                f"public_discovery={public_discovery}"
+            ),
             level="info",
         )
         try:
@@ -339,12 +507,22 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                 provider=media.provider,
                 flat=True,
                 max_entries=playlist_limit if raw_max is not None else process_limit,
+                use_provider_cookies=not public_discovery,
             )
         except YtdlpCookiesInvalidError as e:
             _pause_all_jobs_for_cookies(session, job=job, err=e)
             media.last_video_sync_at = utcnow()
             raise
         except ProviderPauseRequestError as e:
+            if public_discovery:
+                media.last_video_sync_at = utcnow()
+                job_log(
+                    session,
+                    job,
+                    f"public discovery blocked by provider; throttle until next interval: {e}",
+                    level="warn",
+                )
+                return {"skipped": "public_discovery_blocked"}
             _pause_provider_jobs(session, job=job, err=e)
             media.last_video_sync_at = utcnow()
             raise
@@ -357,6 +535,7 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                 media.last_video_sync_at = utcnow()
                 job_log(session, job, f"sync blocked by provider; throttle until next interval: {e}", level="warn")
             raise
+        touch_current_worker_activity()
         if process_limit is None:
             raw_entries = info.get("entries") or []
             items = raw_entries if isinstance(raw_entries, list) else []
@@ -367,9 +546,11 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
 
         created = 0
         enqueued_downloads = 0
+        metadata_enrichment_enqueued = 0
         download_priority = _job_download_priority(job)
         allow_members_only_download = _ytdlp_members_only_download_enabled(session)
         for entry in entries:
+            touch_current_worker_activity()
             provider_video_id = entry.get("id")
             if not provider_video_id:
                 continue
@@ -380,25 +561,16 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
             url = entry.get("webpage_url") or entry.get("url") or ""
             if not url:
                 if media.provider == "youtube":
-                    url = f"https://www.youtube.com/watch?v={provider_video_id}"
+                    url = _youtube_video_url(provider_video_id)
                 elif media.provider == "bilibili":
                     url = _normalize_bilibili_video_url(provider_video_id)
             elif not url.startswith("http"):
                 if media.provider == "youtube":
-                    url = f"https://www.youtube.com/watch?v={provider_video_id}"
+                    url = _youtube_video_url(provider_video_id)
                 elif media.provider == "bilibili":
                     url = _normalize_bilibili_video_url(provider_video_id)
             elif media.provider == "bilibili":
                 url = _normalize_bilibili_video_url(url)
-
-            metadata_entry = entry
-            if media.provider == "youtube":
-                metadata_entry = _enrich_youtube_entry_if_missing_published_at(
-                    session=session,
-                    job=job,
-                    entry=entry,
-                    url=url,
-                )
 
             is_members_only = _is_members_only_entry(media.provider, entry)
             video = _insert_discovered_video_if_new(
@@ -406,11 +578,19 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                 media=media,
                 provider_video_id=provider_video_id,
                 url=url,
-                metadata_entry=metadata_entry,
+                metadata_entry=entry,
                 is_members_only=is_members_only,
                 allow_members_only_download=allow_members_only_download,
             )
             if not video:
+                if media.provider == "youtube" and parse_published_at(entry) is None:
+                    existing_video = _find_video_by_provider_id(
+                        session,
+                        provider=media.provider,
+                        provider_video_id=provider_video_id,
+                    )
+                    if existing_video and _enqueue_youtube_metadata_enrichment_if_needed(session, video=existing_video):
+                        metadata_enrichment_enqueued += 1
                 continue
             created += 1
             if video.published_at:
@@ -421,6 +601,8 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                     source_job_id=job.id,
                     priority=job.priority,
                 )
+            elif media.provider == "youtube" and _enqueue_youtube_metadata_enrichment_if_needed(session, video=video):
+                metadata_enrichment_enqueued += 1
 
             has_transcript = (
                 session.execute(
@@ -468,9 +650,10 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                 "sync done "
                 f"created={created} "
                 f"enqueued_downloads={enqueued_downloads} "
+                f"metadata_enrichment_enqueued={metadata_enrichment_enqueued} "
                 f"existing_downloads={existing_downloads} "
                 f"scanned_entries={len(entries)}"
             ),
             level="info",
         )
-        return {"created": created}
+        return {"created": created, "metadata_enrichment_enqueued": metadata_enrichment_enqueued}

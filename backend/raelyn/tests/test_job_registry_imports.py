@@ -18,6 +18,7 @@ class JobRegistryImportTests(unittest.TestCase):
             "media.delete",
             "media.sync_profile",
             "media.sync_videos",
+            "video.enrich_metadata.youtube",
             "video.download",
             "video.download.youtube",
             "video.download.bilibili",

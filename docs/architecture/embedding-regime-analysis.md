@@ -14,8 +14,8 @@
 
 任务：
 
-- `video.extract_events`：读取单个视频的 `plain` transcript，按 `EVENT_EXTRACTION_CHUNK_MAX_CHARS` 分块调用 LLM；当有效 LLM URL 为 Ollama `/api/generate` 时，事件抽取固定使用 `think=false`、`format=json` 与 `options.temperature=0`，降低结构化抽取漂移。
-- `video.extract_events_batch`：短视频批量抽取任务。每批最多 4 条视频，批 source 总字符数不超过 10000；单视频 source 字符数超过 3500 或 transcript 需要分块时回退到 `video.extract_events`。
+- `video.extract_events`：读取单个视频的 `plain` transcript，按 `EVENT_EXTRACTION_CHUNK_MAX_CHARS` 分块调用 LLM；当有效 LLM URL 为 Ollama `/api/generate` 时，实际分块上限还会被 `EVENT_EXTRACTION_OLLAMA_CHUNK_MAX_CHARS` 封顶，避免本地 35B 模型在小上下文下吃进过大的 prompt。
+- `video.extract_events_batch`：短视频批量抽取任务。任务可以携带多个 video id，但执行时每次 LLM 请求只包含 1 个视频；单视频 source 字符数超过 3500 或 transcript 需要分块时回退到 `video.extract_events`。
 - `playlist.backfill_events`：按播放列表内容时间轴规划月份范围任务。
 - `playlist.backfill_events_range`：查询单个月份范围内已有 `plain` transcript 的视频，按 source 字符数投递 `video.extract_events_batch` 或 `video.extract_events` 子任务；范围任务优先级低于它投递的视频抽取任务。
 - `playlist.mark_event_regime_dirty`：由 `analysis` worker 延迟合并播放列表 dirty 标记，不在 `ai` worker 的事件抽取热路径直接更新 `event_regime_state`。
@@ -26,7 +26,7 @@
 - 媒体名
 - 内容时间
 - 平台发布时间
-- source 列表：`v1.title`、`v1.desc`、`v1.t001...`。标题、描述和 transcript 片段都按 source id 进入 prompt；LLM 不能直接返回证据文本。
+- source 列表：`v1.title`、`v1.desc`、`v1.t001...`。标题、经过确定性清洗的描述和 transcript 片段都按 source id 进入 prompt；LLM 不能直接返回证据文本。描述清洗会移除 URL、hashtag、频道推广、会员/社群导流、推荐影片列表和免责声明等对事件抽取无帮助的噪音。
 
 抽取输出必须是 JSON，顶层为 `videos[]`。每个 `videos[].video_id` 对应输入 video id，例如 `v1`。单个事件包含：
 
@@ -61,7 +61,8 @@
 
 执行边界：
 
-- `video.extract_events` 只在读取 video / media / transcript asset 元数据和最终写入事件时短暂持有数据库事务；S3 transcript 读取、LLM 调用与 JSON 解析在数据库事务外执行。
+- `video.extract_events` 只在读取 video / media / transcript asset 元数据和最终写入事件时短暂持有数据库事务；S3 transcript 读取与 JSON 解析不持有业务行锁。Ollama `/api/generate` 事件抽取在 LLM 调用期间会持有一个 session-level advisory lock，key 为 endpoint + model，用来把同一模型的事件抽取请求限制为 1；锁忙时任务重排，而不是进入 Ollama 内部长队列。
+- Ollama `/api/generate` 事件抽取固定使用紧凑 JSON schema、`think=false`、`format=json`、`options.temperature=0`，并带上 `EVENT_EXTRACTION_OLLAMA_NUM_CTX` / `EVENT_EXTRACTION_OLLAMA_NUM_PREDICT`。紧凑 schema 保留事件时间、类型、标题、摘要、实体、资产、行业、宏观变量、方向、因果链、source-id provenance 与置信度，但限制每个视频最多 4 个核心事件和数组长度，避免本地模型生成过长 JSON 后被 `num_predict` 截断。默认 `stream=true`，调用方会流式读取并累积最终 JSON；超过 `EVENT_EXTRACTION_OLLAMA_IDLE_TIMEOUT_SECONDS` 没有任何流式输出时请求失败，交给任务系统重试。
 - 任务进度使用 `total=10000`：LLM 阶段最多推进到 `9000`，事件写库后到 `9600`，投递 embedding 与 dirty 后处理任务后到 `9900`，worker 成功收尾时才到 `10000`。
 - 事件写库提交后才投递 `event.embed` 与 `playlist.mark_event_regime_dirty`，避免同一事务同时持有 `market_event`、`job` 与 `event_regime_state` 相关锁。
 

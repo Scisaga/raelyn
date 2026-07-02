@@ -11,12 +11,16 @@ from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
 
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+from sqlalchemy.dialects import postgresql
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn import config
+from raelyn.api.videos import _video_list_timeline_columns
+from raelyn.models import Media, Video
 
 
 @contextmanager
@@ -37,6 +41,42 @@ def _load_app(stack: ExitStack):
 
 
 class VideosApiTests(unittest.IsolatedAsyncioTestCase):
+    def test_video_list_content_timeline_uses_set_based_join(self) -> None:
+        selected_time, content_ts, timeline_ts, time_source, time_status, time_confidence = (
+            _video_list_timeline_columns("content")
+        )
+        stmt = (
+            select(Video.id, Media.id, content_ts, timeline_ts, time_source, time_status, time_confidence)
+            .join(Media, Media.id == Video.media_id)
+            .outerjoin(selected_time, selected_time.c.video_id == Video.id)
+            .where(timeline_ts.is_not(None))
+            .order_by(timeline_ts.desc().nullslast(), Video.created_at.desc(), Video.id.desc())
+            .limit(20)
+        )
+        compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
+
+        self.assertIn("left outer join", compiled)
+        self.assertIn("row_number() over", compiled)
+        self.assertIn("partition by video_time_evidence.video_id", compiled)
+        self.assertNotIn("video_time_evidence.video_id = video.id", compiled)
+
+    def test_video_list_platform_timeline_keeps_fast_base_query(self) -> None:
+        selected_time, content_ts, timeline_ts, time_source, time_status, time_confidence = (
+            _video_list_timeline_columns("platform")
+        )
+        stmt = (
+            select(Video.id, Media.id, content_ts, timeline_ts, time_source, time_status, time_confidence)
+            .join(Media, Media.id == Video.media_id)
+            .where(timeline_ts.is_not(None))
+            .order_by(timeline_ts.desc().nullslast(), Video.created_at.desc(), Video.id.desc())
+            .limit(20)
+        )
+        compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
+
+        self.assertIsNone(selected_time)
+        self.assertIn("video.published_at", compiled)
+        self.assertNotIn("video_time_evidence", compiled)
+
     async def test_transcript_endpoint_passes_variant_and_source(self) -> None:
         video_id = uuid.uuid4()
         with ExitStack() as stack:

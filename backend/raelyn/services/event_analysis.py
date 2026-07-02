@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 import hashlib
@@ -10,6 +11,7 @@ import re
 import statistics
 import uuid
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import String, and_, cast, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -18,6 +20,7 @@ from sqlalchemy.orm import Session
 from raelyn.config import settings
 from raelyn.jobs.enqueue import enqueue_job
 from raelyn.jobs.progress import set_job_progress
+from raelyn.jobs.reschedule import JobReschedule
 from raelyn.models import (
     AppConfig,
     Asset,
@@ -50,6 +53,7 @@ from raelyn.services.inference import get_effective_llm_config
 from raelyn.services.job_cancellation import JobCancelRequested, raise_if_job_cancel_requested, request_job_cancel
 from raelyn.services.llm import llm_enabled, llm_generate
 from raelyn.services.periods import iter_period_starts, local_date, month_add_one, period_bounds_utc
+from raelyn.services.pg_lock import advisory_lock
 from raelyn.services.transcripts import pick_transcript_asset, read_text_asset
 from raelyn.services.video_time import resolve_video_timeline, timeline_time_expr
 from raelyn.timeutil import utcnow
@@ -58,7 +62,7 @@ from raelyn.timeutil import utcnow
 EVENT_EXTRACTION_PROMPT_CONFIG_KEY = "llm_event_extraction_prompt"
 EVENT_EXTRACTION_PROMPT_BASE_VERSION = "llm_event_v2_source_provenance"
 EVENT_ACCEPT_CONFIDENCE = 0.8
-EVENT_BATCH_MAX_VIDEOS = 4
+EVENT_BATCH_MAX_VIDEOS = 1
 EVENT_BATCH_MAX_SOURCE_CHARS = 10000
 EVENT_BATCH_SINGLE_MAX_SOURCE_CHARS = 3500
 EVENT_SOURCE_SEGMENT_MAX_CHARS = 700
@@ -156,6 +160,24 @@ DEFAULT_EVENT_EXTRACTION_PROMPT = """
 """.strip()
 
 
+COMPACT_EVENT_EXTRACTION_PROMPT = """
+你是金融市场事件抽取器。只输出合法 JSON，不要 Markdown，不要解释。
+
+任务：从输入 sources 抽取已发生、可验证、可能影响市场 regime 的事件。忽略交易策略、荐股建议、观察名单、纯预测、主持人串场、免责声明和频道推广。
+
+输出必须严格使用这个紧凑结构：
+{"videos":[{"video_id":"v1","events":[{"event_time":{"start":"YYYY-MM-DD 或空字符串","end":"YYYY-MM-DD 或空字符串","time_precision":"second|day|month|year|unknown","basis":"content_time|explicit_transcript|title|description|unknown"},"available_at_basis":"video_published_at|content_published_at|explicit_transcript|unknown","event_type":"macro|monetary_policy|earnings|guidance|credit|rates|fx|commodities|equity|geopolitical|policy|liquidity|market_structure|other","title":"不超过30中文字","summary":"不超过80中文字，只写可验证事实和市场影响","entities":[{"type":"company|person|country|institution|indicator|asset|sector|other","name":"...","role":"actor|affected|indicator|source|other","confidence":0.0}],"assets":[{"name":"...","ticker":"","market":"TWSE|TPEX|NYSE|NASDAQ|HKEX|A-share|other|unknown","role":"affected|signal|other","confidence":0.0}],"sectors":[{"name":"...","role":"affected|signal|other","confidence":0.0}],"macro_variables":[{"name":"...","role":"indicator|affected|cause|other","confidence":0.0}],"direction":"positive|negative|mixed|neutral|unknown","cause_effect_chain":[{"cause":"...","effect":"...","relation_type":"cause|effect|affects|mentions","direction":"positive|negative|mixed|neutral|unknown","confidence":0.0}],"evidence_source_ids":["v1.t001"],"confidence":0.0}]}]}
+
+硬约束：
+- 每个 video 最多 4 个最高价值事件，不足则更少。
+- 每个数组最多 3 项；cause_effect_chain 最多 2 项；没有明确证据时用 []。
+- 不要输出 magnitude、surprise_or_delta、evidence_text、evidence_quotes 或任何 schema 外字段。
+- evidence_source_ids 只能引用输入 sources 中的 id，至少 1 个。
+- 不能把一个视频的事实归到另一个 video_id。
+- 只抽取事实变化；观点、策略、建议、题材归类和条件句不算事件。
+""".strip()
+
+
 def event_extraction_prompt_defaults() -> dict[str, Any]:
     return {
         EVENT_EXTRACTION_PROMPT_CONFIG_KEY: {
@@ -215,6 +237,33 @@ def _short_text(value: Any, *, max_len: int = 600) -> str:
     return text[:max_len]
 
 
+_EVENT_DESCRIPTION_DROP_PATTERNS = (
+    re.compile(r"(更多|更多必看|相關|相关).*(影片|视频)", re.IGNORECASE),
+    re.compile(r"(訂閱|订阅|subscribe|按讚|点赞|分享|留言|小鈴鐺|小铃铛)", re.IGNORECASE),
+    re.compile(r"(粉絲團|粉丝团|facebook|instagram|telegram|twitter|x\.com|line@|discord)", re.IGNORECASE),
+    re.compile(r"(官網|官网|會員|会员|加入會員|加入会员|合作邀約|商务合作|業務合作|业配|贊助|赞助)", re.IGNORECASE),
+    re.compile(r"(免責聲明|免责声明|投資一定有風險|投资一定有风险)", re.IGNORECASE),
+)
+
+
+def _event_description_source_text(value: Any, *, max_len: int = EVENT_DESCRIPTION_SOURCE_MAX_CHARS) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"https?://\S+|www\.\S+", " ", text)
+    rows: list[str] = []
+    for raw_line in re.split(r"[\r\n]+", text):
+        line = re.sub(r"#\S+", " ", raw_line)
+        line = re.sub(r"\s+", " ", line).strip()
+        if not line:
+            continue
+        if any(pattern.search(line) for pattern in _EVENT_DESCRIPTION_DROP_PATTERNS):
+            continue
+        rows.append(line)
+    cleaned = "\n".join(rows).strip()
+    return cleaned[:max_len].strip()
+
+
 def _jsonable(value: Any) -> dict[str, Any] | None:
     if isinstance(value, dict):
         return value
@@ -232,6 +281,96 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="ignore")).hexdigest()
 
 
+def _positive_int(value: Any, default: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        return max(0, int(default or 0))
+    return parsed if parsed > 0 else max(0, int(default or 0))
+
+
+def _effective_llm_is_ollama_generate(session: Session | None = None) -> bool:
+    try:
+        cfg = get_effective_llm_config(session)
+    except Exception:
+        cfg = get_effective_llm_config()
+    return "/api/generate" in urlparse(str(cfg.url or "").strip()).path.lower()
+
+
+def _event_extraction_chunk_max_chars(session: Session | None = None) -> int:
+    base = _positive_int(settings.event_extraction_chunk_max_chars, 12000)
+    if _effective_llm_is_ollama_generate(session):
+        ollama_cap = _positive_int(settings.event_extraction_ollama_chunk_max_chars, 6000)
+        if ollama_cap > 0:
+            base = min(base, ollama_cap)
+    return max(2000, base)
+
+
+def _event_extraction_llm_options(session: Session) -> dict[str, Any]:
+    options: dict[str, Any] = {"temperature": 0}
+    if not _effective_llm_is_ollama_generate(session):
+        return options
+
+    num_ctx = _positive_int(settings.event_extraction_ollama_num_ctx, 8192)
+    num_predict = _positive_int(settings.event_extraction_ollama_num_predict, 2500)
+    if num_ctx > 0:
+        options["num_ctx"] = num_ctx
+    if num_predict > 0:
+        options["num_predict"] = num_predict
+    return options
+
+
+def _session_supports_pg_advisory_lock(session: Session) -> bool:
+    try:
+        bind = session.get_bind()
+    except Exception:
+        return False
+    dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+    return isinstance(dialect_name, str) and dialect_name.startswith("postgresql")
+
+
+def _event_llm_lock_name(session: Session) -> str:
+    try:
+        cfg = get_effective_llm_config(session)
+    except Exception:
+        cfg = get_effective_llm_config()
+    parsed = urlparse(str(cfg.url or "").strip())
+    endpoint = parsed.netloc or parsed.path or "local"
+    model = str(cfg.model or settings.llm_model or "default").strip() or "default"
+    return f"llm:ollama:event_extraction:{endpoint}:{model}"
+
+
+@contextmanager
+def _event_llm_model_lock(session: Session):
+    if not _effective_llm_is_ollama_generate(session) or not _session_supports_pg_advisory_lock(session):
+        with nullcontext():
+            yield
+        return
+
+    lock_name = _event_llm_lock_name(session)
+    with advisory_lock(session, lock_name) as acquired:
+        if not acquired:
+            delay = _positive_int(settings.event_extraction_ollama_busy_defer_seconds, 15)
+            raise JobReschedule(delay_seconds=delay, reason="event_llm_model_busy")
+        yield
+
+
+def _generate_event_extraction_llm(session: Session, *, prompt: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "think": False,
+        "response_format": "json",
+        "options": _event_extraction_llm_options(session),
+    }
+    if _effective_llm_is_ollama_generate(session):
+        kwargs["stream"] = bool(settings.event_extraction_ollama_stream)
+        idle_timeout = _positive_int(settings.event_extraction_ollama_idle_timeout_seconds, 120)
+        if idle_timeout > 0:
+            kwargs["idle_timeout_seconds"] = idle_timeout
+    with _event_llm_model_lock(session):
+        return llm_generate(**kwargs)
+
+
 def event_extraction_spec(session: Session | None = None) -> EventExtractionSpec:
     prompt_text = DEFAULT_EVENT_EXTRACTION_PROMPT
     if session is not None:
@@ -244,17 +383,14 @@ def event_extraction_spec(session: Session | None = None) -> EventExtractionSpec
         elif isinstance(value, str) and value.strip():
             prompt_text = value.strip()
 
-    prompt_hash = _sha256_text(prompt_text)[:12]
+    version_prompt_text = COMPACT_EVENT_EXTRACTION_PROMPT if _effective_llm_is_ollama_generate(session) else prompt_text
+    prompt_hash = _sha256_text(version_prompt_text)[:12]
     model = str(get_effective_llm_config(session).model or settings.llm_model or "").strip()
-    try:
-        chunk_max_chars = int(settings.event_extraction_chunk_max_chars or 12000)
-    except Exception:
-        chunk_max_chars = 12000
     return EventExtractionSpec(
         model=model,
         prompt_version=f"{EVENT_EXTRACTION_PROMPT_BASE_VERSION}:{prompt_hash}",
         prompt_text=prompt_text,
-        chunk_max_chars=max(2000, chunk_max_chars),
+        chunk_max_chars=_event_extraction_chunk_max_chars(session),
     )
 
 
@@ -473,24 +609,22 @@ def _build_event_sources(
             )
         )
 
-    description = str(video.description or "").strip()
-    if description:
-        desc_text = description[:EVENT_DESCRIPTION_SOURCE_MAX_CHARS].strip()
-        if desc_text:
-            sources.append(
-                _EventSource(
-                    source_id=f"{alias}.desc",
-                    video_alias=alias,
-                    video_id=video.id,
-                    source_kind="description",
-                    source_label="描述",
-                    text=desc_text,
-                    char_start=0,
-                    char_end=len(desc_text),
-                    source_sha256=_sha256_text(desc_text),
-                    transcript_asset_id=None,
-                )
+    desc_text = _event_description_source_text(video.description)
+    if desc_text:
+        sources.append(
+            _EventSource(
+                source_id=f"{alias}.desc",
+                video_alias=alias,
+                video_id=video.id,
+                source_kind="description",
+                source_label="描述",
+                text=desc_text,
+                char_start=0,
+                char_end=len(desc_text),
+                source_sha256=_sha256_text(desc_text),
+                transcript_asset_id=None,
             )
+        )
 
     for index, (segment, start, end) in enumerate(
         _text_segments_with_offsets(
@@ -527,6 +661,7 @@ def _render_event_batch_prompt(
     videos: list[_PreparedEventVideo],
     video_sources: dict[str, list[_EventSource]],
     chunk_label: str,
+    compact: bool = False,
 ) -> str:
     blocks: list[str] = []
     for prepared in videos:
@@ -550,15 +685,21 @@ def _render_event_batch_prompt(
             )
         )
 
-    protocol = """
+    max_events = 4 if compact else 6
+    protocol = f"""
 v2 输出协议：
-- 顶层必须是 {"videos": [...]}，每个输入 video_id 必须出现一次。
+- 顶层必须是 {{"videos": [...]}}，每个输入 video_id 必须出现一次。
 - 每个事件只能使用 evidence_source_ids 引用上方 sources 中的 id；不要输出 evidence_quotes / evidence_text。
 - 同一事件至少给 1 个 evidence_source_ids；无法定位证据的内容必须过滤，不能作为 accepted 事件。
 - sports celebration、皇室婚礼、娱乐闲聊、普通人物故事等不影响金融市场 regime 的内容应输出 events: []。
 - 如果输入内有多个视频，不要把一个视频的事实归到另一个 video_id。
+- 每个 video 最多输出 {max_events} 个最高置信、最影响市场 regime 的事件；不足 {max_events} 个就输出更少，不要为了凑数扩写。
+- 每个事件的 summary 最多 120 个中文字；entities / assets / sectors / macro_variables 各最多 5 项，cause_effect_chain 最多 4 项。
+- magnitude / surprise_or_delta 没有明确数值时只保留空结构，不要在 description 里扩写背景。
+- 不要输出同义重复实体、无证据实体或为贴合格式而补全的空泛对象。
 """.strip()
-    return f"""{spec.prompt_text}
+    prompt_text = COMPACT_EVENT_EXTRACTION_PROMPT if compact else spec.prompt_text
+    return f"""{prompt_text}
 
 {protocol}
 
@@ -734,7 +875,7 @@ def _render_event_prompt(
     chunk_index: int,
     chunk_total: int,
 ) -> str:
-    description = _short_text(video.description, max_len=1600)
+    description = _event_description_source_text(video.description)
     content_time_text = content_time.isoformat() if content_time else "unknown"
     published_at_text = video.published_at.isoformat() if video.published_at else "unknown"
     return f"""{spec.prompt_text}
@@ -1090,7 +1231,7 @@ def _prepare_event_videos(
             content_published_at=content_time,
         )
         title_chars = len(str(video_info.title or ""))
-        desc_chars = len(str(video_info.description or "")[:EVENT_DESCRIPTION_SOURCE_MAX_CHARS])
+        desc_chars = len(_event_description_source_text(video_info.description))
         prepared.append(
             _PreparedEventVideo(
                 alias=alias,
@@ -1287,13 +1428,9 @@ def extract_video_events_batch(
             videos=batch_videos,
             video_sources=video_sources,
             chunk_label=", ".join([item[3] for item in batch]),
+            compact=_effective_llm_is_ollama_generate(session),
         )
-        result = llm_generate(
-            prompt=prompt,
-            think=False,
-            response_format="json",
-            options={"temperature": 0},
-        )
+        result = _generate_event_extraction_llm(session, prompt=prompt)
         for key, value in (result.get("usage") or {}).items():
             if key in usage:
                 try:
@@ -1836,7 +1973,7 @@ def backfill_playlist_events_range(
             continue
         source_chars = (
             len(str(video.title or ""))
-            + len(str(video.description or "")[:EVENT_DESCRIPTION_SOURCE_MAX_CHARS])
+            + len(_event_description_source_text(video.description))
             + len(transcript_text)
         )
         if source_chars > EVENT_BATCH_SINGLE_MAX_SOURCE_CHARS:

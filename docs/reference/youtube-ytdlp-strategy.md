@@ -8,11 +8,12 @@
 
 对本项目来说，最稳妥的默认策略是：
 
-- YouTube `media.sync_videos` 和 `video.download.youtube` 当前都应使用已保存的 `YTDLP_COOKIES_YOUTUBE`。只有在相同 yt-dlp 版本、相同出口、相同目标类型下做过最小实测，并证明无 cookies 路径稳定成功时，才能讨论局部关闭 cookies。
+- YouTube 普通 `media.sync_videos` 和 `video.download.youtube` 当前都应使用已保存的 `YTDLP_COOKIES_YOUTUBE`。只有在相同 yt-dlp 版本、相同出口、相同目标类型下做过最小实测，并证明无 cookies 路径稳定成功时，才能讨论局部关闭 cookies。
+- 当 provider 已因 `ytdlp_cookies_*`、`youtube_bot_check` 或 `youtube_auth_check` 暂停时，scheduler 可投递 `media.sync_videos public_discovery=true`，显式无 cookies 抓公开视频 flat 列表。该降级只用于发现公开视频，不解除下载、字幕回补或 `video.enrich_metadata.youtube` 的 provider pause 门控。
 - YouTube 的 `yt-dlp` 同步 / 下载可显式使用 `YTDLP_PROXY`；这只影响 YouTube 访问出口，不代表 ASR / LLM / Embedding / 头像抓取也走代理。
 - 不要从“cookies 会被轮换 / 会增加账号风险”推导出“cookies 不需要”。正确结论是：降低同步频率、降低并发、保持导出 cookies 的浏览器环境干净，并增加 PO Token Provider / impersonation，而不是盲目切到无 cookies。
 - `video.download.youtube` 默认使用 `YTDLP_COOKIES_YOUTUBE`，并通过 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 启用浏览器 impersonation；当前实测这是比单纯重启代理更接近浏览器成功路径的组合。
-- YouTube 频道 flat 列表有时只返回 `id/title/url/duration`，不返回 `timestamp/upload_date`。同步新发现视频时，若 flat 条目缺少发布时间，系统会对该单视频补一次 metadata 解析，用来填充 `video.published_at/raw_info`，避免新视频已入库但被时间筛选隐藏。
+- YouTube 频道 flat 列表有时只返回 `id/title/url/duration`，不返回 `timestamp/upload_date`。`media.sync_videos` 不再在同步循环里内联单视频 metadata 解析；若 flat 条目缺少发布时间，系统会投递低优先级 `video.enrich_metadata.youtube`，异步 best-effort 填充 `video.published_at/raw_info`，避免单个频道同步因逐条补 metadata 而超过执行心跳阈值。
 - 当同步任务持续触发 bot check 或 cookies 失效时，优先降低请求波峰，而不是反复更换 cookies。
 
 ## 2026-05-18 排障复盘
@@ -71,6 +72,14 @@ YouTube 的 `yt-dlp` 同步 / 下载请求可显式使用 `YTDLP_PROXY`，同步
 只有当 yt-dlp 明确返回 `provided YouTube account cookies are no longer valid`、`cookies are no longer valid` 或 cookies 文件格式错误时，系统才把失败归类为 `YTDLP_COOKIES_YOUTUBE` 失效 / 无效。
 
 遇到 `Sign in to confirm you are not a bot`、`请登录，以便我们确认你不是聊天机器人`、`[youtube:tab] ... Playlists that require authentication ... without a successful webpage download` 或类似鉴权检查失败时，系统会把 YouTube provider 暂停，但归类为 `youtube_bot_check` / `youtube_auth_check`，避免把出口 IP、请求频率、PO Token、导出会话不一致等问题误报成 cookies 失效。暂停的目的仍然是避免 `scheduler` 因 `last_video_sync_at` 未推进而每分钟反复投递同一个失败同步 / 下载任务。
+
+provider 暂停期间，若 `SYNC_PUBLIC_DISCOVERY_ENABLED=true`，自动同步会为到期媒体投递低波峰的 public discovery 任务，默认抓最新 `SYNC_PUBLIC_DISCOVERY_MAX_ENTRIES=200` 条。若无 cookies flat 抓取仍被平台挡住，任务只更新该媒体同步冷却并记录 `public_discovery_blocked`，不会覆盖原 provider pause。保存有效非空 cookies 后，配置 API 会清除对应 provider pause，并为该 provider 的受监控媒体补投 `force=true, max_entries=SYNC_COOKIE_RECOVERY_MAX_ENTRIES, download_priority=8` 的 catch-up 同步，默认 `200`。
+
+如果 YouTube 频道同步在 yt-dlp 调用内卡住，没有及时抛出上述可识别错误，sync worker 的执行 watchdog 会先重启进程并释放锁。回收扫描会把 `media.sync_profile` / `media.sync_videos` 的执行心跳过期视为一次同步尝试失败，按 `max_attempts` 有上限地重试，且不提升 orphan 优先级；终止失败的 `media.sync_videos` 会推进该媒体的 `last_video_sync_at` 作为冷却时间，避免单个频道反复卡死时占住整个同步队列。
+
+对 YouTube flat 条目缺失发布时间的场景，`media.sync_videos` 只做发现和幂等写入，并在 flat 提取后、entry 处理循环中刷新执行活动心跳。单视频详情解析由 `video.enrich_metadata.youtube` 独立执行：每个任务只处理一个 `video_id`，受 YouTube provider pause 与 sync provider advisory lock 控制，锁繁忙时延迟 30 秒重排，yt-dlp 详情解析有 45 秒可终止子进程硬超时。该子进程只回传 compact metadata，不回传 `formats`、自动字幕、缩略图数组等完整 yt-dlp `info` 大对象，避免父进程等待子进程退出时被进程队列刷写阻塞。该补全是 best-effort，失败只影响对应补全任务，不阻塞视频发现、下载或后续同步。同一视频达到 `max_attempts` 终止失败后，自动同步不再为同一 `dedupe_key` 重复投递 metadata 补全；如需重试，应在失败任务上手动重试，或等待下载/后续真实 metadata 写入补齐发布时间。
+
+bgutil PO Token Provider 的健康状态与 metadata 补全子进程回传路径是两类问题：`/ping` 正常、日志能生成 PO Token，只能证明 PO Token Provider 当前可用；若同一视频直接 `ytdlp_extract_info` 能在 45 秒内返回，而 `video.enrich_metadata.youtube` 超时，应优先排查子进程结果回传、payload 体积和硬超时路径，而不是直接重启 bgutil 或更改 cookies / 代理。
 
 如果单个下载任务因历史 retry 参数走无 cookies 下载，仍触发 YouTube bot check，则系统同样按“出口 IP / PO Token / 访问频率风控”暂停 YouTube provider，不再提示更新 `YTDLP_COOKIES_YOUTUBE`。手动重试失败任务时会清除该历史 retry 参数，恢复使用 cookies。
 

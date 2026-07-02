@@ -105,7 +105,7 @@ MCP 没有复制 API 路由逻辑，而是复用了抽出的共享 helper：
 
 - resources 只负责稳定对象读取
 - 列表与复杂筛选统一走 tools
-- 大文件资产默认返回元信息和短时 presigned URL，不把二进制直接塞进模型上下文
+- 大文件资产默认返回元信息，不把二进制直接塞进模型上下文；仅当 `ASSET_PRESIGN_ENABLED=true` 时附带短时 presigned URL
 
 ## Transcript 规则
 

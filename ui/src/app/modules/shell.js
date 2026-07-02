@@ -80,7 +80,7 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
       directProbeUrl: "",
       directProbeTimeoutMs: 1000,
       proxyBasePath: "/api/assets",
-      presignEnabled: true,
+      presignEnabled: false,
       mode: "proxy",
       probed: false,
       probeError: "",
@@ -492,14 +492,17 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
         }
         const assetDelivery = payload && payload.asset_delivery ? payload.asset_delivery : null;
         if (assetDelivery && typeof assetDelivery === "object") {
+          const presignEnabled = assetDelivery.presign_enabled === true;
+          const previousMode = this.assetDelivery && this.assetDelivery.mode ? this.assetDelivery.mode : "proxy";
+          const previousProbed = !!(this.assetDelivery && this.assetDelivery.probed);
           this.assetDelivery = {
-            strategy: String(assetDelivery.strategy || "startup_probe"),
+            strategy: String(assetDelivery.strategy || (presignEnabled ? "startup_probe" : "proxy")),
             directProbeUrl: String(assetDelivery.direct_probe_url || ""),
             directProbeTimeoutMs: Math.max(0, Number(assetDelivery.direct_probe_timeout_ms || 1000) || 1000),
             proxyBasePath: String(assetDelivery.proxy_base_path || "/api/assets").replace(/\/+$/, ""),
-            presignEnabled: assetDelivery.presign_enabled !== false,
-            mode: this.assetDelivery && this.assetDelivery.mode ? this.assetDelivery.mode : "proxy",
-            probed: this.assetDelivery && this.assetDelivery.probed ? this.assetDelivery.probed : false,
+            presignEnabled,
+            mode: presignEnabled ? previousMode : "proxy",
+            probed: presignEnabled ? previousProbed : true,
             probeError: "",
           };
         }

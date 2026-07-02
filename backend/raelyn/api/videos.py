@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import case, func, literal, select
 
 from raelyn.api.asset_refs import AssetRef, build_asset_ref
 from raelyn.api.orm import OrmModel
@@ -19,10 +19,7 @@ from raelyn.services.video_meta import backfill_video_published_at
 from raelyn.services.video_time import (
     content_published_at_expr,
     normalize_time_basis,
-    timeline_confidence_expr,
-    timeline_source_expr,
-    timeline_status_expr,
-    timeline_time_expr,
+    selected_content_time_subquery,
 )
 
 
@@ -69,6 +66,72 @@ class VideoListOut(BaseModel):
     error_message: str | None = None
 
 
+def _video_list_timeline_columns(time_basis: str):
+    if time_basis == "platform":
+        content_ts_expr = literal(None).label("content_published_at")
+        timeline_ts_expr = Video.published_at.label("timeline_at")
+        time_source = case(
+            (Video.published_at.is_(None), None),
+            else_=literal("video.published_at"),
+        ).label("time_source")
+        time_status = case((Video.published_at.is_(None), None), else_=literal("platform")).label("time_status")
+        time_confidence = literal(None).label("time_confidence")
+        return None, content_ts_expr, timeline_ts_expr, time_source, time_status, time_confidence
+
+    selected_time = selected_content_time_subquery("video_list_content_time")
+    content_ts_expr = selected_time.c.content_published_at.label("content_published_at")
+    timeline_value = func.coalesce(selected_time.c.content_published_at, Video.published_at)
+    timeline_ts_expr = timeline_value.label("timeline_at")
+    time_source = case(
+        (timeline_value.is_(None), None),
+        else_=func.coalesce(selected_time.c.time_source, literal("video.published_at")),
+    ).label("time_source")
+    time_status = case(
+        (timeline_value.is_(None), None),
+        else_=func.coalesce(selected_time.c.time_status, literal("platform_fallback")),
+    ).label("time_status")
+    time_confidence = selected_time.c.time_confidence.label("time_confidence")
+    return selected_time, content_ts_expr, timeline_ts_expr, time_source, time_status, time_confidence
+
+
+def _latest_video_asset_map(session, video_ids: list[uuid.UUID]) -> dict[tuple[uuid.UUID, str], Asset]:
+    if not video_ids:
+        return {}
+
+    assets = (
+        session.execute(
+            select(Asset)
+            .where(Asset.video_id.in_(video_ids), Asset.type.in_(["thumbnail", "video"]))
+            .order_by(Asset.video_id.asc(), Asset.type.asc(), Asset.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    latest: dict[tuple[uuid.UUID, str], Asset] = {}
+    for asset in assets:
+        if not asset.video_id:
+            continue
+        key = (asset.video_id, asset.type)
+        if key not in latest:
+            latest[key] = asset
+    return latest
+
+
+def _asset_by_id(session, asset_ids: list[uuid.UUID]) -> dict[uuid.UUID, Asset]:
+    if not asset_ids:
+        return {}
+    assets = session.execute(select(Asset).where(Asset.id.in_(asset_ids))).scalars().all()
+    return {asset.id: asset for asset in assets}
+
+
+def _content_published_at_by_video_id(session, video_ids: list[uuid.UUID]) -> dict[uuid.UUID, Any]:
+    if not video_ids:
+        return {}
+    content_ts_expr = content_published_at_expr().label("content_published_at")
+    rows = session.execute(select(Video.id, content_ts_expr).where(Video.id.in_(video_ids))).all()
+    return {video_id: content_published_at for video_id, content_published_at in rows}
+
+
 @router.get("/videos", response_model=list[VideoListOut])
 def list_videos(
     provider: str | None = None,
@@ -95,15 +158,18 @@ def list_videos(
             backfill_video_published_at(session)
             _PUBLISHED_AT_BACKFILLED = True
 
-        content_ts_expr = content_published_at_expr().label("content_published_at")
-        timeline_ts_expr = timeline_time_expr(time_basis=resolved_time_basis).label("timeline_at")
-        time_source = timeline_source_expr(time_basis=resolved_time_basis).label("time_source")
-        time_status = timeline_status_expr(time_basis=resolved_time_basis).label("time_status")
-        time_confidence = timeline_confidence_expr(time_basis=resolved_time_basis).label("time_confidence")
+        selected_time, content_ts_expr, timeline_ts_expr, time_source, time_status, time_confidence = (
+            _video_list_timeline_columns(resolved_time_basis)
+        )
 
         stmt = select(Video, Media, content_ts_expr, timeline_ts_expr, time_source, time_status, time_confidence).join(
             Media, Media.id == Video.media_id
         )
+        if selected_time is not None:
+            stmt = stmt.outerjoin(
+                selected_time,
+                selected_time.c.video_id == Video.id,
+            )
         if provider:
             stmt = stmt.where(Video.provider == provider)
         media_ids: list[uuid.UUID] = []
@@ -136,16 +202,28 @@ def list_videos(
             .offset(offset)
         )
         rows = session.execute(stmt).all()
+        video_ids = [v.id for v, *_ in rows]
+        video_asset_map = _latest_video_asset_map(session, video_ids)
+        media_avatar_asset_ids = list(
+            dict.fromkeys(
+                m.avatar_asset_id
+                for _v, m, *_rest in rows
+                if getattr(m, "avatar_asset_id", None)
+            )
+        )
+        media_avatar_assets = _asset_by_id(session, media_avatar_asset_ids)
+        page_content_published_at = (
+            _content_published_at_by_video_id(session, video_ids)
+            if resolved_time_basis == "platform"
+            else {}
+        )
 
         out: list[VideoListOut] = []
         for v, m, content_published_at, timeline_at, time_source_value, time_status_value, time_confidence_value in rows:
-            thumb = session.execute(
-                select(Asset).where(Asset.video_id == v.id, Asset.type == "thumbnail").order_by(Asset.created_at.desc()).limit(1)
-            ).scalar_one_or_none()
-
-            video_asset = session.execute(
-                select(Asset).where(Asset.video_id == v.id, Asset.type == "video").order_by(Asset.created_at.desc()).limit(1)
-            ).scalar_one_or_none()
+            if resolved_time_basis == "platform":
+                content_published_at = page_content_published_at.get(v.id)
+            thumb = video_asset_map.get((v.id, "thumbnail"))
+            video_asset = video_asset_map.get((v.id, "video"))
             video_asset_ref = None
             if video_asset:
                 filename = build_download_filename(
@@ -159,7 +237,11 @@ def list_videos(
                     filename=filename,
                     response_content_disposition=content_disposition_attachment(filename),
                 )
-            media_avatar_asset = session.get(Asset, getattr(m, "avatar_asset_id", None)) if getattr(m, "avatar_asset_id", None) else None
+            media_avatar_asset = (
+                media_avatar_assets.get(m.avatar_asset_id)
+                if getattr(m, "avatar_asset_id", None)
+                else None
+            )
             out.append(
                 VideoListOut(
                     id=v.id,

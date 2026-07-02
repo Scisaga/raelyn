@@ -21,6 +21,12 @@
 ### 数据与对象存储
 
 - `DATABASE_URL`
+- `DATABASE_POOL_SIZE`
+  - 每个 API / worker / scheduler 进程保留在 SQLAlchemy 连接池中的常驻 DB 连接数，默认 `2`。
+- `DATABASE_MAX_OVERFLOW`
+  - 单进程在连接池已满时允许临时额外打开的 DB 连接数，默认 `2`；空闲后不会作为常驻连接保留。
+- `DATABASE_POOL_TIMEOUT_SECONDS`
+  - 获取 DB 连接的等待超时，默认 `30` 秒。
 - `S3_ENDPOINT`
 - `S3_ACCESS_KEY`
 - `S3_SECRET_KEY`
@@ -28,6 +34,11 @@
 - `S3_BUCKET`
   - 应与 `asset.s3_bucket` 中的实际 bucket 保持一致；`/api/stats` 会在检测到配置 bucket 与唯一实际 bucket 不一致时回退统计实际 bucket，并返回 mismatch 标记。
 - `S3_USE_SSL`
+
+说明：
+
+- 连接池配置只影响非 SQLite 数据库；SQLite 会继续使用 SQLAlchemy 对应 URL 的默认池实现。
+- 当前运行形态会启动 API、scheduler 和多个角色 worker，DB 连接上限约为 `进程数 * (DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW)`。默认值用于单用户部署，避免每个进程沿用 SQLAlchemy 默认连接池后保留过多 PostgreSQL backend。
 
 ### 资产分发策略
 
@@ -38,12 +49,14 @@
 - `ASSET_PROXY_BASE_PATH`
   - 默认 `/api/assets`
 - `ASSET_PRESIGN_ENABLED`
-  - 控制是否为资产生成 presigned URL。
+  - 默认 `false`，生产环境默认使用 `ASSET_PROXY_BASE_PATH` 对应的同源 Python 代理读取资产。
+  - 只有显式设为 `true` 时，后端才会生成 presigned URL，前端才会探测并尝试对象存储直连。
 
 说明：
 
+- 默认 proxy-only 模式下，视频、头像、播放列表图片和 Markdown 等资产都通过 `/api/assets/{asset_id}/content` 或 `/download` 访问；代理接口支持 `Range`，可用于视频播放和断点读取。
 - HTTPS 主站下，若对象存储或 presigned URL 仍是 `http://`，前端不会使用直连资源，而会统一退回 `ASSET_PROXY_BASE_PATH` 对应的 API 代理路径。
-- 若希望在 HTTPS 主站下继续使用直连 / presigned URL，需要让对象存储出口本身也提供 HTTPS。
+- 若希望启用直连 / presigned URL，需要让对象存储出口可被浏览器访问；HTTPS 主站下对象存储出口本身也必须提供 HTTPS。
 
 ### 高优先级代理规则
 
@@ -87,6 +100,13 @@
   - `scheduler` 每分钟扫描到期媒体时，单次最多投递的 `media.sync_videos` 数量；`SYNC_INTERVAL_MINUTES` 约束的是单个媒体的同步间隔，不表示全站每小时只投递一个同步任务。
   - 当前推荐值为 `2`，用于降低 YouTube / B 站同步请求波峰；媒体数量较多时，追赶积压会更慢，但更不容易触发平台风控。
 - `SYNC_MAX_ENTRIES`
+- `SYNC_PUBLIC_DISCOVERY_ENABLED`
+  - 默认 `true`。当 provider 因 `ytdlp_cookies_*`、`youtube_bot_check` 或 `youtube_auth_check` 暂停时，允许 `media.sync_videos` 以 `public_discovery=true` 显式无 cookies 抓公开视频 flat 列表。
+  - 该降级只用于视频发现；下载、字幕回补和 YouTube metadata 补全仍受 provider pause 阻断。
+- `SYNC_PUBLIC_DISCOVERY_MAX_ENTRIES`
+  - public discovery 单次抓取的 flat 列表上限，默认 `200`。
+- `SYNC_COOKIE_RECOVERY_MAX_ENTRIES`
+  - 保存有效非空平台 cookies 并清除 provider pause 后，自动为该 provider 受监控媒体补投 catch-up 同步的 `max_entries`，默认 `200`。
 - `AUTO_DOWNLOAD_NEW_VIDEOS`
 - `AUTO_GENERATE_BRIEFS`
   - 是否在 transcript 就绪、媒体变更或媒体删除后自动投递 `brief.generate_period`，默认 `false`。
@@ -123,7 +143,7 @@
   - `devctl.sh` / Docker 单容器入口启动 `ai` worker 的进程数，默认 `1`。
   - 每个 `ai` worker 同一时间执行一个 LLM 任务，例如 `video.extract_events`、播放列表事件回填范围扫描、转写润色或简报生成。
   - 大型同播放列表事件回填可适当提高该值；AI worker 只竞争单个视频自己的事件写入，播放列表 dirty 由 `analysis` worker 的 `playlist.mark_event_regime_dirty` 延迟合并。
-  - 该配置只增加 worker 进程数，不改变 LLM 请求认证、连接复用或模型参数；提升前应确认 LLM 服务可承受对应并发。
+  - 该配置只增加 worker 进程数，不改变 LLM 请求认证、连接复用或模型参数；提升前应确认 LLM 服务可承受对应并发。Ollama `/api/generate` 事件抽取还会额外使用 per-model advisory lock，忙时重排任务，避免多个事件抽取请求同时压到同一个本地大模型。
 - `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES`
   - `playlist.build_event_regime_snapshot` 开始和处理中允许继续执行的最低 `MemAvailable`，默认 `1073741824`。
   - 低于该值时任务直接失败并记录原因，不进入重试队列。
@@ -134,6 +154,18 @@
   - 事件 Regime 快照构建分批读取 ready event embedding 的批大小，默认 `2000`。
 - `EVENT_EXTRACTION_CHUNK_MAX_CHARS`
   - `video.extract_events` 读取 `plain` transcript 后的 LLM 分块字符上限，默认 `12000`。
+- `EVENT_EXTRACTION_OLLAMA_STREAM`
+  - 当有效 LLM URL 为 Ollama `/api/generate` 时，事件抽取是否使用流式响应，默认 `true`。
+- `EVENT_EXTRACTION_OLLAMA_NUM_CTX`
+  - Ollama 事件抽取请求的 `options.num_ctx`，默认 `8192`。
+- `EVENT_EXTRACTION_OLLAMA_NUM_PREDICT`
+  - Ollama 事件抽取请求的 `options.num_predict`，默认 `2500`，用于限制 JSON 生成不会无限延长。
+- `EVENT_EXTRACTION_OLLAMA_IDLE_TIMEOUT_SECONDS`
+  - Ollama 事件抽取流式读取时的无输出读超时，默认 `120`。超过该时间没有任何流式输出会失败并进入任务重试/重排链路。
+- `EVENT_EXTRACTION_OLLAMA_BUSY_DEFER_SECONDS`
+  - 同一个 Ollama endpoint + model 已有事件抽取请求在运行时，后续事件抽取任务重排的延后秒数，默认 `15`。
+- `EVENT_EXTRACTION_OLLAMA_CHUNK_MAX_CHARS`
+  - Ollama 事件抽取的 transcript 分块上限封顶值，默认 `6000`。实际分块上限取 `EVENT_EXTRACTION_CHUNK_MAX_CHARS` 与该值的较小者，避免 `num_ctx=8192` 时 prompt 过大。
 - `AUTO_EXTRACT_NEW_VIDEO_EVENTS`
   - 是否在新视频 transcript 生成后自动投递 `video.extract_events`，默认 `true`。
   - 关闭时不会影响播放列表页面手动触发的 `playlist.backfill_events` 历史回填。
@@ -175,6 +207,12 @@
 事件抽取 / 事件 Regime：
 
 - `EVENT_EXTRACTION_CHUNK_MAX_CHARS`
+- `EVENT_EXTRACTION_OLLAMA_STREAM`
+- `EVENT_EXTRACTION_OLLAMA_NUM_CTX`
+- `EVENT_EXTRACTION_OLLAMA_NUM_PREDICT`
+- `EVENT_EXTRACTION_OLLAMA_IDLE_TIMEOUT_SECONDS`
+- `EVENT_EXTRACTION_OLLAMA_BUSY_DEFER_SECONDS`
+- `EVENT_EXTRACTION_OLLAMA_CHUNK_MAX_CHARS`
 - `AUTO_EXTRACT_NEW_VIDEO_EVENTS`
 - `EMBEDDING_URL`
 - `EMBEDDING_ENDPOINT`

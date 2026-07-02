@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(_BACKEND_DIR) not in sys.path:
@@ -50,6 +50,48 @@ class LlmServiceTests(unittest.TestCase):
         self.assertEqual(result["text"], '{"ok": true}')
         self.assertEqual(result["usage"]["input_tokens"], 3)
         self.assertEqual(result["usage"]["output_tokens"], 5)
+
+    def test_llm_generate_ollama_stream_accumulates_ndjson(self) -> None:
+        cfg = EffectiveLlmConfig(
+            mode="local",
+            provider="local",
+            source="test",
+            url="http://llm.test/api/generate",
+            model="qwen3.6:35b",
+            api_key="",
+            headers_json="",
+            timeout_seconds=10,
+            configured=True,
+        )
+        stream_response = Mock()
+        stream_response.raise_for_status.return_value = None
+        stream_response.iter_lines.return_value = [
+            '{"response":"{\\"ok\\"","done":false}',
+            '{ "response": ": true}", "done": true, "prompt_eval_count": 7, "eval_count": 11 }',
+        ]
+        stream_context = MagicMock()
+        stream_context.__enter__.return_value = stream_response
+        stream_context.__exit__.return_value = False
+
+        with patch("raelyn.services.llm.get_effective_llm_config", return_value=cfg):
+            with patch("raelyn.services.llm.httpx.Client") as client:
+                client.return_value.__enter__.return_value.stream.return_value = stream_context
+                result = llm_generate(
+                    prompt="ping",
+                    think=False,
+                    response_format="json",
+                    options={"temperature": 0, "num_predict": 1200},
+                    stream=True,
+                    idle_timeout_seconds=120,
+                )
+
+        payload = client.return_value.__enter__.return_value.stream.call_args.kwargs["json"]
+        self.assertTrue(payload["stream"])
+        self.assertEqual(payload["options"], {"temperature": 0, "num_predict": 1200})
+        self.assertEqual(result["text"], '{"ok": true}')
+        self.assertEqual(result["usage"]["input_tokens"], 7)
+        self.assertEqual(result["usage"]["output_tokens"], 11)
+        self.assertTrue(result["meta"]["stream"])
 
     def test_llm_generate_openai_chat_ignores_ollama_format_and_options(self) -> None:
         cfg = EffectiveLlmConfig(

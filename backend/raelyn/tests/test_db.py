@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from raelyn.db import _execute_best_effort_ddl
+from raelyn.db import _database_engine_kwargs, _execute_best_effort_ddl
 from raelyn.models import MarketEvent, MarketEventEmbedding, VideoTimeEvidence
 
 
@@ -39,6 +39,46 @@ class _FakeConn:
 
 
 class DbMigrationHelperTests(unittest.TestCase):
+    def test_postgres_engine_uses_bounded_pool_settings(self) -> None:
+        kwargs = _database_engine_kwargs(
+            "postgresql+psycopg://user:pass@127.0.0.1:5432/db",
+            pool_size=2,
+            max_overflow=2,
+            pool_timeout_seconds=30,
+        )
+
+        self.assertEqual(
+            kwargs,
+            {
+                "pool_pre_ping": True,
+                "pool_size": 2,
+                "max_overflow": 2,
+                "pool_timeout": 30,
+            },
+        )
+
+    def test_engine_pool_settings_are_not_passed_to_sqlite(self) -> None:
+        kwargs = _database_engine_kwargs(
+            "sqlite:///:memory:",
+            pool_size=2,
+            max_overflow=2,
+            pool_timeout_seconds=30,
+        )
+
+        self.assertEqual(kwargs, {"pool_pre_ping": True})
+
+    def test_engine_pool_settings_clamp_invalid_low_values(self) -> None:
+        kwargs = _database_engine_kwargs(
+            "postgresql+psycopg://user:pass@127.0.0.1:5432/db",
+            pool_size=0,
+            max_overflow=-1,
+            pool_timeout_seconds=0,
+        )
+
+        self.assertEqual(kwargs["pool_size"], 1)
+        self.assertEqual(kwargs["max_overflow"], 0)
+        self.assertEqual(kwargs["pool_timeout"], 1)
+
     def test_video_time_evidence_schema_keeps_partial_dates_and_dedup_key(self) -> None:
         columns = VideoTimeEvidence.__table__.columns
 

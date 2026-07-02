@@ -121,6 +121,8 @@ Docker Compose 会自动启动 `bgutil-pot` 服务，并给 app 注入：
 YTDLP_POT_BGUTIL_BASE_URL=http://host.docker.internal:4416
 ```
 
+`docker-compose.yml` 中的 `bgutil-pot` 使用 `restart: unless-stopped`，避免宿主机或 Docker daemon 重启后 provider 长期停在 exited 状态。
+
 如果 `YTDLP_PROXY` 是宿主机上的本地代理，例如 `socks5://127.0.0.1:8887`，bgutil Docker 容器也必须能访问宿主机网络；否则 provider 生成 PO Token 时会在容器内访问自己的 `127.0.0.1` 并失败。Docker Compose 中的 `bgutil-pot` 使用 host 网络以保持这条路径一致。
 
 如果宿主机 shell 或 systemd 环境设置了 `HTTP_PROXY` / `HTTPS_PROXY`，还要确认 `NO_PROXY` / `no_proxy` 包含 `127.0.0.1,localhost,::1,host.docker.internal`。否则访问 `http://127.0.0.1:4416/ping` 也可能被环境代理劫持并显示假性的 `502 Bad Gateway`。
@@ -172,9 +174,10 @@ source ./scripts/dev/load-env.sh
 
 B 站常见 352 风控、年龄验证、会员或私有内容等登录态相关问题，可以通过 cookies 改善。近期 B 站 412 还可能由浏览器 JS 验证、数据中心出口 IP 风控，或 yt-dlp B 站提取器尚未发布的 `playinfo` 参数修复触发；如果更新 B 站 cookies 后仍然 412，优先降低 `BILIBILI_SYNC_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY`、更换更接近真实浏览器访问的网络，或等待 yt-dlp 官方发布包含修复的版本。不要在生产默认依赖中直接切到未合并的第三方 fork，除非只是在隔离环境做临时验证。
 
-YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“公开采集默认不用 cookies”。当前 YouTube 同步 / 下载都会使用已保存的 `YTDLP_COOKIES_YOUTUBE`；是否局部关闭 cookies 必须经过相同 yt-dlp 版本、相同代理出口、相同目标类型的最小实测。完整判断与排障步骤见 [YouTube yt-dlp 同步与 Cookies 策略](youtube-ytdlp-strategy.md)。
+YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“公开采集默认不用 cookies”。当前 YouTube 普通同步 / 下载都会使用已保存的 `YTDLP_COOKIES_YOUTUBE`；只有 provider 因 cookies / bot check / auth check 暂停时，`media.sync_videos` 才可按 `SYNC_PUBLIC_DISCOVERY_ENABLED=true` 进入 `public_discovery` 降级模式，显式无 cookies 抓公开视频 flat 列表。该模式只减少漏入库风险，下载、字幕和 metadata 补全仍等 provider 恢复后执行。完整判断与排障步骤见 [YouTube yt-dlp 同步与 Cookies 策略](youtube-ytdlp-strategy.md)。
 当前实测的下载路径在无 cookies 时会直接触发 `LOGIN_REQUIRED`，因此 YouTube 下载任务固定使用已保存的 `YTDLP_COOKIES_YOUTUBE`，并通过 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 尽量贴近浏览器请求形态。
 如果错误只是 `Sign in to confirm you're not a bot` 或频道 / 播放列表鉴权检查失败，系统会暂停 YouTube provider，但不再直接归类为 `YTDLP_COOKIES_YOUTUBE` 失效；只有 yt-dlp 明确报 cookies no longer valid 或 cookies 格式错误时，才提示更新 cookies。
+保存有效非空 YouTube / B 站 cookies 后，系统会清除对应 provider pause，并为该 provider 的受监控媒体补投一次 `max_entries=SYNC_COOKIE_RECOVERY_MAX_ENTRIES` 的同步追赶任务，默认 `200`。
 若失败信息是 `ERROR: unable to download video data: HTTP Error 403: Forbidden`，先检查格式选择器是否优先选中了 YouTube DASH video-only。2026-05-18 实测中，Bloomberg 样本的 360p+ DASH video-only URL 返回 403，但 HLS / combined MP4 format `96` 可下载；默认配置已改为优先 combined MP4/HLS。
 格式选择与验证步骤见 [yt-dlp 视频 / 音频格式选择策略](ytdlp-format-selection.md)。
 
@@ -210,7 +213,7 @@ YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“�
 - 若你手动多终端启动，并且希望兑现 `YOUTUBE_DOWNLOAD_CONCURRENCY=N` / `BILIBILI_DOWNLOAD_CONCURRENCY=N` 的真实下载并发，需要把对应 `download_*` worker 命令至少启动 `N` 次。
 - 若你手动多终端启动，并且希望兑现 `ASR_WORKER_CONCURRENCY=N` 的 ASR 请求并发，需要把 `./scripts/dev/run-worker.sh asr` 至少启动 `N` 次。
 - 若你手动多终端启动，并且希望兑现 `AI_WORKER_CONCURRENCY=N` 的 LLM 任务并发，需要把 `./scripts/dev/run-worker.sh ai` 至少启动 `N` 次。
-- `ai` worker 负责 `video.extract_events`、`video.extract_events_batch`、`playlist.backfill_events` 与 `playlist.backfill_events_range`，播放列表回填父任务先按月拆分范围任务，范围任务再按 source 字符数投递批量或单视频抽取；事件抽取读取 `plain` transcript 并调用 LLM。大型同播放列表回填可提升 `AI_WORKER_CONCURRENCY`，因为 AI worker 不再直接竞争播放列表级 `event_regime_state` dirty 热行。
+- `ai` worker 负责 `video.extract_events`、`video.extract_events_batch`、`playlist.backfill_events` 与 `playlist.backfill_events_range`，播放列表回填父任务先按月拆分范围任务，范围任务再按 source 字符数投递批量或单视频抽取；事件抽取读取 `plain` transcript 并调用 LLM。Ollama `/api/generate` 事件抽取会使用 endpoint + model 级 advisory lock，锁忙时重排任务，因此提高 `AI_WORKER_CONCURRENCY` 不会让同一个本地大模型的事件抽取并发增加。
 - `embedding` worker 负责 `event.embed`，只为 accepted 事件生成结构化事件 embedding。
 - `analysis` worker 负责 `playlist.mark_event_regime_dirty` 与 `playlist.build_event_regime_snapshot`。即使临时提高 AI 并发，也至少保留 1 个 analysis worker 用于 dirty 合并和 Regime 重建；生产环境建议给该 worker 单独配置 systemd / cgroup `MemoryMax=6G`，与应用内 `ANALYSIS_MAX_RSS_BYTES` 保持一致。
 
@@ -221,7 +224,7 @@ YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“�
 ```
 
 默认按内容时间轴抽取最近 365 天。可用 `--since YYYY-MM-DD --until YYYY-MM-DD` 指定本地日期闭区间，用 `--dry-run` 先查看命中视频数。
-脚本会向数据库 `job` 表投递 `video.extract_events` 任务；播放列表页面的历史回填会优先使用 `video.extract_events_batch` 合并短视频抽取。脚本默认按 `--progress-every` 的批大小分批提交，避免长时间运行时已投递任务不可见。
+脚本会向数据库 `job` 表投递 `video.extract_events` 任务；播放列表页面的历史回填仍会使用 `video.extract_events_batch` 管理短视频任务，但每次 LLM 请求只包含 1 个视频。脚本默认按 `--progress-every` 的批大小分批提交，避免长时间运行时已投递任务不可见。
 
 事件 v2 清库重抽维护命令：
 

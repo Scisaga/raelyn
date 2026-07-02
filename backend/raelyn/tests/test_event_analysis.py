@@ -35,6 +35,7 @@ from raelyn.models import (
     VideoEventExtractionRun,
 )
 from raelyn.services import event_analysis
+from raelyn.services.inference import EffectiveLlmConfig
 from raelyn.services.job_cancellation import JobCancelRequested
 
 
@@ -103,6 +104,55 @@ class EventAnalysisTests(unittest.TestCase):
         self.assertEqual(sources[2].source_kind, "transcript")
         self.assertEqual(sources[2].char_start, 0)
         self.assertEqual(sources[2].char_end, len("Alpha. Beta."))
+
+    def test_event_description_source_text_removes_channel_noise(self) -> None:
+        cleaned = event_analysis._event_description_source_text(
+            "\n".join(
+                [
+                    "公司公布五月营收年增 20%。",
+                    "https://example.test/video",
+                    "更多必看经典影片：上一集分析",
+                    "加入会员支持频道",
+                    "#AI #台股",
+                    "外资连续买超电子股。",
+                ]
+            )
+        )
+
+        self.assertIn("公司公布五月营收年增 20%。", cleaned)
+        self.assertIn("外资连续买超电子股。", cleaned)
+        self.assertNotIn("https://", cleaned)
+        self.assertNotIn("更多必看", cleaned)
+        self.assertNotIn("会员", cleaned)
+        self.assertNotIn("#AI", cleaned)
+
+    def test_event_llm_call_uses_ollama_stream_and_generation_limits(self) -> None:
+        cfg = EffectiveLlmConfig(
+            mode="local",
+            provider="local",
+            source="test",
+            url="http://llm.test/api/generate",
+            model="qwen3.6:35b",
+            api_key="",
+            headers_json="",
+            timeout_seconds=600,
+            configured=True,
+        )
+        session = Mock()
+
+        with patch("raelyn.services.event_analysis.get_effective_llm_config", return_value=cfg):
+            with patch("raelyn.services.event_analysis.llm_generate", return_value={"text": "{}", "usage": {}}) as llm_generate:
+                result = event_analysis._generate_event_extraction_llm(session, prompt="prompt")
+
+        self.assertEqual(result["text"], "{}")
+        self.assertEqual(llm_generate.call_args.kwargs["think"], False)
+        self.assertEqual(llm_generate.call_args.kwargs["response_format"], "json")
+        self.assertEqual(llm_generate.call_args.kwargs["stream"], True)
+        self.assertEqual(llm_generate.call_args.kwargs["idle_timeout_seconds"], 120)
+        self.assertEqual(
+            llm_generate.call_args.kwargs["options"],
+            {"temperature": 0, "num_ctx": 8192, "num_predict": 2500},
+        )
 
     def test_parse_event_response_strips_think_and_drops_bad_events(self) -> None:
         raw = """
@@ -287,7 +337,7 @@ class EventAnalysisTests(unittest.TestCase):
         llm_generate.assert_called_once()
         self.assertEqual(llm_generate.call_args.kwargs["think"], False)
         self.assertEqual(llm_generate.call_args.kwargs["response_format"], "json")
-        self.assertEqual(llm_generate.call_args.kwargs["options"], {"temperature": 0})
+        self.assertEqual(llm_generate.call_args.kwargs["options"]["temperature"], 0)
         enqueue_embeddings.assert_called_once_with(session, event_ids=[event_id], priority=4)
         schedule_dirty.assert_called_once_with(
             session,

@@ -4,6 +4,7 @@ import uuid
 
 from pydantic import BaseModel
 
+from raelyn.config import settings
 from raelyn.models import Asset
 from raelyn.services.s3 import s3_presign_get
 
@@ -30,13 +31,14 @@ def build_asset_ref(
 
     presigned_url = None
     download_presigned_url = None
-    if include_presigned:
+    should_presign = bool(include_presigned and settings.asset_presign_enabled)
+    if should_presign:
         try:
             presigned_url = s3_presign_get(asset.s3_bucket, asset.s3_key, expires_seconds=expires_seconds)
         except Exception:
             presigned_url = None
 
-    if include_presigned and response_content_disposition:
+    if should_presign and response_content_disposition:
         try:
             download_presigned_url = s3_presign_get(
                 asset.s3_bucket,

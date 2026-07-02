@@ -48,7 +48,15 @@ def _parse_csv(value: str | None) -> list[str]:
 
 def _effective_max_attempts(job_type: str, current: int) -> int:
     # Reduce retries for provider-facing jobs to avoid repeated blocks.
-    if job_type in {"media.sync_profile", "media.sync_videos", "media.delete", "video.download", "video.download.youtube", "video.download.bilibili"}:
+    if job_type in {
+        "media.sync_profile",
+        "media.sync_videos",
+        "media.delete",
+        "video.enrich_metadata.youtube",
+        "video.download",
+        "video.download.youtube",
+        "video.download.bilibili",
+    }:
         return min(int(current or 0) or 5, 2)
     return int(current or 0) or 5
 

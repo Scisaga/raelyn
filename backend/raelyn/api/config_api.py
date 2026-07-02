@@ -5,8 +5,10 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from raelyn.config import settings
 from raelyn.db import session_scope
-from raelyn.models import AppConfig
+from raelyn.jobs.enqueue import enqueue_job
+from raelyn.models import AppConfig, Media
 from raelyn.services.inference import INFERENCE_MODE_CONFIG_KEY
 from raelyn.services.inference import INFERENCE_MODES
 from raelyn.services.inference import VOLCENGINE_INFERENCE_CONFIG_KEY
@@ -45,6 +47,36 @@ class ConfigUpsert(BaseModel):
 class InferenceSettingsPayload(BaseModel):
     mode: str
     volcengine: dict | None = None
+
+
+def _positive_int(value: object, *, default: int) -> int:
+    try:
+        n = int(value)
+    except Exception:
+        n = int(default)
+    return max(1, n)
+
+
+def _enqueue_cookie_recovery_syncs(session, *, provider: str) -> int:
+    media_ids = session.execute(
+        select(Media.id)
+        .where(Media.monitor_enabled.is_(True), Media.provider == provider)
+        .order_by(Media.name.asc().nulls_last(), Media.id.asc())
+    ).scalars().all()
+    max_entries = _positive_int(settings.sync_cookie_recovery_max_entries, default=200)
+    for media_id in media_ids:
+        enqueue_job(
+            session,
+            type_="media.sync_videos",
+            params={
+                "media_id": str(media_id),
+                "force": True,
+                "max_entries": max_entries,
+                "download_priority": 8,
+            },
+            priority=5,
+        )
+    return len(media_ids)
 
 
 def _validate_llm_transcript_polish_prompt_value(value: dict) -> None:
@@ -125,12 +157,14 @@ def put_config(key: str, payload: ConfigUpsert) -> dict:
             cookie_config_key("youtube"),
             cookie_config_key("bilibili"),
         }
+        cookie_text_present = False
         if key in cookie_keys:
             try:
                 text = value.get("text") if isinstance(value, dict) else ""
             except Exception:
                 text = ""
             if isinstance(text, str) and text.strip():
+                cookie_text_present = True
                 if not looks_like_netscape_cookie_file(text):
                     raise HTTPException(
                         status_code=400,
@@ -155,16 +189,18 @@ def put_config(key: str, payload: ConfigUpsert) -> dict:
         else:
             session.add(AppConfig(key=key, value=value))
 
-        # If the system was paused due to invalid/expired cookies, resume automatically after cookies update.
-        if key in cookie_keys:
+        # 只有保存了有效非空 cookies，才恢复 provider 并补投一次同步追赶。
+        if key in cookie_keys and cookie_text_present:
             p = get_pause(session)
             reason = str(p.get("reason") or "")
             if p.get("paused") and reason.startswith("ytdlp_cookies_"):
                 clear_pause(session)
             if key == cookie_config_key("youtube"):
                 clear_provider_pauses(session, providers=["youtube"])
+                _enqueue_cookie_recovery_syncs(session, provider="youtube")
             elif key == cookie_config_key("bilibili"):
                 clear_provider_pauses(session, providers=["bilibili"])
+                _enqueue_cookie_recovery_syncs(session, provider="bilibili")
     return {"ok": True}
 
 

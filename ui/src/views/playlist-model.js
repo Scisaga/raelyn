@@ -3,6 +3,7 @@ import {
   PLAYLIST_BRIEF_CACHE_TTL_MS,
   PLAYLIST_TRANSCRIPT_CACHE_TTL_MS,
 } from "../app/constants.js";
+import { assetPresignQueryValue } from "../shared/asset-delivery.js";
 import { addUniqueMediaId, filterUnselectedMediaOptions, removeMediaId, resolveMediaItemsByIds } from "../shared/media-tags.js";
 import {
   formatIsoRangeShort,
@@ -2027,6 +2028,7 @@ export function createPlaylistViewMethods() {
       this._playlistPlayableProbeAbortCtrl = ctrl;
 
       try {
+        const assetPresign = assetPresignQueryValue(this.assetDelivery);
         for (const video of items) {
           if (Number(this.playlistLoadToken || 0) !== token) return null;
 
@@ -2036,7 +2038,7 @@ export function createPlaylistViewMethods() {
           let assets = this._cacheGet(this.playlistVideoAssetsCache, vid);
           if (!assets) {
             try {
-              assets = await this.api(`/videos/${encodeURIComponent(vid)}/assets?presign=1&download=0&localize_title=0`, {
+              assets = await this.api(`/videos/${encodeURIComponent(vid)}/assets?presign=${assetPresign}&download=0&localize_title=0`, {
                 signal: ctrl.signal,
               });
               if (Number(this.playlistLoadToken || 0) !== token) return null;
@@ -2150,9 +2152,12 @@ export function createPlaylistViewMethods() {
       }
 
       try {
+        const assetPresign = assetPresignQueryValue(this.assetDelivery);
         const assetsPromise = cachedAssets
           ? Promise.resolve(cachedAssets)
-          : this.api(`/videos/${encodeURIComponent(vid)}/assets?presign=1&download=0&localize_title=0`, { signal: ctrl.signal });
+          : this.api(`/videos/${encodeURIComponent(vid)}/assets?presign=${assetPresign}&download=0&localize_title=0`, {
+              signal: ctrl.signal,
+            });
         const transcriptPromise = cachedTranscript
           ? Promise.resolve(cachedTranscript)
           : this.api(`/videos/${encodeURIComponent(vid)}/transcript`, { signal: ctrl.signal });

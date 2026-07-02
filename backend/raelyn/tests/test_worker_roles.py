@@ -17,6 +17,7 @@ class WorkerRoleTests(unittest.TestCase):
     def test_ai_embedding_analysis_roles_are_split(self) -> None:
         self.assertEqual(WORKER_ROLE_TYPES["download_youtube"], ["video.download.youtube", "video.backfill_subtitles.youtube"])
         self.assertEqual(WORKER_ROLE_TYPES["download_bilibili"], ["video.download.bilibili", "video.backfill_subtitles.bilibili"])
+        self.assertIn("video.enrich_metadata.youtube", WORKER_ROLE_TYPES["sync"])
         self.assertEqual(WORKER_ROLE_TYPES["embedding"], ["event.embed"])
         self.assertEqual(WORKER_ROLE_TYPES["analysis"], ["playlist.mark_event_regime_dirty", "playlist.build_event_regime_snapshot"])
         self.assertEqual(
@@ -41,16 +42,20 @@ class WorkerRoleTests(unittest.TestCase):
         self.assertEqual(job_type_worker_role("playlist.backfill_events"), "ai")
         self.assertEqual(job_type_worker_role("playlist.backfill_events_range"), "ai")
         self.assertEqual(job_type_worker_role("brief.generate_daily"), "ai")
+        self.assertEqual(job_type_worker_role("video.enrich_metadata.youtube"), "sync")
         self.assertEqual(job_type_worker_role("video.backfill_subtitles.youtube"), "download_youtube")
         self.assertEqual(job_type_worker_role("video.backfill_subtitles.bilibili"), "download_bilibili")
 
     def test_provider_helpers_map_subtitle_backfill_provider_job_types(self) -> None:
         youtube_job = Job(type="video.backfill_subtitles.youtube", params={"video_id": "unused"})
+        metadata_job = Job(type="video.enrich_metadata.youtube", params={"video_id": "unused"})
         bilibili_job = Job(type="video.backfill_subtitles.bilibili", params={"video_id": "unused"})
 
         self.assertEqual(provider_for_job(None, youtube_job), "youtube")
+        self.assertEqual(provider_for_job(None, metadata_job), "youtube")
         self.assertEqual(provider_for_job(None, bilibili_job), "bilibili")
         self.assertEqual(job_provider(None, youtube_job), "youtube")
+        self.assertEqual(job_provider(None, metadata_job), "youtube")
         self.assertEqual(job_provider(None, bilibili_job), "bilibili")
 
 

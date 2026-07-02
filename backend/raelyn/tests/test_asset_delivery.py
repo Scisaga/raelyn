@@ -47,6 +47,24 @@ class AssetDeliveryTests(unittest.TestCase):
         self.assertEqual(payload["asset_delivery"]["proxy_base_path"], "/api/assets")
         self.assertTrue(payload["asset_delivery"]["presign_enabled"])
 
+    def test_system_status_exposes_proxy_strategy_when_presign_disabled(self) -> None:
+        with (
+            patch.object(config.settings, "asset_direct_probe_url", ""),
+            patch.object(config.settings, "asset_direct_probe_timeout_ms", 1000),
+            patch.object(config.settings, "asset_proxy_base_path", "/api/assets"),
+            patch.object(config.settings, "asset_presign_enabled", False),
+            patch.object(config.settings, "s3_endpoint", "http://minio:9000"),
+            patch("raelyn.api.system.session_scope", _fake_session_scope),
+            patch("raelyn.api.system.get_pause", return_value={"paused": False}),
+            patch("raelyn.api.system.get_provider_pauses", return_value={}),
+        ):
+            payload = system_status()
+
+        self.assertEqual(payload["asset_delivery"]["strategy"], "proxy")
+        self.assertEqual(payload["asset_delivery"]["direct_probe_url"], "")
+        self.assertEqual(payload["asset_delivery"]["proxy_base_path"], "/api/assets")
+        self.assertFalse(payload["asset_delivery"]["presign_enabled"])
+
     def test_stream_asset_returns_range_headers(self) -> None:
         asset = SimpleNamespace(id=uuid.uuid4(), s3_bucket="raelyn", s3_key="demo.txt")
         stream = ObjectStreamResult(
@@ -63,6 +81,7 @@ class AssetDeliveryTests(unittest.TestCase):
         self.assertEqual(response.status_code, 206)
         self.assertEqual(response.headers.get("Accept-Ranges"), "bytes")
         self.assertEqual(response.headers.get("Content-Range"), "bytes 0-4/5")
+        self.assertEqual(response.headers.get("Content-Length"), "5")
         self.assertEqual(response.media_type, "text/plain")
 
     def test_stream_asset_raises_416_for_invalid_range(self) -> None:

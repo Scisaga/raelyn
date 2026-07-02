@@ -618,6 +618,7 @@ def ytdlp_extract_info(
     flat: bool = False,
     max_entries: int | None = None,
     socket_timeout: int | None = None,
+    use_provider_cookies: bool = True,
 ) -> dict[str, Any]:
     logger = _YtdlpCaptureLogger()
     cookie_provider = cookie_provider_for_target(url, provider)
@@ -651,7 +652,13 @@ def ytdlp_extract_info(
     js = _js_runtimes()
     if js:
         opts["js_runtimes"] = js
-    _apply_common_ytdlp_opts(opts, url=url, provider=cookie_provider)
+    _apply_common_ytdlp_opts(
+        opts,
+        url=url,
+        provider=cookie_provider,
+        use_provider_cookies=bool(use_provider_cookies),
+    )
+    using_cookies = bool(opts.get("cookiefile"))
     lim = None
     if max_entries is not None:
         try:
@@ -674,7 +681,11 @@ def ytdlp_extract_info(
         except (DownloadError, ExtractorError) as e:
             msgs = logger.warnings + logger.errors + [str(e)]
             _raise_if_cookie_invalid_messages(msgs, provider=cookie_provider)
-            _raise_if_youtube_bot_check_messages(msgs, provider=cookie_provider)
+            _raise_if_youtube_bot_check_messages(
+                msgs,
+                provider=cookie_provider,
+                using_cookies=using_cookies,
+            )
             _raise_if_provider_pause_messages(msgs)
             if _is_youtube_bot_check_error(e):
                 raise RuntimeError(_youtube_bot_check_hint()) from e
@@ -691,13 +702,21 @@ def ytdlp_extract_info(
             last = logger.errors[-1] if logger.errors else "yt-dlp extraction returned no result"
             msgs = logger.warnings + logger.errors + [last]
             _raise_if_cookie_invalid_messages(msgs, provider=cookie_provider)
-            _raise_if_youtube_bot_check_messages(msgs, provider=cookie_provider)
+            _raise_if_youtube_bot_check_messages(
+                msgs,
+                provider=cookie_provider,
+                using_cookies=using_cookies,
+            )
             _raise_if_provider_pause_messages(msgs)
             if _is_bilibili_risk_control_error(RuntimeError(last)) or _is_bilibili_precondition_failed_error(RuntimeError(last)):
                 raise RuntimeError(_bilibili_risk_control_hint())
             raise RuntimeError(last)
         _raise_if_cookie_invalid_messages(logger.warnings + logger.errors, provider=cookie_provider)
-        _raise_if_youtube_bot_check_messages(logger.warnings + logger.errors, provider=cookie_provider)
+        _raise_if_youtube_bot_check_messages(
+            logger.warnings + logger.errors,
+            provider=cookie_provider,
+            using_cookies=using_cookies,
+        )
         _raise_if_provider_pause_messages(logger.warnings + logger.errors)
         return info
 

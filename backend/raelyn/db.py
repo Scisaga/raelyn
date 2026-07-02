@@ -3,16 +3,47 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 from pathlib import Path
+from typing import Any
 import uuid
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from raelyn.config import settings
 
 
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+def _database_engine_kwargs(
+    database_url: str,
+    *,
+    pool_size: int,
+    max_overflow: int,
+    pool_timeout_seconds: int,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"pool_pre_ping": True}
+    if make_url(database_url).get_backend_name() == "sqlite":
+        return kwargs
+
+    kwargs.update(
+        {
+            "pool_size": max(1, int(pool_size or 0)),
+            "max_overflow": max(0, int(max_overflow or 0)),
+            "pool_timeout": max(1, int(pool_timeout_seconds or 0)),
+        }
+    )
+    return kwargs
+
+
+engine = create_engine(
+    settings.database_url,
+    **_database_engine_kwargs(
+        settings.database_url,
+        pool_size=settings.database_pool_size,
+        max_overflow=settings.database_max_overflow,
+        pool_timeout_seconds=settings.database_pool_timeout_seconds,
+    ),
+)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, class_=Session)
 
 _CREATE_ALL_LOCK_KEY = "raelyn.schema.create_all"

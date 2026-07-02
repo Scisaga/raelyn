@@ -23,7 +23,8 @@
 
 当前任务链：
 
-- `media.sync_videos`：发现新视频、更新视频元数据，并按配置决定是否自动下载。
+- `media.sync_videos`：轻量发现新视频，用平台 flat 列表信息幂等写入 `video`，并按配置决定是否自动下载；YouTube flat 条目缺少发布时间时只投递异步补全任务。
+- `video.enrich_metadata.youtube`：低优先级、best-effort 补全单个 YouTube 视频的 `raw_info/published_at`，不阻塞媒体同步。
 - `video.download.youtube` / `video.download.bilibili`：下载视频、缩略图、字幕等原始产物。
 - `video.backfill_subtitles.youtube` / `video.backfill_subtitles.bilibili`：对已采集视频执行 subtitle-only 回补，只用 yt-dlp `skip_download` 抓取字幕 / 自动字幕并落 raw subtitle asset。
 - `video.extract_audio`：提取音频资产，供移动播放和 ASR 使用。
@@ -34,6 +35,9 @@
 当前边界：
 
 - `media.sync_videos` 同一媒体运行时互斥；重复发现同一平台视频时依赖 `video(provider, provider_video_id)` 唯一键执行幂等插入。
+- `media.sync_videos` 不再为 YouTube 缺失发布时间的视频内联调用单视频详情解析；新发现视频和已存在但 `published_at is null` 的视频会投递 `video.enrich_metadata.youtube`，同步任务结果会记录 `metadata_enrichment_enqueued`。
+- `video.enrich_metadata.youtube` 归属 `sync` worker role，复用 YouTube provider pause 与 sync provider advisory lock；拿不到锁时延迟 30 秒重排。单次只处理一个 `video_id`，单视频 yt-dlp 详情解析有 45 秒硬超时，超时只影响该补全任务。同一视频达到 `max_attempts` 终止失败后，后续自动同步不会再为同一 `dedupe_key` 重复投递补全任务。
+- YouTube metadata 补全只在缺失时写入 `published_at`、`thumbnail_url`、`duration_sec`，不会覆盖已有标题；若 `published_at` 从空变为有值，会触发播放列表事件时间轴 dirty 标记。
 - 正常视频下载链路的字幕下载是否开启由运行时配置 `ytdlp_subtitles` 决定；显式字幕回补任务不依赖该开关，因为任务本身就是人工发起的 subtitle-only 抓取。
 - `video.download.*` 只会把 yt-dlp 产出的可播放视频容器登记为 `video` asset；`.ytdl` 断点状态、`.info.json`、缩略图、字幕和纯音频片段不会进入 `video.extract_audio` 链路。
 - 字幕回补复用平台 cookies、YouTube `YTDLP_PROXY`、PO Token/EJS 与 provider 下载并发门控；默认只请求明确语言码。YouTube 以 `zh-Hant`、`zh-Hans`、`zh-CN`、`zh-TW`、`zh-HK`、`zh`、`en` 为主；B 站会额外请求 yt-dlp 暴露的 `ai-zh` / `ai-en`。
@@ -45,12 +49,13 @@
 
 当前 API 同时支持两种访问模式：
 
-- 直连模式：通过 `AssetRef.presigned_url` / `download_presigned_url` 直接访问对象存储。
-- 代理模式：通过 `/api/assets/{asset_id}/content` 或 `/download` 由 API 代理流式读取。
+- 代理模式：默认通过 `/api/assets/{asset_id}/content` 或 `/download` 由 API 代理流式读取。
+- 直连模式：仅在显式启用 `ASSET_PRESIGN_ENABLED=true` 且对象存储出口可被浏览器访问时，通过 `AssetRef.presigned_url` / `download_presigned_url` 直接访问对象存储。
 
 实现要点：
 
 - API 启动后会结合 `ASSET_DIRECT_PROBE_URL`、`ASSET_PRESIGN_ENABLED` 和 `ASSET_PROXY_BASE_PATH` 形成前端可用的分发策略。
+- `ASSET_PRESIGN_ENABLED=false` 时，前端直接进入 proxy-only 模式，不做对象存储直连探测，后端也不生成 presigned URL。
 - 若主站页面是 HTTPS，而对象存储直连地址或 presigned URL 是 HTTP，前端会强制回退到代理模式，避免 mixed content 破坏播放与 PWA installability。
 - 代理下载支持 `Range`，用于视频播放与断点读取。
 - `playlist` 头像 / 背景图也复用同一套 standalone asset 写入逻辑。

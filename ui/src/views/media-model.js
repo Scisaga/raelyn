@@ -1,3 +1,5 @@
+import { assetDirectModeEnabled } from "../shared/asset-delivery.js";
+
 export function createMediaViewMethods() {
   return {
     async loadMedia() {
@@ -30,7 +32,7 @@ export function createMediaViewMethods() {
         offset: String(offset || 0),
       });
       if (this.mediaQuery) params.set("q", this.mediaQuery);
-      if (!this.assetDelivery || this.assetDelivery.mode !== "direct") params.set("presign", "false");
+      if (!assetDirectModeEnabled(this.assetDelivery)) params.set("presign", "false");
       return params;
     },
 
@@ -95,7 +97,7 @@ export function createMediaViewMethods() {
           offset: "0",
         });
         if (this.mediaQuery) params.set("q", this.mediaQuery);
-        if (!this.assetDelivery || this.assetDelivery.mode !== "direct") params.set("presign", "false");
+        if (!assetDirectModeEnabled(this.assetDelivery)) params.set("presign", "false");
         const items = await this.api(`/media?${params.toString()}`);
         this.mediaList = Array.isArray(items) ? items : [];
         this.mediaOffset = this.mediaList.length;

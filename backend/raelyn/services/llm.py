@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -143,12 +144,85 @@ def _extract_llm_usage(payload: Any, *, mode: str) -> dict[str, int]:
     }
 
 
+def _timeout(*, total_timeout_seconds: int, idle_timeout_seconds: int | None = None) -> httpx.Timeout:
+    if idle_timeout_seconds is None or int(idle_timeout_seconds or 0) <= 0:
+        return httpx.Timeout(total_timeout_seconds)
+    return httpx.Timeout(total_timeout_seconds, read=int(idle_timeout_seconds))
+
+
+def _decode_stream_line(line: str | bytes) -> dict[str, Any]:
+    text = line.decode("utf-8", errors="replace") if isinstance(line, bytes) else str(line)
+    text = text.strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"ollama stream returned invalid JSON line: {text[:200]}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("ollama stream returned non-object JSON line")
+    return payload
+
+
+def _read_ollama_stream_response(
+    *,
+    client: httpx.Client,
+    url: str,
+    payload: dict[str, Any],
+    total_timeout_seconds: int,
+) -> dict[str, Any]:
+    started_at = time.monotonic()
+    first_token_at: float | None = None
+    chunks = 0
+    text_parts: list[str] = []
+    final_payload: dict[str, Any] = {}
+
+    with client.stream("POST", url, json=payload) as resp:
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if (
+                int(total_timeout_seconds or 0) > 0
+                and time.monotonic() - started_at > total_timeout_seconds
+            ):
+                raise httpx.TimeoutException(f"ollama stream exceeded {total_timeout_seconds}s total timeout")
+            item = _decode_stream_line(line)
+            if not item:
+                continue
+            chunks += 1
+            piece = item.get("response")
+            if piece:
+                if first_token_at is None:
+                    first_token_at = time.monotonic()
+                text_parts.append(str(piece))
+            final_payload = item
+            if item.get("done") is True:
+                break
+
+    meta: dict[str, Any] = {
+        "stream": True,
+        "stream_chunks": chunks,
+        "done": bool(final_payload.get("done")),
+    }
+    if first_token_at is not None:
+        meta["first_token_seconds"] = round(first_token_at - started_at, 3)
+    if final_payload.get("done_reason"):
+        meta["done_reason"] = str(final_payload.get("done_reason"))
+
+    return {
+        "text": "".join(text_parts).strip(),
+        "usage": _extract_llm_usage(final_payload, mode="ollama_generate"),
+        "meta": meta,
+    }
+
+
 def llm_generate(
     *,
     prompt: str,
     think: bool | str | None = None,
     response_format: Literal["json"] | None = None,
     options: dict[str, Any] | None = None,
+    stream: bool | None = None,
+    idle_timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
     if not llm_enabled():
         raise RuntimeError("llm is not configured")
@@ -156,11 +230,19 @@ def llm_generate(
     cfg = get_effective_llm_config()
     url = cfg.url.strip()
     mode = _llm_mode(url)
-    timeout = httpx.Timeout(cfg.timeout_seconds)
+    timeout = _timeout(
+        total_timeout_seconds=cfg.timeout_seconds,
+        idle_timeout_seconds=idle_timeout_seconds if stream else None,
+    )
     model = cfg.model.strip()
 
     if mode == "ollama_generate":
-        payload: dict[str, Any] = {"model": model or "qwen2.5:7b", "prompt": prompt, "stream": False}
+        use_stream = bool(stream) if stream is not None else False
+        payload: dict[str, Any] = {
+            "model": model or "qwen2.5:7b",
+            "prompt": prompt,
+            "stream": use_stream,
+        }
         if think is not None:
             payload["think"] = think
         if response_format == "json":
@@ -178,6 +260,13 @@ def llm_generate(
 
     headers = {"Content-Type": "application/json", **_headers()}
     with httpx.Client(timeout=timeout, headers=headers, trust_env=False) as client:
+        if mode == "ollama_generate" and payload.get("stream") is True:
+            return _read_ollama_stream_response(
+                client=client,
+                url=url,
+                payload=payload,
+                total_timeout_seconds=cfg.timeout_seconds,
+            )
         resp = client.post(url, json=payload)
         resp.raise_for_status()
         data = resp.json()

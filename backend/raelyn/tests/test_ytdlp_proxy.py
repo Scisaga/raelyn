@@ -20,6 +20,7 @@ from raelyn.services.ytdlp import (
     _build_dash_mp4_format,
     _download_format_attempts,
     _is_http_403_forbidden_error,
+    ytdlp_extract_info,
 )
 
 
@@ -211,6 +212,70 @@ class YtdlpProxyTests(unittest.TestCase):
     def test_detect_http_403_forbidden_format_failure(self) -> None:
         self.assertTrue(_is_http_403_forbidden_error(RuntimeError("ERROR: unable to download video data: HTTP Error 403: Forbidden")))
         self.assertFalse(_is_http_403_forbidden_error(RuntimeError("HTTP Error 404: Not Found")))
+
+    def test_extract_info_can_disable_provider_cookies(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeYoutubeDL:
+            def __init__(self, opts):
+                captured.update(opts)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def extract_info(self, _url, *, download):
+                assert download is False
+                return {"entries": []}
+
+        with (
+            patch("raelyn.services.ytdlp.load_provider_cookie_text", return_value=".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tabc"),
+            patch("raelyn.services.ytdlp._ensure_ytdlp_cookies_file") as ensure_cookie_file,
+            patch("raelyn.services.ytdlp.YoutubeDL", FakeYoutubeDL),
+        ):
+            result = ytdlp_extract_info(
+                "https://www.youtube.com/@example/videos",
+                provider="youtube",
+                flat=True,
+                max_entries=1,
+                use_provider_cookies=False,
+            )
+
+        self.assertEqual(result, {"entries": []})
+        self.assertNotIn("cookiefile", captured)
+        ensure_cookie_file.assert_not_called()
+
+    def test_extract_info_reports_bot_check_with_actual_cookie_mode(self) -> None:
+        class FakeYoutubeDL:
+            def __init__(self, _opts):
+                return
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def extract_info(self, _url, *, download):
+                assert download is False
+                return None
+
+        with (
+            patch("raelyn.services.ytdlp.YoutubeDL", FakeYoutubeDL),
+            patch("raelyn.services.ytdlp._raise_if_youtube_bot_check_messages") as bot_check,
+        ):
+            with self.assertRaises(RuntimeError):
+                ytdlp_extract_info(
+                    "https://www.youtube.com/@example/videos",
+                    provider="youtube",
+                    flat=True,
+                    max_entries=1,
+                    use_provider_cookies=False,
+                )
+
+        self.assertFalse(bot_check.call_args.kwargs["using_cookies"])
 
 
 if __name__ == "__main__":

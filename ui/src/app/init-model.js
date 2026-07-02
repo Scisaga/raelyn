@@ -1,3 +1,5 @@
+import { assetDirectModeEnabled } from "../shared/asset-delivery.js";
+
 export function createAppInitMethods() {
   return {
     _initShellListeners() {
@@ -68,7 +70,7 @@ export function createAppInitMethods() {
 
     async loadMediaIndex({ lightweight = false } = {}) {
       const params = new URLSearchParams({ limit: "500", offset: "0" });
-      if (!lightweight && (!this.assetDelivery || this.assetDelivery.mode !== "direct")) {
+      if (!lightweight && !assetDirectModeEnabled(this.assetDelivery)) {
         params.set("presign", "false");
       }
       const path = lightweight ? `/media/options?${params.toString()}` : `/media?${params.toString()}`;

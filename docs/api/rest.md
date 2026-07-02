@@ -21,7 +21,7 @@
 ### `GET /api/system`
 
 - 返回系统暂停状态、provider 暂停状态和资产分发策略。
-- `asset_delivery` 包含 `direct_probe_url`、`proxy_base_path`、`presign_enabled` 等前端运行参数。
+- `asset_delivery` 包含 `strategy`、`direct_probe_url`、`proxy_base_path`、`presign_enabled` 等前端运行参数；`presign_enabled=false` 时 `strategy=proxy`，前端不做对象存储直连探测。
 
 ### `POST /api/system/pause`
 
@@ -195,6 +195,7 @@
 
 - query：`presign`、`download`、`localize_title`
 - 返回该视频的全部资产列表，可包含 presigned URL 和下载文件名。
+- 当 `ASSET_PRESIGN_ENABLED=false` 时，即使 query 传 `presign=true`，响应也不会包含 presigned URL；前端应使用 `/api/assets/{asset_id}/content` 或 `/download` 代理地址。
 - `localize_title` 默认 `false`；只有显式传 `true` 时才会额外调用 yt-dlp 尝试补充 YouTube 本地化标题，避免详情页资产加载被外部视频站请求拖慢。
 
 ### `GET /api/assets/{asset_id}`
@@ -361,8 +362,8 @@
 
 ### `POST /api/playlists/{playlist_id}/events/extract`
 
-- 手动创建 `playlist.backfill_events` 父任务；父任务按播放列表内容时间轴拆分月份范围并投递 `playlist.backfill_events_range` 子任务，范围任务运行时再查询该月内已有 `plain` transcript 的视频并投递 `video.extract_events_batch` 或 `video.extract_events` 子任务。
-- 事件抽取在 Ollama `/api/generate` 模式下使用 JSON 输出约束与低温度采样，降低标题、实体和证据之间的结构化抽取漂移。v2 协议要求 LLM 只返回 `evidence_source_ids`，后端用 source map 写入可验证证据。
+- 手动创建 `playlist.backfill_events` 父任务；父任务按播放列表内容时间轴拆分月份范围并投递 `playlist.backfill_events_range` 子任务，范围任务运行时再查询该月内已有 `plain` transcript 的视频并投递 `video.extract_events_batch` 或 `video.extract_events` 子任务。批量抽取任务执行时每次 LLM 请求只包含 1 个视频，避免多个视频共用一个大 JSON 生成导致本地模型长时间无返回。
+- 事件抽取在 Ollama `/api/generate` 模式下使用 JSON 输出约束、低温度采样、流式读取、`num_ctx/num_predict` 上限和 per-model advisory lock，降低标题、实体和证据之间的结构化抽取漂移，并避免同一 Ollama 大模型被多个事件抽取请求同时压满。v2 协议要求 LLM 只返回 `evidence_source_ids`，后端用 source map 写入可验证证据。
 - 月份范围任务的优先级低于它投递的视频事件抽取任务；同一批回填中，一旦 `video.extract_events_batch` 或 `video.extract_events` 入队，worker 会优先消费事件抽取，再继续领取后续月份范围任务。
 - body：`{ "force": false }`；`force=false` 只补齐缺失当前 transcript / prompt / model 口径事件的视频，`force=true` 会先取消当前播放列表相关的活跃事件抽取、事件 embedding 与 Regime 重建任务，再重新抽取同一 prompt / model 口径下的视频事件。
 - `force=true` 的任务清理只取消 `pending/running` 任务并保留历史记录：`pending` 立即变为 `canceled`，`running` 设置取消请求；同时将当前播放列表 `pending/running` 的 event-regime run 收敛为 `canceled` 并保持 dirty。

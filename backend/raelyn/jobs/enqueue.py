@@ -21,6 +21,7 @@ def _default_max_attempts(type_: str) -> int | None:
         "media.sync_profile",
         "media.sync_videos",
         "media.delete",
+        "video.enrich_metadata.youtube",
         "video.download",
         "video.backfill_subtitles",
         "video.backfill_subtitles.youtube",
@@ -79,6 +80,17 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
         except Exception:
             return None, params2
         return f"media.delete:{media_id}", params2
+
+    if type_ == "video.enrich_metadata.youtube":
+        if not isinstance(params, dict):
+            return None, params
+        params2 = dict(params)
+        try:
+            video_id = uuid.UUID(str(params2.get("video_id")))
+        except Exception:
+            return None, params2
+        params2["video_id"] = str(video_id)
+        return f"video.enrich_metadata.youtube:{video_id}", params2
 
     if type_ == "video.extract_events":
         if not isinstance(params, dict):

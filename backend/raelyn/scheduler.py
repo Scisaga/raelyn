@@ -12,7 +12,7 @@ from raelyn.db import init_db, session_scope
 from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import Media
 from raelyn.services.log_timestamps import install_if_needed
-from raelyn.services.provider_pause import is_provider_paused
+from raelyn.services.provider_pause import get_provider_pause, provider_pause_allows_public_discovery
 from raelyn.services.s3 import s3_ensure_bucket
 from raelyn.services.system_pause import is_paused
 from raelyn.timeutil import utcnow
@@ -48,6 +48,14 @@ def _is_sync_due(media: Media, now: Any) -> bool:
     return last_sync + due_after <= now
 
 
+def _positive_int(value: Any, *, default: int) -> int:
+    try:
+        n = int(value)
+    except Exception:
+        n = int(default)
+    return max(1, n)
+
+
 def tick() -> int:
     now = utcnow()
     threshold = now - timedelta(minutes=settings.sync_interval_minutes)
@@ -69,9 +77,26 @@ def tick() -> int:
                 break
             if not _is_sync_due(m, now):
                 continue
-            if is_provider_paused(session, m.provider):
-                continue
             if _has_pending_sync_job(session, m.id):
+                continue
+            provider_pause = get_provider_pause(session, m.provider)
+            if provider_pause.get("paused"):
+                if not bool(settings.sync_public_discovery_enabled):
+                    continue
+                if not provider_pause_allows_public_discovery(provider_pause):
+                    continue
+                enqueue_job(
+                    session,
+                    type_="media.sync_videos",
+                    params={
+                        "media_id": str(m.id),
+                        "public_discovery": True,
+                        "max_entries": _positive_int(settings.sync_public_discovery_max_entries, default=200),
+                        "download_priority": 8,
+                    },
+                    priority=1,
+                )
+                enqueued += 1
                 continue
             enqueue_job(session, type_="media.sync_videos", params={"media_id": str(m.id)}, priority=1)
             enqueued += 1

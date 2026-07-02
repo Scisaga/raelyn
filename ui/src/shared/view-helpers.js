@@ -1,4 +1,5 @@
 import { getCachedValue, setCachedValue } from "../services/cache.js";
+import { assetDirectModeEnabled } from "./asset-delivery.js";
 import {
   formatBytes,
   formatCompactInteger,
@@ -228,17 +229,15 @@ export function createCommonViewMethods() {
 
     assetContentUrl(asset) {
       if (!asset || !asset.id) return "";
-      const mode = this.assetDelivery && this.assetDelivery.mode ? this.assetDelivery.mode : "proxy";
       const presignedUrl = String((asset && asset.presigned_url) || "").trim();
-      if (mode === "direct" && this.assetDirectUrlUsable(presignedUrl)) return presignedUrl;
+      if (assetDirectModeEnabled(this.assetDelivery) && this.assetDirectUrlUsable(presignedUrl)) return presignedUrl;
       const base = (this.assetDelivery && this.assetDelivery.proxyBasePath) || "/api/assets";
       return `${String(base).replace(/\/+$/, "")}/${encodeURIComponent(String(asset.id))}/content`;
     },
 
     assetDownloadUrl(asset) {
       if (!asset || !asset.id) return "";
-      const mode = this.assetDelivery && this.assetDelivery.mode ? this.assetDelivery.mode : "proxy";
-      if (mode === "direct") {
+      if (assetDirectModeEnabled(this.assetDelivery)) {
         const downloadUrl = String((asset && asset.download_presigned_url) || "").trim();
         if (this.assetDirectUrlUsable(downloadUrl)) return downloadUrl;
         const presignedUrl = String((asset && asset.presigned_url) || "").trim();

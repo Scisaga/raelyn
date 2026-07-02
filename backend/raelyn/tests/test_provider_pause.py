@@ -19,6 +19,7 @@ from raelyn.services.provider_pause import (
     bilibili_provider_pause_message,
     clear_provider_pause,
     get_provider_pause,
+    provider_pause_allows_public_discovery,
     set_provider_paused,
 )
 from raelyn.services.ytdlp import (
@@ -59,6 +60,13 @@ class ProviderPauseStateTests(unittest.TestCase):
             pause,
             {"paused": False, "reason": None, "message": None, "set_at": None},
         )
+
+    def test_provider_pause_allows_only_discovery_safe_reasons(self) -> None:
+        self.assertTrue(provider_pause_allows_public_discovery({"paused": True, "reason": "ytdlp_cookies_expired"}))
+        self.assertTrue(provider_pause_allows_public_discovery({"paused": True, "reason": "youtube_bot_check"}))
+        self.assertTrue(provider_pause_allows_public_discovery({"paused": True, "reason": "youtube_auth_check"}))
+        self.assertFalse(provider_pause_allows_public_discovery({"paused": True, "reason": "bilibili_risk_control"}))
+        self.assertFalse(provider_pause_allows_public_discovery({"paused": False, "reason": "youtube_bot_check"}))
 
 
 class ClaimNextJobProviderPauseTests(unittest.TestCase):
@@ -167,6 +175,70 @@ class ClaimNextJobProviderPauseTests(unittest.TestCase):
         self.assertIsNone(yt_job.error_stack)
         self.assertIsNone(yt_job.progress_current)
         self.assertIsNone(yt_job.progress_total)
+
+    def test_claim_next_job_allows_public_discovery_sync_when_provider_pause_allows_it(self) -> None:
+        now = datetime.now(timezone.utc)
+        sync_job = SimpleNamespace(
+            type="media.sync_videos",
+            status="pending",
+            worker_id=None,
+            error_message="old",
+            error_stack="old",
+            progress_current=10,
+            progress_total=20,
+            started_at=None,
+            lease_expires_at=None,
+            priority=9,
+            scheduled_for=now,
+            created_at=now,
+            id="sync-job",
+            params={"media_id": "media-1", "public_discovery": True},
+        )
+        scalar_result = Mock()
+        scalar_result.all.return_value = [sync_job]
+        session = Mock()
+        session.execute.return_value = Mock(scalars=Mock(return_value=scalar_result))
+
+        with patch("raelyn.jobs.claim.is_paused", return_value=False):
+            with patch("raelyn.jobs.claim.job_provider", return_value="youtube"):
+                with patch("raelyn.jobs.claim.is_provider_paused", return_value=True):
+                    with patch("raelyn.jobs.claim.is_public_discovery_allowed_during_provider_pause", return_value=True):
+                        claimed = claim_next_job(session, worker_id="worker-1", lease_seconds=60)
+
+        self.assertIs(claimed, sync_job)
+        self.assertEqual(sync_job.status, "running")
+        self.assertEqual(sync_job.worker_id, "worker-1")
+
+    def test_claim_next_job_skips_normal_sync_when_provider_is_paused(self) -> None:
+        now = datetime.now(timezone.utc)
+        sync_job = SimpleNamespace(
+            type="media.sync_videos",
+            status="pending",
+            worker_id=None,
+            error_message="old",
+            error_stack="old",
+            progress_current=10,
+            progress_total=20,
+            started_at=None,
+            lease_expires_at=None,
+            priority=9,
+            scheduled_for=now,
+            created_at=now,
+            id="sync-job",
+            params={"media_id": "media-1"},
+        )
+        scalar_result = Mock()
+        scalar_result.all.return_value = [sync_job]
+        session = Mock()
+        session.execute.return_value = Mock(scalars=Mock(return_value=scalar_result))
+
+        with patch("raelyn.jobs.claim.is_paused", return_value=False):
+            with patch("raelyn.jobs.claim.job_provider", return_value="youtube"):
+                with patch("raelyn.jobs.claim.is_provider_paused", return_value=True):
+                    claimed = claim_next_job(session, worker_id="worker-1", lease_seconds=60)
+
+        self.assertIsNone(claimed)
+        self.assertEqual(sync_job.status, "pending")
 
 
 class BilibiliProviderPauseDetectionTests(unittest.TestCase):

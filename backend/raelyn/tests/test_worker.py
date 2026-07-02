@@ -16,7 +16,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from raelyn.jobs import claim
 from raelyn.jobs.heartbeat import touch_worker_heartbeat
 from raelyn.jobs import progress
-from raelyn.models import AppConfig, Job, Media, Video
+from raelyn.models import AppConfig, Job, Media, Video, WorkerHeartbeat
 from raelyn import worker
 from raelyn.services.asr import AsrBackendDefer
 from raelyn.services.ytdlp import YTDLP_RETRY_WITHOUT_COOKIES_PARAM, YtdlpCookiesInvalidError
@@ -299,6 +299,161 @@ class WorkerRecoveryMergeTests(unittest.TestCase):
         self.assertEqual(running_job.status, "failed")
         self.assertEqual(running_job.finished_at, now)
         self.assertIsNone(running_job.worker_id)
+
+    def test_execution_stale_sync_job_retries_without_priority_bump(self) -> None:
+        job_id = uuid.uuid4()
+        now = datetime(2026, 3, 20, 0, 22, 11, tzinfo=timezone.utc)
+        job = Job(
+            id=job_id,
+            type="media.sync_videos",
+            status="running",
+            priority=6006,
+            attempt=0,
+            max_attempts=2,
+            worker_id="worker-sync",
+            scheduled_for=now - timedelta(hours=1),
+            started_at=now - timedelta(minutes=10),
+            lease_expires_at=now + timedelta(minutes=50),
+            progress_current=1,
+            progress_total=2,
+        )
+        heartbeat = WorkerHeartbeat(
+            worker_id="worker-sync",
+            role="sync",
+            updated_at=now - timedelta(seconds=5),
+            active_at=now - timedelta(seconds=121),
+            current_job_id=job_id,
+        )
+        session = Mock()
+        session.execute.return_value = _scalars_all([job])
+        session.get.side_effect = lambda model, key: heartbeat if model is WorkerHeartbeat else None
+
+        with patch("raelyn.jobs.claim.utcnow", return_value=now):
+            count = claim.requeue_orphan_running_jobs(
+                session,
+                stale_after_seconds=20,
+                execution_stale_after_seconds=120,
+                priority_bump=1000,
+            )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(job.status, "pending")
+        self.assertEqual(job.attempt, 1)
+        self.assertEqual(job.priority, 6006)
+        self.assertEqual(job.scheduled_for, now + timedelta(seconds=10))
+        self.assertIsNone(job.started_at)
+        self.assertIsNone(job.finished_at)
+        self.assertIsNone(job.worker_id)
+        self.assertIsNone(job.lease_expires_at)
+        self.assertIsNone(job.progress_current)
+        self.assertIsNone(job.progress_total)
+        self.assertIn("sync execution heartbeat stale", job.error_message or "")
+        self.assertEqual(session.execute.call_count, 1)
+
+    def test_execution_stale_sync_job_terminal_failure_updates_media_cooldown(self) -> None:
+        media_id = uuid.uuid4()
+        job_id = uuid.uuid4()
+        now = datetime(2026, 3, 20, 0, 22, 11, tzinfo=timezone.utc)
+        previous_sync = now - timedelta(days=1)
+        job = Job(
+            id=job_id,
+            type="media.sync_videos",
+            status="running",
+            priority=6006,
+            attempt=1,
+            max_attempts=2,
+            worker_id="worker-sync",
+            params={"media_id": str(media_id)},
+            scheduled_for=now - timedelta(hours=1),
+            started_at=now - timedelta(minutes=10),
+            lease_expires_at=now + timedelta(minutes=50),
+        )
+        heartbeat = WorkerHeartbeat(
+            worker_id="worker-sync",
+            role="sync",
+            updated_at=now - timedelta(seconds=5),
+            active_at=now - timedelta(seconds=121),
+            current_job_id=job_id,
+        )
+        media = Media(
+            id=media_id,
+            provider="youtube",
+            provider_media_id="markets",
+            url="https://www.youtube.com/@markets",
+            monitor_enabled=True,
+        )
+        media.last_video_sync_at = previous_sync
+        session = Mock()
+        session.execute.return_value = _scalars_all([job])
+
+        def _get(model, key):
+            if model is WorkerHeartbeat:
+                return heartbeat
+            if model is Media:
+                return media
+            return None
+
+        session.get.side_effect = _get
+
+        with patch("raelyn.jobs.claim.utcnow", return_value=now):
+            count = claim.requeue_orphan_running_jobs(
+                session,
+                stale_after_seconds=20,
+                execution_stale_after_seconds=120,
+                priority_bump=1000,
+            )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.attempt, 2)
+        self.assertEqual(job.priority, 6006)
+        self.assertEqual(job.finished_at, now)
+        self.assertIsNone(job.worker_id)
+        self.assertIsNone(job.lease_expires_at)
+        self.assertEqual(media.last_video_sync_at, now)
+        self.assertIn("sync execution heartbeat stale", job.error_message or "")
+        self.assertEqual(session.execute.call_count, 1)
+
+    def test_process_stale_sync_job_still_requeues_with_priority_bump(self) -> None:
+        job_id = uuid.uuid4()
+        now = datetime(2026, 3, 20, 0, 22, 11, tzinfo=timezone.utc)
+        job = Job(
+            id=job_id,
+            type="media.sync_videos",
+            status="running",
+            priority=7,
+            attempt=0,
+            max_attempts=2,
+            worker_id="worker-sync",
+            scheduled_for=now - timedelta(hours=1),
+            started_at=now - timedelta(minutes=10),
+            lease_expires_at=now + timedelta(minutes=50),
+        )
+        heartbeat = WorkerHeartbeat(
+            worker_id="worker-sync",
+            role="sync",
+            updated_at=now - timedelta(seconds=61),
+            active_at=now - timedelta(seconds=121),
+            current_job_id=job_id,
+        )
+        session = Mock()
+        session.execute.side_effect = [
+            _scalars_all([job]),
+            _scalar_one_or_none(50),
+            _scalar_one_or_none(None),
+        ]
+        session.get.side_effect = lambda model, key: heartbeat if model is WorkerHeartbeat else None
+
+        with patch("raelyn.jobs.claim.utcnow", return_value=now):
+            count = claim.requeue_orphan_running_jobs(session, stale_after_seconds=60, priority_bump=1000)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(job.status, "pending")
+        self.assertEqual(job.priority, 1050)
+        self.assertEqual(job.scheduled_for, now)
+        self.assertEqual(job.attempt, 0)
+        self.assertIsNone(job.worker_id)
+        self.assertIsNone(job.lease_expires_at)
 
 
 class WorkerHeartbeatTests(unittest.TestCase):

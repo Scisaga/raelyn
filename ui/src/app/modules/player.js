@@ -1,3 +1,5 @@
+import { assetPresignQueryValue } from "../../shared/asset-delivery.js";
+
 function mergeVideoDetail(baseVideo, detail) {
   const base = baseVideo && typeof baseVideo === "object" ? baseVideo : {};
   const next = detail && typeof detail === "object" ? detail : {};
@@ -219,8 +221,9 @@ export function createPlayerModule() {
       const loadToken = Number(this.playerLoadToken || 0);
 
       try {
+        const assetPresign = assetPresignQueryValue(this.assetDelivery);
         const [assets, transcript, detail] = await Promise.all([
-          this.api(`/videos/${encodeURIComponent(nextId)}/assets?presign=true&download=true&localize_title=false`),
+          this.api(`/videos/${encodeURIComponent(nextId)}/assets?presign=${assetPresign}&download=true&localize_title=false`),
           this.api(`/videos/${encodeURIComponent(nextId)}/transcript`),
           this.api(`/videos/${encodeURIComponent(nextId)}`),
         ]);

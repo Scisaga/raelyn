@@ -44,10 +44,14 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - `worker_heartbeat.active_at` 是主执行线程活动心跳，由 worker 主循环、任务领取点和下载进度更新维护；同步 / 下载任务回收必须同时检查它，避免“心跳线程活着”掩盖主执行循环已经卡死。
 - `worker_heartbeat.current_job_id` 记录主执行线程最近声明的任务，用于排障时定位哪个任务导致执行心跳停止推进。
 - `video.backfill_subtitles.*` 属于 provider-facing 下载角色任务：它只执行 yt-dlp subtitle-only 抓取，不下载媒体文件，但仍复用 provider 下载并发门控、平台暂停、cookies 失效暂停和长执行心跳语义。
+- `media.sync_videos` 在平台 flat 列表提取完成后和逐条处理循环中刷新执行活动心跳；YouTube 缺失发布时间的单视频详情解析已拆到 `video.enrich_metadata.youtube`，避免同步任务在批量补 metadata 时长期不推进 `active_at`。
+- `video.enrich_metadata.youtube` 是低优先级单视频补全任务，自身通过可终止子进程给 yt-dlp 详情解析设置 45 秒硬超时；子进程只向父进程回传 compact metadata，避免完整 yt-dlp `info` 大对象在进程队列中阻塞；超时只使该补全任务失败或重试，不扩大 `media.sync_videos` 的执行窗口。同一视频达到 `max_attempts` 终止失败后，后续自动同步不会再为同一 `dedupe_key` 反复投递补全任务，避免 best-effort 补全绕过任务重试上限。
 - provider-facing worker（同步 / 下载）会在本进程内启动执行 watchdog；当 `current_job_id` 指向同步或下载任务且 `active_at` 超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进时，worker 主动退出，让 supervisor 重启并释放 PostgreSQL session 级 advisory lock。
 - `scheduler` 或 `worker` 启动时可执行回收扫描：
   - `status=running AND lease_expires_at < now()` 视为失联，转回 `pending` 或标记为 `failed`
-  - 对同步 / 下载这类 provider-facing 任务，如果进程心跳新鲜但执行心跳超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进，也视为主执行循环卡死并转回 `pending`
+  - 对下载等 provider-facing 任务，如果进程心跳新鲜但执行心跳超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进，也视为主执行循环卡死并转回 `pending`
+  - 对 `media.sync_profile` / `media.sync_videos`，若进程心跳仍新鲜但执行心跳过期，按一次同步尝试失败处理：增加 `attempt`、按既有退避重试，且不使用 orphan priority bump；达到 `max_attempts` 后标记 `failed`
+  - `media.sync_videos` 因执行心跳过期达到终止失败时，会推进对应媒体的 `last_video_sync_at` 作为冷却时间，避免同一媒体立即被 scheduler 重新投递并堵塞同步队列
   - 回收动作应记录原因，便于后续排障
 
 ## Worker 角色暂停（Claim Gate）
@@ -65,6 +69,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
   - `assets(video_id, type, format, language, source, variant)` 可按业务定义唯一
 - Job 层可设置 `dedupe_key`
   - 例如 `media.sync_videos:{media_id}`
+  - 例如 `video.enrich_metadata.youtube:{video_id}`
   - PostgreSQL 下，创建 pending dedupe job 时先按 `dedupe_key` 获取事务级 advisory lock，再查询已有 `pending`，最后才插入新 job；`job(dedupe_key) where status='pending'` 唯一索引只作为兜底约束，不作为常规并发控制机制。
   - 同一事务需要投递多个 dedupe job 时，调用方必须按稳定 key 顺序投递，避免多个 worker 对同一批 key 反向等待。
   - 手动重试失败任务时，若同一 `dedupe_key` 已有 pending 任务，重试接口会取消那个 pending 任务并复用当前任务，避免提交时撞 pending dedupe 唯一约束
@@ -82,6 +87,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 的公开语义是对应 provider 的真实最大下载并发数
 - 当 `*_DOWNLOAD_CONCURRENCY = N` 时，运行层默认会拉起至少 `N` 个对应的 `download_*` worker 进程
 - `video.download.*` 与 `video.backfill_subtitles.*` 共享对应 provider 的下载角色和 advisory lock；字幕回补不会绕过平台并发上限
+- `video.enrich_metadata.youtube` 归属 `sync` worker role，受 YouTube provider pause 与 sync provider advisory lock 控制；sync 锁繁忙时重排当前补全任务，不占用下载并发。
 - provider advisory lock / guard slot 只负责做最终上限保护和防风控，不作为对外配置语义
 
 实现方式可从易到难演进：

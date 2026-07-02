@@ -28,7 +28,7 @@ WORKER_ROLE_TYPES: dict[str, list[str]] = {
     "audio": ["video.extract_audio"],
     "process": ["video.normalize_subtitle"],
     "asr": ["video.asr_transcribe"],
-    "sync": ["media.sync_profile", "media.sync_videos", "media.delete"],
+    "sync": ["media.sync_profile", "media.sync_videos", "media.delete", "video.enrich_metadata.youtube"],
     "embedding": ["event.embed"],
     "analysis": ["playlist.mark_event_regime_dirty", "playlist.build_event_regime_snapshot"],
     "ai": [
@@ -117,7 +117,7 @@ def worker_role_for_job(session: Session, job: Job | Any) -> str | None:
 
 def provider_for_job(session: Session, job: Job | Any) -> str | None:
     job_type = str(getattr(job, "type", "") or "").strip()
-    if job_type in {"video.download.youtube", "video.backfill_subtitles.youtube"}:
+    if job_type in {"video.download.youtube", "video.backfill_subtitles.youtube", "video.enrich_metadata.youtube"}:
         return "youtube"
     if job_type in {"video.download.bilibili", "video.backfill_subtitles.bilibili"}:
         return "bilibili"

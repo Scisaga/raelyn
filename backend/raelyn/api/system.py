@@ -16,17 +16,20 @@ router = APIRouter(tags=["system"])
 @router.get("/system")
 def system_status() -> dict:
     with session_scope() as session:
-        probe_url = (settings.asset_direct_probe_url or "").strip() or (settings.s3_endpoint.rstrip("/") + "/")
+        presign_enabled = bool(settings.asset_presign_enabled)
+        probe_url = ""
+        if presign_enabled:
+            probe_url = (settings.asset_direct_probe_url or "").strip() or (settings.s3_endpoint.rstrip("/") + "/")
         return {
             "pause": get_pause(session),
             "provider_pauses": get_provider_pauses(session),
             "inference": build_inference_status(session),
             "asset_delivery": {
-                "strategy": "startup_probe",
+                "strategy": "startup_probe" if presign_enabled else "proxy",
                 "direct_probe_url": probe_url,
                 "direct_probe_timeout_ms": max(0, int(settings.asset_direct_probe_timeout_ms or 0)),
                 "proxy_base_path": (settings.asset_proxy_base_path or "/api/assets").rstrip("/"),
-                "presign_enabled": bool(settings.asset_presign_enabled),
+                "presign_enabled": presign_enabled,
             },
         }
 

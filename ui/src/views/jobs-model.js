@@ -462,6 +462,7 @@ export function createJobsViewMethods() {
         "video.download",
         "video.download.bilibili",
         "video.download.youtube",
+        "video.enrich_metadata.youtube",
         "video.extract_events",
         "video.extract_audio",
         "video.normalize_subtitle",

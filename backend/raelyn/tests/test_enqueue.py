@@ -43,6 +43,38 @@ class EnqueueDedupeTests(unittest.TestCase):
         self.assertIsNone(dedupe_key)
         self.assertEqual(params, {"media_id": "bad-id"})
 
+    def test_youtube_metadata_enrich_dedupe_key_uses_video_id(self) -> None:
+        video_id = uuid.uuid4()
+
+        dedupe_key, params = _normalize_dedupe_key_and_params(
+            "video.enrich_metadata.youtube",
+            {"video_id": str(video_id)},
+        )
+
+        self.assertEqual(dedupe_key, f"video.enrich_metadata.youtube:{video_id}")
+        self.assertEqual(params, {"video_id": str(video_id)})
+
+    def test_youtube_metadata_enrich_reuses_existing_pending_job(self) -> None:
+        video_id = uuid.uuid4()
+        existing_job_id = uuid.uuid4()
+        session = Mock()
+        session.get_bind.return_value = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+        session.execute.side_effect = [
+            Mock(),
+            Mock(scalar_one_or_none=Mock(return_value=existing_job_id)),
+        ]
+
+        job_id = enqueue_job(
+            session,
+            type_="video.enrich_metadata.youtube",
+            params={"video_id": str(video_id)},
+            priority=0,
+        )
+
+        self.assertEqual(job_id, existing_job_id)
+        session.begin_nested.assert_not_called()
+        session.flush.assert_not_called()
+
     def test_video_subtitle_backfill_dedupe_key_uses_video_and_target_language(self) -> None:
         video_id = uuid.uuid4()
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import timedelta
 
 from sqlalchemy import case
@@ -8,8 +9,8 @@ from sqlalchemy import func
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from raelyn.models import Job, JobEvent, WorkerHeartbeat
-from raelyn.services.provider_pause import is_provider_paused, job_provider
+from raelyn.models import Job, JobEvent, Media, WorkerHeartbeat
+from raelyn.services.provider_pause import is_provider_paused, is_public_discovery_allowed_during_provider_pause, job_provider
 from raelyn.services.system_pause import is_paused
 from raelyn.services.worker_role_pause import is_worker_role_paused
 from raelyn.services.worker_roles import job_type_worker_role, worker_role_for_job
@@ -22,6 +23,10 @@ _JOB_TYPE_RANK = {
     "video.asr_transcribe": 0,
     "video.normalize_subtitle": 1,
     "video.extract_audio": 2,
+}
+_SYNC_JOB_TYPES = {
+    "media.sync_profile",
+    "media.sync_videos",
 }
 _EXECUTION_HEARTBEAT_JOB_TYPES = {
     "media.sync_profile",
@@ -38,6 +43,7 @@ _DIRECT_PROVIDER_JOB_TYPES = {
     "video.download.bilibili": "bilibili",
     "video.backfill_subtitles.youtube": "youtube",
     "video.backfill_subtitles.bilibili": "bilibili",
+    "video.enrich_metadata.youtube": "youtube",
 }
 
 
@@ -63,6 +69,21 @@ def _all_claim_types_provider_paused(session: Session, type_in: list[str] | None
             return False
         providers.add(provider)
     return bool(providers) and all(is_provider_paused(session, provider) for provider in providers)
+
+
+def _is_public_discovery_sync_job(job: Job) -> bool:
+    if str(getattr(job, "type", "") or "").strip() != "media.sync_videos":
+        return False
+    params = getattr(job, "params", None)
+    return bool(params.get("public_discovery")) if isinstance(params, dict) else False
+
+
+def _provider_pause_blocks_job(session: Session, *, job: Job, provider: str) -> bool:
+    if not is_provider_paused(session, provider):
+        return False
+    if _is_public_discovery_sync_job(job):
+        return not is_public_discovery_allowed_during_provider_pause(session, provider)
+    return True
 
 
 def _merge_requeue_into_existing_pending_job(
@@ -128,6 +149,98 @@ def _merge_requeue_into_existing_pending_job(
         )
     )
     return True
+
+
+def _max_attempts(job: Job) -> int:
+    return max(1, int(job.max_attempts or 1))
+
+
+def _retry_backoff_seconds(attempt: int) -> int:
+    return min(600, 10 * (2 ** max(0, int(attempt or 1) - 1)))
+
+
+def _is_sync_execution_heartbeat_stale(
+    session: Session,
+    *,
+    job: Job,
+    process_stale_before,
+    execution_stale_before,
+) -> bool:
+    if str(getattr(job, "type", "") or "").strip() not in _SYNC_JOB_TYPES:
+        return False
+    worker_id = str(getattr(job, "worker_id", "") or "").strip()
+    if not worker_id:
+        return False
+
+    hb = session.get(WorkerHeartbeat, worker_id)
+    if not hb or not hb.updated_at or hb.updated_at < process_stale_before:
+        return False
+    return (not hb.active_at) or hb.active_at < execution_stale_before
+
+
+def _touch_media_sync_cooldown_after_terminal_failure(session: Session, *, job: Job, now) -> None:
+    if str(getattr(job, "type", "") or "").strip() != "media.sync_videos":
+        return
+    raw_media_id = (job.params or {}).get("media_id") if isinstance(job.params, dict) else None
+    try:
+        media_id = uuid.UUID(str(raw_media_id))
+    except Exception:
+        return
+    media = session.get(Media, media_id)
+    if media:
+        media.last_video_sync_at = now
+
+
+def _fail_sync_job_for_execution_heartbeat_stale(
+    session: Session,
+    *,
+    job: Job,
+    now,
+    execution_stale_after_seconds: int,
+) -> None:
+    worker_id = job.worker_id
+    job.attempt = int(job.attempt or 0) + 1
+    job.max_attempts = _max_attempts(job)
+    reason = (
+        "sync execution heartbeat stale; "
+        f"worker_id={worker_id} "
+        f"job_type={job.type} "
+        f"stale_after_seconds={int(execution_stale_after_seconds)}"
+    )
+    job.error_message = reason
+    job.error_stack = None
+    job.worker_id = None
+    job.lease_expires_at = None
+    job.progress_current = None
+    job.progress_total = None
+
+    if job.attempt < job.max_attempts:
+        backoff = _retry_backoff_seconds(job.attempt)
+        job.status = "pending"
+        job.scheduled_for = now + timedelta(seconds=backoff)
+        job.started_at = None
+        job.finished_at = None
+        session.add(
+            JobEvent(
+                job_id=job.id,
+                level="warn",
+                message="sync execution heartbeat stale; retry scheduled",
+                data={"attempt": job.attempt, "backoff_seconds": backoff, "worker_id": str(worker_id or "")},
+            )
+        )
+        return
+
+    job.status = "failed"
+    job.finished_at = now
+    _touch_media_sync_cooldown_after_terminal_failure(session, job=job, now=now)
+    session.add(
+        JobEvent(
+            job_id=job.id,
+            level="error",
+            message="sync execution heartbeat stale; no retry",
+            data={"attempt": job.attempt, "worker_id": str(worker_id or "")},
+        )
+    )
 
 
 def requeue_expired_running_jobs(session: Session) -> int:
@@ -201,10 +314,30 @@ def requeue_orphan_running_jobs(
     if not jobs:
         return 0
 
+    requeue_jobs: list[Job] = []
+    for job in jobs:
+        if _is_sync_execution_heartbeat_stale(
+            session,
+            job=job,
+            process_stale_before=process_stale_before,
+            execution_stale_before=execution_stale_before,
+        ):
+            _fail_sync_job_for_execution_heartbeat_stale(
+                session,
+                job=job,
+                now=now,
+                execution_stale_after_seconds=execution_stale_after,
+            )
+            continue
+        requeue_jobs.append(job)
+
+    if not requeue_jobs:
+        return len(jobs)
+
     max_pending_priority = session.execute(select(func.max(Job.priority)).where(Job.status == "pending")).scalar_one_or_none()
     base_priority = int((max_pending_priority or 0) + max(1, int(priority_bump or 0)))
 
-    for idx, job in enumerate(jobs):
+    for idx, job in enumerate(requeue_jobs):
         desired_priority = max(int(job.priority or 0), base_priority + idx)
         if _merge_requeue_into_existing_pending_job(
             session,
@@ -272,7 +405,7 @@ def claim_next_job(
             if str(getattr(candidate, "type", "") or "") in skip_types:
                 continue
             provider = job_provider(session, candidate)
-            if provider and is_provider_paused(session, provider):
+            if provider and _provider_pause_blocks_job(session, job=candidate, provider=provider):
                 continue
             role = worker_role_for_job(session, candidate)
             if role and is_worker_role_paused(session, role):

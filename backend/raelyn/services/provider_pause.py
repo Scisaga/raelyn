@@ -11,6 +11,7 @@ from raelyn.timeutil import utcnow
 
 PROVIDER_PAUSE_CONFIG_KEY = "provider_pause"
 BILIBILI_PROVIDER_PAUSE_REASON = "bilibili_risk_control"
+_PUBLIC_DISCOVERY_PAUSE_REASONS = {"youtube_bot_check", "youtube_auth_check"}
 
 
 class ProviderPauseRequestError(RuntimeError):
@@ -85,6 +86,17 @@ def is_provider_paused(session: Session, provider: str) -> bool:
     return bool(get_provider_pause(session, provider).get("paused"))
 
 
+def provider_pause_allows_public_discovery(pause: dict[str, Any]) -> bool:
+    if not bool((pause or {}).get("paused")):
+        return False
+    reason = str((pause or {}).get("reason") or "").strip()
+    return reason.startswith("ytdlp_cookies_") or reason in _PUBLIC_DISCOVERY_PAUSE_REASONS
+
+
+def is_public_discovery_allowed_during_provider_pause(session: Session, provider: str) -> bool:
+    return provider_pause_allows_public_discovery(get_provider_pause(session, provider))
+
+
 def set_provider_paused(session: Session, *, provider: str, reason: str, message: str) -> dict[str, Any]:
     p = _normalize_provider(provider)
     if not p:
@@ -142,7 +154,7 @@ def clear_provider_pauses(session: Session, *, providers: list[str] | None = Non
 
 def job_provider(session: Session, job: Job) -> str | None:
     job_type = str(getattr(job, "type", "") or "").strip()
-    if job_type in {"video.download.youtube", "video.backfill_subtitles.youtube"}:
+    if job_type in {"video.download.youtube", "video.backfill_subtitles.youtube", "video.enrich_metadata.youtube"}:
         return "youtube"
     if job_type in {"video.download.bilibili", "video.backfill_subtitles.bilibili"}:
         return "bilibili"
