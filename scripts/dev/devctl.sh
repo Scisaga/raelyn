@@ -360,7 +360,11 @@ start_one() {
 
   echo "[start] ${name}: ${cmd[*]}"
   : >"$log_file"
-  nohup "${cmd[@]}" >>"$log_file" 2>&1 &
+  local launch_cmd=( "${cmd[@]}" )
+  if command -v setsid >/dev/null 2>&1; then
+    launch_cmd=(setsid "${cmd[@]}")
+  fi
+  nohup "${launch_cmd[@]}" >>"$log_file" 2>&1 &
   local pid="$!"
   write_pid "$pid_file" "$pid"
   echo "[start] ${name}: pid=${pid} log=${log_file}"
@@ -382,7 +386,7 @@ wait_for_http_ok() {
       echo "[start] ${name}: process exited during startup; inspect ${log_file}" >&2
       return 1
     fi
-    local curl_args=(-fsS --max-time 2)
+    local curl_args=(-fsS --noproxy "*" --max-time 2)
     if [[ "$#" -gt 0 ]]; then
       curl_args+=( "$@" )
     fi
@@ -400,11 +404,8 @@ wait_for_http_ok() {
 start_api() {
   ensure_ui_built
   start_one "api" "$API_PID_FILE" "$API_LOG" bash scripts/dev/run-api.sh
-  local -a api_wait_args=()
-  if [[ -n "${API_BEARER_TOKEN:-}" ]]; then
-    api_wait_args=(-H "Authorization: Bearer ${API_BEARER_TOKEN}")
-  fi
-  wait_for_http_ok "api" "http://127.0.0.1:8000/api/health" "$API_PID_FILE" "$API_LOG" 120 "${api_wait_args[@]}"
+  # /api/health checks downstream dependencies and can be slower than API readiness.
+  wait_for_http_ok "api" "http://127.0.0.1:8000/" "$API_PID_FILE" "$API_LOG" 120
 }
 
 kill_api_strays() {

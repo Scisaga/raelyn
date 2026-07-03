@@ -267,9 +267,10 @@ PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.reset_event_extraction_v2 
 
 - `devctl.sh start/restart` 会先执行一次 UI 构建（等价于 `./scripts/dev/build-ui.sh`）。如需跳过可设置 `SKIP_UI_BUILD=1`。
 - `devctl.sh restart-api` 只重启 API 进程并保留 worker / scheduler 运行；它同样会先执行一次 UI 构建，适合只更新 Web/API 代码后的快速重启。
-- `devctl.sh start/restart/restart-api` 会等待 API 健康检查最多 120 秒；API 启动阶段需要执行数据库初始化、对象存储检查和 orphan job 恢复，偶尔超过 30 秒不代表启动失败。
+- `devctl.sh start/restart/restart-api` 会等待 API 本机轻量 readiness 最多 120 秒；该检查只确认 API 已完成启动并可响应，不把 ASR / Embedding / LLM 等完整依赖健康检查作为启动门槛。完整健康状态仍通过 `GET /api/health` 查看。
 - `devctl.sh start/restart` 会按 `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 自动扩展对应 provider 的下载 worker 数。
 - `devctl.sh start/restart` 会按 `ASR_WORKER_CONCURRENCY` / `EMBEDDING_WORKER_CONCURRENCY` / `ANALYSIS_WORKER_CONCURRENCY` / `AI_WORKER_CONCURRENCY` 自动扩展 asr / embedding / analysis / ai worker 数，默认均为 `1`；其中 `EMBEDDING_WORKER_CONCURRENCY=0` / `ANALYSIS_WORKER_CONCURRENCY=0` 表示当前节点不启动对应 worker。事件 Regime 链路需要 dirty/rebuild 正常推进时，不要把 `ANALYSIS_WORKER_CONCURRENCY` 设为 `0`。
+- `devctl.sh` 后台进程会优先以独立进程组启动；如需停止服务，使用 `./scripts/dev/devctl.sh stop`。
 - `devctl.sh` 启动的 worker 会先进入轻量 supervisor；worker 子进程崩溃后会自动拉起，默认等待 `WORKER_RESTART_DELAY_SECONDS=5` 秒，也可用旧的 `DEV_WORKER_RESTART_DELAY_SECONDS` 覆盖本地等待时间。
 - 下载类 worker 的主执行心跳超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进时，会主动退出并交给 supervisor 重启，避免进程心跳仍在线但下载槽 advisory lock 长时间不释放。
 - 只有在 `.env` 里配置了 `API_BEARER_TOKEN` 时，主 API 进程才会额外挂载 `/mcp`；否则 `/mcp` 与 `/mcp/health` 返回 `404`。
