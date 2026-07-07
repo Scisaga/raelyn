@@ -12,7 +12,7 @@ import httpx
 from raelyn.config import settings
 from raelyn.services.inference import get_effective_asr_config
 
-_ASR_TIMEOUT_MIN_REALTIME_FACTOR = 12
+_ASR_TIMEOUT_MIN_REALTIME_FACTOR = 5
 _ASR_TIMEOUT_OVERHEAD_SECONDS = 120
 _ASR_TIMEOUT_MAX_SECONDS = 3300
 _ASR_HEALTH_TIMEOUT_SECONDS = 2.0
@@ -53,8 +53,8 @@ def resolve_asr_timeout_seconds(*, base_timeout_seconds: int, media_duration_sec
     if not isinstance(media_duration_seconds, int) or media_duration_seconds <= 0:
         return base
 
-    # 长视频的转写速度通常低于下载速度；这里按至少 12x realtime 估算，
-    # 再预留固定上传/排队开销，但仍然限制在 worker 1 小时 lease 之内。
+    # 长视频批量重跑时，qwen3-asr 的尾部样本会明显低于 12x realtime；
+    # 按 5x realtime 预留长音频时间，避免客户端超时后后端仍继续占用推理槽。
     estimated = math.ceil(media_duration_seconds / _ASR_TIMEOUT_MIN_REALTIME_FACTOR) + _ASR_TIMEOUT_OVERHEAD_SECONDS
     return max(base, min(_ASR_TIMEOUT_MAX_SECONDS, estimated))
 

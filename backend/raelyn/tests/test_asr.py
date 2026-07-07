@@ -163,10 +163,15 @@ class AsrServiceTests(unittest.TestCase):
         self.assertEqual(resolve_asr_timeout_seconds(base_timeout_seconds=600, media_duration_seconds=300), 600)
 
     def test_resolve_asr_timeout_grows_for_long_media(self) -> None:
-        self.assertEqual(resolve_asr_timeout_seconds(base_timeout_seconds=600, media_duration_seconds=15705), 1429)
+        self.assertEqual(resolve_asr_timeout_seconds(base_timeout_seconds=600, media_duration_seconds=5670), 1254)
+        self.assertEqual(resolve_asr_timeout_seconds(base_timeout_seconds=600, media_duration_seconds=8681), 1857)
+        self.assertEqual(resolve_asr_timeout_seconds(base_timeout_seconds=600, media_duration_seconds=15705), 3261)
 
     def test_resolve_asr_timeout_preserves_explicitly_larger_base_timeout(self) -> None:
-        self.assertEqual(resolve_asr_timeout_seconds(base_timeout_seconds=1800, media_duration_seconds=15705), 1800)
+        self.assertEqual(resolve_asr_timeout_seconds(base_timeout_seconds=1800, media_duration_seconds=3600), 1800)
+
+    def test_resolve_asr_timeout_stays_below_worker_lease(self) -> None:
+        self.assertEqual(resolve_asr_timeout_seconds(base_timeout_seconds=600, media_duration_seconds=20000), 3300)
 
     def test_backend_capacity_guard_defers_when_replicas_are_full(self) -> None:
         defer = _asr_backend_defer_from_health(

@@ -81,6 +81,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - Provider 级并发：如 YouTube 同时下载数、B 站同时下载数
 - Media 级并发：同一媒体同一时刻只允许 1 个同步 / 下载任务；`media.sync_videos` 运行时会持有事务级媒体 advisory lock，拿不到锁时重排队
 - ASR 后端容量：当 qwen3-asr-openai `/health` 显示 replica 推理槽位已满或已有等待队列时，worker claim 会跳过 `video.asr_transcribe`，让任务继续留在 DB 的 `pending` 队列中等待后端释放容量
+- ASR 长视频超时：`video.asr_transcribe` 会在 `ASR_TIMEOUT_SECONDS` 基础上按媒体时长动态放大请求 timeout，避免长视频客户端先超时重试、而后端仍继续占用推理槽
 
 当前项目对下载并发采用“强绑定语义”：
 

@@ -132,6 +132,9 @@
   - 该门控只影响 `video.asr_transcribe` 的任务调度节奏，不改变 ASR 请求体、认证、连接复用或后端模型参数。
 - `ASR_BACKEND_CAPACITY_DEFER_SECONDS`
   - 当 ASR `/health` 没有返回 `backend_queue_timeout_seconds` 时，handler 兜底重排 ASR 任务的默认延后秒数，默认 `30`。
+- `ASR_TIMEOUT_SECONDS`
+  - 本地 ASR 请求的短音频基础超时，默认 `600` 秒。
+  - `video.asr_transcribe` 处理长视频时会按媒体时长动态放大 HTTP timeout：约按 `5x realtime + 120s` 估算，并限制在 worker 1 小时 lease 以下，避免 90 分钟以上视频过早客户端超时后，ASR 后端仍继续占用推理槽。
 - `EMBEDDING_WORKER_CONCURRENCY`
   - `devctl.sh` / Docker 单容器入口启动 `embedding` worker 的进程数，默认 `1`。
   - 可设为 `0`，表示当前节点不启动 `embedding` worker；事件 embedding 任务会保留在 `pending`，直到有 embedding worker 可领取。

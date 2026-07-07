@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from urllib.parse import quote
 
 
@@ -33,8 +34,16 @@ def build_download_filename(*, media_name: str | None, title: str | None, fallba
 
 
 def content_disposition_attachment(filename: str) -> str:
-    # Use both `filename` (ASCII-ish) and RFC 5987 `filename*` for UTF-8.
-    safe = re.sub(r'["\\\\]', "_", filename)
-    safe = re.sub(r"[\r\n]+", " ", safe).strip() or "download.bin"
-    return f'attachment; filename="{safe}"; filename*=UTF-8\'\'{quote(filename)}'
+    raw = re.sub(r"[\r\n\t]+", " ", str(filename or "")).strip() or "download.bin"
+    base, dot, ext = raw.rpartition(".")
+    if not dot:
+        base = raw
+        ext = "bin"
 
+    ascii_base = unicodedata.normalize("NFKD", base).encode("ascii", "ignore").decode("ascii")
+    ascii_base = re.sub(r'["\\\\]', "_", ascii_base)
+    ascii_base = re.sub(r"[^A-Za-z0-9._ -]+", "_", ascii_base)
+    ascii_base = re.sub(r"\s+", "_", ascii_base).strip(" ._") or "download"
+    ascii_ext = re.sub(r"[^A-Za-z0-9]+", "", ext).lower()[:16] or "bin"
+    ascii_filename = f"{ascii_base}.{ascii_ext}"
+    return f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{quote(raw, safe="")}'

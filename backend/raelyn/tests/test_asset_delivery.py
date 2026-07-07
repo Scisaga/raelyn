@@ -19,6 +19,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from raelyn import config
 from raelyn.api.assets import _stream_asset
 from raelyn.api.system import system_status
+from raelyn.services.downloads import content_disposition_attachment
 from raelyn.services.s3 import ObjectStreamResult, _format_http_last_modified
 
 
@@ -83,6 +84,31 @@ class AssetDeliveryTests(unittest.TestCase):
         self.assertEqual(response.headers.get("Content-Range"), "bytes 0-4/5")
         self.assertEqual(response.headers.get("Content-Length"), "5")
         self.assertEqual(response.media_type, "text/plain")
+
+    def test_stream_asset_attachment_accepts_non_ascii_filename(self) -> None:
+        asset = SimpleNamespace(id=uuid.uuid4(), s3_bucket="raelyn", s3_key="demo.m4a")
+        stream = ObjectStreamResult(
+            body=io.BytesIO(b"audio"),
+            content_length=5,
+            content_type="audio/mp4",
+            content_range=None,
+            etag=None,
+            last_modified=None,
+        )
+        with patch("raelyn.api.assets.s3_get_object_stream", return_value=stream):
+            response = _stream_asset(asset, byte_range=None, as_attachment=True, filename="中文标题.m4a")
+
+        header = response.headers.get("Content-Disposition") or ""
+        self.assertIn('filename="download.m4a"', header)
+        self.assertIn("filename*=UTF-8''", header)
+        header.encode("latin-1")
+
+    def test_content_disposition_attachment_uses_ascii_fallback_filename(self) -> None:
+        header = content_disposition_attachment("欢欢吹牛小屋_价值投资.m4a")
+
+        self.assertIn('filename="download.m4a"', header)
+        self.assertIn("%E6%AC%A2%E6%AC%A2", header)
+        header.encode("latin-1")
 
     def test_stream_asset_raises_416_for_invalid_range(self) -> None:
         asset = SimpleNamespace(id=uuid.uuid4(), s3_bucket="raelyn", s3_key="demo.txt")
