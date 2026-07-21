@@ -75,6 +75,8 @@ Docker 单容器入口会直接守护 worker 子进程：某个 worker 崩溃退
 
 推荐在 WSL 里安装 Node，避免使用 `/mnt/c/...` 的 Windows npm 导致构建失败：
 
+当前 yt-dlp EJS 要求 Node.js 22 或更高版本；项目脚本默认安装 Node.js 22.23.1。旧的 Node.js 20 会导致 YouTube `n challenge` 返回 `no solutions`，最终只剩图片格式、无法下载视频。
+
 ```bash
 ./scripts/dev/bootstrap-node-wsl.sh
 ```
@@ -97,8 +99,9 @@ EJS 只解决 YouTube JS / n challenge；若 cookies 很快再次触发“确认
 
 - `n challenge solving failed`
 - `Only images are available for download`
+- `No video formats found`
 
-通常意味着 EJS 解析失败（版本过旧或环境缺依赖）。可直接执行脚本升级 `.venv` 里的 `yt-dlp[default]` 与 `yt-dlp-ejs`，并做基础自检：
+前两类通常意味着 EJS / JS challenge 解析失败（版本过旧或环境缺依赖）。`No video formats found` 表示 yt-dlp 没拿到任何可播放 formats，除 EJS 外还要检查 `YTDLP_PROXY` 出口、PO Token Provider、cookies 导出会话和视频访问限制。可先执行脚本升级 `.venv` 里的 `yt-dlp[default]` 与 `yt-dlp-ejs`，并做基础自检：
 
 ```bash
 ./scripts/dev/install-ytdlp-ejs.sh
@@ -215,7 +218,8 @@ YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“�
 - 若你手动多终端启动，并且希望兑现 `AI_WORKER_CONCURRENCY=N` 的 LLM 任务并发，需要把 `./scripts/dev/run-worker.sh ai` 至少启动 `N` 次。
 - `ai` worker 负责 `video.extract_events`、`video.extract_events_batch`、`playlist.backfill_events` 与 `playlist.backfill_events_range`，播放列表回填父任务先按月拆分范围任务，范围任务再按 source 字符数投递批量或单视频抽取；事件抽取读取 `plain` transcript 并调用 LLM。Ollama `/api/generate` 事件抽取会使用 endpoint + model 级 advisory lock，锁忙时重排任务，因此提高 `AI_WORKER_CONCURRENCY` 不会让同一个本地大模型的事件抽取并发增加。
 - `embedding` worker 负责 `event.embed`，只为 accepted 事件生成结构化事件 embedding。
-- `analysis` worker 负责 `playlist.mark_event_regime_dirty` 与 `playlist.build_event_regime_snapshot`。即使临时提高 AI 并发，也至少保留 1 个 analysis worker 用于 dirty 合并和 Regime 重建；生产环境建议给该 worker 单独配置 systemd / cgroup `MemoryMax=6G`，与应用内 `ANALYSIS_MAX_RSS_BYTES` 保持一致。
+- `analysis` worker 负责兼容任务 `playlist.mark_event_regime_dirty` 与 `playlist.build_event_regime_snapshot`。即使临时提高 AI 并发，也至少保留 1 个 analysis worker 用于 dirty 合并和语义快照构建。快照按 `ANALYSIS_STREAM_BATCH_SIZE` 两遍流式读取，并在每批检查 `MemAvailable` 与 RSS；应用内 `ANALYSIS_MAX_RSS_BYTES` 默认 6 GiB。若生产环境另设 systemd / cgroup `MemoryMax`，应与它保持一致或略高。
+- 6 GiB 是进程安全上限而非预分配。32 GiB 主机先保留默认值并观察构建任务峰值 RSS 与全机 `MemAvailable`；只有流式构建仍触顶、机器同时有足够余量时再提高，且必须同步提高 cgroup 上限，避免两个门槛互相冲突。
 
 手动按播放列表时间范围投递事件抽取：
 
@@ -233,7 +237,7 @@ PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.reset_event_extraction_v2
 PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.reset_event_extraction_v2 --yes
 ```
 
-默认命令只 dry-run 并输出将删除的事件、Regime 派生数据、事件管线 job 与 `video_event_extraction_run` 计数；只有显式 `--yes` 才执行删除。执行前应保持 `ai`、`embedding`、`analysis` 队列暂停，并确认没有事件抽取管线 running；该命令只清理事件管线 job，不删除 ASR、下载、字幕润色或简报任务。
+默认命令只 dry-run 并输出将删除的事件、语义快照派生数据、事件管线 job 与 `video_event_extraction_run` 计数；只有显式 `--yes` 才执行删除。执行前应保持 `ai`、`embedding`、`analysis` 队列暂停，并确认没有事件抽取管线 running；该命令只清理事件管线 job，不删除 ASR、下载、字幕润色或简报任务。
 
 手动探测并投递字幕回补：
 
@@ -269,7 +273,7 @@ PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.reset_event_extraction_v2 
 - `devctl.sh restart-api` 只重启 API 进程并保留 worker / scheduler 运行；它同样会先执行一次 UI 构建，适合只更新 Web/API 代码后的快速重启。
 - `devctl.sh start/restart/restart-api` 会等待 API 本机轻量 readiness 最多 120 秒；该检查只确认 API 已完成启动并可响应，不把 ASR / Embedding / LLM 等完整依赖健康检查作为启动门槛。完整健康状态仍通过 `GET /api/health` 查看。
 - `devctl.sh start/restart` 会按 `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 自动扩展对应 provider 的下载 worker 数。
-- `devctl.sh start/restart` 会按 `ASR_WORKER_CONCURRENCY` / `EMBEDDING_WORKER_CONCURRENCY` / `ANALYSIS_WORKER_CONCURRENCY` / `AI_WORKER_CONCURRENCY` 自动扩展 asr / embedding / analysis / ai worker 数，默认均为 `1`；其中 `EMBEDDING_WORKER_CONCURRENCY=0` / `ANALYSIS_WORKER_CONCURRENCY=0` 表示当前节点不启动对应 worker。事件 Regime 链路需要 dirty/rebuild 正常推进时，不要把 `ANALYSIS_WORKER_CONCURRENCY` 设为 `0`。
+- `devctl.sh start/restart` 会按 `ASR_WORKER_CONCURRENCY` / `EMBEDDING_WORKER_CONCURRENCY` / `ANALYSIS_WORKER_CONCURRENCY` / `AI_WORKER_CONCURRENCY` 自动扩展 asr / embedding / analysis / ai worker 数，默认均为 `1`；其中 `EMBEDDING_WORKER_CONCURRENCY=0` / `ANALYSIS_WORKER_CONCURRENCY=0` 表示当前节点不启动对应 worker。事件图谱链路需要 dirty/build 正常推进时，不要把 `ANALYSIS_WORKER_CONCURRENCY` 设为 `0`。
 - `devctl.sh` 后台进程会优先以独立进程组启动；如需停止服务，使用 `./scripts/dev/devctl.sh stop`。
 - `devctl.sh` 启动的 worker 会先进入轻量 supervisor；worker 子进程崩溃后会自动拉起，默认等待 `WORKER_RESTART_DELAY_SECONDS=5` 秒，也可用旧的 `DEV_WORKER_RESTART_DELAY_SECONDS` 覆盖本地等待时间。
 - 下载类 worker 的主执行心跳超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进时，会主动退出并交给 supervisor 重启，避免进程心跳仍在线但下载槽 advisory lock 长时间不释放。

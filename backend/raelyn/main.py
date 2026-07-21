@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
 
 from raelyn.api.auth import OptionalBearerTokenAuthMiddleware
 from raelyn.api.assets import router as assets_router
@@ -30,8 +31,16 @@ from raelyn.mcp.auth import BearerTokenAuthMiddleware, normalize_mount_path
 from raelyn.services.s3 import s3_ensure_bucket
 from raelyn.services.system_pause import SystemPausedError
 from starlette.routing import Route
+from starlette.types import Scope
 
 static_dir = Path(__file__).resolve().parents[2] / "static"
+
+
+class RevalidatingStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def _static_root_file(filename: str, *, media_type: str) -> FileResponse:
@@ -67,8 +76,8 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="raelyn", version="0.1.0", lifespan=lifespan)
     app.add_middleware(OptionalBearerTokenAuthMiddleware, token=settings.api_bearer_token, protected_prefix="/api")
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-    app.mount("/pwa", StaticFiles(directory=str(static_dir / "pwa")), name="pwa")
+    app.mount("/static", RevalidatingStaticFiles(directory=str(static_dir)), name="static")
+    app.mount("/pwa", RevalidatingStaticFiles(directory=str(static_dir / "pwa")), name="pwa")
     if mcp_mount is not None:
         app.add_middleware(
             BearerTokenAuthMiddleware,
@@ -83,8 +92,7 @@ def create_app() -> FastAPI:
 
     @app.api_route("/", methods=["GET", "HEAD"])
     def index() -> FileResponse:
-        index_path = static_dir / "index.html"
-        return FileResponse(str(index_path))
+        return _static_root_file("index.html", media_type="text/html")
 
     @app.api_route("/manifest.webmanifest", methods=["GET", "HEAD"])
     def web_manifest() -> FileResponse:
@@ -134,8 +142,7 @@ def create_app() -> FastAPI:
             mcp_prefix = mcp_base_path.lstrip("/")
             if full_path == mcp_prefix or full_path.startswith(f"{mcp_prefix}/"):
                 raise HTTPException(status_code=404)
-        index_path = static_dir / "index.html"
-        return FileResponse(str(index_path))
+        return _static_root_file("index.html", media_type="text/html")
 
     return app
 

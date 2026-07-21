@@ -22,8 +22,8 @@ copyFileSync(
   resolve(vendorDir, "lightweight-charts.min.js")
 );
 
-buildIndexHtml({ uiDir, root });
 await buildAppBundle({ uiDir, root, minify: false });
+buildIndexHtml({ uiDir, root, assetVersion: "dev" });
 
 const tailwindCli = resolve(uiDir, "node_modules/.bin/tailwindcss");
 const args = ["-i", resolve(uiDir, "input.css"), "-o", cssOut, "--minify", "--watch"];
@@ -55,7 +55,7 @@ setInterval(() => {
   if (sig && sig !== lastSig) {
     lastSig = sig;
     try {
-      buildIndexHtml({ uiDir, root });
+      buildIndexHtml({ uiDir, root, assetVersion: "dev" });
     } catch (err) {
       console.error("[ui] html build failed:", err);
     }

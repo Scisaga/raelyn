@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
+from datetime import timedelta
 
 import httpx
 from sqlalchemy import select
@@ -10,17 +12,25 @@ from sqlalchemy.orm import Session
 from raelyn.config import settings
 from raelyn.jobs.enqueue import enqueue_in, enqueue_job
 from raelyn.jobs.log import job_log
+from raelyn.jobs.progress import set_job_lease_deadline
 from raelyn.jobs.registry import registry
 from raelyn.jobs.reschedule import JobReschedule, JobTerminalFailure
 from raelyn.models import Asset, Job, Video
 from raelyn.services.assets import ensure_asset
-from raelyn.services.asr import asr_enabled, asr_transcribe, inspect_asr_backend_defer
+from raelyn.services.asr import (
+    asr_enabled,
+    asr_transcribe,
+    inspect_asr_backend_defer,
+    resolve_asr_timeout_seconds,
+)
 from raelyn.services.ffmpeg import extract_audio_to_m4a
-from raelyn.services.llm import llm_enabled
 from raelyn.services.event_analysis import schedule_video_event_extraction
+from raelyn.services.inference import LOCAL_PROVIDER, get_effective_asr_config
+from raelyn.services.llm import llm_enabled
 from raelyn.services.s3 import s3_download_file
 from raelyn.services.subtitles import normalize_subtitle
 from raelyn.services.workdir import job_workdir
+from raelyn.timeutil import utcnow
 
 from .briefs import _enqueue_brief_for_video_playlists
 from .common import _best_language_subtitle
@@ -28,6 +38,8 @@ from .common import _best_language_subtitle
 
 _ASR_TERMINAL_HTTP_STATUS_CODES = {400, 401, 403, 404, 413, 415, 422, 507}
 _ASR_TRANSIENT_HTTP_STATUS_CODES = {429, 502, 503, 504}
+_LOCAL_ASR_READ_TIMEOUT_MAX_ATTEMPTS = 3
+_LOCAL_ASR_LEASE_GRACE_SECONDS = 300
 _ASR_AUTO_LANGUAGE_VALUES = {"", "auto", "detect", "mixed", "multilingual", "und", "unknown"}
 _SUBTITLE_LANGUAGE_ALIASES = {
     "ai-zh": "zh",
@@ -291,16 +303,72 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
             reason=defer.reason,
         )
 
+    asr_config = get_effective_asr_config(session)
+    request_timeout_seconds = resolve_asr_timeout_seconds(
+        base_timeout_seconds=asr_config.timeout_seconds,
+        media_duration_seconds=video.duration_sec,
+        provider=asr_config.provider,
+    )
     requested_language = _configured_asr_language()
     with job_workdir(job.id) as wd:
         local_audio = wd / f"audio.{audio_asset.format}"
         s3_download_file(bucket=audio_asset.s3_bucket, key=audio_asset.s3_key, local_path=local_audio)
+        audio_size_bytes = local_audio.stat().st_size
+        lease_expires_at = job.lease_expires_at
+        if asr_config.provider == LOCAL_PROVIDER:
+            requested_lease_expires_at = utcnow() + timedelta(
+                seconds=request_timeout_seconds + _LOCAL_ASR_LEASE_GRACE_SECONDS
+            )
+            if lease_expires_at is None or lease_expires_at < requested_lease_expires_at:
+                worker_id = str(job.worker_id or "").strip()
+                if not worker_id or not set_job_lease_deadline(
+                    job_id=job.id,
+                    worker_id=worker_id,
+                    lease_expires_at=requested_lease_expires_at,
+                ):
+                    raise RuntimeError("asr job lease extension rejected because job ownership changed")
+                lease_expires_at = requested_lease_expires_at
+
+        attempt_number = int(job.attempt or 0) + 1
+        request_event_data = {
+            "provider": asr_config.provider,
+            "media_duration_seconds": video.duration_sec,
+            "audio_size_bytes": audio_size_bytes,
+            "read_timeout_seconds": request_timeout_seconds,
+            "lease_expires_at": lease_expires_at.isoformat() if lease_expires_at else None,
+            "attempt": attempt_number,
+        }
+        if asr_config.provider == LOCAL_PROVIDER:
+            request_event_data["max_read_timeout_attempts"] = _LOCAL_ASR_READ_TIMEOUT_MAX_ATTEMPTS
+        job_log(session, job, "asr request started", data=request_event_data)
+        session.commit()
+        request_started_at = time.monotonic()
         try:
             resp = asr_transcribe(
                 audio_path=local_audio,
                 language=requested_language,
                 media_duration_seconds=video.duration_sec,
+                config=asr_config,
+                timeout_seconds=request_timeout_seconds,
             )
+        except httpx.ReadTimeout as exc:
+            request_elapsed_seconds = time.monotonic() - request_started_at
+            timeout_event_data = dict(request_event_data)
+            timeout_event_data["request_elapsed_seconds"] = round(request_elapsed_seconds, 3)
+            job_log(session, job, "asr request read timed out", level="error", data=timeout_event_data)
+            session.commit()
+            if (
+                asr_config.provider == LOCAL_PROVIDER
+                and attempt_number >= _LOCAL_ASR_READ_TIMEOUT_MAX_ATTEMPTS
+            ):
+                reason = (
+                    "local asr read timed out "
+                    f"after {request_timeout_seconds}s "
+                    f"(media_duration_seconds={video.duration_sec}, "
+                    f"attempt={attempt_number}/{_LOCAL_ASR_READ_TIMEOUT_MAX_ATTEMPTS})"
+                )
+                raise JobTerminalFailure(reason) from exc
+            raise
         except httpx.HTTPStatusError as exc:
             status_code = int(exc.response.status_code)
             detail = _asr_error_detail(exc)
@@ -314,6 +382,14 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
                     reason=f"asr backend returned transient http {status_code}: {detail}",
                 )
             raise
+
+        request_elapsed_seconds = time.monotonic() - request_started_at
+        success_event_data = dict(request_event_data)
+        success_event_data["request_elapsed_seconds"] = round(request_elapsed_seconds, 3)
+        if isinstance(video.duration_sec, int) and video.duration_sec > 0 and request_elapsed_seconds > 0:
+            success_event_data["realtime_factor"] = round(video.duration_sec / request_elapsed_seconds, 3)
+        job_log(session, job, "asr request succeeded", data=success_event_data)
+        session.commit()
 
         segments_path = wd / "segments.json"
         plain_path = wd / "plain.txt"

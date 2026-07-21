@@ -23,7 +23,6 @@ from raelyn.models import (
     EventRegimeState,
     Media,
     MarketEvent,
-    MarketEventEmbedding,
     MarketEventEntity,
     MarketEventEvidence,
     MarketEventRelation,
@@ -42,6 +41,7 @@ from raelyn.services.event_analysis import (
     mark_playlist_event_regime_dirty,
     pending_event_regime_job,
     playlist_event_coverage,
+    playlist_event_regime_coverage,
     request_event_regime_rebuild,
     request_playlist_event_backfill,
     update_event_status,
@@ -243,6 +243,8 @@ class EventRegimeSummaryOut(BaseModel):
     last_error: str | None = None
     event_total: int = 0
     event_embedded: int = 0
+    event_eligible: int = 0
+    event_scale_excluded: int = 0
     event_skipped: int = 0
     event_failed: int = 0
     candidate_count: int = 0
@@ -936,15 +938,11 @@ def _event_regime_summary(session, playlist_id: uuid.UUID) -> EventRegimeSummary
     pending_job = pending_event_regime_job(session, playlist_id)
     backfill_job = _active_playlist_event_backfill_job(session, playlist_id)
     last_ready_run = session.get(EventRegimeRun, state.last_ready_run_id) if state.last_ready_run_id else None
-    event_total = event_embedded = event_skipped = event_failed = 0
+    coverage = playlist_event_regime_coverage(session, playlist_id)
     candidate_count = 0
     signal_start_date = None
     signal_end_date = None
     if last_ready_run:
-        event_total = int(last_ready_run.event_total or 0)
-        event_embedded = int(last_ready_run.event_embedded or 0)
-        event_skipped = int(last_ready_run.event_skipped or 0)
-        event_failed = int(last_ready_run.event_failed or 0)
         candidate_count = int(
             session.execute(
                 select(func.count()).select_from(EventRegimeCandidate).where(EventRegimeCandidate.regime_run_id == last_ready_run.id)
@@ -954,28 +952,8 @@ def _event_regime_summary(session, playlist_id: uuid.UUID) -> EventRegimeSummary
         signal_start_date, signal_end_date = session.execute(
             select(func.min(EventRegimeSignal.period_date), func.max(EventRegimeSignal.period_date)).where(
                 EventRegimeSignal.regime_run_id == last_ready_run.id,
-                EventRegimeSignal.granularity == "day",
             )
         ).one()
-    else:
-        coverage = playlist_event_coverage(session, playlist_id)
-        event_total = int(coverage.get("accepted") or 0)
-        event_embedded = int(
-            session.execute(
-                select(func.count())
-                .select_from(MarketEventEmbedding)
-                .join(MarketEvent, MarketEvent.id == MarketEventEmbedding.event_id)
-                .join(Video, Video.id == MarketEvent.source_video_id)
-                .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
-                .where(
-                    PlaylistMedia.playlist_id == playlist_id,
-                    MarketEvent.status == "accepted",
-                    MarketEventEmbedding.status == "ready",
-                )
-            ).scalar_one()
-            or 0
-        )
-        event_skipped = max(0, event_total - event_embedded)
     return EventRegimeSummaryOut(
         playlist_id=playlist_id,
         analysis_dirty=bool(state.analysis_dirty),
@@ -986,10 +964,12 @@ def _event_regime_summary(session, playlist_id: uuid.UUID) -> EventRegimeSummary
         last_requested_at=state.last_requested_at,
         last_built_at=state.last_built_at,
         last_error=state.last_error,
-        event_total=event_total,
-        event_embedded=event_embedded,
-        event_skipped=event_skipped,
-        event_failed=event_failed,
+        event_total=coverage["event_total"],
+        event_embedded=coverage["event_embedded"],
+        event_eligible=coverage["event_eligible"],
+        event_scale_excluded=coverage["event_scale_excluded"],
+        event_skipped=coverage["event_skipped"],
+        event_failed=coverage["event_failed"],
         candidate_count=candidate_count,
         signal_start_date=signal_start_date,
         signal_end_date=signal_end_date,

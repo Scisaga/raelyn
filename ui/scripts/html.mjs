@@ -37,13 +37,16 @@ function assembleFile(filePath, rootDir, stack) {
   });
 }
 
-export function buildIndexHtml({ uiDir, root }) {
+export function buildIndexHtml({ uiDir, root, assetVersion = "dev" }) {
   const templatesRoot = resolve(uiDir, "templates/app");
   const entry = resolve(templatesRoot, "index.html");
   const outFile = resolve(root, "static/index.html");
 
   mkdirSync(dirname(outFile), { recursive: true });
-  const html = assembleFile(entry, templatesRoot, []);
+  const html = assembleFile(entry, templatesRoot, []).replaceAll(
+    "__RAELYN_ASSET_VERSION__",
+    encodeURIComponent(String(assetVersion || "dev"))
+  );
   writeFileSync(outFile, html, "utf8");
   console.log("[ui] built:", outFile);
 }
@@ -68,4 +71,3 @@ export function templatesSignature(uiDir) {
   }
   return parts.join("|");
 }
-

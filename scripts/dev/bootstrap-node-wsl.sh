@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-NODE_VERSION="${NODE_VERSION:-20.11.1}"
+NODE_VERSION="${NODE_VERSION:-22.23.1}"
 NVM_VERSION="${NVM_VERSION:-v0.40.1}"
 
 unset NODE_TLS_REJECT_UNAUTHORIZED || true

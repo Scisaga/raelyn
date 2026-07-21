@@ -6,7 +6,7 @@
   "scripts": {
     "ui:brand": "bash scripts/run-node.sh scripts/build-brand-logo.mjs",
     "ui:build": "bash scripts/run-node.sh scripts/build.mjs",
-    "ui:test": "node --test src/shared/__tests__/asset-delivery.test.mjs",
+    "ui:test": "node --test src/**/__tests__/*.test.mjs",
     "ui:watch": "bash scripts/run-node.sh scripts/watch.mjs"
   },
   "devDependencies": {

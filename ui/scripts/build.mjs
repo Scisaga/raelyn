@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -378,5 +379,10 @@ function buildPwaAssets() {
 console.log("[ui] built:", cssOut);
 buildPwaAssets();
 
-buildIndexHtml({ uiDir, root });
 await buildAppBundle({ uiDir, root, minify: true });
+const assetVersion = createHash("sha256")
+  .update(readFileSync(cssOut))
+  .update(readFileSync(resolve(root, "static/app.js")))
+  .digest("hex")
+  .slice(0, 12);
+buildIndexHtml({ uiDir, root, assetVersion });

@@ -93,6 +93,20 @@ def provider_pause_allows_public_discovery(pause: dict[str, Any]) -> bool:
     return reason.startswith("ytdlp_cookies_") or reason in _PUBLIC_DISCOVERY_PAUSE_REASONS
 
 
+def should_defer_provider_pause_for_retry(
+    err: Exception,
+    *,
+    next_attempt: int,
+    max_attempts: int,
+) -> bool:
+    """仅将可能由频道页瞬时失败触发的鉴权检查暂停延迟到最终尝试。"""
+    if not isinstance(err, ProviderPauseRequestError):
+        return False
+    if err.provider != "youtube" or err.reason != "youtube_auth_check":
+        return False
+    return max(1, int(next_attempt or 0)) < max(1, int(max_attempts or 0))
+
+
 def is_public_discovery_allowed_during_provider_pause(session: Session, provider: str) -> bool:
     return provider_pause_allows_public_discovery(get_provider_pause(session, provider))
 

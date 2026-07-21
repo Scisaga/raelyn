@@ -21,6 +21,7 @@ from raelyn.services.provider_pause import (
     get_provider_pause,
     provider_pause_allows_public_discovery,
     set_provider_paused,
+    should_defer_provider_pause_for_retry,
 )
 from raelyn.services.ytdlp import (
     _raise_if_provider_pause_messages,
@@ -67,6 +68,43 @@ class ProviderPauseStateTests(unittest.TestCase):
         self.assertTrue(provider_pause_allows_public_discovery({"paused": True, "reason": "youtube_auth_check"}))
         self.assertFalse(provider_pause_allows_public_discovery({"paused": True, "reason": "bilibili_risk_control"}))
         self.assertFalse(provider_pause_allows_public_discovery({"paused": False, "reason": "youtube_bot_check"}))
+
+    def test_youtube_auth_check_pause_waits_for_remaining_job_retry(self) -> None:
+        err = ProviderPauseRequestError(
+            provider="youtube",
+            reason="youtube_auth_check",
+            message="YouTube 频道/播放列表鉴权检查失败",
+        )
+
+        self.assertTrue(
+            should_defer_provider_pause_for_retry(
+                err,
+                next_attempt=1,
+                max_attempts=2,
+            )
+        )
+        self.assertFalse(
+            should_defer_provider_pause_for_retry(
+                err,
+                next_attempt=2,
+                max_attempts=2,
+            )
+        )
+
+    def test_youtube_bot_check_pause_is_not_deferred(self) -> None:
+        err = ProviderPauseRequestError(
+            provider="youtube",
+            reason="youtube_bot_check",
+            message="YouTube 触发人机验证",
+        )
+
+        self.assertFalse(
+            should_defer_provider_pause_for_retry(
+                err,
+                next_attempt=1,
+                max_attempts=2,
+            )
+        )
 
 
 class ClaimNextJobProviderPauseTests(unittest.TestCase):

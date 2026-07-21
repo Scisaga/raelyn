@@ -115,9 +115,22 @@ class ApiAuthStaticRouteTests(unittest.TestCase):
         self.assertEqual(service_worker.media_type, "application/javascript")
         self.assertEqual(manifest.headers.get("Cache-Control"), "no-cache")
         self.assertEqual(service_worker.headers.get("Cache-Control"), "no-cache")
+        self.assertEqual(index.headers.get("Cache-Control"), "no-cache")
         self.assertTrue((module.static_dir / "pwa" / "icon-192.png").exists())
         self.assertTrue((module.static_dir / "pwa" / "icon-512.png").exists())
         self.assertTrue((module.static_dir / "pwa" / "icon-maskable-512.png").exists())
+
+    def test_spa_and_static_assets_require_cache_revalidation(self) -> None:
+        with ExitStack() as stack:
+            app = _load_app(stack, token="")
+            with TestClient(app) as client:
+                index = client.get("/playlist?subview=analysis")
+                app_bundle = client.get("/static/app.js")
+
+        self.assertEqual(index.status_code, 200)
+        self.assertEqual(app_bundle.status_code, 200)
+        self.assertEqual(index.headers.get("Cache-Control"), "no-cache")
+        self.assertEqual(app_bundle.headers.get("Cache-Control"), "no-cache")
 
 
 class ApiAuthWebSocketTests(unittest.TestCase):

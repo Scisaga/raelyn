@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 from collections.abc import Callable
@@ -471,6 +472,23 @@ def _is_youtube_js_challenge_failed_messages(msgs: list[str]) -> bool:
     return False
 
 
+def _is_youtube_no_video_formats_messages(msgs: list[str]) -> bool:
+    for s in msgs:
+        m = _normalize_msg(s)
+        if not m:
+            continue
+        if "no video formats found" in m:
+            return True
+    return False
+
+
+def _package_version(name: str) -> str:
+    try:
+        return metadata.version(name)
+    except Exception:
+        return "unknown"
+
+
 def _youtube_js_challenge_hint() -> str:
     # This error frequently happens when:
     # - yt-dlp is outdated relative to YouTube's latest "n" JS challenge
@@ -494,6 +512,28 @@ def _youtube_js_challenge_hint() -> str:
         "2) 或直接运行：`./scripts/dev/install-ytdlp-ejs.sh`（会升级 yt-dlp-ejs 并做基础自检）；\n"
         "3) 确认已启用 `YTDLP_REMOTE_COMPONENTS=ejs:github`，并且 `node` 可用；\n"
         "4) 若 YouTube 同步/下载仍失败：配置 YouTube cookies（UI -> 设置 -> YTDLP_COOKIES_YOUTUBE）或代理（YTDLP_PROXY），并重试。"
+    )
+
+
+def _youtube_no_video_formats_hint() -> str:
+    return (
+        "YouTube 未返回可播放视频格式（yt-dlp 提取到的 formats 为空）。"
+        "这通常不是画质 selector 问题；更常见原因是 yt-dlp / EJS 提取器落后、"
+        "YTDLP_PROXY 出口不可达或被风控、PO Token Provider 未生效、cookies 导出会话与运行出口不一致，"
+        "或视频本身存在地区/年龄/会员/直播状态限制。\n"
+        "环境信息："
+        f"yt_dlp={_package_version('yt-dlp')}; "
+        f"yt_dlp_ejs={_package_version('yt-dlp-ejs')}; "
+        f"curl_cffi={_package_version('curl_cffi')}; "
+        f"pot_provider={_youtube_pot_provider_desc()}; "
+        f"impersonate={_youtube_impersonate_desc()}; "
+        f"proxy_configured={bool(str(settings.ytdlp_proxy or '').strip())}\n"
+        "处理建议：\n"
+        "1) 确认 `YTDLP_PROXY` 在 worker 运行环境中可连接；\n"
+        "2) 运行 `./scripts/dev/install-ytdlp-ejs.sh` 或重新安装 `backend/requirements.txt`；\n"
+        "3) 用同一环境执行 `.venv/bin/python -m yt_dlp -v <YouTube URL>`，检查 player status、"
+        "PO Token Providers 与是否仍返回空 formats；\n"
+        "4) 若代理、PO Token 和依赖版本都正常，再按 cookies 导出会话、请求频率和视频访问限制排查。"
     )
 
 
@@ -691,6 +731,8 @@ def ytdlp_extract_info(
                 raise RuntimeError(_youtube_bot_check_hint()) from e
             if _is_youtube_js_challenge_failed_messages(logger.warnings + logger.errors + [str(e)]):
                 raise RuntimeError(_youtube_js_challenge_hint()) from e
+            if cookie_provider == "youtube" and _is_youtube_no_video_formats_messages(msgs):
+                raise RuntimeError(_youtube_no_video_formats_hint()) from e
             if _is_bilibili_risk_control_error(e) or _is_bilibili_precondition_failed_error(e):
                 raise RuntimeError(_bilibili_risk_control_hint()) from e
             # Prefer the last captured yt-dlp error line (more user-friendly than a Python traceback).
@@ -710,6 +752,8 @@ def ytdlp_extract_info(
             _raise_if_provider_pause_messages(msgs)
             if _is_bilibili_risk_control_error(RuntimeError(last)) or _is_bilibili_precondition_failed_error(RuntimeError(last)):
                 raise RuntimeError(_bilibili_risk_control_hint())
+            if cookie_provider == "youtube" and _is_youtube_no_video_formats_messages(msgs):
+                raise RuntimeError(_youtube_no_video_formats_hint())
             raise RuntimeError(last)
         _raise_if_cookie_invalid_messages(logger.warnings + logger.errors, provider=cookie_provider)
         _raise_if_youtube_bot_check_messages(
@@ -848,6 +892,8 @@ def ytdlp_download(
                 raise RuntimeError(_youtube_bot_check_hint()) from e
             if _is_youtube_js_challenge_failed_messages(captured_warnings + captured_errors + [str(e)]):
                 raise RuntimeError(_youtube_js_challenge_hint()) from e
+            if cookie_provider == "youtube" and _is_youtube_no_video_formats_messages([joined]):
+                raise RuntimeError(_youtube_no_video_formats_hint()) from e
             if _is_bilibili_risk_control_error(e) or _is_bilibili_precondition_failed_error(e):
                 raise RuntimeError(_bilibili_risk_control_hint()) from e
 
@@ -898,6 +944,8 @@ def ytdlp_download(
                         using_cookies=effective_use_provider_cookies,
                     )
                     _raise_if_provider_pause_messages([joined2])
+                    if cookie_provider == "youtube" and _is_youtube_no_video_formats_messages([joined2]):
+                        raise RuntimeError(_youtube_no_video_formats_hint()) from e2
                     # Fall through to raise a readable error below.
                     joined = joined2 or joined
                     e = e2
@@ -979,6 +1027,8 @@ def ytdlp_download_subtitles(
             raise RuntimeError(_youtube_bot_check_hint()) from e
         if _is_youtube_js_challenge_failed_messages(msgs):
             raise RuntimeError(_youtube_js_challenge_hint()) from e
+        if cookie_provider == "youtube" and _is_youtube_no_video_formats_messages(msgs):
+            raise RuntimeError(_youtube_no_video_formats_hint()) from e
         if _is_bilibili_risk_control_error(e) or _is_bilibili_precondition_failed_error(e):
             raise RuntimeError(_bilibili_risk_control_hint()) from e
         last = logger.errors[-1] if logger.errors else str(e)
@@ -990,6 +1040,8 @@ def ytdlp_download_subtitles(
         _raise_if_cookie_invalid_messages(msgs, provider=cookie_provider)
         _raise_if_youtube_bot_check_messages(msgs, provider=cookie_provider)
         _raise_if_provider_pause_messages(msgs)
+        if cookie_provider == "youtube" and _is_youtube_no_video_formats_messages(msgs):
+            raise RuntimeError(_youtube_no_video_formats_hint())
         raise RuntimeError(last)
 
     _raise_if_cookie_invalid_messages(logger.warnings + logger.errors, provider=cookie_provider)

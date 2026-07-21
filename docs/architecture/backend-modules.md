@@ -70,14 +70,14 @@
 - 支持为单个播放列表配置独立的简报提示词。
 - 支持获取按日期 / 按周期的视频列表与周期视频计数。
 - 支持按单周期生成简报，也支持按区间批量重建。
-- 播放列表主界面提供事件审核 / 证据面板，支持事件确认 / 拒绝；播放列表设置页集中提供补齐事件抽取、全部重新抽取、停止抽取任务与 Regime 重建。
+- 播放列表主界面提供事件审核 / 证据面板，支持事件确认 / 拒绝；播放列表设置页集中提供补齐事件抽取、全部重新抽取、停止抽取任务与语义快照构建。
 
 实现要点：
 
 - `AUTO_GENERATE_BRIEFS=true` 时，播放列表媒体变更会调用 `schedule_brief_refresh_for_media_change()` 触发相关周期简报刷新；默认关闭自动简报投递。
 - 简报调度策略由 `brief_generation_policy` 决定，区分“最新周期冷却时间”和“历史周期每日批处理时间”；该策略只在自动简报开启或手动简报任务创建时生效。
 - `brief` 是当前主表，`daily_brief` 仅用于历史兼容读取。
-- 事件抽取由 `playlist.backfill_events` 先按播放列表内容时间轴规划月份范围，再由 `playlist.backfill_events_range` 查询单月视频并投递 `video.extract_events`；范围任务优先级低于其投递的视频抽取任务，避免回填时持续拆月而延后实际抽取。accepted 事件再通过 `event.embed` 进入 `playlist.build_event_regime_snapshot`。事件抽取、embedding 状态变化和人工事件状态修改只投递 `playlist.mark_event_regime_dirty`，由 `analysis` worker 延迟合并 dirty 标记；播放列表级 `force=true` 全量重抽会先取消同一播放列表相关的活跃抽取、月份范围任务、embedding 与 Regime 重建任务，并保持 Regime dirty。
+- 事件抽取由 `playlist.backfill_events` 先按播放列表内容时间轴规划月份范围，再由 `playlist.backfill_events_range` 查询单月视频并投递 `video.extract_events`；范围任务优先级低于其投递的视频抽取任务，避免回填时持续拆月而延后实际抽取。accepted 事件再通过 `event.embed` 进入兼容任务 `playlist.build_event_regime_snapshot`。事件抽取、embedding 状态变化和人工事件状态修改只投递 `playlist.mark_event_regime_dirty`，由 `analysis` worker 延迟合并 dirty 标记；播放列表级 `force=true` 全量重抽会先取消同一播放列表相关的活跃抽取、月份范围任务、embedding 与语义快照构建任务，并保持快照 dirty。
 
 ## 系统运维与观测
 

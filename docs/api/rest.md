@@ -365,7 +365,7 @@
 - 手动创建 `playlist.backfill_events` 父任务；父任务按播放列表内容时间轴拆分月份范围并投递 `playlist.backfill_events_range` 子任务，范围任务运行时再查询该月内已有 `plain` transcript 的视频并投递 `video.extract_events_batch` 或 `video.extract_events` 子任务。批量抽取任务执行时每次 LLM 请求只包含 1 个视频，避免多个视频共用一个大 JSON 生成导致本地模型长时间无返回。
 - 事件抽取在 Ollama `/api/generate` 模式下使用 JSON 输出约束、低温度采样、流式读取、`num_ctx/num_predict` 上限和 per-model advisory lock，降低标题、实体和证据之间的结构化抽取漂移，并避免同一 Ollama 大模型被多个事件抽取请求同时压满。v2 协议要求 LLM 只返回 `evidence_source_ids`，后端用 source map 写入可验证证据。
 - 月份范围任务的优先级低于它投递的视频事件抽取任务；同一批回填中，一旦 `video.extract_events_batch` 或 `video.extract_events` 入队，worker 会优先消费事件抽取，再继续领取后续月份范围任务。
-- body：`{ "force": false }`；`force=false` 只补齐缺失当前 transcript / prompt / model 口径事件的视频，`force=true` 会先取消当前播放列表相关的活跃事件抽取、事件 embedding 与 Regime 重建任务，再重新抽取同一 prompt / model 口径下的视频事件。
+- body：`{ "force": false }`；`force=false` 只补齐缺失当前 transcript / prompt / model 口径事件的视频，`force=true` 会先取消当前播放列表相关的活跃事件抽取、事件 embedding 与语义快照构建任务，再重新抽取同一 prompt / model 口径下的视频事件。
 - `force=true` 的任务清理只取消 `pending/running` 任务并保留历史记录：`pending` 立即变为 `canceled`，`running` 设置取消请求；同时将当前播放列表 `pending/running` 的 event-regime run 收敛为 `canceled` 并保持 dirty。
 - 返回任务 ID、任务状态与进度。新 transcript 生成后也可由 `AUTO_EXTRACT_NEW_VIDEO_EVENTS=true` 自动投递单视频抽取。
 
@@ -395,7 +395,7 @@
 ### `PATCH /api/playlists/{playlist_id}/events/{event_id}`
 
 - body：`{ "status": "accepted|draft|rejected" }`。
-- 将低置信或人工审核事件改为 accepted 后，会投递 `event.embed` 并标记播放列表 event-regime dirty；rejected/draft 不进入自动 Regime 分析。
+- 将低置信或人工审核事件改为 accepted 后，会投递 `event.embed` 并标记播放列表语义快照 dirty；rejected/draft 不进入自动语义分析。内部 dirty 标识仍沿用 `event_regime` 兼容命名。
 
 ### `GET /api/playlists/{playlist_id}/events/graph`
 
@@ -404,29 +404,32 @@
 
 ### `POST /api/playlists/{playlist_id}/regime/rebuild`
 
-- 手动创建 `playlist.build_event_regime_snapshot` 任务。
-- Regime 只消费 `accepted`、`event_time_start` 与 `available_at` 均可解析且 `market_event_embedding.status=ready` 的事件。
-- Regime 信号按 `available_at` 归入 day / week / month 周期；`event_time_start` 作为事件目标时间保留在事件详情与导出序列中。
+- `/regime/*` 是兼容路由名；产品概念为“事件图谱 / 语义快照”，不表示市场 Regime。
+- 手动创建 `playlist.build_event_regime_snapshot` 兼容任务。
+- 语义快照只消费 `accepted`、`event_time_start` 可解析且当前口径 `market_event_embedding.status=ready`、vector 有效的事件。
+- 信号按 `event_time_start` 归入 day / week / month 周期，不使用平台发布时间、采集时间或 `available_at` 作为事件发生时间。`second/day` 精度进入三个尺度，`month` 精度只进入月尺度，`year/unknown` 不进入当前细尺度，避免伪造 1 月 1 日峰值。
+- 同一播放列表整体作为一个语料库，不按来源拆分或加权。
 - 同一播放列表已有 `pending/running` 的重建 run 时复用现有 run。
 
 ### `GET /api/playlists/{playlist_id}/regime/summary`
 
-- 返回事件 Regime 覆盖率、dirty 状态、ready run、signal 日期边界、候选数量、活跃重建任务与当前活跃历史抽取任务 `backfill_job`。
+- 返回语义快照状态、ready run、所有有效 granularity 合并后的 signal 日期边界、变化点数量、活跃构建任务与当前活跃历史抽取任务 `backfill_job`；仅有 month precision 信号时也会返回时间范围。
+- 覆盖字段为实时口径：`event_total` 是 accepted 总数，`event_embedded` 是当前口径 ready embedding 数，`event_eligible` 是同时具备事件时间与有效 ready vector 的数量，`event_skipped=event_total-event_eligible`，`event_failed` 是 failed / skipped-over-budget 数；`event_scale_excluded` 单列时间精度不足以进入当前日/周/月尺度、但不属于整体 skipped 的数量。
 
 ### `GET /api/playlists/{playlist_id}/regime/signals`
 
 - query：可选 `granularity=day|week|month`、`since=YYYY-MM-DD`、`until=YYYY-MM-DD`。
-- 返回当前 ready event-regime run 的连续多尺度信号面板，日期轴使用事件 `available_at`。
+- 返回当前 ready 语义快照的连续多尺度信号面板，日期轴使用事件 `event_time_start`。
 - 关键字段：`granularity`、`period_date`、`rolling_window`、`event_count`、`ready_embedding_count`、`drift_score`、`drift_rolling_mean/std/z`、`dispersion_mean/std/p25/p75`、`projection_*`、`linked_candidate_id`。
 
 ### `GET /api/playlists/{playlist_id}/regime/candidates`
 
-- 返回当前 ready event-regime run 的候选 regime 变化，默认按 `candidate_date` 倒序排列。
+- 返回当前 ready 语义快照的语义变化点，默认按 `candidate_date` 倒序排列。
 - 候选证据来自 LLM 事件与 KG 实体，不再来自整段 transcript embedding 的视频候选。
 
 ### `GET /api/playlists/{playlist_id}/regime/candidates/{candidate_id}`
 
-- 返回候选详情，包含候选窗口、分数、证据事件 ID、证据视频 ID 与检测元数据；`evidence.videos` 会按证据视频 ID 展开视频标题、媒体名、发布时间与 URL，供 UI 展示证据视频列表。
+- 返回变化点详情，包含完整周/月窗口、分数、代表事件 ID、证据视频 ID 与检测元数据；代表事件是在候选周期内按 centroid 距离选出的至多 20 条样本，`evidence.videos` 会按其视频 ID 展开视频标题、媒体名、发布时间与 URL。
 
 ### `PATCH /api/playlists/{playlist_id}/regime/candidates/{candidate_id}`
 
@@ -434,8 +437,8 @@
 
 ### `GET /api/playlists/{playlist_id}/regime/export/events`
 
-- 返回 `{ "window_mode": "event_regime", "events": [...] }`，供下游 quant-lab / 回测使用。
-- 每个事件窗口包含 `available_at`，下游应以它作为可观察时间，避免未来函数。
+- 返回 `{ "window_mode": "event_regime", "events": [...] }`；`window_mode` 值仅为兼容标识。
+- 每个事件窗口同时保留 `event_time_start` 与 `available_at`：前者表示事件发生 / 覆盖时间，后者只作来源审计。本项目不定义市场回测或人工 Regime 验证流程。
 
 ### `POST /api/briefs/generate`
 

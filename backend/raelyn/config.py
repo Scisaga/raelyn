@@ -126,7 +126,7 @@ class Settings(BaseSettings):
     llm_headers_json: str = ""
     llm_timeout_seconds: int = 600
 
-    # --- Event extraction / event regime analysis ---
+    # --- Event extraction / event graph semantic analysis ---
     event_extraction_chunk_max_chars: int = Field(default=12000, validation_alias=AliasChoices("EVENT_EXTRACTION_CHUNK_MAX_CHARS"))
     event_extraction_ollama_stream: bool = Field(default=True, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_STREAM"))
     event_extraction_ollama_num_ctx: int = Field(default=8192, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_NUM_CTX"))

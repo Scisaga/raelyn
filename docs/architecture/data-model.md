@@ -130,13 +130,13 @@
 
 当前职责：
 
-- 保存视频级 LLM 原子事件，是知识图谱与 Regime 分析的新事实源。
+- 保存视频级 LLM 原子事件，是知识图谱与事件语义分析的事实源。
 - `confidence >= 0.8` 且至少有 1 条 verified provenance 的事件自动进入 `accepted`，低置信或无合法 provenance 的事件先进入 `draft` 供人工查看。
 
 关键字段：
 
-- `event_time_start/end`、`time_precision`：事件目标时间；无法解析时 `time_precision=unknown`，自动 Regime 不消费。
-- `available_at`：该事件可被下游观察到的时间，供回测避免未来函数；事件 Regime 信号按该时间聚合。
+- `event_time_start/end`、`time_precision`：事件目标时间；语义时间轴按 `event_time_start` 聚合，无法解析时不进入语义快照。
+- `available_at`：事件在系统中最早可被观察到的时间，仅用于溯源与导出审计，不作为事件发生时间或语义信号周期。
 - `event_type`、`title`、`summary`、`direction`、`magnitude`、`surprise_or_delta`：事件语义与强度。
 - `title` / `summary` 应保留具体市场对象；例如房地产、住房、楼市语境不能只写“市场”，必须与实体、资产、行业标签保持同一对象口径。
 - `status`：`accepted | draft | rejected`。
@@ -189,7 +189,7 @@
 
 当前职责：
 
-- 基于结构化事件文本生成 embedding，供事件 Regime 分析使用。
+- 基于结构化事件文本生成 embedding，供事件图谱与语义分析使用。
 - 只对 `accepted` 事件生成；`draft` / `rejected` 不进入自动分析。
 
 关键字段：
@@ -203,23 +203,24 @@
 
 - `(event_id, embedding_model, embedding_dim)` 唯一。
 
-### `event_regime_run` / `event_regime_signal` / `event_regime_candidate`
+### `event_regime_run` / `event_regime_signal` / `event_regime_candidate`（兼容命名）
 
 当前职责：
 
-- `event_regime_run` 保存一次播放列表事件 Regime 快照的状态、embedding 口径与覆盖率。
-- `event_regime_signal` 保存 day / week / month 多尺度事件 embedding 信号面板。
-- `event_regime_candidate` 保存候选 regime 变化和人工状态。
+- `event_regime_run` 保存一次播放列表语义快照的状态、embedding 口径与覆盖率。
+- `event_regime_signal` 保存 day / week / month 多尺度事件 embedding 语义信号。
+- `event_regime_candidate` 保存语义变化点和人工状态。
 - `event_regime_state` 保存播放列表级 dirty 状态与最新 ready run。
+- 这些表名属于历史兼容标识；产品与 UI 不使用 Regime 概念。
 
 关键字段：
 
 - `event_regime_signal.granularity`：`day | week | month`。
-- `event_regime_signal.period_date`：按事件 `available_at` 归属后的周期起点。
+- `event_regime_signal.period_date`：按事件 `event_time_start` 与 `time_precision` 归属后的周期起点；年精度事件不伪装成 1 月 1 日的日/月事件。
 - `event_count`、`ready_embedding_count`：当前周期事件数和 ready embedding 数。
 - `drift_score`、`drift_rolling_mean/std/z`：事件语义中心漂移及其 rolling z。
 - `dispersion_mean/std/p25/p75`：同一 period 内部事件 embedding 分散度。
-- `linked_candidate_id`：该 signal period 命中的候选 regime。
+- `linked_candidate_id`：该 signal period 命中的语义变化点。
 - `event_regime_candidate.candidate_date` / `event_start` / `event_end` / `peak_date`：候选日期与区间。
 - `evidence_event_ids` / `evidence_video_ids` / `evidence_json`：候选解释与证据事件。
 - `available_at`：候选窗口中最早可观察证据时间。

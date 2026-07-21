@@ -8,7 +8,7 @@ import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from sqlalchemy.dialects import postgresql
 
@@ -37,6 +37,7 @@ from raelyn.models import (
 from raelyn.services import event_analysis
 from raelyn.services.inference import EffectiveLlmConfig
 from raelyn.services.job_cancellation import JobCancelRequested
+from raelyn.jobs.reschedule import JobTerminalFailure
 
 
 class _ScalarResult:
@@ -59,6 +60,26 @@ class _ScalarOneOrNone:
 
     def scalar_one_or_none(self):
         return self._value
+
+
+class _OneResult:
+    def __init__(self, value):
+        self._value = value
+
+    def one(self):
+        return self._value
+
+
+class _IterableRows:
+    def __init__(self, rows):
+        self._rows = rows
+        self.closed = False
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def close(self):
+        self.closed = True
 
 
 class EventAnalysisTests(unittest.TestCase):
@@ -432,21 +453,295 @@ class EventAnalysisTests(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertTrue(warnings)
 
-    def test_event_regime_period_uses_observable_time_not_target_time(self) -> None:
+    def test_event_regime_period_uses_event_time_and_respects_precision(self) -> None:
         event = MarketEvent(
             source_video_id=uuid.uuid4(),
             source_hash="h",
             event_key="k",
             status="accepted",
             event_type="macro",
-            time_precision="year",
-            event_time_start=datetime(2054, 1, 1, tzinfo=timezone.utc),
+            time_precision="day",
+            event_time_start=datetime(2012, 3, 23, tzinfo=timezone.utc),
             available_at=datetime(2026, 6, 3, 12, 0, tzinfo=timezone.utc),
         )
 
-        self.assertEqual(event_analysis._event_regime_period_date(event, "day"), date(2026, 6, 3))
-        self.assertEqual(event_analysis._event_regime_period_date(event, "week"), date(2026, 6, 1))
-        self.assertEqual(event_analysis._event_regime_period_date(event, "month"), date(2026, 6, 1))
+        self.assertEqual(event_analysis._event_regime_period_date(event, "day"), date(2012, 3, 23))
+        self.assertEqual(event_analysis._event_regime_period_date(event, "week"), date(2012, 3, 19))
+        self.assertEqual(event_analysis._event_regime_period_date(event, "month"), date(2012, 3, 1))
+
+        event.time_precision = "month"
+        self.assertIsNone(event_analysis._event_regime_period_date(event, "day"))
+        self.assertIsNone(event_analysis._event_regime_period_date(event, "week"))
+        self.assertEqual(event_analysis._event_regime_period_date(event, "month"), date(2012, 3, 1))
+
+        event.time_precision = "year"
+        self.assertIsNone(event_analysis._event_regime_period_date(event, "day"))
+        self.assertIsNone(event_analysis._event_regime_period_date(event, "week"))
+        self.assertIsNone(event_analysis._event_regime_period_date(event, "month"))
+
+    def test_event_regime_coverage_separates_ready_eligible_and_scale_excluded(self) -> None:
+        playlist_id = uuid.uuid4()
+        session = Mock()
+        session.execute.return_value = _OneResult((161840, 161840, 160876, 157645, 0))
+
+        with patch("raelyn.services.event_analysis.embedding_spec", return_value=SimpleNamespace(model="m", dim=1024)):
+            coverage = event_analysis.playlist_event_regime_coverage(session, playlist_id)
+
+        self.assertEqual(
+            coverage,
+            {
+                "event_total": 161840,
+                "event_embedded": 161840,
+                "event_eligible": 160876,
+                "event_scale_excluded": 3231,
+                "event_skipped": 964,
+                "event_failed": 0,
+            },
+        )
+        stmt = session.execute.call_args.args[0]
+        compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
+        self.assertIn("market_event.event_time_start is not null", compiled)
+        self.assertIn("market_event_embedding.embedding_model = 'm'", compiled)
+        self.assertIn("market_event_embedding.embedding_dim = 1024", compiled)
+        self.assertNotIn("market_event.available_at is not null", compiled)
+
+    def test_event_regime_rows_use_streaming_and_event_time_order(self) -> None:
+        playlist_id = uuid.uuid4()
+        result = _IterableRows([])
+        session = Mock()
+        session.execute.return_value = result
+
+        with patch.object(event_analysis.settings, "analysis_stream_batch_size", 17):
+            rows = list(
+                event_analysis._event_rows_for_regime(
+                    session,
+                    playlist_id,
+                    embedding_model="m",
+                    embedding_dim=2,
+                )
+            )
+
+        self.assertEqual(rows, [])
+        self.assertTrue(result.closed)
+        stmt = session.execute.call_args.args[0]
+        compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
+        self.assertIn("order by market_event.event_time_start asc, market_event.id asc", compiled)
+        self.assertNotIn("market_event.available_at is not null", compiled)
+        self.assertTrue(stmt.get_execution_options()["stream_results"])
+        self.assertEqual(stmt.get_execution_options()["yield_per"], 17)
+
+    def test_event_regime_snapshot_reader_uses_one_repeatable_read_transaction(self) -> None:
+        session = Mock()
+        engine = MagicMock()
+        engine.dialect.name = "postgresql"
+        raw_connection = MagicMock()
+        connection = MagicMock()
+        engine.connect.return_value.__enter__.return_value = raw_connection
+        raw_connection.execution_options.return_value = connection
+        session.get_bind.return_value = engine
+
+        with event_analysis._event_regime_snapshot_reader(session) as reader:
+            self.assertIs(reader, connection)
+
+        raw_connection.execution_options.assert_called_once_with(isolation_level="REPEATABLE READ")
+        connection.begin.assert_called_once_with()
+        connection.exec_driver_sql.assert_called_once_with("SET TRANSACTION READ ONLY")
+
+    def test_event_regime_second_pass_reports_unknown_period_as_snapshot_change(self) -> None:
+        video_id = uuid.uuid4()
+        first_row = (
+            uuid.uuid4(),
+            video_id,
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            "day",
+            None,
+            "first",
+            None,
+            "macro",
+            [1.0, 0.0],
+        )
+        changed_row = (
+            uuid.uuid4(),
+            video_id,
+            datetime(2026, 2, 1, tzinfo=timezone.utc),
+            "day",
+            None,
+            "changed",
+            None,
+            "macro",
+            [0.0, 1.0],
+        )
+        aggregates, _ = event_analysis._build_event_regime_period_aggregates(
+            iter([first_row]),
+            embedding_dim=2,
+            batch_size=10,
+            checkpoint=lambda _processed: None,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "unexpected day period 2026-02-01"):
+            event_analysis._populate_event_regime_dispersions_and_evidence(
+                iter([changed_row]),
+                aggregates=aggregates,
+                embedding_dim=2,
+                batch_size=10,
+                checkpoint=lambda _processed: None,
+            )
+
+    def test_event_regime_two_pass_aggregation_does_not_put_coarse_dates_in_finer_scales(self) -> None:
+        video_id = uuid.uuid4()
+
+        def row(day: int, precision: str, vector: list[float], *, month: int = 1):
+            event_time = datetime(2026, month, day, tzinfo=timezone.utc)
+            return (
+                uuid.uuid4(),
+                video_id,
+                event_time,
+                precision,
+                event_time,
+                f"{precision}-{month}-{day}",
+                None,
+                "macro",
+                vector,
+            )
+
+        rows = [
+            row(1, "day", [1.0, 0.0]),
+            row(1, "day", [0.0, 1.0]),
+            row(8, "day", [1.0, 1.0]),
+            row(1, "month", [1.0, 0.0], month=2),
+            row(1, "year", [9.0, 9.0], month=3),
+        ]
+        checkpoints: list[int] = []
+
+        aggregates, processed = event_analysis._build_event_regime_period_aggregates(
+            iter(rows),
+            embedding_dim=2,
+            batch_size=2,
+            checkpoint=checkpoints.append,
+        )
+
+        self.assertEqual(processed, 5)
+        self.assertEqual([item.event_count for item in aggregates["day"]], [2, 1])
+        self.assertEqual([item.event_count for item in aggregates["week"]], [2, 1])
+        self.assertEqual([item.event_count for item in aggregates["month"]], [3, 1])
+        self.assertEqual(list(aggregates["day"][0].centroid), [0.5, 0.5])
+        self.assertAlmostEqual(aggregates["month"][0].centroid[0], 2.0 / 3.0)
+        self.assertAlmostEqual(aggregates["month"][0].centroid[1], 2.0 / 3.0)
+
+        second_processed = event_analysis._populate_event_regime_dispersions_and_evidence(
+            iter(rows),
+            aggregates=aggregates,
+            embedding_dim=2,
+            batch_size=2,
+            checkpoint=checkpoints.append,
+        )
+
+        self.assertEqual(second_processed, 5)
+        self.assertIsNotNone(aggregates["day"][0].dispersion_mean)
+        self.assertIsNotNone(aggregates["month"][0].dispersion_mean)
+
+    def test_event_regime_candidates_use_period_end_and_bounded_centroid_representatives(self) -> None:
+        video_id = uuid.uuid4()
+        far_event_id = uuid.UUID(int=1)
+        rows = []
+        for idx in range(21):
+            event_time = datetime(2026, 1, 5, 0, 0, idx, tzinfo=timezone.utc)
+            rows.append(
+                (
+                    far_event_id if idx == 0 else uuid.UUID(int=idx + 1),
+                    video_id,
+                    event_time,
+                    "day",
+                    event_time,
+                    "远离中心" if idx == 0 else f"代表事件{idx}",
+                    None,
+                    "macro",
+                    [-1.0, 0.0] if idx == 0 else [1.0, 0.0],
+                )
+            )
+
+        aggregates, _ = event_analysis._build_event_regime_period_aggregates(
+            iter(rows),
+            embedding_dim=2,
+            batch_size=10,
+            checkpoint=lambda _processed: None,
+        )
+        aggregates["week"][0].drift_rolling_z = 2.1
+        aggregates["month"][0].drift_rolling_z = 2.2
+        event_analysis._populate_event_regime_dispersions_and_evidence(
+            iter(rows),
+            aggregates=aggregates,
+            embedding_dim=2,
+            batch_size=10,
+            checkpoint=lambda _processed: None,
+        )
+
+        week_evidence = aggregates["week"][0].evidence
+        self.assertEqual(len(week_evidence), 20)
+        self.assertNotIn(far_event_id, {item.event_id for item in week_evidence})
+        self.assertEqual(
+            week_evidence,
+            sorted(week_evidence, key=event_analysis._event_regime_evidence_sort_key),
+        )
+
+        candidates, _ = event_analysis._event_regime_candidate_models(
+            run_id=uuid.uuid4(),
+            aggregates=aggregates,
+        )
+        by_granularity = {candidate.evidence_json["granularity"]: candidate for candidate in candidates}
+        self.assertEqual(by_granularity["week"].event_start, date(2026, 1, 5))
+        self.assertEqual(by_granularity["week"].event_end, date(2026, 1, 11))
+        self.assertEqual(by_granularity["month"].event_start, date(2026, 1, 1))
+        self.assertEqual(by_granularity["month"].event_end, date(2026, 1, 31))
+        self.assertEqual(by_granularity["week"].evidence_json["sampling"], "centroid_nearest_top_20_v1")
+        self.assertNotIn(str(far_event_id), by_granularity["week"].evidence_event_ids)
+        self.assertNotIn("远离中心", by_granularity["week"].summary)
+
+    def test_analysis_memory_gate_enforces_configured_rss_limit(self) -> None:
+        rss = event_analysis._proc_memory_value_bytes("/proc/self/status", "VmRSS")
+        if rss is None:
+            self.skipTest("当前平台不提供 /proc/self/status VmRSS")
+
+        with patch.object(event_analysis.settings, "analysis_min_available_memory_bytes", 0):
+            with patch.object(event_analysis.settings, "analysis_max_rss_bytes", max(1, rss - 1)):
+                with self.assertRaises(JobTerminalFailure) as raised:
+                    event_analysis._raise_if_analysis_memory_limit_exceeded()
+
+        self.assertIn("worker RSS", raised.exception.reason)
+
+    def test_snapshot_terminal_failure_rolls_back_partial_output_and_marks_run_failed(self) -> None:
+        playlist_id = uuid.uuid4()
+        run_id = uuid.uuid4()
+        run = EventRegimeRun(
+            id=run_id,
+            playlist_id=playlist_id,
+            status="running",
+            analysis_clock="day",
+            embedding_model="m",
+            embedding_dim=2,
+        )
+        state = EventRegimeState(playlist_id=playlist_id, analysis_dirty=False)
+        job = Job(
+            id=uuid.uuid4(),
+            type="playlist.build_event_regime_snapshot",
+            status="running",
+            params={"playlist_id": str(playlist_id), "regime_run_id": str(run_id)},
+        )
+        session = Mock()
+        session.get.return_value = run
+        failure = JobTerminalFailure("analysis aborted: worker RSS exceeded")
+
+        with patch("raelyn.services.event_analysis._build_event_regime_snapshot", side_effect=failure):
+            with patch("raelyn.services.event_analysis.ensure_event_regime_state", return_value=state):
+                with self.assertRaises(JobTerminalFailure):
+                    event_analysis.build_event_regime_snapshot(session, playlist_id=playlist_id, job=job)
+
+        session.rollback.assert_called_once_with()
+        self.assertEqual(run.status, "failed")
+        self.assertIsNotNone(run.finished_at)
+        self.assertTrue(state.analysis_dirty)
+        self.assertEqual(state.last_error, failure.reason)
+        session.flush.assert_called_once()
 
     def test_update_event_status_accepts_and_enqueues_embedding(self) -> None:
         event_id = uuid.uuid4()
@@ -506,6 +801,9 @@ class EventAnalysisTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["embedding_id"], str(embedding_id))
+        created_embedding = session.add.call_args.args[0]
+        self.assertEqual(created_embedding.embedding_model, "m")
+        self.assertEqual(created_embedding.embedding_dim, 3)
         schedule_dirty.assert_called_once_with(session, video_id=video_id, reason="event_embedding_changed")
 
     def test_job_dedupe_keys_use_event_job_types(self) -> None:

@@ -16,7 +16,7 @@ from raelyn.jobs.registry import registry
 from raelyn.jobs.worker_activity import touch_current_worker_activity
 from raelyn.models import Asset, Job, Media, Video
 from raelyn.services.pg_lock import advisory_lock_any, try_xact_lock
-from raelyn.services.provider_pause import ProviderPauseRequestError
+from raelyn.services.provider_pause import ProviderPauseRequestError, should_defer_provider_pause_for_retry
 from raelyn.services.profile_fetch import fetch_media_profile
 from raelyn.services.provider import build_media_videos_url
 from raelyn.services.transcripts import TRANSCRIPT_VARIANTS
@@ -137,6 +137,35 @@ def _compact_raw_info(info: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def _media_sync_lock_name(media_id: uuid.UUID) -> str:
     return f"media:{media_id}:sync"
+
+
+def _pause_provider_or_defer_to_job_retry(
+    session: Session,
+    *,
+    job: Job,
+    err: ProviderPauseRequestError,
+) -> None:
+    next_attempt = int(job.attempt or 0) + 1
+    max_attempts = max(1, int(job.max_attempts or 0))
+    if should_defer_provider_pause_for_retry(
+        err,
+        next_attempt=next_attempt,
+        max_attempts=max_attempts,
+    ):
+        job_log(
+            session,
+            job,
+            "YouTube 频道/播放列表鉴权检查失败；已安排任务级重试，尚未暂停 provider",
+            level="warn",
+            data={
+                "provider": err.provider,
+                "reason": err.reason,
+                "attempt": next_attempt,
+                "max_attempts": max_attempts,
+            },
+        )
+        return
+    _pause_provider_jobs(session, job=job, err=err)
 
 
 def _youtube_video_url(provider_video_id: str) -> str:
@@ -349,7 +378,7 @@ def youtube_metadata_enrich(session: Session, job: Job) -> dict | None:
             _pause_all_jobs_for_cookies(session, job=job, err=e)
             raise
         except ProviderPauseRequestError as e:
-            _pause_provider_jobs(session, job=job, err=e)
+            _pause_provider_or_defer_to_job_retry(session, job=job, err=e)
             raise
 
         provider_video_id = str(video.provider_video_id or "").strip()
@@ -391,7 +420,7 @@ def media_sync_profile(session: Session, job: Job) -> dict | None:
         try:
             profile = fetch_media_profile(provider=media.provider, url=media.url)
         except ProviderPauseRequestError as e:
-            _pause_provider_jobs(session, job=job, err=e)
+            _pause_provider_or_defer_to_job_retry(session, job=job, err=e)
             media.last_profile_sync_at = utcnow()
             raise
         except Exception as e:
@@ -424,7 +453,7 @@ def media_sync_profile(session: Session, job: Job) -> dict | None:
             _pause_all_jobs_for_cookies(session, job=job, err=e)
             raise
         except ProviderPauseRequestError as e:
-            _pause_provider_jobs(session, job=job, err=e)
+            _pause_provider_or_defer_to_job_retry(session, job=job, err=e)
             media.last_profile_sync_at = utcnow()
             raise
         except Exception as e:
@@ -523,7 +552,7 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                     level="warn",
                 )
                 return {"skipped": "public_discovery_blocked"}
-            _pause_provider_jobs(session, job=job, err=e)
+            _pause_provider_or_defer_to_job_retry(session, job=job, err=e)
             media.last_video_sync_at = utcnow()
             raise
         except Exception as e:

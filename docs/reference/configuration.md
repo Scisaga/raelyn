@@ -134,27 +134,29 @@
   - 当 ASR `/health` 没有返回 `backend_queue_timeout_seconds` 时，handler 兜底重排 ASR 任务的默认延后秒数，默认 `30`。
 - `ASR_TIMEOUT_SECONDS`
   - 本地 ASR 请求的短音频基础超时，默认 `600` 秒。
-  - `video.asr_transcribe` 处理长视频时会按媒体时长动态放大 HTTP timeout：约按 `5x realtime + 120s` 估算，并限制在 worker 1 小时 lease 以下，避免 90 分钟以上视频过早客户端超时后，ASR 后端仍继续占用推理槽。
+  - `video.asr_transcribe` 处理本地 ASR 长视频时会按媒体时长动态放大 HTTP timeout：约按 `4x realtime + 120s` 估算，不设固定 3300 秒上限；发起请求前会把 job lease 延长到 timeout 后 300 秒，避免超长请求尚未完成就被回收。
+  - 本地 ASR `ReadTimeout` 最多执行 3 次；第三次仍超时则终止并保留人工重试。火山 ASR 继续使用原有 provider 超时行为。
 - `EMBEDDING_WORKER_CONCURRENCY`
   - `devctl.sh` / Docker 单容器入口启动 `embedding` worker 的进程数，默认 `1`。
   - 可设为 `0`，表示当前节点不启动 `embedding` worker；事件 embedding 任务会保留在 `pending`，直到有 embedding worker 可领取。
 - `ANALYSIS_WORKER_CONCURRENCY`
   - `devctl.sh` / Docker 单容器入口启动 `analysis` worker 的进程数，默认 `1`。
-  - 可设为 `0`，表示当前节点不启动 `analysis` worker；`playlist.mark_event_regime_dirty` 与事件 Regime 快照任务会保留在 `pending`，直到有 analysis worker 可领取。
-  - 事件抽取、embedding 状态变化和人工事件状态修改后的 dirty 合并也由 `analysis` worker 处理；需要事件 Regime 链路正常推进时至少保留 1 个。
+  - 可设为 `0`，表示当前节点不启动 `analysis` worker；兼容任务 `playlist.mark_event_regime_dirty` 与语义快照构建任务会保留在 `pending`，直到有 analysis worker 可领取。
+  - 事件抽取、embedding 状态变化和人工事件状态修改后的 dirty 合并也由 `analysis` worker 处理；需要事件图谱链路正常推进时至少保留 1 个。
 - `AI_WORKER_CONCURRENCY`
   - `devctl.sh` / Docker 单容器入口启动 `ai` worker 的进程数，默认 `1`。
   - 每个 `ai` worker 同一时间执行一个 LLM 任务，例如 `video.extract_events`、播放列表事件回填范围扫描、转写润色或简报生成。
   - 大型同播放列表事件回填可适当提高该值；AI worker 只竞争单个视频自己的事件写入，播放列表 dirty 由 `analysis` worker 的 `playlist.mark_event_regime_dirty` 延迟合并。
   - 该配置只增加 worker 进程数，不改变 LLM 请求认证、连接复用或模型参数；提升前应确认 LLM 服务可承受对应并发。Ollama `/api/generate` 事件抽取还会额外使用 per-model advisory lock，忙时重排任务，避免多个事件抽取请求同时压到同一个本地大模型。
 - `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES`
-  - `playlist.build_event_regime_snapshot` 开始和处理中允许继续执行的最低 `MemAvailable`，默认 `1073741824`。
+  - 语义快照开始和每批处理中允许继续执行的最低 `/proc/meminfo` `MemAvailable`，默认 `1073741824`（1 GiB）。
   - 低于该值时任务直接失败并记录原因，不进入重试队列。
 - `ANALYSIS_MAX_RSS_BYTES`
-  - `playlist.build_event_regime_snapshot` 允许的最大 worker 进程 RSS，默认 `6442450944`（6 GiB）。
-  - 高于该值时任务直接失败并记录原因，不进入重试队列；生产环境仍建议用 systemd / cgroup 设置同等硬上限。
+  - 语义快照允许的最大 worker 进程 RSS，代码默认值和 `.env.example` 都是 `6442450944`（6 GiB）。每批读取前后都会检查当前进程 RSS。
+  - 高于该值时任务直接失败并记录原因，不进入重试队列；生产环境若使用 systemd / cgroup，应设置相同或略高的硬上限。
+  - 该值是安全上限，不是预分配内存。快照已按批流式聚合，32 GiB 主机无需仅因物理内存更大就提高；只有观测到实际 RSS 接近 6 GiB、`MemAvailable` 仍持续充足且没有同机资源竞争时，再同步调整环境变量与 cgroup 上限。
 - `ANALYSIS_STREAM_BATCH_SIZE`
-  - 事件 Regime 快照构建分批读取 ready event embedding 的批大小，默认 `2000`。
+  - 语义快照两遍流式读取 ready event embedding 的批大小，代码默认 `2000`；`.env.example` 可给部署提供更保守的覆盖值。
 - `EVENT_EXTRACTION_CHUNK_MAX_CHARS`
   - `video.extract_events` 读取 `plain` transcript 后的 LLM 分块字符上限，默认 `12000`。
 - `EVENT_EXTRACTION_OLLAMA_STREAM`
@@ -207,7 +209,7 @@
 - `LLM_HEADERS_JSON`
 - `LLM_TIMEOUT_SECONDS`
 
-事件抽取 / 事件 Regime：
+事件抽取 / 事件图谱：
 
 - `EVENT_EXTRACTION_CHUNK_MAX_CHARS`
 - `EVENT_EXTRACTION_OLLAMA_STREAM`

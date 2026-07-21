@@ -25,7 +25,12 @@ from raelyn.services.job_cancellation import JobCancelRequested, finalize_cancel
 from raelyn.services.log_timestamps import install_if_needed
 from raelyn.services.asr import inspect_asr_backend_defer
 from raelyn.services.provider_cookies import cookie_config_name, cookie_provider_label, normalize_cookie_provider
-from raelyn.services.provider_pause import ProviderPauseRequestError, job_provider, set_provider_paused
+from raelyn.services.provider_pause import (
+    ProviderPauseRequestError,
+    job_provider,
+    set_provider_paused,
+    should_defer_provider_pause_for_retry,
+)
 from raelyn.services.s3 import s3_ensure_bucket
 from raelyn.services.worker_roles import is_known_worker_role, normalize_worker_role, worker_role_types
 from raelyn.services.ytdlp import YTDLP_RETRY_WITHOUT_COOKIES_PARAM, YtdlpCookiesInvalidError
@@ -503,11 +508,37 @@ def run_loop() -> None:
                         finalize_canceled_job(session, job, message="canceled after handler error", reason="cancel_requested")
                         continue
 
-                    _persist_provider_pause_after_rollback(session, job=job, err=e)
+                    next_attempt = int(job.attempt or 0) + 1
+                    effective_max_attempts = _effective_max_attempts(job.type, job.max_attempts)
+                    provider_pause_deferred = should_defer_provider_pause_for_retry(
+                        e,
+                        next_attempt=next_attempt,
+                        max_attempts=effective_max_attempts,
+                    )
+                    if provider_pause_deferred:
+                        job_log(
+                            session,
+                            job,
+                            "YouTube channel auth check failed; defer provider pause until retry is exhausted",
+                            level="warn",
+                            data={
+                                "provider": e.provider,
+                                "reason": e.reason,
+                                "attempt": next_attempt,
+                                "max_attempts": effective_max_attempts,
+                            },
+                        )
+                    else:
+                        _persist_provider_pause_after_rollback(session, job=job, err=e)
 
-                    job.attempt += 1
-                    job.max_attempts = _effective_max_attempts(job.type, job.max_attempts)
-                    job.error_message = str(e)
+                    job.attempt = next_attempt
+                    job.max_attempts = effective_max_attempts
+                    if provider_pause_deferred:
+                        job.error_message = (
+                            "YouTube 频道/播放列表鉴权检查失败；已安排任务级重试，尚未暂停 provider"
+                        )
+                    else:
+                        job.error_message = str(e)
                     job.error_stack = error_stack
                     job.lease_expires_at = None
                     job.worker_id = None

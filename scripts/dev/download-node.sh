@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-NODE_VERSION="${NODE_VERSION:-20.18.1}"
+NODE_VERSION="${NODE_VERSION:-22.23.1}"
 
 uname_s="$(uname -s | tr '[:upper:]' '[:lower:]')"
 uname_m="$(uname -m)"

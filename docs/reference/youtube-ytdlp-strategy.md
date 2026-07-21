@@ -73,6 +73,8 @@ YouTube 的 `yt-dlp` 同步 / 下载请求可显式使用 `YTDLP_PROXY`，同步
 
 遇到 `Sign in to confirm you are not a bot`、`请登录，以便我们确认你不是聊天机器人`、`[youtube:tab] ... Playlists that require authentication ... without a successful webpage download` 或类似鉴权检查失败时，系统会把 YouTube provider 暂停，但归类为 `youtube_bot_check` / `youtube_auth_check`，避免把出口 IP、请求频率、PO Token、导出会话不一致等问题误报成 cookies 失效。暂停的目的仍然是避免 `scheduler` 因 `last_video_sync_at` 未推进而每分钟反复投递同一个失败同步 / 下载任务。
 
+其中 `youtube_auth_check` 可能由一次频道页瞬时下载失败触发：首次失败且任务仍有剩余 attempt 时，worker 只按任务退避重试，不立即暂停整个 YouTube provider；最终尝试仍失败才持久化 provider pause。`youtube_bot_check` 和明确 cookies 无效仍立即暂停，避免在真实风控下继续请求。
+
 provider 暂停期间，若 `SYNC_PUBLIC_DISCOVERY_ENABLED=true`，自动同步会为到期媒体投递低波峰的 public discovery 任务，默认抓最新 `SYNC_PUBLIC_DISCOVERY_MAX_ENTRIES=200` 条。若无 cookies flat 抓取仍被平台挡住，任务只更新该媒体同步冷却并记录 `public_discovery_blocked`，不会覆盖原 provider pause。保存有效非空 cookies 后，配置 API 会清除对应 provider pause，并为该 provider 的受监控媒体补投 `force=true, max_entries=SYNC_COOKIE_RECOVERY_MAX_ENTRIES, download_priority=8` 的 catch-up 同步，默认 `200`。
 
 如果 YouTube 频道同步在 yt-dlp 调用内卡住，没有及时抛出上述可识别错误，sync worker 的执行 watchdog 会先重启进程并释放锁。回收扫描会把 `media.sync_profile` / `media.sync_videos` 的执行心跳过期视为一次同步尝试失败，按 `max_attempts` 有上限地重试，且不提升 orphan 优先级；终止失败的 `media.sync_videos` 会推进该媒体的 `last_video_sync_at` 作为冷却时间，避免单个频道反复卡死时占住整个同步队列。
@@ -125,7 +127,7 @@ yt-dlp 官方 PO Token Guide 当前推荐用 PO Token Provider plugin，尤其�
 
 ## 浏览器 Impersonation
 
-yt-dlp 官方 README 把 `curl_cffi` 列为推荐的浏览器 impersonation 支持库，可用于需要浏览器 TLS 指纹的站点。项目依赖固定 `curl_cffi>=0.14,<0.15`，因为当前 `yt-dlp 2026.03.17` 明确不支持 `curl_cffi 0.15.x`。
+yt-dlp 官方 README 把 `curl_cffi` 列为推荐的浏览器 impersonation 支持库，可用于需要浏览器 TLS 指纹的站点。当前项目依赖固定 `curl_cffi>=0.15,<0.16`；`yt-dlp 2026.07.04` 的 `curl_cffi` 请求后端支持 `0.10.x` 到 `0.15.x`。
 
 当前默认：
 
@@ -135,13 +137,15 @@ yt-dlp 官方 README 把 `curl_cffi` 列为推荐的浏览器 impersonation 支�
 
 ## 本项目当前状态
 
-- 本地 `yt-dlp` 版本曾观测为 `2026.03.17`；不是特别旧，但 yt-dlp master / nightly 在 2026-04 仍有新构建。
+- 本地 `yt-dlp` 版本已更新到 `2026.07.04`，对应 PyPI 包版本 `2026.7.4`；`yt-dlp-ejs` 当前为 `0.8.0`。
 - 当前配置已有 `YTDLP_REMOTE_COMPONENTS=ejs:github`，用于 YouTube EJS / JS challenge 组件。
 - 当前支持通过 `YTDLP_POT_BGUTIL_BASE_URL` 启用 bgutil PO Token Provider HTTP server。
 - 当前 YouTube 同步 / 下载固定注入已保存的 YouTube cookies；不再提供全局无 cookies 下载开关。
 - 历史 `_download_without_cookies` 任务参数只作为兼容清理对象存在，不允许作为新的自动重试策略。
 - 当前 YouTube `yt-dlp` 调用默认启用 `YTDLP_YOUTUBE_IMPERSONATE=chrome`。
+- 当前项目本地 Node.js 默认版本为 22.23.1，满足 EJS 的 Node.js 22+ 要求；Node.js 20 不再受支持，会导致 `n challenge` 求解失败。
 - 当前 YouTube 下载格式优先 combined MP4/HLS，避免优先命中已实测 403 的 360p+ DASH video-only GVS URL。
+- 当前会将 YouTube `No video formats found` 识别为“formats 为空”的解析失败，并提示优先检查依赖版本、`YTDLP_PROXY`、PO Token Provider、cookies 导出会话和视频访问限制；不会把它误报成 cookies 失效。
 - 已将 `SYNC_BATCH_SIZE` 推荐值降为 `2`，减少同步任务波峰。
 
 ## 参考来源

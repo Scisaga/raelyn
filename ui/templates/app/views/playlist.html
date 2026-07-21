@@ -843,7 +843,7 @@
                   <div class="shrink-0 border-b border-slate-800 bg-slate-950/35">
                     <div class="px-4 py-2.5 grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
                       <div class="min-w-0 flex flex-wrap items-center gap-x-3 gap-y-2">
-                        <span class="text-sm font-semibold text-slate-100">事件 / Regime 分析</span>
+                        <span class="text-sm font-semibold text-slate-100">事件图谱</span>
                         <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="playlistAnalysisSummaryBadgeClass()">
                           <span x-text="playlistAnalysisSummaryShortBadgeLabel()"></span>
                         </span>
@@ -851,12 +851,13 @@
                         <span class="inline-flex items-center gap-1 text-xs text-slate-400">
                           <span>事件 embedding</span>
                           <span class="font-mono tabular-nums text-slate-200" x-text="playlistAnalysisEmbeddingCoverageLabel()"></span>
+                          <span :class="playlistAnalysisEmbeddingStatusClass()" x-text="playlistAnalysisEmbeddingStatusLabel()"></span>
                         </span>
-                        <span class="inline-flex items-center gap-1 text-xs text-slate-400" title="低置信、未确认或时间不可解析的事件不会进入自动 Regime。">
-                          <span>跳过</span>
+                        <span class="inline-flex items-center gap-1 text-xs text-slate-400" title="缺少可解析事件时间，或 embedding 尚未就绪、没有有效向量的 accepted 事件暂不进入语义快照。">
+                          <span>不可入图</span>
                           <span class="font-mono tabular-nums text-slate-200" x-text="playlistAnalysisSummaryMetricLabel('event_skipped')"></span>
                         </span>
-                        <span class="inline-flex items-center gap-1 text-xs text-slate-400" title="事件 embedding 失败会阻止对应事件进入 Regime；可在 Jobs 页查看 event.embed 错误。">
+                        <span class="inline-flex items-center gap-1 text-xs text-slate-400" title="事件 embedding 失败会阻止对应事件进入语义快照；可在 Jobs 页查看 event.embed 错误。">
                           <span>失败</span>
                           <span class="font-mono tabular-nums text-rose-200" x-text="playlistAnalysisSummaryMetricLabel('event_failed')"></span>
                         </span>
@@ -885,7 +886,7 @@
                         </button>
                       </div>
                     </div>
-                    <div class="border-t border-amber-500/20 bg-amber-500/10 px-4 py-2 text-xs text-amber-200" x-show="playlistAnalysisSummary && playlistAnalysisSummary.running">基于旧快照浏览，后台重建中。</div>
+                    <div class="border-t border-amber-500/20 bg-amber-500/10 px-4 py-2 text-xs text-amber-200" x-show="playlistAnalysisSummary && playlistAnalysisSummary.running && playlistAnalysisSummary.last_ready_run_id">基于旧语义快照浏览，后台更新中。</div>
                     <div class="border-t border-cyan-500/20 bg-cyan-500/10 px-4 py-2 flex flex-wrap items-center gap-2 text-xs text-cyan-200" x-show="playlistAnalysisActiveBackfillJob()">
                       <span x-text="playlistAnalysisBackfillJobText()"></span>
                       <span class="text-cyan-300/70">可到设置页停止任务或提交全部重新抽取。</span>
@@ -910,29 +911,29 @@
                       <section class="min-h-[22rem] flex flex-col">
                         <div class="shrink-0 px-4 py-3 flex items-start justify-between gap-3">
                           <div class="min-w-0">
-                            <div class="text-sm font-semibold text-slate-100">多尺度时间趋势</div>
+                            <div class="text-sm font-semibold text-slate-100">事件时间演化</div>
                             <div class="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-400">
-                              <span>按统一时间轴展示多尺度语义漂移 z 与不确定性。</span>
+                              <span>按统一时间轴展示多尺度标准化语义变化与不确定性。</span>
                               <span class="inline-flex items-center gap-1 text-rose-200/80">
                                 <span class="h-3 border-l border-dashed border-rose-300/70"></span>
-                                <span>候选断点</span>
+                                <span>语义变化点</span>
                               </span>
                             </div>
                           </div>
                           <div class="flex shrink-0 flex-wrap items-center justify-end gap-2">
-                            <div class="inline-flex rounded-md border border-slate-800 bg-slate-950/30 p-0.5 text-[11px]" aria-label="候选断点显示模式">
+                            <div class="inline-flex rounded-md border border-slate-800 bg-slate-950/30 p-0.5 text-[11px]" aria-label="语义变化点显示模式">
                               <template x-for="mode in playlistAnalysisBreakpointDisplayModeOptions()" :key="mode.key">
                                 <button
                                   type="button"
                                   class="h-7 rounded px-2 transition"
                                   :class="playlistAnalysisBreakpointDisplayModeClass(mode.key)"
                                   @click="playlistAnalysisSetBreakpointDisplayMode(mode.key)"
-                                  :title="`候选断点：${mode.label}`"
+                                  :title="`语义变化点：${mode.label}`"
                                   x-text="mode.label"
                                 ></button>
                               </template>
                             </div>
-                            <div class="inline-flex rounded-md border border-slate-800 bg-slate-950/30 p-0.5 text-[11px]" aria-label="事件语义焦点窗口长度">
+                            <div class="inline-flex rounded-md border border-slate-800 bg-slate-950/30 p-0.5 text-[11px]" aria-label="周期语义焦点窗口长度">
                               <template x-for="option in playlistAnalysisProjectionWindowOptions()" :key="option.months">
                                 <button
                                   type="button"
@@ -940,7 +941,7 @@
                                   :class="playlistAnalysisProjectionWindowOptionClass(option.months)"
                                   :disabled="!playlistAnalysisSelectedTimelineMonths().length"
                                   @click="playlistAnalysisSetProjectionWindowMonths(option.months)"
-                                  :title="`事件语义焦点窗口：${option.label}`"
+                                  :title="`周期语义焦点窗口：${option.label}`"
                                   x-text="option.label"
                                 ></button>
                               </template>
@@ -951,8 +952,8 @@
                               :class="playlistAnalysisProjectionPlaying ? 'border-sky-500/40 bg-sky-500/20 text-sky-100' : ''"
                               :disabled="!playlistAnalysisProjectionCanPlay()"
                               @click="playlistAnalysisToggleProjectionPlayback()"
-                              :title="playlistAnalysisProjectionPlaying ? '暂停投影播放' : '播放投影焦点窗口'"
-                              :aria-label="playlistAnalysisProjectionPlaying ? '暂停投影播放' : '播放投影焦点窗口'"
+                              :title="playlistAnalysisProjectionPlaying ? '暂停周期语义轨迹' : '播放周期语义轨迹'"
+                              :aria-label="playlistAnalysisProjectionPlaying ? '暂停周期语义轨迹' : '播放周期语义轨迹'"
                             >
                               <svg x-show="!playlistAnalysisProjectionPlaying" viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true">
                                 <path d="M8 5v14l11-7z"></path>
@@ -1005,12 +1006,12 @@
                                 @pointerdown="playlistAnalysisStartProjectionWindowDrag($event)"
                                 @keydown="playlistAnalysisProjectionWindowKeydown($event)"
                                 role="slider"
-                                aria-label="拖动事件语义焦点窗口"
+                                aria-label="拖动周期语义焦点窗口"
                                 :aria-valuemin="playlistAnalysisTimelineStartIndex()"
                                 :aria-valuemax="playlistAnalysisTimelineEndIndex()"
                                 :aria-valuenow="playlistAnalysisTimelineMonthIndex(playlistAnalysisProjectionWindowStart)"
                                 :aria-valuetext="playlistAnalysisProjectionRangeLabel()"
-                                title="拖动事件语义焦点窗口"
+                                title="拖动周期语义焦点窗口"
                               >
                                 <span class="sr-only" x-text="playlistAnalysisProjectionRangeLabel()"></span>
                                 <span class="absolute left-1/2 top-1/2 h-12 -translate-x-1/2 -translate-y-1/2 border-l border-sky-100/45"></span>
@@ -1023,10 +1024,10 @@
                       <section class="min-h-[22rem] flex flex-col">
                         <div class="shrink-0 px-4 py-3">
                           <div class="min-w-0">
-                            <div class="text-sm font-semibold text-slate-100">焦点窗口事件语义分布</div>
+                            <div class="text-sm font-semibold text-slate-100">焦点窗口周期语义轨迹</div>
                             <div class="text-xs text-slate-400 mt-1">
                               <span x-text="playlistAnalysisProjectionRangeLabel()"></span>
-                              <span class="ml-2">按事件 centroid 映射语义变化，不是 rolling z 散点图。</span>
+                              <span class="ml-2">每个点代表一个日级周期 centroid，仅用于观察相邻周期变化；不是事件级二维 embedding 地图。</span>
                             </div>
                           </div>
                         </div>
@@ -1075,7 +1076,7 @@
                                 type="button"
                                 class="absolute rounded-full border transition-opacity hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-emerald-400/40"
                                 :style="playlistAnalysisProjectionPointStyle(point)"
-                                :title="`${point.period_date} · 事件 ${point.event_count || point.video_count || 0} · 不确定性 ${point.dispersion_mean != null ? Number(point.dispersion_mean).toFixed(4) : '-'}`"
+                                :title="`${point.period_date} · 日级周期 centroid · 事件数 ${point.event_count || point.video_count || 0} · 不确定性 ${point.dispersion_mean != null ? Number(point.dispersion_mean).toFixed(4) : '-'}`"
                                 @click="playlistAnalysisSelectEventFromDate(point.period_date)"
                               ></button>
                             </template>
@@ -1098,9 +1099,37 @@
                     <div class="shrink-0 border-t border-slate-800 bg-slate-950/35 px-4 py-2">
                       <div class="flex flex-col gap-2">
                         <div x-show="playlistAnalysisTimelineMonths().length">
+                          <div class="mb-1 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+                            <div class="flex min-w-0 items-center gap-2">
+                              <span class="truncate font-mono tabular-nums" x-text="playlistAnalysisTimelineScopeLabel()"></span>
+                              <span class="hidden items-center gap-1 text-sky-300/70 sm:inline-flex" title="柱高表示该月进入语义快照的事件数量">
+                                <span class="inline-block h-2.5 w-1 rounded-sm bg-sky-400/55"></span>
+                                <span x-text="playlistAnalysisTimelineDensityLoading ? '分布加载中' : '月事件量'"></span>
+                              </span>
+                            </div>
+                            <div class="inline-flex rounded-md border border-slate-800 bg-slate-950/30 p-0.5" x-show="playlistAnalysisTimelineHasExtendedRange()">
+                              <button
+                                type="button"
+                                class="h-6 rounded px-2 transition"
+                                :class="playlistAnalysisTimelineScopeClass('normal')"
+                                @click="playlistAnalysisSetTimelineScope('normal')"
+                              >正常范围</button>
+                              <button
+                                type="button"
+                                class="h-6 rounded px-2 transition"
+                                :class="playlistAnalysisTimelineScopeClass('full')"
+                                @click="playlistAnalysisSetTimelineScope('full')"
+                              >全量</button>
+                            </div>
+                          </div>
                           <div class="relative h-14 overflow-hidden rounded-md border border-slate-800 bg-slate-950/20 px-3">
                             <div x-ref="playlistAnalysisTimelineTrack" class="absolute inset-x-3 top-5 h-7 -translate-y-1/2">
                               <div class="absolute inset-0 opacity-60" :style="playlistAnalysisTimelineTickStyle()"></div>
+                              <div class="pointer-events-none absolute inset-x-0 bottom-0 h-3 opacity-80" aria-hidden="true">
+                                <template x-for="bar in playlistAnalysisTimelineDensityBars()" :key="bar.key">
+                                  <span class="absolute bottom-0 min-w-px rounded-t-sm bg-sky-400/55" :style="bar.style" :title="bar.label"></span>
+                                </template>
+                              </div>
                               <div class="pointer-events-none absolute inset-0 opacity-75">
                                 <template x-for="tick in playlistAnalysisTimelineYearTicks()" :key="tick.key">
                                   <span class="absolute inset-y-0 w-px bg-slate-500/60" :style="playlistAnalysisTimelineYearMarkStyle(tick)"></span>
@@ -1176,7 +1205,7 @@
                     <div class="min-h-0 flex flex-col divide-y divide-slate-800">
                       <div class="shrink-0 px-4 py-3">
                         <div class="text-sm font-semibold text-slate-100">事件序列</div>
-                        <div class="text-xs text-slate-400 mt-1">按事件日期倒序展示；开放式主题爆发标为事件候选，语义漂移结果标为候选断点。</div>
+                        <div class="text-xs text-slate-400 mt-1">按事件日期倒序展示；开放式主题爆发标为事件候选，语义漂移结果标为语义变化点。</div>
                       </div>
                       <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar divide-y divide-slate-800">
                         <template x-for="item in playlistAnalysisDisplayCandidates()" :key="item.id">
@@ -1200,7 +1229,11 @@
                           </button>
                         </template>
                         <div class="px-4 py-3 text-xs text-slate-500" x-show="playlistAnalysisCandidatesLoading">事件加载中...</div>
-                        <div class="px-4 py-3 text-xs text-slate-500" x-show="!playlistAnalysisCandidatesLoading && playlistAnalysisCandidatesLoaded && playlistAnalysisCandidates.length===0">暂无候选事件。</div>
+                        <div
+                          class="px-4 py-3 text-xs text-slate-500"
+                          x-show="!playlistAnalysisCandidatesLoading && ((!playlistAnalysisHasReadySnapshot() && playlistAnalysisSummary) || (playlistAnalysisCandidatesLoaded && playlistAnalysisCandidates.length===0))"
+                          x-text="playlistAnalysisCandidatesEmptyLabel()"
+                        ></div>
                       </div>
                     </div>
 
@@ -1241,7 +1274,7 @@
                             <div class="text-slate-100 mt-1" x-text="playlistAnalysisCandidateDetail && playlistAnalysisCandidateDetail.uncertainty != null ? Number(playlistAnalysisCandidateDetail.uncertainty).toFixed(4) : '-'"></div>
                           </div>
                           <div class="px-4 py-3">
-                            <div class="text-slate-500">边界 z</div>
+                            <div class="text-slate-500">标准化语义变化</div>
                             <div class="text-slate-100 mt-1" x-text="playlistAnalysisCandidateDetail && (playlistAnalysisCandidateDetail.boundary_z ?? playlistAnalysisCandidateDetail.score) != null ? Number(playlistAnalysisCandidateDetail.boundary_z ?? playlistAnalysisCandidateDetail.score).toFixed(3) : '-'"></div>
                           </div>
                         </div>
@@ -1257,7 +1290,7 @@
                         </div>
 
                         <div class="px-4 py-3 space-y-2">
-                          <div class="text-xs font-semibold text-slate-300">证据视频</div>
+                          <div class="text-xs font-semibold text-slate-300">代表证据视频</div>
                           <div class="divide-y divide-slate-800 border border-slate-800/70">
                             <template x-for="video in (((playlistAnalysisCandidateDetail||{}).evidence||{}).videos || [])" :key="video.video_id">
                               <div class="px-3 py-2">
@@ -1496,8 +1529,8 @@
                     <div class="rounded-lg border border-slate-800 bg-slate-950/20 overflow-hidden divide-y divide-slate-800">
                       <div class="px-4 py-3 flex flex-wrap items-start justify-between gap-3">
                         <div class="min-w-0">
-                          <div class="text-sm font-semibold text-slate-100">事件与 Regime 数据维护</div>
-                          <div class="text-xs text-slate-400 mt-1">管理事件抽取、全量重抽与 Regime 快照重建。</div>
+                          <div class="text-sm font-semibold text-slate-100">事件图谱数据维护</div>
+                          <div class="text-xs text-slate-400 mt-1">管理事件抽取、全量重抽与语义快照构建。</div>
                         </div>
                         <div class="flex flex-wrap items-center gap-2 text-[11px]">
                           <span class="rounded-full border border-sky-500/25 bg-sky-500/10 px-2 py-0.5 text-sky-200" :title="playlistEventsCoverageTitle()" x-text="playlistEventsCoverageLabel()"></span>
@@ -1555,8 +1588,8 @@
 
                       <div class="px-4 py-3 flex items-start justify-between gap-3">
                         <div>
-                          <div class="text-sm font-semibold text-slate-100">重建 Regime 分析</div>
-                          <div class="text-xs text-slate-400 mt-1">基于已确认且 embedding ready 的事件重建趋势信号与候选断点。</div>
+                          <div class="text-sm font-semibold text-slate-100">构建事件语义快照</div>
+                          <div class="text-xs text-slate-400 mt-1">基于已确认且 embedding 已就绪的事件构建语义趋势与语义变化点。</div>
                         </div>
                         <div class="shrink-0 pt-0.5">
                           <button
@@ -1564,8 +1597,8 @@
                             @click="playlistAnalysisRebuild()"
                             :disabled="playlistAnalysisRebuilding || playlistAnalysisActiveBackfillJob() || !playlistDetail"
                           >
-                            <span x-show="!playlistAnalysisRebuilding">重建 Regime</span>
-                            <span x-show="playlistAnalysisRebuilding">重建中…</span>
+                            <span x-show="!playlistAnalysisRebuilding">构建语义快照</span>
+                            <span x-show="playlistAnalysisRebuilding">构建中…</span>
                           </button>
                         </div>
                       </div>

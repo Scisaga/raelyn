@@ -19,6 +19,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from raelyn.api.playlists import (
     _active_playlist_event_backfill_job,
     _candidate_detail_out,
+    _event_regime_summary,
     _playlist_event_backfill_job_out,
     EventRegimeCandidatePatch,
     PlaylistEventsSummaryOut,
@@ -31,7 +32,7 @@ from raelyn.api.playlists import (
     list_playlist_videos_by_period,
     patch_playlist_event_regime_candidate,
 )
-from raelyn.models import Job
+from raelyn.models import EventRegimeRun, EventRegimeState, Job
 
 
 class _ScalarResult:
@@ -51,6 +52,17 @@ class _RowsResult:
 
     def all(self):
         return self._rows
+
+    def one(self):
+        return self._rows[0]
+
+
+class _ScalarOneResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one(self):
+        return self._value
 
 
 class _BackfillProgressSession:
@@ -222,6 +234,62 @@ class PlaylistApiTests(unittest.TestCase):
         self.assertEqual(payload.video_extracted, 10108)
         self.assertEqual(payload.video_total, 10646)
         self.assertGreater(payload.estimated_total_seconds or 0, elapsed_seconds * 5)
+
+    def test_regime_summary_uses_live_coverage_and_month_only_signal_range(self) -> None:
+        playlist_id = uuid.uuid4()
+        run_id = uuid.uuid4()
+        state = EventRegimeState(
+            playlist_id=playlist_id,
+            analysis_dirty=True,
+            last_ready_run_id=run_id,
+        )
+        run = EventRegimeRun(
+            id=run_id,
+            playlist_id=playlist_id,
+            status="ready",
+            analysis_clock="day",
+            embedding_model="old",
+            embedding_dim=3,
+            event_total=10,
+            event_embedded=8,
+            event_skipped=2,
+            event_failed=1,
+        )
+        session = Mock()
+        session.get.return_value = run
+        session.execute.side_effect = [
+            _ScalarOneResult(4),
+            _RowsResult([(date(2010, 1, 1), date(2026, 6, 1))]),
+        ]
+        live_coverage = {
+            "event_total": 161840,
+            "event_embedded": 161840,
+            "event_eligible": 160876,
+            "event_scale_excluded": 3231,
+            "event_skipped": 964,
+            "event_failed": 0,
+        }
+
+        with patch("raelyn.api.playlists.ensure_event_regime_state", return_value=state):
+            with patch("raelyn.api.playlists.active_event_regime_run", return_value=None):
+                with patch("raelyn.api.playlists.pending_event_regime_job", return_value=None):
+                    with patch("raelyn.api.playlists._active_playlist_event_backfill_job", return_value=None):
+                        with patch("raelyn.api.playlists.playlist_event_regime_coverage", return_value=live_coverage):
+                            payload = _event_regime_summary(session, playlist_id)
+
+        self.assertEqual(payload.event_total, 161840)
+        self.assertEqual(payload.event_embedded, 161840)
+        self.assertEqual(payload.event_eligible, 160876)
+        self.assertEqual(payload.event_scale_excluded, 3231)
+        self.assertEqual(payload.event_skipped, 964)
+        self.assertEqual(payload.event_failed, 0)
+        self.assertEqual(payload.candidate_count, 4)
+        self.assertEqual(payload.signal_start_date, date(2010, 1, 1))
+        self.assertEqual(payload.signal_end_date, date(2026, 6, 1))
+        range_stmt = session.execute.call_args_list[1].args[0]
+        compiled = str(range_stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
+        self.assertIn("event_regime_signal.regime_run_id", compiled)
+        self.assertNotIn("event_regime_signal.granularity", compiled)
 
     def test_regime_candidate_detail_exposes_event_evidence_without_training_windows(self) -> None:
         candidate_id = uuid.uuid4()

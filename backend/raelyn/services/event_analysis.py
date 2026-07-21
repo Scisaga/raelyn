@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from array import array
+from collections import defaultdict, deque
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 import hashlib
 import json
@@ -10,17 +11,18 @@ import math
 import re
 import statistics
 import uuid
-from typing import Any
+from typing import Any, Callable, Iterator, Sequence
 from urllib.parse import urlparse
 
-from sqlalchemy import String, and_, cast, delete, func, or_, select
+from sqlalchemy import String, and_, case, cast, delete, func, or_, select
+from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from raelyn.config import settings
 from raelyn.jobs.enqueue import enqueue_job
 from raelyn.jobs.progress import set_job_progress
-from raelyn.jobs.reschedule import JobReschedule
+from raelyn.jobs.reschedule import JobReschedule, JobTerminalFailure
 from raelyn.models import (
     AppConfig,
     Asset,
@@ -52,7 +54,7 @@ from raelyn.services.embeddings import (
 from raelyn.services.inference import get_effective_llm_config
 from raelyn.services.job_cancellation import JobCancelRequested, raise_if_job_cancel_requested, request_job_cancel
 from raelyn.services.llm import llm_enabled, llm_generate
-from raelyn.services.periods import iter_period_starts, local_date, month_add_one, period_bounds_utc
+from raelyn.services.periods import iter_period_starts, local_date, month_add_one, period_bounds_utc, period_end_inclusive
 from raelyn.services.pg_lock import advisory_lock
 from raelyn.services.transcripts import pick_transcript_asset, read_text_asset
 from raelyn.services.video_time import resolve_video_timeline, timeline_time_expr
@@ -69,6 +71,11 @@ EVENT_SOURCE_SEGMENT_MAX_CHARS = 700
 EVENT_DESCRIPTION_SOURCE_MAX_CHARS = 1600
 EVENT_REGIME_GRANULARITIES = ("day", "week", "month")
 EVENT_REGIME_WINDOWS = {"day": 20, "week": 12, "month": 12}
+EVENT_REGIME_PRECISIONS = {
+    "day": frozenset({"second", "day"}),
+    "week": frozenset({"second", "day"}),
+    "month": frozenset({"second", "day", "month"}),
+}
 _EVENT_PIPELINE_ACTIVE_JOB_STATUSES = ("pending", "running")
 EVENT_EXTRACTION_PROGRESS_TOTAL = 10000
 EVENT_EXTRACTION_PROGRESS_LLM_DONE = 9000
@@ -98,6 +105,35 @@ class _EventExtractionTranscriptAssetSnapshot:
     id: uuid.UUID
     s3_bucket: str
     s3_key: str
+
+
+@dataclass(frozen=True)
+class _EventRegimeEvidenceSnapshot:
+    event_id: uuid.UUID
+    source_video_id: uuid.UUID
+    event_time_start: datetime
+    available_at: datetime | None
+    title: str | None
+    summary: str | None
+    event_type: str
+    centroid_distance: float
+
+
+@dataclass
+class _EventRegimePeriodAggregate:
+    period_date: date
+    event_count: int
+    centroid: array
+    drift_score: float | None
+    drift_rolling_mean: float | None
+    drift_rolling_std: float | None
+    drift_rolling_z: float | None
+    dispersion_mean: float | None = None
+    dispersion_std: float | None = None
+    dispersion_p25: float | None = None
+    dispersion_p75: float | None = None
+    evidence: list[_EventRegimeEvidenceSnapshot] = field(default_factory=list)
+    available_at: datetime | None = None
 
 
 DEFAULT_EVENT_EXTRACTION_PROMPT = """
@@ -2277,7 +2313,7 @@ def request_event_regime_rebuild(session: Session, playlist_id: uuid.UUID, *, pr
     return run
 
 
-def _cosine_distance(a: list[float], b: list[float]) -> float:
+def _cosine_distance(a: Sequence[float], b: Sequence[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
@@ -2288,15 +2324,6 @@ def _cosine_distance(a: list[float], b: list[float]) -> float:
     return 1.0 - max(-1.0, min(1.0, dot / (na * nb)))
 
 
-def _centroid(vectors: list[list[float]]) -> list[float] | None:
-    if not vectors:
-        return None
-    dim = len(vectors[0])
-    if dim <= 0:
-        return None
-    return [sum(vector[i] for vector in vectors) / len(vectors) for i in range(dim)]
-
-
 def _period_start(value: date, granularity: str) -> date:
     if granularity == "week":
         return value - timedelta(days=value.weekday())
@@ -2305,10 +2332,15 @@ def _period_start(value: date, granularity: str) -> date:
     return value
 
 
-def _event_regime_period_date(event: MarketEvent, granularity: str) -> date | None:
-    if not event.available_at:
+def _event_regime_period_start(event_time: datetime | None, precision: str | None, granularity: str) -> date | None:
+    normalized_precision = str(precision or "").strip().lower()
+    if not event_time or normalized_precision not in EVENT_REGIME_PRECISIONS[granularity]:
         return None
-    return _period_start(event.available_at.date(), granularity)
+    return _period_start(event_time.date(), granularity)
+
+
+def _event_regime_period_date(event: MarketEvent, granularity: str) -> date | None:
+    return _event_regime_period_start(event.event_time_start, event.time_precision, granularity)
 
 
 def _rolling_z(values: list[float | None], idx: int, window: int) -> tuple[float | None, float | None, float | None]:
@@ -2331,36 +2363,407 @@ def _pctl(values: list[float], ratio: float) -> float | None:
     return ordered[idx]
 
 
-def _event_rows_for_regime(session: Session, playlist_id: uuid.UUID) -> list[tuple[MarketEvent, MarketEventEmbedding]]:
-    spec = embedding_spec()
-    return (
-        session.execute(
-            select(MarketEvent, MarketEventEmbedding)
-            .join(Video, Video.id == MarketEvent.source_video_id)
-            .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
-            .join(
-                MarketEventEmbedding,
-                and_(
-                    MarketEventEmbedding.event_id == MarketEvent.id,
-                    MarketEventEmbedding.embedding_model == spec.model,
-                    MarketEventEmbedding.embedding_dim == spec.dim,
-                ),
-            )
-            .where(
-                PlaylistMedia.playlist_id == playlist_id,
-                MarketEvent.status == "accepted",
-                MarketEvent.event_time_start.is_not(None),
-                MarketEvent.available_at.is_not(None),
-                MarketEventEmbedding.status == "ready",
-                MarketEventEmbedding.vector.is_not(None),
-            )
-            .order_by(MarketEvent.available_at.asc(), MarketEvent.event_time_start.asc(), MarketEvent.id.asc())
+def _proc_memory_value_bytes(path: str, key: str) -> int | None:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                if not line.startswith(f"{key}:"):
+                    continue
+                parts = line.split()
+                if len(parts) < 2:
+                    return None
+                multiplier = 1024 if len(parts) >= 3 and parts[2].lower() == "kb" else 1
+                return int(parts[1]) * multiplier
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _raise_if_analysis_memory_limit_exceeded() -> None:
+    available = _proc_memory_value_bytes("/proc/meminfo", "MemAvailable")
+    min_available = max(0, int(settings.analysis_min_available_memory_bytes or 0))
+    if available is not None and min_available > 0 and available < min_available:
+        raise JobTerminalFailure(
+            f"analysis aborted: available memory {available} is below configured minimum {min_available}"
         )
-        .all()
+
+    rss = _proc_memory_value_bytes("/proc/self/status", "VmRSS")
+    max_rss = max(0, int(settings.analysis_max_rss_bytes or 0))
+    if rss is not None and max_rss > 0 and rss > max_rss:
+        raise JobTerminalFailure(f"analysis aborted: worker RSS {rss} exceeds configured maximum {max_rss}")
+
+
+@contextmanager
+def _event_regime_snapshot_reader(session: Session) -> Iterator[Session | Connection]:
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        yield session
+        return
+
+    engine = bind.engine if isinstance(bind, Connection) else bind
+    with engine.connect() as raw_connection:
+        connection = raw_connection.execution_options(isolation_level="REPEATABLE READ")
+        with connection.begin():
+            connection.exec_driver_sql("SET TRANSACTION READ ONLY")
+            yield connection
+
+
+def playlist_event_regime_coverage(session: Session | Connection, playlist_id: uuid.UUID) -> dict[str, int]:
+    spec = embedding_spec()
+    ready = MarketEventEmbedding.status == "ready"
+    eligible = and_(
+        ready,
+        MarketEventEmbedding.vector.is_not(None),
+        MarketEvent.event_time_start.is_not(None),
     )
+    scale_eligible = and_(
+        eligible,
+        MarketEvent.time_precision.in_(sorted(set().union(*EVENT_REGIME_PRECISIONS.values()))),
+    )
+    failed = MarketEventEmbedding.status.in_(["failed", "skipped_over_budget"])
+    total, embedded, eligible_count, scale_eligible_count, failed_count = session.execute(
+        select(
+            func.count(MarketEvent.id),
+            func.coalesce(func.sum(case((ready, 1), else_=0)), 0),
+            func.coalesce(func.sum(case((eligible, 1), else_=0)), 0),
+            func.coalesce(func.sum(case((scale_eligible, 1), else_=0)), 0),
+            func.coalesce(func.sum(case((failed, 1), else_=0)), 0),
+        )
+        .select_from(MarketEvent)
+        .join(Video, Video.id == MarketEvent.source_video_id)
+        .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
+        .outerjoin(
+            MarketEventEmbedding,
+            and_(
+                MarketEventEmbedding.event_id == MarketEvent.id,
+                MarketEventEmbedding.embedding_model == spec.model,
+                MarketEventEmbedding.embedding_dim == spec.dim,
+            ),
+        )
+        .where(PlaylistMedia.playlist_id == playlist_id, MarketEvent.status == "accepted")
+    ).one()
+    event_total = int(total or 0)
+    event_eligible = int(eligible_count or 0)
+    event_scale_eligible = int(scale_eligible_count or 0)
+    return {
+        "event_total": event_total,
+        "event_embedded": int(embedded or 0),
+        "event_eligible": event_eligible,
+        "event_scale_excluded": max(0, event_eligible - event_scale_eligible),
+        "event_skipped": max(0, event_total - event_eligible),
+        "event_failed": int(failed_count or 0),
+    }
 
 
-def build_event_regime_snapshot(session: Session, *, playlist_id: uuid.UUID, job: Job | None = None) -> dict[str, Any]:
+def _event_rows_for_regime(
+    session: Session | Connection,
+    playlist_id: uuid.UUID,
+    *,
+    embedding_model: str,
+    embedding_dim: int,
+) -> Iterator[Any]:
+    batch_size = max(1, int(settings.analysis_stream_batch_size or 0))
+    stmt = (
+        select(
+            MarketEvent.id,
+            MarketEvent.source_video_id,
+            MarketEvent.event_time_start,
+            MarketEvent.time_precision,
+            MarketEvent.available_at,
+            MarketEvent.title,
+            MarketEvent.summary,
+            MarketEvent.event_type,
+            MarketEventEmbedding.vector,
+        )
+        .join(Video, Video.id == MarketEvent.source_video_id)
+        .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
+        .join(
+            MarketEventEmbedding,
+            and_(
+                MarketEventEmbedding.event_id == MarketEvent.id,
+                MarketEventEmbedding.embedding_model == embedding_model,
+                MarketEventEmbedding.embedding_dim == embedding_dim,
+            ),
+        )
+        .where(
+            PlaylistMedia.playlist_id == playlist_id,
+            MarketEvent.status == "accepted",
+            MarketEvent.event_time_start.is_not(None),
+            MarketEventEmbedding.status == "ready",
+            MarketEventEmbedding.vector.is_not(None),
+        )
+        .order_by(MarketEvent.event_time_start.asc(), MarketEvent.id.asc())
+        .execution_options(stream_results=True, yield_per=batch_size)
+    )
+    result = session.execute(stmt)
+    try:
+        yield from result
+    finally:
+        close = getattr(result, "close", None)
+        if close:
+            close()
+
+
+def _validated_regime_vector(raw_vector: Any, *, event_id: uuid.UUID, embedding_dim: int) -> Sequence[float]:
+    if not isinstance(raw_vector, list) or len(raw_vector) != embedding_dim:
+        actual_dim = len(raw_vector) if isinstance(raw_vector, list) else 0
+        raise JobTerminalFailure(
+            f"analysis aborted: ready embedding for event {event_id} has dimension {actual_dim}, expected {embedding_dim}"
+        )
+    return raw_vector
+
+
+def _event_regime_evidence_sort_key(item: _EventRegimeEvidenceSnapshot) -> tuple[float, datetime, str]:
+    return item.centroid_distance, item.event_time_start, str(item.event_id)
+
+
+def _offer_event_regime_evidence(
+    aggregate: _EventRegimePeriodAggregate,
+    snapshot: _EventRegimeEvidenceSnapshot,
+) -> None:
+    if len(aggregate.evidence) < 20:
+        aggregate.evidence.append(snapshot)
+        aggregate.evidence.sort(key=_event_regime_evidence_sort_key)
+        return
+    if _event_regime_evidence_sort_key(snapshot) >= _event_regime_evidence_sort_key(aggregate.evidence[-1]):
+        return
+    aggregate.evidence[-1] = snapshot
+    aggregate.evidence.sort(key=_event_regime_evidence_sort_key)
+
+
+def _build_event_regime_period_aggregates(
+    rows: Iterator[Any],
+    *,
+    embedding_dim: int,
+    batch_size: int,
+    checkpoint: Callable[[int], None],
+) -> tuple[dict[str, list[_EventRegimePeriodAggregate]], int]:
+    aggregates: dict[str, list[_EventRegimePeriodAggregate]] = {
+        granularity: [] for granularity in EVENT_REGIME_GRANULARITIES
+    }
+    current_dates: dict[str, date | None] = {granularity: None for granularity in EVENT_REGIME_GRANULARITIES}
+    current_sums: dict[str, array | None] = {granularity: None for granularity in EVENT_REGIME_GRANULARITIES}
+    current_counts = {granularity: 0 for granularity in EVENT_REGIME_GRANULARITIES}
+    previous_centroids: dict[str, array | None] = {granularity: None for granularity in EVENT_REGIME_GRANULARITIES}
+    rolling_drifts = {
+        granularity: deque(maxlen=EVENT_REGIME_WINDOWS[granularity])
+        for granularity in EVENT_REGIME_GRANULARITIES
+    }
+
+    def finalize(granularity: str) -> None:
+        period_date = current_dates[granularity]
+        vector_sum = current_sums[granularity]
+        count = current_counts[granularity]
+        if period_date is None or vector_sum is None or count <= 0:
+            return
+
+        centroid = array("d", (value / count for value in vector_sum))
+        previous = previous_centroids[granularity]
+        drift = _cosine_distance(centroid, previous) if previous is not None else None
+        rolling_values = list(rolling_drifts[granularity]) + [drift]
+        mean, std, z = _rolling_z(rolling_values, len(rolling_values) - 1, EVENT_REGIME_WINDOWS[granularity])
+        aggregates[granularity].append(
+            _EventRegimePeriodAggregate(
+                period_date=period_date,
+                event_count=count,
+                centroid=centroid,
+                drift_score=drift,
+                drift_rolling_mean=mean,
+                drift_rolling_std=std,
+                drift_rolling_z=z,
+            )
+        )
+        previous_centroids[granularity] = centroid
+        rolling_drifts[granularity].append(drift)
+        current_dates[granularity] = None
+        current_sums[granularity] = None
+        current_counts[granularity] = 0
+
+        if granularity == "day":
+            add_contribution("week", _period_start(period_date, "week"), vector_sum, count)
+            add_contribution("month", _period_start(period_date, "month"), vector_sum, count)
+
+    def add_contribution(granularity: str, period_date: date, vector_sum: Sequence[float], count: int) -> None:
+        if current_dates[granularity] != period_date:
+            finalize(granularity)
+            current_dates[granularity] = period_date
+            current_sums[granularity] = array("d", [0.0]) * embedding_dim
+        target = current_sums[granularity]
+        assert target is not None
+        for idx, value in enumerate(vector_sum):
+            target[idx] += float(value)
+        current_counts[granularity] += count
+
+    processed = 0
+    previous_event_date: date | None = None
+    for row in rows:
+        event_id, _video_id, event_time, precision, _available_at, _title, _summary, _event_type, raw_vector = row
+        vector = _validated_regime_vector(raw_vector, event_id=event_id, embedding_dim=embedding_dim)
+        event_date = event_time.date()
+        if previous_event_date is not None and event_date != previous_event_date:
+            finalize("day")
+        previous_event_date = event_date
+        normalized_precision = str(precision or "").strip().lower()
+        if normalized_precision in EVENT_REGIME_PRECISIONS["day"]:
+            add_contribution("day", event_date, vector, 1)
+        elif normalized_precision == "month":
+            add_contribution("month", _period_start(event_date, "month"), vector, 1)
+        processed += 1
+        if processed % batch_size == 0:
+            checkpoint(processed)
+
+    finalize("day")
+    finalize("week")
+    finalize("month")
+    checkpoint(processed)
+    return aggregates, processed
+
+
+def _populate_event_regime_dispersions_and_evidence(
+    rows: Iterator[Any],
+    *,
+    aggregates: dict[str, list[_EventRegimePeriodAggregate]],
+    embedding_dim: int,
+    batch_size: int,
+    checkpoint: Callable[[int], None],
+) -> int:
+    aggregate_by_date = {
+        granularity: {item.period_date: item for item in items}
+        for granularity, items in aggregates.items()
+    }
+    candidate_dates = {
+        granularity: {
+            item.period_date
+            for item in items
+            if granularity != "day" and item.drift_rolling_z is not None and item.drift_rolling_z >= 2.0
+        }
+        for granularity, items in aggregates.items()
+    }
+    current_dates: dict[str, date | None] = {granularity: None for granularity in EVENT_REGIME_GRANULARITIES}
+    current_distances: dict[str, list[float]] = {granularity: [] for granularity in EVENT_REGIME_GRANULARITIES}
+
+    def finalize(granularity: str) -> None:
+        period_date = current_dates[granularity]
+        distances = current_distances[granularity]
+        if period_date is None:
+            return
+        aggregate = aggregate_by_date[granularity][period_date]
+        if len(distances) != aggregate.event_count:
+            raise RuntimeError(
+                "event analysis snapshot changed between streaming passes: "
+                f"{granularity} {period_date} expected {aggregate.event_count} events, got {len(distances)}"
+            )
+        aggregate.dispersion_mean = statistics.fmean(distances)
+        aggregate.dispersion_std = statistics.pstdev(distances) if len(distances) > 1 else None
+        aggregate.dispersion_p25 = _pctl(distances, 0.25)
+        aggregate.dispersion_p75 = _pctl(distances, 0.75)
+        current_dates[granularity] = None
+        current_distances[granularity] = []
+
+    processed = 0
+    for row in rows:
+        event_id, source_video_id, event_time, precision, available_at, title, summary, event_type, raw_vector = row
+        vector = _validated_regime_vector(raw_vector, event_id=event_id, embedding_dim=embedding_dim)
+        for granularity in EVENT_REGIME_GRANULARITIES:
+            period_date = _event_regime_period_start(event_time, precision, granularity)
+            if period_date is None:
+                continue
+            if current_dates[granularity] != period_date:
+                finalize(granularity)
+                current_dates[granularity] = period_date
+            aggregate = aggregate_by_date[granularity].get(period_date)
+            if aggregate is None:
+                raise RuntimeError(
+                    "event analysis snapshot changed between streaming passes: "
+                    f"unexpected {granularity} period {period_date}"
+                )
+            centroid_distance = _cosine_distance(vector, aggregate.centroid)
+            current_distances[granularity].append(centroid_distance)
+            if period_date in candidate_dates[granularity]:
+                if available_at is not None and (aggregate.available_at is None or available_at < aggregate.available_at):
+                    aggregate.available_at = available_at
+                _offer_event_regime_evidence(
+                    aggregate,
+                    _EventRegimeEvidenceSnapshot(
+                        event_id=event_id,
+                        source_video_id=source_video_id,
+                        event_time_start=event_time,
+                        available_at=available_at,
+                        title=title,
+                        summary=summary,
+                        event_type=event_type,
+                        centroid_distance=centroid_distance,
+                    ),
+                )
+        processed += 1
+        if processed % batch_size == 0:
+            checkpoint(processed)
+
+    for granularity in EVENT_REGIME_GRANULARITIES:
+        finalize(granularity)
+    checkpoint(processed)
+    return processed
+
+
+def _event_regime_candidate_models(
+    *,
+    run_id: uuid.UUID,
+    aggregates: dict[str, list[_EventRegimePeriodAggregate]],
+) -> tuple[list[EventRegimeCandidate], dict[date, EventRegimeCandidate]]:
+    selected_candidates: dict[date, tuple[str, _EventRegimePeriodAggregate]] = {}
+    supporting_granularities: dict[date, set[str]] = defaultdict(set)
+    for granularity in sorted({"week", "month"}):
+        for aggregate in aggregates[granularity]:
+            z = aggregate.drift_rolling_z
+            if z is None or z < 2.0 or aggregate.event_count <= 0:
+                continue
+            supporting_granularities[aggregate.period_date].add(granularity)
+            selected = selected_candidates.get(aggregate.period_date)
+            if selected is None or z > float(selected[1].drift_rolling_z or 0.0):
+                selected_candidates[aggregate.period_date] = (granularity, aggregate)
+
+    candidate_models: list[EventRegimeCandidate] = []
+    candidate_by_date: dict[date, EventRegimeCandidate] = {}
+    for period_date, (granularity, aggregate) in sorted(selected_candidates.items()):
+        evidence = aggregate.evidence
+        event_ids = [str(item.event_id) for item in evidence]
+        video_ids = sorted({str(item.source_video_id) for item in evidence})
+        summaries = [item.title or item.summary or item.event_type for item in evidence[:5]]
+        z = float(aggregate.drift_rolling_z or 0.0)
+        candidate = EventRegimeCandidate(
+            id=uuid.uuid4(),
+            regime_run_id=run_id,
+            candidate_date=period_date,
+            effective_trade_date=period_date,
+            peak_date=period_date,
+            event_start=period_date,
+            event_end=period_end_inclusive(period_date, granularity),
+            event_type="event_regime_shift",
+            status="draft",
+            score=z,
+            confidence=max(0.0, min(1.0, z / 5.0)),
+            uncertainty=max(0.0, 1.0 - min(1.0, z / 5.0)),
+            drift_score=aggregate.drift_score,
+            dispersion_score=aggregate.dispersion_mean,
+            drift_rolling_z=z,
+            summary="；".join(summaries)[:1500],
+            top_terms=[],
+            evidence_event_ids=event_ids,
+            evidence_video_ids=video_ids,
+            evidence_json={
+                "granularity": granularity,
+                "supporting_granularities": sorted(supporting_granularities[period_date]),
+                "event_count": aggregate.event_count,
+                "sampling": "centroid_nearest_top_20_v1",
+            },
+            available_at=aggregate.available_at,
+        )
+        candidate_models.append(candidate)
+        candidate_by_date[period_date] = candidate
+    return candidate_models, candidate_by_date
+
+
+def _build_event_regime_snapshot(session: Session, *, playlist_id: uuid.UUID, job: Job | None = None) -> dict[str, Any]:
     playlist = session.get(Playlist, playlist_id)
     if not playlist:
         return {"skipped": "playlist not found"}
@@ -2409,161 +2812,121 @@ def build_event_regime_snapshot(session: Session, *, playlist_id: uuid.UUID, job
     session.flush([run, state])
     raise_if_snapshot_cancel_requested()
 
-    rows = _event_rows_for_regime(session, playlist_id)
-    accepted_total = session.execute(
-        select(func.count())
-        .select_from(MarketEvent)
-        .join(Video, Video.id == MarketEvent.source_video_id)
-        .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
-        .where(PlaylistMedia.playlist_id == playlist_id, MarketEvent.status == "accepted")
-    ).scalar_one()
-    run.event_total = int(accepted_total or 0)
-    run.event_embedded = len(rows)
-    run.event_skipped = max(0, run.event_total - run.event_embedded)
+    _raise_if_analysis_memory_limit_exceeded()
+    with _event_regime_snapshot_reader(session) as snapshot_reader:
+        coverage = playlist_event_regime_coverage(snapshot_reader, playlist_id)
+        run.event_total = coverage["event_total"]
+        run.event_embedded = coverage["event_embedded"]
+        run.event_skipped = coverage["event_skipped"]
+        run.event_failed = coverage["event_failed"]
 
-    session.execute(delete(EventRegimeSignal).where(EventRegimeSignal.regime_run_id == run.id))
-    session.execute(delete(EventRegimeCandidate).where(EventRegimeCandidate.regime_run_id == run.id))
-    if job:
-        set_job_progress(job_id=job.id, current=0, total=max(1, len(rows)))
+        session.execute(delete(EventRegimeSignal).where(EventRegimeSignal.regime_run_id == run.id))
+        session.execute(delete(EventRegimeCandidate).where(EventRegimeCandidate.regime_run_id == run.id))
+        batch_size = max(1, int(settings.analysis_stream_batch_size or 0))
+        scan_total = max(1, coverage["event_eligible"] * 2)
+        if job:
+            set_job_progress(job_id=job.id, current=0, total=scan_total)
 
-    signals_by_key: dict[tuple[str, date], EventRegimeSignal] = {}
+        def first_pass_checkpoint(processed: int) -> None:
+            raise_if_snapshot_cancel_requested()
+            _raise_if_analysis_memory_limit_exceeded()
+            if job:
+                set_job_progress(job_id=job.id, current=min(processed, scan_total), total=scan_total)
+
+        aggregates, first_pass_count = _build_event_regime_period_aggregates(
+            _event_rows_for_regime(
+                snapshot_reader,
+                playlist_id,
+                embedding_model=spec.model,
+                embedding_dim=spec.dim,
+            ),
+            embedding_dim=spec.dim,
+            batch_size=batch_size,
+            checkpoint=first_pass_checkpoint,
+        )
+        if first_pass_count != coverage["event_eligible"]:
+            raise RuntimeError(
+                "event analysis snapshot coverage mismatch: "
+                f"expected {coverage['event_eligible']} eligible events, got {first_pass_count}"
+            )
+
+        def second_pass_checkpoint(processed: int) -> None:
+            raise_if_snapshot_cancel_requested()
+            _raise_if_analysis_memory_limit_exceeded()
+            if job:
+                current = min(first_pass_count + processed, scan_total)
+                set_job_progress(job_id=job.id, current=current, total=scan_total)
+
+        second_pass_count = _populate_event_regime_dispersions_and_evidence(
+            _event_rows_for_regime(
+                snapshot_reader,
+                playlist_id,
+                embedding_model=spec.model,
+                embedding_dim=spec.dim,
+            ),
+            aggregates=aggregates,
+            embedding_dim=spec.dim,
+            batch_size=batch_size,
+            checkpoint=second_pass_checkpoint,
+        )
+        if second_pass_count != first_pass_count:
+            raise RuntimeError(
+                "event analysis snapshot changed between streaming passes: "
+                f"first pass read {first_pass_count} events, second pass read {second_pass_count}"
+            )
+
+    candidate_models, candidate_by_date = _event_regime_candidate_models(run_id=run.id, aggregates=aggregates)
+    for candidate in candidate_models:
+        session.add(candidate)
+    if candidate_models:
+        session.flush(candidate_models)
+
+    signal_count = 0
+    signal_batch: list[EventRegimeSignal] = []
     for granularity in EVENT_REGIME_GRANULARITIES:
-        raise_if_snapshot_cancel_requested()
-        grouped: dict[date, list[tuple[MarketEvent, list[float]]]] = defaultdict(list)
-        for event, embedding in rows:
-            vector = [float(value) for value in (embedding.vector or [])]
-            period_date = _event_regime_period_date(event, granularity)
-            if not vector or period_date is None:
-                continue
-            grouped[period_date].append((event, vector))
-        period_dates = sorted(grouped)
-        centroids: list[list[float] | None] = []
-        drifts: list[float | None] = []
-        dispersions: list[float | None] = []
-        for idx, period_date in enumerate(period_dates):
-            items = grouped[period_date]
-            centroid = _centroid([vector for _, vector in items])
-            centroids.append(centroid)
-            previous = centroids[idx - 1] if idx > 0 else None
-            drift = _cosine_distance(centroid, previous) if centroid and previous else None
-            drifts.append(drift)
-            dispersion_values = [_cosine_distance(vector, centroid) for _, vector in items if centroid]
-            dispersions.append(statistics.fmean(dispersion_values) if dispersion_values else None)
-
-        window = EVENT_REGIME_WINDOWS[granularity]
-        for idx, period_date in enumerate(period_dates):
-            items = grouped[period_date]
-            centroid = centroids[idx]
-            dispersion_values = [_cosine_distance(vector, centroid) for _, vector in items if centroid]
-            mean, std, z = _rolling_z(drifts, idx, window)
+        for idx, aggregate in enumerate(aggregates[granularity]):
+            candidate = candidate_by_date.get(aggregate.period_date) if granularity in {"week", "month"} else None
             signal = EventRegimeSignal(
+                id=uuid.uuid4(),
                 regime_run_id=run.id,
                 granularity=granularity,
-                period_date=period_date,
-                rolling_window=window,
-                event_count=len(items),
-                ready_embedding_count=len(items),
-                centroid_vector=centroid,
-                drift_score=drifts[idx],
-                drift_rolling_mean=mean,
-                drift_rolling_std=std,
-                drift_rolling_z=z,
-                dispersion_mean=dispersions[idx],
-                dispersion_std=statistics.pstdev(dispersion_values) if len(dispersion_values) > 1 else None,
-                dispersion_p25=_pctl(dispersion_values, 0.25),
-                dispersion_p75=_pctl(dispersion_values, 0.75),
+                period_date=aggregate.period_date,
+                rolling_window=EVENT_REGIME_WINDOWS[granularity],
+                event_count=aggregate.event_count,
+                ready_embedding_count=aggregate.event_count,
+                centroid_vector=list(aggregate.centroid),
+                drift_score=aggregate.drift_score,
+                drift_rolling_mean=aggregate.drift_rolling_mean,
+                drift_rolling_std=aggregate.drift_rolling_std,
+                drift_rolling_z=aggregate.drift_rolling_z,
+                dispersion_mean=aggregate.dispersion_mean,
+                dispersion_std=aggregate.dispersion_std,
+                dispersion_p25=aggregate.dispersion_p25,
+                dispersion_p75=aggregate.dispersion_p75,
                 projection_id=f"{run.id}:timeline",
                 projection_method="event_centroid_index_v1",
                 projection_x=float(idx),
-                projection_y=drifts[idx] if drifts[idx] is not None else 0.0,
-                projection_z=dispersions[idx] if dispersions[idx] is not None else 0.0,
+                projection_y=aggregate.drift_score if aggregate.drift_score is not None else 0.0,
+                projection_z=aggregate.dispersion_mean if aggregate.dispersion_mean is not None else 0.0,
                 projection_explained_variance_ratio=[],
+                linked_candidate_id=candidate.id if candidate else None,
             )
             session.add(signal)
-            signals_by_key[(granularity, period_date)] = signal
-        if job:
-            set_job_progress(job_id=job.id, current=min(len(rows), len(rows)), total=max(1, len(rows)))
-
-    session.flush()
-
-    candidate_models: list[EventRegimeCandidate] = []
-    candidate_by_date: dict[date, EventRegimeCandidate] = {}
-    for (granularity, period_date), signal in sorted(signals_by_key.items(), key=lambda item: (item[0][0], item[0][1])):
+            signal_batch.append(signal)
+            signal_count += 1
+            if len(signal_batch) >= batch_size:
+                raise_if_snapshot_cancel_requested()
+                _raise_if_analysis_memory_limit_exceeded()
+                session.flush(signal_batch)
+                for item in signal_batch:
+                    session.expunge(item)
+                signal_batch.clear()
+    if signal_batch:
         raise_if_snapshot_cancel_requested()
-        if granularity == "day":
-            continue
-        z = signal.drift_rolling_z
-        if z is None or z < 2.0 or signal.event_count <= 0:
-            continue
-        existing_candidate = candidate_by_date.get(period_date)
-        if existing_candidate:
-            evidence = existing_candidate.evidence_json if isinstance(existing_candidate.evidence_json, dict) else {}
-            support = {str(item) for item in (evidence.get("supporting_granularities") or []) if str(item).strip()}
-            support.add(str(evidence.get("granularity") or "").strip())
-            support.add(granularity)
-            evidence["supporting_granularities"] = sorted(item for item in support if item)
-            existing_candidate.evidence_json = evidence
-            if z <= float(existing_candidate.score or 0.0):
-                continue
-        period_events = [
-            event
-            for event, _embedding in rows
-            if _event_regime_period_date(event, granularity) == period_date
-        ]
-        event_ids = [str(event.id) for event in period_events[:20]]
-        video_ids = sorted({str(event.source_video_id) for event in period_events[:20]})
-        summaries = [event.title or event.summary or event.event_type for event in period_events[:5]]
-        candidate = EventRegimeCandidate(
-            regime_run_id=run.id,
-            candidate_date=period_date,
-            effective_trade_date=period_date,
-            peak_date=period_date,
-            event_start=period_date,
-            event_end=period_date,
-            event_type="event_regime_shift",
-            status="draft",
-            score=float(z),
-            confidence=max(0.0, min(1.0, z / 5.0)),
-            uncertainty=max(0.0, 1.0 - min(1.0, z / 5.0)),
-            drift_score=signal.drift_score,
-            dispersion_score=signal.dispersion_mean,
-            drift_rolling_z=z,
-            summary="；".join(summaries)[:1500],
-            top_terms=[],
-            evidence_event_ids=event_ids,
-            evidence_video_ids=video_ids,
-            evidence_json={"granularity": granularity, "supporting_granularities": [granularity], "event_count": signal.event_count},
-            available_at=min([event.available_at for event in period_events if event.available_at] or [None]),
-        )
-        if existing_candidate:
-            existing_candidate.event_type = candidate.event_type
-            existing_candidate.score = candidate.score
-            existing_candidate.confidence = candidate.confidence
-            existing_candidate.uncertainty = candidate.uncertainty
-            existing_candidate.drift_score = candidate.drift_score
-            existing_candidate.dispersion_score = candidate.dispersion_score
-            existing_candidate.drift_rolling_z = candidate.drift_rolling_z
-            existing_candidate.summary = candidate.summary
-            existing_candidate.evidence_event_ids = candidate.evidence_event_ids
-            existing_candidate.evidence_video_ids = candidate.evidence_video_ids
-            evidence = candidate.evidence_json if isinstance(candidate.evidence_json, dict) else {}
-            previous = existing_candidate.evidence_json if isinstance(existing_candidate.evidence_json, dict) else {}
-            support = {str(item) for item in (previous.get("supporting_granularities") or []) if str(item).strip()}
-            support.add(granularity)
-            evidence["supporting_granularities"] = sorted(item for item in support if item)
-            existing_candidate.evidence_json = evidence
-            existing_candidate.available_at = candidate.available_at
-            continue
-        session.add(candidate)
-        candidate_models.append(candidate)
-        candidate_by_date[period_date] = candidate
-    session.flush(candidate_models)
-    for candidate in candidate_models:
-        raise_if_snapshot_cancel_requested()
-        for granularity in ("week", "month"):
-            signal = signals_by_key.get((granularity, candidate.candidate_date))
-            if signal:
-                signal.linked_candidate_id = candidate.id
+        _raise_if_analysis_memory_limit_exceeded()
+        session.flush(signal_batch)
+        for item in signal_batch:
+            session.expunge(item)
 
     raise_if_snapshot_cancel_requested()
     finished = utcnow()
@@ -2575,16 +2938,46 @@ def build_event_regime_snapshot(session: Session, *, playlist_id: uuid.UUID, job
     state.updated_at = finished
     session.flush()
     if job:
-        set_job_progress(job_id=job.id, current=max(1, len(rows)), total=max(1, len(rows)))
+        set_job_progress(job_id=job.id, current=scan_total, total=scan_total)
     return {
         "ok": True,
         "playlist_id": str(playlist_id),
         "run_id": str(run.id),
         "event_total": run.event_total,
         "event_embedded": run.event_embedded,
-        "signal_count": len(signals_by_key),
+        "event_eligible": coverage["event_eligible"],
+        "event_scale_excluded": coverage["event_scale_excluded"],
+        "event_skipped": run.event_skipped,
+        "event_failed": run.event_failed,
+        "streamed_first_pass": first_pass_count,
+        "streamed_second_pass": second_pass_count,
+        "signal_count": signal_count,
         "candidate_count": len(candidate_models),
     }
+
+
+def build_event_regime_snapshot(session: Session, *, playlist_id: uuid.UUID, job: Job | None = None) -> dict[str, Any]:
+    try:
+        return _build_event_regime_snapshot(session, playlist_id=playlist_id, job=job)
+    except JobTerminalFailure as exc:
+        session.rollback()
+        run = None
+        if job and isinstance(job.params, dict) and job.params.get("regime_run_id"):
+            try:
+                run = session.get(EventRegimeRun, uuid.UUID(str(job.params["regime_run_id"])))
+            except (TypeError, ValueError):
+                run = None
+        state = ensure_event_regime_state(session, playlist_id)
+        finished_at = utcnow()
+        if run is not None:
+            run.status = "failed"
+            run.finished_at = finished_at
+            run.updated_at = finished_at
+        state.analysis_dirty = True
+        state.last_error = exc.reason
+        state.updated_at = finished_at
+        session.flush([item for item in (run, state) if item is not None])
+        raise
 
 
 def update_event_status(session: Session, *, event_id: uuid.UUID, status: str) -> MarketEvent:

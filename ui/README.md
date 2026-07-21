@@ -29,6 +29,8 @@ npm ci
 npm run ui:build
 ```
 
+构建会根据 `static/app.js` 与 `static/css/tailwind.min.css` 内容生成静态资源版本参数并写入 `static/index.html`。服务端对 SPA HTML 与 `/static/*` 返回 `Cache-Control: no-cache`，浏览器刷新后会重新验证资源，避免继续运行旧前端产物。
+
 ## Watch
 
 ```bash

@@ -73,6 +73,7 @@ export function createPlaylistViewMethods() {
         this.playlistBriefResetSwipeState();
         this.playlistAnalysisStopPolling();
         this.playlistAnalysisStopSignalsReload();
+        this.playlistAnalysisStopTimelineDensityLoad();
         this.playlistAnalysisStopProjectionPlayback();
         this.playlistAnalysisDestroyChart();
         this.playlistAnalysisReleaseRangeDrag();
@@ -127,6 +128,11 @@ export function createPlaylistViewMethods() {
         this.playlistAnalysisRangeEnd = "";
         this.playlistAnalysisFullRangeStart = "";
         this.playlistAnalysisFullRangeEnd = "";
+        this.playlistAnalysisTimelineScope = "normal";
+        this.playlistAnalysisTimelineDensity = [];
+        this.playlistAnalysisTimelineDensityLoading = false;
+        this.playlistAnalysisTimelineDensityLoadedRangeStart = "";
+        this.playlistAnalysisTimelineDensityLoadedRangeEnd = "";
         this.playlistAnalysisSignalsLoadedRangeStart = "";
         this.playlistAnalysisSignalsLoadedRangeEnd = "";
         this.playlistAnalysisProjectionWindowStart = "";
@@ -1341,6 +1347,7 @@ export function createPlaylistViewMethods() {
       this._abortCtrl("_playlistTranscriptVariantAbortCtrl");
       this.playlistAnalysisStopPolling();
       this.playlistAnalysisStopSignalsReload();
+      this.playlistAnalysisStopTimelineDensityLoad();
       this.playlistAnalysisStopProjectionPlayback();
       this.playlistAnalysisDestroyChart();
       this.playlistAnalysisReleaseRangeDrag();
@@ -1388,6 +1395,11 @@ export function createPlaylistViewMethods() {
       this.playlistAnalysisRangeEnd = "";
       this.playlistAnalysisFullRangeStart = "";
       this.playlistAnalysisFullRangeEnd = "";
+      this.playlistAnalysisTimelineScope = "normal";
+      this.playlistAnalysisTimelineDensity = [];
+      this.playlistAnalysisTimelineDensityLoading = false;
+      this.playlistAnalysisTimelineDensityLoadedRangeStart = "";
+      this.playlistAnalysisTimelineDensityLoadedRangeEnd = "";
       this.playlistAnalysisSignalsLoadedRangeStart = "";
       this.playlistAnalysisSignalsLoadedRangeEnd = "";
       this.playlistAnalysisProjectionWindowStart = "";
@@ -4068,7 +4080,7 @@ export function createPlaylistViewMethods() {
       const ok =
         typeof window === "undefined" ||
         window.confirm(
-          "全部重新抽取会先停止当前播放列表相关的事件抽取、事件 embedding 与 Regime 重建任务，然后重新抽取所有已有 plain transcript 的视频事件。任务历史会保留。确认继续？"
+          "全部重新抽取会先停止当前播放列表相关的事件抽取、事件 embedding 与语义快照构建任务，然后重新抽取所有已有 plain transcript 的视频事件。任务历史会保留。确认继续？"
         );
       if (!ok) return;
       await this.playlistSubmitEventExtraction({ force: true });
@@ -4116,6 +4128,12 @@ export function createPlaylistViewMethods() {
       this._playlistAnalysisSignalsRequestToken = Number(this._playlistAnalysisSignalsRequestToken || 0) + 1;
       this._abortCtrl("_playlistAnalysisSignalsAbortCtrl");
       this.playlistAnalysisSignalsLoading = false;
+    },
+
+    playlistAnalysisStopTimelineDensityLoad() {
+      this._playlistAnalysisTimelineDensityRequestToken = Number(this._playlistAnalysisTimelineDensityRequestToken || 0) + 1;
+      this._abortCtrl("_playlistAnalysisTimelineDensityAbortCtrl");
+      this.playlistAnalysisTimelineDensityLoading = false;
     },
 
     playlistAnalysisInvalidateSignalCaches() {
@@ -4381,17 +4399,17 @@ export function createPlaylistViewMethods() {
       return [
         {
           key: "day_z",
-          title: "日 rolling z",
+          title: "日标准化语义变化",
           granularity: "day",
           field: "drift_rolling_z",
           color: "rgba(16, 185, 129, 0.95)",
           minReadyCount: 3,
           maxGapDays: 3,
-          description: "日级信号对低样本日期很敏感，默认隐藏；少于 3 个事件 embedding 的日期会断线。",
+          description: "日级标准化语义变化对低样本日期很敏感，默认隐藏；少于 3 个事件 embedding 的日期会断线。",
         },
-        { key: "week_z", title: "周语义漂移 z", granularity: "week", field: "drift_rolling_z", color: "rgba(56, 189, 248, 0.92)", maxGapDays: 21 },
-        { key: "month_z", title: "月语义漂移 z", granularity: "month", field: "drift_rolling_z", color: "rgba(251, 191, 36, 0.88)", maxGapDays: 70 },
-        { key: "day_drift", title: "日 drift", granularity: "day", field: "drift_score", color: "rgba(129, 140, 248, 0.86)", lineWidth: 1, minReadyCount: 3, maxGapDays: 3 },
+        { key: "week_z", title: "周标准化语义变化", granularity: "week", field: "drift_rolling_z", color: "rgba(56, 189, 248, 0.92)", maxGapDays: 21 },
+        { key: "month_z", title: "月标准化语义变化", granularity: "month", field: "drift_rolling_z", color: "rgba(251, 191, 36, 0.88)", maxGapDays: 70 },
+        { key: "day_drift", title: "日相邻周期语义变化", granularity: "day", field: "drift_score", color: "rgba(129, 140, 248, 0.86)", lineWidth: 1, minReadyCount: 3, maxGapDays: 3 },
         { key: "day_uncertainty", title: "日不确定性", granularity: "day", field: "dispersion_mean", color: "rgba(244, 114, 182, 0.84)", lineWidth: 1, minReadyCount: 2, maxGapDays: 3 },
       ];
     },
@@ -4419,6 +4437,7 @@ export function createPlaylistViewMethods() {
       }
       this.playlistAnalysisStopProjectionPlayback();
       this.playlistAnalysisReleaseProjectionWindowDrag();
+      if (!this.playlistAnalysisHasReadySnapshot()) return;
       if (this.playlistAnalysisTab === "events" && !this.playlistAnalysisCandidatesLoaded && !this.playlistAnalysisCandidatesLoading) {
         this.playlistLoadAnalysisCandidates();
       } else if (this.playlistAnalysisTab === "events" && this.playlistAnalysisCandidatesLoaded && !this.playlistAnalysisCandidateDetail) {
@@ -4437,29 +4456,29 @@ export function createPlaylistViewMethods() {
         return "border-slate-700 bg-slate-900/40 text-slate-300";
       }
       if (summary.running) return "border-amber-500/30 bg-amber-500/10 text-amber-200";
-      if (summary.analysis_dirty) return "border-sky-500/30 bg-sky-500/10 text-sky-200";
       if (!summary.last_ready_run_id) {
         const eventTotal = Number(summary.event_total || 0);
         return eventTotal > 0
           ? "border-amber-500/30 bg-amber-500/10 text-amber-200"
           : "border-slate-700 bg-slate-900/40 text-slate-300";
       }
+      if (summary.analysis_dirty) return "border-sky-500/30 bg-sky-500/10 text-sky-200";
       if (Number(summary.event_total || 0) <= 0) return "border-slate-700 bg-slate-900/40 text-slate-300";
       return "border-emerald-500/30 bg-emerald-500/10 text-emerald-200";
     },
 
     playlistAnalysisSummaryBadgeText({ short = false } = {}) {
-      const prefix = short ? "" : "Regime ";
+      const prefix = short ? "快照" : "语义快照";
       const summary = this.playlistAnalysisSummary;
       if (!summary) {
         if (this.playlistAnalysisSummaryLoading) return `${prefix}加载中`;
         if (this.playlistAnalysisSummaryError) return `${prefix}加载失败`;
         return `${prefix}未加载`;
       }
-      if (summary.running) return `${prefix}重建中`;
-      if (summary.analysis_dirty) return `${prefix}待刷新`;
+      if (summary.running) return summary.last_ready_run_id ? `${prefix}更新中` : `${prefix}构建中`;
       const eventTotal = Number(summary.event_total || 0);
       if (!summary.last_ready_run_id) return eventTotal > 0 ? `${prefix}未构建` : `${prefix}无事件`;
+      if (summary.analysis_dirty) return `${prefix}待更新`;
       if (eventTotal <= 0) return `${prefix}无事件`;
       return `${prefix}已就绪`;
     },
@@ -4496,6 +4515,42 @@ export function createPlaylistViewMethods() {
       const safeEmbedded = Math.max(0, Math.trunc(Number.isFinite(embedded) ? embedded : 0));
       const safeTotal = Math.max(0, Math.trunc(Number.isFinite(total) ? total : 0));
       return `${this.formatInteger(safeEmbedded)}/${this.formatInteger(safeTotal)}`;
+    },
+
+    playlistAnalysisEmbeddingStatusLabel() {
+      const summary = this.playlistAnalysisSummary;
+      if (!summary) {
+        if (this.playlistAnalysisSummaryLoading) return "加载中";
+        if (this.playlistAnalysisSummaryError) return "加载失败";
+        return "未加载";
+      }
+      const embedded = Math.max(0, Number(summary.event_embedded || 0));
+      const total = Math.max(0, Number(summary.event_total || 0));
+      if (total <= 0) return "无事件";
+      if (embedded >= total) return "已就绪";
+      if (embedded > 0) return "部分就绪";
+      return "未就绪";
+    },
+
+    playlistAnalysisEmbeddingStatusClass() {
+      const summary = this.playlistAnalysisSummary;
+      if (!summary) return this.playlistAnalysisSummaryError ? "text-rose-200" : "text-slate-500";
+      const embedded = Math.max(0, Number(summary.event_embedded || 0));
+      const total = Math.max(0, Number(summary.event_total || 0));
+      if (total > 0 && embedded >= total) return "text-emerald-200";
+      if (embedded > 0) return "text-amber-200";
+      return "text-slate-500";
+    },
+
+    playlistAnalysisHasReadySnapshot() {
+      return Boolean(this.playlistAnalysisSummary && this.playlistAnalysisSummary.last_ready_run_id);
+    },
+
+    playlistAnalysisCandidatesEmptyLabel() {
+      const summary = this.playlistAnalysisSummary;
+      if (!summary) return this.playlistAnalysisSummaryLoading ? "语义快照状态加载中…" : "语义快照状态未加载。";
+      if (!summary.last_ready_run_id) return summary.running ? "语义快照正在构建…" : "尚未构建语义快照。";
+      return "当前语义快照未发现语义变化点。";
     },
 
     playlistAnalysisActiveBackfillJob() {
@@ -4655,14 +4710,113 @@ export function createPlaylistViewMethods() {
         this.playlistAnalysisFullRangeEnd = "";
         this.playlistAnalysisRangeStart = "";
         this.playlistAnalysisRangeEnd = "";
+        this.playlistAnalysisTimelineDensity = [];
         return;
       }
       this.playlistAnalysisFullRangeStart = start;
       this.playlistAnalysisFullRangeEnd = end;
+      const bounds = this.playlistAnalysisTimelineBounds();
+      if (
+        this.playlistAnalysisRangeStart &&
+        this.playlistAnalysisRangeEnd &&
+        bounds &&
+        this.playlistAnalysisRangeStart >= bounds.start &&
+        this.playlistAnalysisRangeEnd <= bounds.end
+      ) {
+        return;
+      }
+      this.playlistAnalysisRangeStart = "";
+      this.playlistAnalysisRangeEnd = "";
+    },
+
+    playlistAnalysisFullTimelineBounds() {
+      const start = String(this.playlistAnalysisFullRangeStart || "").slice(0, 10);
+      const end = String(this.playlistAnalysisFullRangeEnd || "").slice(0, 10);
+      if (!start || !end || start > end) return null;
+      return { start, end };
+    },
+
+    playlistAnalysisNormalTimelineBounds() {
+      const full = this.playlistAnalysisFullTimelineBounds();
+      if (!full) return null;
+      const today = String(this._todayIsoLocal ? this._todayIsoLocal() : todayIsoLocal()).slice(0, 10);
+      const contentStart = String(this.playlistTimelineStart || "").slice(0, 10);
+      const start = contentStart && contentStart > full.start ? contentStart : full.start;
+      const end = today && today < full.end ? today : full.end;
+      if (start <= end) return { start, end };
+
+      if (full.start > today) {
+        const firstMonth = full.start.slice(0, 7);
+        const cappedEnd = this.playlistAnalysisMonthEndDate(this.playlistAnalysisShiftMonth(firstMonth, 11));
+        return { start: full.start, end: cappedEnd < full.end ? cappedEnd : full.end };
+      }
+
+      const lastMonth = full.end.slice(0, 7);
+      const cappedStart = `${this.playlistAnalysisShiftMonth(lastMonth, -11)}-01`;
+      return { start: cappedStart > full.start ? cappedStart : full.start, end: full.end };
+    },
+
+    playlistAnalysisTimelineBounds() {
+      return String(this.playlistAnalysisTimelineScope || "normal") === "full"
+        ? this.playlistAnalysisFullTimelineBounds()
+        : this.playlistAnalysisNormalTimelineBounds();
+    },
+
+    playlistAnalysisTimelineHasExtendedRange() {
+      const full = this.playlistAnalysisFullTimelineBounds();
+      const normal = this.playlistAnalysisNormalTimelineBounds();
+      return Boolean(full && normal && (full.start !== normal.start || full.end !== normal.end));
+    },
+
+    playlistAnalysisTimelineScopeClass(scope) {
+      const active = String(this.playlistAnalysisTimelineScope || "normal") === String(scope || "normal");
+      return active
+        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
+        : "border-slate-700 bg-slate-950/20 text-slate-400 hover:bg-slate-900/60 hover:text-slate-200";
+    },
+
+    playlistAnalysisTimelineScopeLabel() {
+      const bounds = this.playlistAnalysisTimelineBounds();
+      if (!bounds) return "暂无时间范围";
+      const prefix = String(this.playlistAnalysisTimelineScope || "normal") === "full" ? "完整范围" : "正常观察域";
+      return `${prefix} ${bounds.start} ~ ${bounds.end}`;
+    },
+
+    playlistAnalysisInitializeDefaultRange() {
       if (this.playlistAnalysisRangeStart && this.playlistAnalysisRangeEnd) return;
-      const maxMonth = end.slice(0, 7);
-      const defaultStartMonth = this.playlistAnalysisShiftMonth(maxMonth, -11);
-      this.playlistAnalysisSetTimelineRangeByMonth(defaultStartMonth, maxMonth, { render: false });
+      const bounds = this.playlistAnalysisTimelineBounds();
+      if (!bounds) return;
+      const rows = (Array.isArray(this.playlistAnalysisTimelineDensity) ? this.playlistAnalysisTimelineDensity : [])
+        .filter((item) => item && item.period_date && String(item.period_date) >= bounds.start && String(item.period_date) <= bounds.end)
+        .sort((left, right) => String(left.period_date).localeCompare(String(right.period_date)));
+      const today = String(this._todayIsoLocal ? this._todayIsoLocal() : todayIsoLocal()).slice(0, 10);
+      const nonFutureRows = rows.filter((item) => String(item.period_date) <= today);
+      const anchor = nonFutureRows.length ? nonFutureRows[nonFutureRows.length - 1] : rows[0] || null;
+      const anchorMonth = String((anchor && anchor.period_date) || bounds.end).slice(0, 7);
+      const futureOnly = anchor && String(anchor.period_date) > today;
+      const startMonth = futureOnly ? anchorMonth : this.playlistAnalysisShiftMonth(anchorMonth, -11);
+      const endMonth = futureOnly ? this.playlistAnalysisShiftMonth(anchorMonth, 11) : anchorMonth;
+      this.playlistAnalysisSetTimelineRangeByMonth(startMonth, endMonth, { render: false });
+    },
+
+    async playlistAnalysisSetTimelineScope(scope) {
+      const next = String(scope || "normal") === "full" ? "full" : "normal";
+      if (String(this.playlistAnalysisTimelineScope || "normal") === next) return;
+      this.playlistAnalysisStopProjectionPlayback();
+      this.playlistAnalysisReleaseProjectionWindowDrag();
+      this.playlistAnalysisReleaseRangeDrag();
+      this.playlistAnalysisTimelineScope = next;
+      this._playlistAnalysisTimelineMonthsCache = null;
+      if (next === "normal") {
+        this.playlistAnalysisRangeStart = "";
+        this.playlistAnalysisRangeEnd = "";
+      }
+      await this.playlistLoadAnalysisTimelineDensity();
+      const hadRange = Boolean(this.playlistAnalysisRangeStart && this.playlistAnalysisRangeEnd);
+      this.playlistAnalysisInitializeDefaultRange();
+      if (!hadRange && this.playlistAnalysisRangeStart && this.playlistAnalysisRangeEnd) {
+        await this.playlistLoadAnalysisSignals();
+      }
     },
 
     playlistAnalysisScheduleSignalsReload() {
@@ -4951,7 +5105,7 @@ export function createPlaylistViewMethods() {
           score: null,
           strengthReady: false,
           source: "signal",
-          label: "候选断点",
+          label: "语义变化点",
         });
       });
       if (this.playlistAnalysisCandidatesLoaded) {
@@ -5221,10 +5375,10 @@ export function createPlaylistViewMethods() {
       if (item && item.kind === "cluster") {
         const count = Number(item.count || 0);
         const score = item.score != null ? Number(item.score) : NaN;
-        const scoreText = Number.isFinite(score) ? ` · 最高边界 z ${score.toFixed(2)}` : " · 强度加载中";
+        const scoreText = Number.isFinite(score) ? ` · 最高标准化语义变化 ${score.toFixed(2)}` : " · 强度加载中";
         const topDate = item.topBreakpoint && item.topBreakpoint.date ? ` · 最强 ${item.topBreakpoint.date}` : "";
         const range = item.rangeStart && item.rangeEnd && item.rangeStart !== item.rangeEnd ? `${item.rangeStart} ~ ${item.rangeEnd}` : String(item.rangeStart || item.date || "");
-        return `候选断点簇 ${range} · ${count} 个${scoreText}${topDate}`;
+        return `语义变化点簇 ${range} · ${count} 个${scoreText}${topDate}`;
       }
       return this.playlistAnalysisBreakpointTitle(item);
     },
@@ -5269,15 +5423,15 @@ export function createPlaylistViewMethods() {
       const date = String((breakpoint && breakpoint.date) || "");
       const score = breakpoint && breakpoint.score != null ? Number(breakpoint.score) : null;
       const granularity = String((breakpoint && breakpoint.granularity) || "").trim();
-      if (!breakpoint || !breakpoint.strengthReady || !Number.isFinite(score)) return `候选断点 ${date} · 强度加载中`;
+      if (!breakpoint || !breakpoint.strengthReady || !Number.isFinite(score)) return `语义变化点 ${date} · 强度加载中`;
       const granularityText = granularity ? ` · ${granularity}` : "";
-      return `候选断点 ${date} · 边界 z ${score.toFixed(2)}${granularityText}`;
+      return `语义变化点 ${date} · 标准化语义变化 ${score.toFixed(2)}${granularityText}`;
     },
 
     playlistAnalysisBreakpointShortLabel(breakpoint) {
       const date = String((breakpoint && breakpoint.date) || "");
       if (date.length >= 10) return `${date.slice(2, 4)}/${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
-      return date || "断点";
+      return date || "变化点";
     },
 
     playlistAnalysisSelectBreakpoint(breakpoint) {
@@ -5428,6 +5582,8 @@ export function createPlaylistViewMethods() {
     },
 
     playlistAnalysisHeaderContextLabel() {
+      const summary = this.playlistAnalysisSummary;
+      if (summary && !summary.last_ready_run_id) return summary.running ? "语义快照构建中" : "尚未构建语义快照";
       if (String(this.playlistAnalysisTab || "trend") === "events") {
         if (this.playlistAnalysisCandidatesLoading) return "事件加载中";
         if (!this.playlistAnalysisCandidatesLoaded) return "事件未加载";
@@ -5471,10 +5627,11 @@ export function createPlaylistViewMethods() {
     },
 
     playlistAnalysisTimelineMonths() {
-      const start = String(this.playlistAnalysisFullRangeStart || "").slice(0, 7);
-      const end = String(this.playlistAnalysisFullRangeEnd || "").slice(0, 7);
+      const bounds = this.playlistAnalysisTimelineBounds();
+      const start = String((bounds && bounds.start) || "").slice(0, 7);
+      const end = String((bounds && bounds.end) || "").slice(0, 7);
       if (!start || !end || start > end) return [];
-      const cacheKey = `${start}|${end}`;
+      const cacheKey = `${String(this.playlistAnalysisTimelineScope || "normal")}|${start}|${end}`;
       if (this._playlistAnalysisTimelineMonthsCache && this._playlistAnalysisTimelineMonthsCache.key === cacheKey) {
         return this._playlistAnalysisTimelineMonthsCache.value;
       }
@@ -5498,6 +5655,32 @@ export function createPlaylistViewMethods() {
         "background-position:left center",
         "background-repeat:repeat-x",
       ].join(";");
+    },
+
+    playlistAnalysisTimelineDensityBars() {
+      const months = this.playlistAnalysisTimelineMonths();
+      const rows = Array.isArray(this.playlistAnalysisTimelineDensity) ? this.playlistAnalysisTimelineDensity : [];
+      if (!months.length || !rows.length) return [];
+      const monthIndex = new Map(months.map((item) => [String(item.ym || ""), Number(item.index || 0)]));
+      const visible = rows
+        .map((item) => ({
+          ym: String((item && item.period_date) || "").slice(0, 7),
+          count: Math.max(0, Number((item && item.event_count) || 0)),
+        }))
+        .filter((item) => item.ym && monthIndex.has(item.ym) && item.count > 0);
+      if (!visible.length) return [];
+      const maxCount = Math.max(...visible.map((item) => item.count), 1);
+      const maxIndex = Math.max(1, months.length - 1);
+      const width = Math.max(0.16, Math.min(1.2, 82 / Math.max(1, months.length)));
+      return visible.map((item) => {
+        const index = Number(monthIndex.get(item.ym) || 0);
+        const height = 2 + Math.round(Math.sqrt(item.count / maxCount) * 9);
+        return {
+          key: `${item.ym}-${item.count}`,
+          label: `${item.ym} · ${this.formatInteger(item.count)} 个事件`,
+          style: `left:${(index / maxIndex) * 100}%;width:${width}%;height:${height}px;transform:translateX(-50%);`,
+        };
+      });
     },
 
     playlistAnalysisTimelineTrackWidthPx() {
@@ -5923,6 +6106,8 @@ export function createPlaylistViewMethods() {
     playlistAnalysisSetTimelineRangeByMonth(startMonth, endMonth, { render = true } = {}) {
       const months = this.playlistAnalysisTimelineMonths();
       if (!months.length) return;
+      const bounds = this.playlistAnalysisTimelineBounds();
+      if (!bounds) return;
       const monthValues = months.map((item) => item.ym);
       let start = String(startMonth || monthValues[0]).slice(0, 7);
       let end = String(endMonth || monthValues[monthValues.length - 1]).slice(0, 7);
@@ -5935,8 +6120,8 @@ export function createPlaylistViewMethods() {
       if (end > monthValues[monthValues.length - 1]) end = monthValues[monthValues.length - 1];
       const startDate = `${start}-01`;
       const endDate = this.playlistAnalysisMonthEndDate(end);
-      const nextRangeStart = this.playlistAnalysisFullRangeStart && startDate < this.playlistAnalysisFullRangeStart ? this.playlistAnalysisFullRangeStart : startDate;
-      const nextRangeEnd = this.playlistAnalysisFullRangeEnd && endDate > this.playlistAnalysisFullRangeEnd ? this.playlistAnalysisFullRangeEnd : endDate;
+      const nextRangeStart = startDate < bounds.start ? bounds.start : startDate;
+      const nextRangeEnd = endDate > bounds.end ? bounds.end : endDate;
       const changed =
         String(this.playlistAnalysisRangeStart || "") !== String(nextRangeStart || "") ||
         String(this.playlistAnalysisRangeEnd || "") !== String(nextRangeEnd || "");
@@ -6207,10 +6392,10 @@ export function createPlaylistViewMethods() {
 
     playlistAnalysisEventTypeLabel(value) {
       const type = String(value || "").trim().toLowerCase();
-      if (type === "event_regime_shift") return "Regime Shift";
-      if (type === "regime") return "Regime";
-      if (type === "transition") return "Transition";
-      return "Burst";
+      if (type === "event_regime_shift") return "语义转折";
+      if (type === "regime") return "语义阶段";
+      if (type === "transition") return "过渡";
+      return "主题爆发";
     },
 
     playlistAnalysisEventTypeClass(value) {
@@ -6223,7 +6408,7 @@ export function createPlaylistViewMethods() {
 
     playlistAnalysisDetectionKindLabel(item) {
       const method = String((item && item.detection_method) || "").trim();
-      if (method === "event_embedding_regime_v1") return "事件 Regime";
+      if (method === "event_embedding_regime_v1") return "语义漂移";
       return "候选";
     },
 
@@ -6305,11 +6490,71 @@ export function createPlaylistViewMethods() {
       }
     },
 
+    playlistAnalysisTimelineDensityCacheKey(pid, start, end) {
+      const runId = this.playlistAnalysisSummary && this.playlistAnalysisSummary.last_ready_run_id ? String(this.playlistAnalysisSummary.last_ready_run_id) : "";
+      return [String(pid || ""), runId, String(start || ""), String(end || "")].join("|");
+    },
+
+    playlistAnalysisApplyTimelineDensityPayload(payload, requestedStart, requestedEnd) {
+      this.playlistAnalysisTimelineDensity = (Array.isArray(payload) ? payload : [])
+        .filter((item) => item && String(item.granularity || "") === "month" && item.period_date)
+        .sort((left, right) => String(left.period_date).localeCompare(String(right.period_date)));
+      this.playlistAnalysisTimelineDensityLoadedRangeStart = String(requestedStart || "");
+      this.playlistAnalysisTimelineDensityLoadedRangeEnd = String(requestedEnd || "");
+    },
+
+    async playlistLoadAnalysisTimelineDensity() {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const bounds = this.playlistAnalysisTimelineBounds();
+      if (!pid || !bounds || !this.playlistAnalysisHasReadySnapshot()) {
+        this.playlistAnalysisTimelineDensity = [];
+        return [];
+      }
+      const requestedStart = bounds.start;
+      const requestedEnd = bounds.end;
+      const cacheKey = this.playlistAnalysisTimelineDensityCacheKey(pid, requestedStart, requestedEnd);
+      if (this._playlistAnalysisTimelineDensityResponseCache && this._playlistAnalysisTimelineDensityResponseCache.has(cacheKey)) {
+        this._playlistAnalysisTimelineDensityRequestToken = Number(this._playlistAnalysisTimelineDensityRequestToken || 0) + 1;
+        this._abortCtrl("_playlistAnalysisTimelineDensityAbortCtrl");
+        this.playlistAnalysisTimelineDensityLoading = false;
+        const cached = this._playlistAnalysisTimelineDensityResponseCache.get(cacheKey);
+        this.playlistAnalysisApplyTimelineDensityPayload(cached, requestedStart, requestedEnd);
+        return this.playlistAnalysisTimelineDensity;
+      }
+      const token = Number(this._playlistAnalysisTimelineDensityRequestToken || 0) + 1;
+      this._playlistAnalysisTimelineDensityRequestToken = token;
+      this._abortCtrl("_playlistAnalysisTimelineDensityAbortCtrl");
+      const ctrl = new AbortController();
+      this._playlistAnalysisTimelineDensityAbortCtrl = ctrl;
+      this.playlistAnalysisTimelineDensityLoading = true;
+      try {
+        const params = new URLSearchParams({
+          granularity: "month",
+          since: requestedStart,
+          until: requestedEnd,
+        });
+        const payload = await this.api(`/playlists/${encodeURIComponent(pid)}/regime/signals?${params.toString()}`, { signal: ctrl.signal });
+        if (Number(this._playlistAnalysisTimelineDensityRequestToken || 0) !== token) return [];
+        if (!this._playlistAnalysisTimelineDensityResponseCache) this._playlistAnalysisTimelineDensityResponseCache = new Map();
+        this._playlistAnalysisTimelineDensityResponseCache.set(cacheKey, Array.isArray(payload) ? payload : []);
+        this.playlistAnalysisApplyTimelineDensityPayload(payload, requestedStart, requestedEnd);
+        return this.playlistAnalysisTimelineDensity;
+      } catch (e) {
+        if (this._isAbortError && this._isAbortError(e)) return [];
+        throw e;
+      } finally {
+        if (Number(this._playlistAnalysisTimelineDensityRequestToken || 0) === token) {
+          this._playlistAnalysisTimelineDensityAbortCtrl = null;
+          this.playlistAnalysisTimelineDensityLoading = false;
+        }
+      }
+    },
+
     async playlistLoadAnalysisSignals() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       if (!pid) return [];
       if (!this.playlistAnalysisRangeStart || !this.playlistAnalysisRangeEnd) {
-        this.playlistAnalysisInitializeRangeFromSummary(this.playlistAnalysisSummary);
+        this.playlistAnalysisInitializeDefaultRange();
       }
       const requestedStart = String(this.playlistAnalysisRangeStart || "");
       const requestedEnd = String(this.playlistAnalysisRangeEnd || "");
@@ -6352,7 +6597,7 @@ export function createPlaylistViewMethods() {
 
     async playlistLoadAnalysisCandidates({ preserveSelection = true, selectDetail = true } = {}) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
-      if (!pid) return [];
+      if (!pid || !this.playlistAnalysisHasReadySnapshot()) return [];
       if (this.playlistAnalysisCandidatesLoading && this._playlistAnalysisCandidatesPromise) {
         return this._playlistAnalysisCandidatesPromise;
       }
@@ -6415,6 +6660,8 @@ export function createPlaylistViewMethods() {
         const summary = await this.playlistLoadAnalysisSummary();
         if (!summary) return;
         if (summary.last_ready_run_id) {
+          await this.playlistLoadAnalysisTimelineDensity();
+          this.playlistAnalysisInitializeDefaultRange();
           if (String(this.playlistAnalysisTab || "trend") === "events") {
             await Promise.all([this.playlistLoadAnalysisSignals(), this.playlistLoadAnalysisCandidates()]);
           } else {
@@ -6436,6 +6683,10 @@ export function createPlaylistViewMethods() {
           this.playlistAnalysisRangeEnd = "";
           this.playlistAnalysisFullRangeStart = "";
           this.playlistAnalysisFullRangeEnd = "";
+          this.playlistAnalysisTimelineScope = "normal";
+          this.playlistAnalysisTimelineDensity = [];
+          this.playlistAnalysisTimelineDensityLoadedRangeStart = "";
+          this.playlistAnalysisTimelineDensityLoadedRangeEnd = "";
           this.playlistAnalysisSignalsLoadedRangeStart = "";
           this.playlistAnalysisSignalsLoadedRangeEnd = "";
           this.playlistAnalysisProjectionWindowAnchorDate = "";
@@ -6461,7 +6712,7 @@ export function createPlaylistViewMethods() {
           body: "{}",
         });
         if (!silent) {
-          this.globalStatus = result && result.created ? "已触发分析重建" : "分析重建已在执行或排队，已复用现有任务";
+          this.globalStatus = result && result.created ? "已触发语义快照构建" : "语义快照构建已在执行或排队，已复用现有任务";
         }
         await this.playlistLoadAnalysisSummary();
         this.playlistAnalysisSchedulePoll();

@@ -10,11 +10,12 @@ from typing import Any
 import httpx
 
 from raelyn.config import settings
-from raelyn.services.inference import get_effective_asr_config
+from raelyn.services.inference import EffectiveAsrConfig, LOCAL_PROVIDER, get_effective_asr_config
 
-_ASR_TIMEOUT_MIN_REALTIME_FACTOR = 5
+_LOCAL_ASR_TIMEOUT_MIN_REALTIME_FACTOR = 4
+_NON_LOCAL_ASR_TIMEOUT_MIN_REALTIME_FACTOR = 5
 _ASR_TIMEOUT_OVERHEAD_SECONDS = 120
-_ASR_TIMEOUT_MAX_SECONDS = 3300
+_NON_LOCAL_ASR_TIMEOUT_MAX_SECONDS = 3300
 _ASR_HEALTH_TIMEOUT_SECONDS = 2.0
 _ASR_DEFER_DELAY_MIN_SECONDS = 5
 _ASR_DEFER_DELAY_MAX_SECONDS = 900
@@ -48,15 +49,30 @@ def _is_openai_transcriptions_url(url: str) -> bool:
     return "/v1/audio/transcriptions" in url
 
 
-def resolve_asr_timeout_seconds(*, base_timeout_seconds: int, media_duration_seconds: int | None = None) -> int:
+def resolve_asr_timeout_seconds(
+    *,
+    base_timeout_seconds: int,
+    media_duration_seconds: int | None = None,
+    provider: str = LOCAL_PROVIDER,
+) -> int:
     base = max(1, int(base_timeout_seconds or 0))
     if not isinstance(media_duration_seconds, int) or media_duration_seconds <= 0:
         return base
 
-    # 长视频批量重跑时，qwen3-asr 的尾部样本会明显低于 12x realtime；
-    # 按 5x realtime 预留长音频时间，避免客户端超时后后端仍继续占用推理槽。
-    estimated = math.ceil(media_duration_seconds / _ASR_TIMEOUT_MIN_REALTIME_FACTOR) + _ASR_TIMEOUT_OVERHEAD_SECONDS
-    return max(base, min(_ASR_TIMEOUT_MAX_SECONDS, estimated))
+    if provider == LOCAL_PROVIDER:
+        # 真实慢尾样本会低于 5x realtime；本地后端自身已分块处理，
+        # 调用侧按 4x realtime 留出完整单请求窗口，不再用 1 小时 lease 反向截断。
+        estimated = (
+            math.ceil(media_duration_seconds / _LOCAL_ASR_TIMEOUT_MIN_REALTIME_FACTOR)
+            + _ASR_TIMEOUT_OVERHEAD_SECONDS
+        )
+        return max(base, estimated)
+
+    estimated = (
+        math.ceil(media_duration_seconds / _NON_LOCAL_ASR_TIMEOUT_MIN_REALTIME_FACTOR)
+        + _ASR_TIMEOUT_OVERHEAD_SECONDS
+    )
+    return max(base, min(_NON_LOCAL_ASR_TIMEOUT_MAX_SECONDS, estimated))
 
 
 def _coerce_int(value: Any, default: int = 0) -> int:
@@ -158,15 +174,20 @@ def asr_transcribe(
     audio_path: Path,
     language: str | None = None,
     media_duration_seconds: int | None = None,
+    config: EffectiveAsrConfig | None = None,
+    timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
-    if not asr_enabled():
+    cfg = config or get_effective_asr_config()
+    if not cfg.configured:
         raise RuntimeError("asr is not configured")
 
-    cfg = get_effective_asr_config()
-    timeout_seconds = resolve_asr_timeout_seconds(
-        base_timeout_seconds=cfg.timeout_seconds,
-        media_duration_seconds=media_duration_seconds,
-    )
+    request_timeout_seconds = timeout_seconds
+    if request_timeout_seconds is None:
+        request_timeout_seconds = resolve_asr_timeout_seconds(
+            base_timeout_seconds=cfg.timeout_seconds,
+            media_duration_seconds=media_duration_seconds,
+            provider=cfg.provider,
+        )
     payload: Any
     if cfg.provider == "local":
         base_url = cfg.url.strip()
@@ -176,7 +197,7 @@ def asr_transcribe(
         else:
             # Default: OpenAI-compatible endpoint.
             url = base_url.rstrip("/") if _is_openai_transcriptions_url(base_url) else _join_url(base_url, "/v1/audio/transcriptions")
-        timeout = httpx.Timeout(timeout_seconds)
+        timeout = httpx.Timeout(request_timeout_seconds)
         files = {"file": (audio_path.name, audio_path.read_bytes())}
         data: dict[str, Any] = {}
         if language:
@@ -195,7 +216,7 @@ def asr_transcribe(
             resp.raise_for_status()
             payload = resp.json()
     else:
-        timeout = httpx.Timeout(timeout_seconds)
+        timeout = httpx.Timeout(request_timeout_seconds)
         headers = {
             "Content-Type": "application/json",
             "X-Api-App-Key": cfg.app_key,

@@ -40,6 +40,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - Worker 执行长任务时周期性刷新 `lease_expires_at`
 - 长任务若在业务函数内部有明显批处理检查点，可以通过进度更新同步刷新 `lease_expires_at`，使 DB 中的任务事实源持续反映真实运行状态；例如播放列表分析快照会在 embedding 批读取、离散度计算、事件检测和写库阶段更新进度。
 - 下载任务的 yt-dlp 进度回调会同步刷新 `lease_expires_at`，避免大文件或慢速下载超过初始 1 小时租约后被误回收成 `pending`，但原 worker 仍继续占用 provider 下载锁。
+- 本地 `video.asr_transcribe` 在音频下载完成、发起单次 ASR 请求前，按 `4x realtime + 120s` 计算 timeout，并将 lease 一次性延长到请求窗口后 300 秒；更新带 `status=running + worker_id` 所有权条件，避免旧 worker 覆盖新 owner。超时前两次走 worker 退避，第三次终止，防止确定性慢样本连续占用 5 次推理资源。
 - `worker_heartbeat.updated_at` 是进程心跳，由心跳线程维护，只能证明 worker 进程和心跳线程仍在运行。
 - `worker_heartbeat.active_at` 是主执行线程活动心跳，由 worker 主循环、任务领取点和下载进度更新维护；同步 / 下载任务回收必须同时检查它，避免“心跳线程活着”掩盖主执行循环已经卡死。
 - `worker_heartbeat.current_job_id` 记录主执行线程最近声明的任务，用于排障时定位哪个任务导致执行心跳停止推进。
@@ -47,6 +48,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - `media.sync_videos` 在平台 flat 列表提取完成后和逐条处理循环中刷新执行活动心跳；YouTube 缺失发布时间的单视频详情解析已拆到 `video.enrich_metadata.youtube`，避免同步任务在批量补 metadata 时长期不推进 `active_at`。
 - `video.enrich_metadata.youtube` 是低优先级单视频补全任务，自身通过可终止子进程给 yt-dlp 详情解析设置 45 秒硬超时；子进程只向父进程回传 compact metadata，避免完整 yt-dlp `info` 大对象在进程队列中阻塞；超时只使该补全任务失败或重试，不扩大 `media.sync_videos` 的执行窗口。同一视频达到 `max_attempts` 终止失败后，后续自动同步不会再为同一 `dedupe_key` 反复投递补全任务，避免 best-effort 补全绕过任务重试上限。
 - provider-facing worker（同步 / 下载）会在本进程内启动执行 watchdog；当 `current_job_id` 指向同步或下载任务且 `active_at` 超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进时，worker 主动退出，让 supervisor 重启并释放 PostgreSQL session 级 advisory lock。
+- YouTube 频道/播放列表的 `youtube_auth_check` 可能由一次瞬时网页下载失败触发。worker 在当前任务仍有剩余 attempt 时只按既有退避重试，不持久化 provider pause；仅最终尝试仍返回同一错误时才暂停 YouTube。明确 cookies 无效、`youtube_bot_check` 与其他 provider 风控仍立即暂停，避免重复请求扩大风控。
 - `scheduler` 或 `worker` 启动时可执行回收扫描：
   - `status=running AND lease_expires_at < now()` 视为失联，转回 `pending` 或标记为 `failed`
   - 对下载等 provider-facing 任务，如果进程心跳新鲜但执行心跳超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进，也视为主执行循环卡死并转回 `pending`
@@ -81,7 +83,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - Provider 级并发：如 YouTube 同时下载数、B 站同时下载数
 - Media 级并发：同一媒体同一时刻只允许 1 个同步 / 下载任务；`media.sync_videos` 运行时会持有事务级媒体 advisory lock，拿不到锁时重排队
 - ASR 后端容量：当 qwen3-asr-openai `/health` 显示 replica 推理槽位已满或已有等待队列时，worker claim 会跳过 `video.asr_transcribe`，让任务继续留在 DB 的 `pending` 队列中等待后端释放容量
-- ASR 长视频超时：`video.asr_transcribe` 会在 `ASR_TIMEOUT_SECONDS` 基础上按媒体时长动态放大请求 timeout，避免长视频客户端先超时重试、而后端仍继续占用推理槽
+- ASR 长视频超时：本地 `video.asr_transcribe` 会在 `ASR_TIMEOUT_SECONDS` 基础上按媒体时长动态放大请求 timeout，并同步延长该 job 的 lease；火山 ASR 保持 provider 自身的既有超时行为
 
 当前项目对下载并发采用“强绑定语义”：
 
