@@ -8,7 +8,7 @@ import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 from sqlalchemy.dialects import postgresql
 
@@ -19,10 +19,10 @@ if str(_BACKEND_DIR) not in sys.path:
 from raelyn.jobs.enqueue import _normalize_dedupe_key_and_params
 from raelyn.models import (
     Asset,
-    EventRegimeCandidate,
-    EventRegimeRun,
-    EventRegimeSignal,
-    EventRegimeState,
+    EventMapCanonical,
+    EventMapCanonicalMember,
+    EventMapSnapshot,
+    EventMapState,
     Job,
     MarketEvent,
     MarketEventEmbedding,
@@ -36,8 +36,6 @@ from raelyn.models import (
 )
 from raelyn.services import event_analysis
 from raelyn.services.inference import EffectiveLlmConfig
-from raelyn.services.job_cancellation import JobCancelRequested
-from raelyn.jobs.reschedule import JobTerminalFailure
 
 
 class _ScalarResult:
@@ -70,32 +68,25 @@ class _OneResult:
         return self._value
 
 
-class _IterableRows:
-    def __init__(self, rows):
-        self._rows = rows
-        self.closed = False
-
-    def __iter__(self):
-        return iter(self._rows)
-
-    def close(self):
-        self.closed = True
-
-
 class EventAnalysisTests(unittest.TestCase):
     def test_event_models_have_expected_constraints(self) -> None:
         self.assertIn("market_event_source_event_ux", {c.name for c in MarketEvent.__table__.constraints})
         self.assertIn("market_event_evidence_ux", {c.name for c in MarketEventEvidence.__table__.constraints})
         self.assertIn("market_event_entity_ux", {c.name for c in MarketEventEntity.__table__.constraints})
         self.assertIn("market_event_embedding_ux", {c.name for c in MarketEventEmbedding.__table__.constraints})
-        self.assertIn("event_regime_signal_ux", {c.name for c in EventRegimeSignal.__table__.constraints})
-        self.assertIn("event_regime_candidate_ux", {c.name for c in EventRegimeCandidate.__table__.constraints})
+        self.assertIn(
+            "event_map_canonical_point_index_ux",
+            {c.name for c in EventMapCanonical.__table__.constraints},
+        )
         self.assertIn("video_event_extraction_run_ux", {c.name for c in VideoEventExtractionRun.__table__.constraints})
 
         for model in [MarketEvent, MarketEventEvidence, MarketEventEntity, MarketEventRelation, MarketEventEmbedding]:
             self.assertIn("event_id" if model is not MarketEvent else "source_video_id", model.__table__.columns)
-        self.assertIn("last_ready_run_id", EventRegimeState.__table__.columns)
-        self.assertIn("event_total", EventRegimeRun.__table__.columns)
+        self.assertIn("current_snapshot_id", EventMapState.__table__.columns)
+        self.assertIn("dirty_generation", EventMapState.__table__.columns)
+        self.assertIn("canonical_count", EventMapSnapshot.__table__.columns)
+        self.assertIn("peak_rss_bytes", EventMapSnapshot.__table__.columns)
+        self.assertIn("record_revision_id", EventMapCanonicalMember.__table__.columns)
         self.assertIn("event_count", VideoEventExtractionRun.__table__.columns)
 
     def test_source_map_generates_stable_title_description_and_transcript_ids(self) -> None:
@@ -194,7 +185,7 @@ class EventAnalysisTests(unittest.TestCase):
         self.assertEqual(events[0]["confidence"], 0.91)
         self.assertGreaterEqual(len(warnings), 2)
 
-    def test_parse_event_batch_response_groups_by_video_and_reports_missing(self) -> None:
+    def test_parse_event_batch_response_preserves_valid_rows_when_expected_video_is_missing(self) -> None:
         raw = json.dumps(
             {
                 "videos": [
@@ -212,14 +203,93 @@ class EventAnalysisTests(unittest.TestCase):
                 ]
             }
         )
+        with self.assertRaises(event_analysis._EventExtractionResponseError) as raised:
+            event_analysis.parse_event_extraction_batch_response(
+                raw,
+                expected_video_ids=["v1", "v2"],
+            )
+
+        self.assertEqual(len(raised.exception.parsed_by_video["v1"]), 1)
+        self.assertEqual(raised.exception.parsed_by_video["v2"], [])
+        self.assertEqual(raised.exception.affected_video_ids, ("v2",))
+        self.assertTrue(any("missing video_id v2" in message for message in raised.exception.warnings))
+
+    def test_parse_event_batch_response_accepts_explicit_empty_events(self) -> None:
         events_by_video, warnings = event_analysis.parse_event_extraction_batch_response(
-            raw,
-            expected_video_ids=["v1", "v2"],
+            json.dumps({"videos": [{"video_id": "v1", "events": []}]}),
+            expected_video_ids=["v1"],
         )
 
-        self.assertEqual(len(events_by_video["v1"]), 1)
-        self.assertEqual(events_by_video["v2"], [])
-        self.assertTrue(any("missing video_id v2" in message for message in warnings))
+        self.assertEqual(events_by_video, {"v1": []})
+        self.assertEqual(warnings, [])
+
+    def test_parse_event_response_rejects_invalid_envelopes(self) -> None:
+        for raw in ("not-json", "[]", "{}"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(event_analysis._EventExtractionResponseError):
+                    event_analysis.parse_event_extraction_response(raw)
+
+        with self.assertRaises(event_analysis._EventExtractionResponseError) as raised:
+            event_analysis.parse_event_extraction_batch_response(
+                json.dumps({"events": []}),
+                expected_video_ids=["v1"],
+            )
+        self.assertIn("missing videos[]", str(raised.exception))
+
+        with self.assertRaises(event_analysis._EventExtractionResponseError) as raised:
+            event_analysis.parse_event_extraction_batch_response(
+                json.dumps({"videos": [{"video_id": "v1"}]}),
+                expected_video_ids=["v1"],
+            )
+        self.assertIn("missing events[]", str(raised.exception))
+
+    def test_parse_event_relation_keeps_propositions_and_validates_explicit_endpoint_keys(self) -> None:
+        raw = json.dumps(
+            {
+                "videos": [
+                    {
+                        "video_id": "v1",
+                        "events": [
+                            {
+                                "title": "美联储维持高利率",
+                                "summary": "融资成本继续上升。",
+                                "entities": [{"type": "institution", "name": "Federal Reserve"}],
+                                "macro_variables": [{"name": "融资成本"}],
+                                "cause_effect_chain": [
+                                    {
+                                        "cause": "通胀持续高于目标迫使美联储维持高利率",
+                                        "effect": "美国企业融资成本继续上升",
+                                        "source_entity_key": "federal_reserve",
+                                        "target_entity_key": "融资成本",
+                                    },
+                                    {
+                                        "cause": "同一命题仍须保留",
+                                        "effect": "端点不能按近似名称解析",
+                                        "source_entity_key": "Federal Reserve",
+                                        "target_entity_key": "不存在的对象",
+                                    },
+                                ],
+                                "confidence": 0.95,
+                            }
+                        ],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+        events_by_video, warnings = event_analysis.parse_event_extraction_batch_response(
+            raw,
+            expected_video_ids=["v1"],
+        )
+
+        relations = events_by_video["v1"][0]["cause_effect_chain"]
+        self.assertEqual(relations[0]["cause"], "通胀持续高于目标迫使美联储维持高利率")
+        self.assertEqual(relations[0]["effect"], "美国企业融资成本继续上升")
+        self.assertEqual(relations[0]["source_entity_key"], "federal_reserve")
+        self.assertFalse(any("cause_effect_chain[0]" in message for message in warnings))
+        self.assertTrue(any("cause_effect_chain[1]" in message and "source_entity_key" in message for message in warnings))
+        self.assertTrue(any("cause_effect_chain[1]" in message and "target_entity_key" in message for message in warnings))
 
     def test_default_event_prompt_requires_specific_market_scope(self) -> None:
         prompt = event_analysis.DEFAULT_EVENT_EXTRACTION_PROMPT
@@ -239,6 +309,87 @@ class EventAnalysisTests(unittest.TestCase):
         self.assertIn("不是事件的内容必须过滤掉", prompt)
         self.assertIn("操作策略、荐股建议、观察名单", prompt)
         self.assertIn("events 为空数组", prompt)
+        self.assertIn("source_entity_key", prompt)
+        self.assertIn("target_entity_key", prompt)
+        self.assertIn("cause / effect 必须保留为可独立阅读的自然语言命题", prompt)
+        self.assertIn("禁止拿 cause / effect 文本猜端点", prompt)
+        self.assertIn("source_entity_key", event_analysis.COMPACT_EVENT_EXTRACTION_PROMPT)
+        self.assertIn("source_entity_key / target_entity_key 是独立端点", event_analysis.COMPACT_EVENT_EXTRACTION_PROMPT)
+        self.assertEqual(
+            event_analysis.EVENT_EXTRACTION_PROMPT_BASE_VERSION,
+            "llm_event_v4_explicit_relation_endpoints",
+        )
+
+    def test_insert_event_relations_only_resolves_explicit_exact_endpoint_keys(self) -> None:
+        event = MarketEvent(
+            id=uuid.uuid4(),
+            source_video_id=uuid.uuid4(),
+            source_hash="source",
+            event_key="event",
+            event_type="monetary_policy",
+        )
+        video = SimpleNamespace(id=event.source_video_id)
+        raw = {
+            "confidence": 0.95,
+            "entities": [{"type": "institution", "name": "Federal Reserve", "role": "actor"}],
+            "macro_variables": [{"name": "融资成本", "role": "affected"}],
+            "cause_effect_chain": [
+                {
+                    "cause": "通胀持续高于目标迫使美联储维持高利率",
+                    "effect": "美国企业融资成本继续上升",
+                    "source_entity_key": "federal_reserve",
+                    "target_entity_key": "融资成本",
+                    "relation_type": "affects",
+                    "confidence": 0.9,
+                },
+                {
+                    "cause": "Federal Reserve",
+                    "effect": "融资成本",
+                    "relation_type": "affects",
+                    "confidence": 0.8,
+                },
+                {
+                    "cause": "端点键不是显示名称",
+                    "effect": "大小写不同也不能隐式归一化",
+                    "source_entity_key": "Federal Reserve",
+                    "target_entity_key": "融资成本 ",
+                    "relation_type": "affects",
+                    "confidence": 0.7,
+                },
+            ],
+        }
+        session = Mock()
+
+        def _flush(*_args, **_kwargs):
+            for call in session.add.call_args_list:
+                item = call.args[0]
+                if isinstance(item, MarketEventEntity) and item.id is None:
+                    item.id = uuid.uuid4()
+
+        session.flush.side_effect = _flush
+
+        event_analysis._insert_event_children(
+            session,
+            event=event,
+            raw=raw,
+            video=video,
+            transcript_asset_id=uuid.uuid4(),
+        )
+
+        relations = [
+            call.args[0]
+            for call in session.add.call_args_list
+            if isinstance(call.args[0], MarketEventRelation)
+        ]
+        self.assertEqual(len(relations), 3)
+        self.assertIsNotNone(relations[0].source_entity_id)
+        self.assertIsNotNone(relations[0].target_entity_id)
+        self.assertEqual(relations[0].raw_payload["cause"], "通胀持续高于目标迫使美联储维持高利率")
+        self.assertEqual(relations[0].raw_payload["effect"], "美国企业融资成本继续上升")
+        self.assertIsNone(relations[1].source_entity_id)
+        self.assertIsNone(relations[1].target_entity_id)
+        self.assertIsNone(relations[2].source_entity_id)
+        self.assertIsNone(relations[2].target_entity_id)
 
     def test_event_time_unknown_does_not_parse(self) -> None:
         start, end, precision = event_analysis._event_time({"event_time": {"start": "", "time_precision": "unknown"}})
@@ -252,7 +403,7 @@ class EventAnalysisTests(unittest.TestCase):
         self.assertIsNone(end)
         self.assertEqual(precision, "unknown")
 
-    def test_extract_video_events_commits_before_embedding_enqueue(self) -> None:
+    def test_extract_video_events_commits_embedding_and_dirty_outbox_atomically(self) -> None:
         video_id = uuid.uuid4()
         media_id = uuid.uuid4()
         transcript_asset_id = uuid.uuid4()
@@ -283,6 +434,8 @@ class EventAnalysisTests(unittest.TestCase):
             status="running",
             params={"video_id": str(video_id)},
             priority=4,
+            worker_id="analysis-worker",
+            execution_token=uuid.uuid4(),
         )
         session = Mock()
         session.begin_nested.return_value = nullcontext()
@@ -341,19 +494,23 @@ class EventAnalysisTests(unittest.TestCase):
                         with patch("raelyn.services.event_analysis._event_source_hash", return_value="hash"):
                             with patch("raelyn.services.event_analysis.resolve_video_timeline", return_value=SimpleNamespace(content_published_at=video.published_at)):
                                 with patch("raelyn.services.event_analysis.llm_generate", return_value={"text": response, "usage": {}}) as llm_generate:
-                                    with patch("raelyn.services.event_analysis.set_job_progress"):
-                                        with patch("raelyn.services.event_analysis.mark_playlists_event_regime_dirty_for_video") as mark_dirty:
+                                    with patch("raelyn.services.event_analysis.set_job_progress", return_value=True):
+                                        with patch("raelyn.services.event_analysis.schedule_playlist_event_map_dirty") as mark_dirty:
                                             with patch(
                                                 "raelyn.services.event_analysis.enqueue_event_embedding_jobs",
                                                 side_effect=_enqueue_embeddings,
                                             ) as enqueue_embeddings:
                                                 with patch(
-                                                    "raelyn.services.event_analysis.schedule_playlists_event_regime_dirty_for_video",
+                                                    "raelyn.services.event_analysis.schedule_playlists_event_map_dirty_for_video",
                                                     side_effect=_schedule_dirty,
                                                 ) as schedule_dirty:
-                                                    result = event_analysis.extract_video_events(session, video_id=video_id, job=job)
+                                                    with patch(
+                                                        "raelyn.services.event_analysis._video_ids_with_event_map_inputs",
+                                                        return_value={video_id},
+                                                    ):
+                                                        result = event_analysis.extract_video_events(session, video_id=video_id, job=job)
 
-        self.assertEqual(order[-3:], ["commit", "enqueue_embeddings", "schedule_dirty"])
+        self.assertEqual(order[-3:], ["enqueue_embeddings", "schedule_dirty", "commit"])
         mark_dirty.assert_not_called()
         llm_generate.assert_called_once()
         self.assertEqual(llm_generate.call_args.kwargs["think"], False)
@@ -396,10 +553,18 @@ class EventAnalysisTests(unittest.TestCase):
             s3_bucket="b",
             s3_key="k",
         )
-        job = Job(id=uuid.uuid4(), type="video.extract_events", status="running", params={"video_id": str(video_id), "force": True}, priority=4)
+        job = Job(
+            id=uuid.uuid4(),
+            type="video.extract_events",
+            status="running",
+            params={"video_id": str(video_id), "force": True},
+            priority=4,
+            worker_id="analysis-worker",
+            execution_token=uuid.uuid4(),
+        )
         session = Mock()
         session.begin_nested.return_value = nullcontext()
-        session.execute.side_effect = [_ScalarResult([]), _ScalarResult([]), _ScalarOneOrNone(None)]
+        session.execute.side_effect = [_ScalarResult([]), _ScalarOneOrNone(None)]
 
         def _get(model, key):
             if model is Video:
@@ -409,7 +574,7 @@ class EventAnalysisTests(unittest.TestCase):
             return None
 
         session.get.side_effect = _get
-        response = json.dumps({"events": []})
+        response = json.dumps({"videos": [{"video_id": "v1", "events": []}]})
         spec = event_analysis.EventExtractionSpec(model="m", prompt_version="p", prompt_text="prompt", chunk_max_chars=12000)
 
         with patch("raelyn.services.event_analysis.llm_enabled", return_value=True):
@@ -419,18 +584,230 @@ class EventAnalysisTests(unittest.TestCase):
                         with patch("raelyn.services.event_analysis._event_source_hash", return_value="hash"):
                             with patch("raelyn.services.event_analysis.resolve_video_timeline", return_value=SimpleNamespace(content_published_at=video.published_at)):
                                 with patch("raelyn.services.event_analysis.llm_generate", return_value={"text": response, "usage": {}}):
-                                    with patch("raelyn.services.event_analysis.set_job_progress"):
+                                    with patch("raelyn.services.event_analysis.set_job_progress", return_value=True):
                                         with patch("raelyn.services.event_analysis.enqueue_event_embedding_jobs", return_value=0):
                                             with patch(
-                                                "raelyn.services.event_analysis.schedule_playlists_event_regime_dirty_for_video",
+                                                "raelyn.services.event_analysis.schedule_playlists_event_map_dirty_for_video",
                                                 return_value=1,
                                             ) as schedule_dirty:
-                                                result = event_analysis.extract_video_events(session, video_id=video_id, force=True, job=job)
+                                                with patch(
+                                                    "raelyn.services.event_analysis._video_ids_with_event_map_inputs",
+                                                    return_value={video_id},
+                                                ):
+                                                    result = event_analysis.extract_video_events(session, video_id=video_id, force=True, job=job)
 
         self.assertEqual(result["accepted"], 0)
         self.assertEqual(result["inserted"], 0)
         self.assertEqual(result["dirty_jobs_enqueued"], 1)
         schedule_dirty.assert_called_once()
+
+    def test_extract_video_events_structure_error_persists_failed_run_without_deleting_events(self) -> None:
+        video_id = uuid.uuid4()
+        transcript_asset_id = uuid.uuid4()
+        spec = event_analysis.EventExtractionSpec(
+            model="m",
+            prompt_version="p",
+            prompt_text="prompt",
+            chunk_max_chars=12000,
+        )
+        prepared = event_analysis._PreparedEventVideo(
+            alias="v1",
+            video=event_analysis._EventExtractionVideoSnapshot(
+                id=video_id,
+                media_id=None,
+                title="Title",
+                description=None,
+                published_at=datetime(2026, 6, 4, tzinfo=timezone.utc),
+                created_at=datetime(2026, 6, 4, tzinfo=timezone.utc),
+            ),
+            media=None,
+            transcript_asset=event_analysis._EventExtractionTranscriptAssetSnapshot(
+                id=transcript_asset_id,
+                s3_bucket="b",
+                s3_key="k",
+            ),
+            transcript_text="transcript",
+            content_time=datetime(2026, 6, 4, tzinfo=timezone.utc),
+            source_hash="hash",
+            source_chars=10,
+        )
+        existing_run = VideoEventExtractionRun(
+            id=uuid.uuid4(),
+            video_id=video_id,
+            transcript_asset_id=transcript_asset_id,
+            source_hash="hash",
+            prompt_version="p",
+            extraction_model="m",
+            status="succeeded",
+            event_count=2,
+        )
+        session = Mock()
+        session.execute.return_value = _ScalarOneOrNone(existing_run)
+
+        with patch("raelyn.services.event_analysis.llm_enabled", return_value=True):
+            with patch("raelyn.services.event_analysis.event_extraction_spec", return_value=spec):
+                with patch("raelyn.services.event_analysis._prepare_event_videos", return_value=([prepared], [])):
+                    with patch("raelyn.services.event_analysis._render_event_batch_prompt", return_value="prompt"):
+                        with patch(
+                            "raelyn.services.event_analysis._generate_event_extraction_llm",
+                            return_value={
+                                "text": "not-json",
+                                "usage": {"input_tokens": 11, "output_tokens": 2, "total_tokens": 13, "call_count": 1},
+                            },
+                        ):
+                            with patch("raelyn.services.event_analysis._delete_video_events") as delete_events:
+                                with self.assertRaises(event_analysis._EventExtractionResponseError):
+                                    event_analysis.extract_video_events(
+                                        session,
+                                        video_id=video_id,
+                                        force=True,
+                                    )
+
+        self.assertEqual(existing_run.status, "failed")
+        self.assertEqual(existing_run.event_count, 0)
+        self.assertEqual(existing_run.usage_json["total_tokens"], 13)
+        self.assertIn("json parse failed", existing_run.error_message or "")
+        delete_events.assert_not_called()
+        self.assertGreaterEqual(session.commit.call_count, 2)
+
+    def test_successful_retry_updates_existing_failed_extraction_run(self) -> None:
+        video_id = uuid.uuid4()
+        existing_run = VideoEventExtractionRun(
+            id=uuid.uuid4(),
+            video_id=video_id,
+            source_hash="hash",
+            prompt_version="p",
+            extraction_model="m",
+            status="failed",
+            event_count=0,
+            warning_count=1,
+            error_message="bad envelope",
+        )
+        session = Mock()
+        session.execute.return_value = _ScalarOneOrNone(existing_run)
+        spec = event_analysis.EventExtractionSpec(
+            model="m",
+            prompt_version="p",
+            prompt_text="prompt",
+            chunk_max_chars=12000,
+        )
+
+        run = event_analysis._write_event_extraction_run(
+            session,
+            video_id=video_id,
+            transcript_asset_id=None,
+            source_hash="hash",
+            spec=spec,
+            status="succeeded",
+            event_count=3,
+            usage={"total_tokens": 9},
+        )
+
+        self.assertIs(run, existing_run)
+        self.assertEqual(run.status, "succeeded")
+        self.assertEqual(run.event_count, 3)
+        self.assertEqual(run.warning_count, 0)
+        self.assertIsNone(run.error_message)
+        self.assertEqual(run.usage_json, {"total_tokens": 9})
+
+    def test_multi_video_structure_error_falls_back_only_affected_video(self) -> None:
+        first_video_id = uuid.uuid4()
+        second_video_id = uuid.uuid4()
+        first = event_analysis._PreparedEventVideo(
+            alias="v1",
+            video=event_analysis._EventExtractionVideoSnapshot(
+                id=first_video_id,
+                media_id=None,
+                title="First",
+                description=None,
+                published_at=datetime(2026, 6, 4, tzinfo=timezone.utc),
+                created_at=datetime(2026, 6, 4, tzinfo=timezone.utc),
+            ),
+            media=None,
+            transcript_asset=event_analysis._EventExtractionTranscriptAssetSnapshot(
+                id=uuid.uuid4(),
+                s3_bucket="b",
+                s3_key="first",
+            ),
+            transcript_text="first transcript",
+            content_time=datetime(2026, 6, 4, tzinfo=timezone.utc),
+            source_hash="first-hash",
+            source_chars=16,
+        )
+        second = event_analysis._PreparedEventVideo(
+            alias="v2",
+            video=event_analysis._EventExtractionVideoSnapshot(
+                id=second_video_id,
+                media_id=None,
+                title="Second",
+                description=None,
+                published_at=datetime(2026, 6, 4, tzinfo=timezone.utc),
+                created_at=datetime(2026, 6, 4, tzinfo=timezone.utc),
+            ),
+            media=None,
+            transcript_asset=event_analysis._EventExtractionTranscriptAssetSnapshot(
+                id=uuid.uuid4(),
+                s3_bucket="b",
+                s3_key="second",
+            ),
+            transcript_text="second transcript",
+            content_time=datetime(2026, 6, 4, tzinfo=timezone.utc),
+            source_hash="second-hash",
+            source_chars=17,
+        )
+        spec = event_analysis.EventExtractionSpec(
+            model="m",
+            prompt_version="p",
+            prompt_text="prompt",
+            chunk_max_chars=12000,
+        )
+        session = Mock()
+        response = json.dumps({"videos": [{"video_id": "v1", "events": []}]})
+
+        with patch("raelyn.services.event_analysis.llm_enabled", return_value=True):
+            with patch("raelyn.services.event_analysis.event_extraction_spec", return_value=spec):
+                with patch("raelyn.services.event_analysis._prepare_event_videos", return_value=([first, second], [])):
+                    with patch("raelyn.services.event_analysis.EVENT_BATCH_MAX_VIDEOS", 2):
+                        with patch("raelyn.services.event_analysis._render_event_batch_prompt", return_value="prompt"):
+                            with patch(
+                                "raelyn.services.event_analysis._generate_event_extraction_llm",
+                                return_value={"text": response, "usage": {}},
+                            ):
+                                with patch("raelyn.services.event_analysis.enqueue_job", return_value=uuid.uuid4()) as enqueue:
+                                    with patch("raelyn.services.event_analysis._delete_video_events") as delete_events:
+                                        with patch("raelyn.services.event_analysis._write_event_extraction_run") as write_run:
+                                            with patch(
+                                                "raelyn.services.event_analysis.enqueue_event_embedding_jobs",
+                                                return_value=0,
+                                            ):
+                                                with patch(
+                                                    "raelyn.services.event_analysis.schedule_playlists_event_map_dirty_for_video",
+                                                    return_value=0,
+                                                ) as schedule_dirty:
+                                                    with patch(
+                                                        "raelyn.services.event_analysis._video_ids_with_event_map_inputs",
+                                                        return_value=set(),
+                                                    ):
+                                                        result = event_analysis.extract_video_events_batch(
+                                                            session,
+                                                            video_ids=[first_video_id, second_video_id],
+                                                            force=True,
+                                                        )
+
+        self.assertEqual(result["videos"], 1)
+        self.assertEqual(result["fallback_jobs_enqueued"], 1)
+        enqueue.assert_called_once_with(
+            session,
+            type_="video.extract_events",
+            params={"video_id": str(second_video_id), "force": True},
+            priority=0,
+            parent_job_id=None,
+        )
+        delete_events.assert_called_once_with(session, video_id=first_video_id)
+        self.assertEqual(write_run.call_count, 1)
+        self.assertEqual(write_run.call_args.kwargs["video_id"], first_video_id)
+        self.assertEqual(write_run.call_args.kwargs["status"], "succeeded")
+        schedule_dirty.assert_not_called()
 
     def test_high_confidence_without_verified_provenance_becomes_draft(self) -> None:
         source = event_analysis._EventSource(
@@ -453,296 +830,6 @@ class EventAnalysisTests(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertTrue(warnings)
 
-    def test_event_regime_period_uses_event_time_and_respects_precision(self) -> None:
-        event = MarketEvent(
-            source_video_id=uuid.uuid4(),
-            source_hash="h",
-            event_key="k",
-            status="accepted",
-            event_type="macro",
-            time_precision="day",
-            event_time_start=datetime(2012, 3, 23, tzinfo=timezone.utc),
-            available_at=datetime(2026, 6, 3, 12, 0, tzinfo=timezone.utc),
-        )
-
-        self.assertEqual(event_analysis._event_regime_period_date(event, "day"), date(2012, 3, 23))
-        self.assertEqual(event_analysis._event_regime_period_date(event, "week"), date(2012, 3, 19))
-        self.assertEqual(event_analysis._event_regime_period_date(event, "month"), date(2012, 3, 1))
-
-        event.time_precision = "month"
-        self.assertIsNone(event_analysis._event_regime_period_date(event, "day"))
-        self.assertIsNone(event_analysis._event_regime_period_date(event, "week"))
-        self.assertEqual(event_analysis._event_regime_period_date(event, "month"), date(2012, 3, 1))
-
-        event.time_precision = "year"
-        self.assertIsNone(event_analysis._event_regime_period_date(event, "day"))
-        self.assertIsNone(event_analysis._event_regime_period_date(event, "week"))
-        self.assertIsNone(event_analysis._event_regime_period_date(event, "month"))
-
-    def test_event_regime_coverage_separates_ready_eligible_and_scale_excluded(self) -> None:
-        playlist_id = uuid.uuid4()
-        session = Mock()
-        session.execute.return_value = _OneResult((161840, 161840, 160876, 157645, 0))
-
-        with patch("raelyn.services.event_analysis.embedding_spec", return_value=SimpleNamespace(model="m", dim=1024)):
-            coverage = event_analysis.playlist_event_regime_coverage(session, playlist_id)
-
-        self.assertEqual(
-            coverage,
-            {
-                "event_total": 161840,
-                "event_embedded": 161840,
-                "event_eligible": 160876,
-                "event_scale_excluded": 3231,
-                "event_skipped": 964,
-                "event_failed": 0,
-            },
-        )
-        stmt = session.execute.call_args.args[0]
-        compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
-        self.assertIn("market_event.event_time_start is not null", compiled)
-        self.assertIn("market_event_embedding.embedding_model = 'm'", compiled)
-        self.assertIn("market_event_embedding.embedding_dim = 1024", compiled)
-        self.assertNotIn("market_event.available_at is not null", compiled)
-
-    def test_event_regime_rows_use_streaming_and_event_time_order(self) -> None:
-        playlist_id = uuid.uuid4()
-        result = _IterableRows([])
-        session = Mock()
-        session.execute.return_value = result
-
-        with patch.object(event_analysis.settings, "analysis_stream_batch_size", 17):
-            rows = list(
-                event_analysis._event_rows_for_regime(
-                    session,
-                    playlist_id,
-                    embedding_model="m",
-                    embedding_dim=2,
-                )
-            )
-
-        self.assertEqual(rows, [])
-        self.assertTrue(result.closed)
-        stmt = session.execute.call_args.args[0]
-        compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
-        self.assertIn("order by market_event.event_time_start asc, market_event.id asc", compiled)
-        self.assertNotIn("market_event.available_at is not null", compiled)
-        self.assertTrue(stmt.get_execution_options()["stream_results"])
-        self.assertEqual(stmt.get_execution_options()["yield_per"], 17)
-
-    def test_event_regime_snapshot_reader_uses_one_repeatable_read_transaction(self) -> None:
-        session = Mock()
-        engine = MagicMock()
-        engine.dialect.name = "postgresql"
-        raw_connection = MagicMock()
-        connection = MagicMock()
-        engine.connect.return_value.__enter__.return_value = raw_connection
-        raw_connection.execution_options.return_value = connection
-        session.get_bind.return_value = engine
-
-        with event_analysis._event_regime_snapshot_reader(session) as reader:
-            self.assertIs(reader, connection)
-
-        raw_connection.execution_options.assert_called_once_with(isolation_level="REPEATABLE READ")
-        connection.begin.assert_called_once_with()
-        connection.exec_driver_sql.assert_called_once_with("SET TRANSACTION READ ONLY")
-
-    def test_event_regime_second_pass_reports_unknown_period_as_snapshot_change(self) -> None:
-        video_id = uuid.uuid4()
-        first_row = (
-            uuid.uuid4(),
-            video_id,
-            datetime(2026, 1, 1, tzinfo=timezone.utc),
-            "day",
-            None,
-            "first",
-            None,
-            "macro",
-            [1.0, 0.0],
-        )
-        changed_row = (
-            uuid.uuid4(),
-            video_id,
-            datetime(2026, 2, 1, tzinfo=timezone.utc),
-            "day",
-            None,
-            "changed",
-            None,
-            "macro",
-            [0.0, 1.0],
-        )
-        aggregates, _ = event_analysis._build_event_regime_period_aggregates(
-            iter([first_row]),
-            embedding_dim=2,
-            batch_size=10,
-            checkpoint=lambda _processed: None,
-        )
-
-        with self.assertRaisesRegex(RuntimeError, "unexpected day period 2026-02-01"):
-            event_analysis._populate_event_regime_dispersions_and_evidence(
-                iter([changed_row]),
-                aggregates=aggregates,
-                embedding_dim=2,
-                batch_size=10,
-                checkpoint=lambda _processed: None,
-            )
-
-    def test_event_regime_two_pass_aggregation_does_not_put_coarse_dates_in_finer_scales(self) -> None:
-        video_id = uuid.uuid4()
-
-        def row(day: int, precision: str, vector: list[float], *, month: int = 1):
-            event_time = datetime(2026, month, day, tzinfo=timezone.utc)
-            return (
-                uuid.uuid4(),
-                video_id,
-                event_time,
-                precision,
-                event_time,
-                f"{precision}-{month}-{day}",
-                None,
-                "macro",
-                vector,
-            )
-
-        rows = [
-            row(1, "day", [1.0, 0.0]),
-            row(1, "day", [0.0, 1.0]),
-            row(8, "day", [1.0, 1.0]),
-            row(1, "month", [1.0, 0.0], month=2),
-            row(1, "year", [9.0, 9.0], month=3),
-        ]
-        checkpoints: list[int] = []
-
-        aggregates, processed = event_analysis._build_event_regime_period_aggregates(
-            iter(rows),
-            embedding_dim=2,
-            batch_size=2,
-            checkpoint=checkpoints.append,
-        )
-
-        self.assertEqual(processed, 5)
-        self.assertEqual([item.event_count for item in aggregates["day"]], [2, 1])
-        self.assertEqual([item.event_count for item in aggregates["week"]], [2, 1])
-        self.assertEqual([item.event_count for item in aggregates["month"]], [3, 1])
-        self.assertEqual(list(aggregates["day"][0].centroid), [0.5, 0.5])
-        self.assertAlmostEqual(aggregates["month"][0].centroid[0], 2.0 / 3.0)
-        self.assertAlmostEqual(aggregates["month"][0].centroid[1], 2.0 / 3.0)
-
-        second_processed = event_analysis._populate_event_regime_dispersions_and_evidence(
-            iter(rows),
-            aggregates=aggregates,
-            embedding_dim=2,
-            batch_size=2,
-            checkpoint=checkpoints.append,
-        )
-
-        self.assertEqual(second_processed, 5)
-        self.assertIsNotNone(aggregates["day"][0].dispersion_mean)
-        self.assertIsNotNone(aggregates["month"][0].dispersion_mean)
-
-    def test_event_regime_candidates_use_period_end_and_bounded_centroid_representatives(self) -> None:
-        video_id = uuid.uuid4()
-        far_event_id = uuid.UUID(int=1)
-        rows = []
-        for idx in range(21):
-            event_time = datetime(2026, 1, 5, 0, 0, idx, tzinfo=timezone.utc)
-            rows.append(
-                (
-                    far_event_id if idx == 0 else uuid.UUID(int=idx + 1),
-                    video_id,
-                    event_time,
-                    "day",
-                    event_time,
-                    "远离中心" if idx == 0 else f"代表事件{idx}",
-                    None,
-                    "macro",
-                    [-1.0, 0.0] if idx == 0 else [1.0, 0.0],
-                )
-            )
-
-        aggregates, _ = event_analysis._build_event_regime_period_aggregates(
-            iter(rows),
-            embedding_dim=2,
-            batch_size=10,
-            checkpoint=lambda _processed: None,
-        )
-        aggregates["week"][0].drift_rolling_z = 2.1
-        aggregates["month"][0].drift_rolling_z = 2.2
-        event_analysis._populate_event_regime_dispersions_and_evidence(
-            iter(rows),
-            aggregates=aggregates,
-            embedding_dim=2,
-            batch_size=10,
-            checkpoint=lambda _processed: None,
-        )
-
-        week_evidence = aggregates["week"][0].evidence
-        self.assertEqual(len(week_evidence), 20)
-        self.assertNotIn(far_event_id, {item.event_id for item in week_evidence})
-        self.assertEqual(
-            week_evidence,
-            sorted(week_evidence, key=event_analysis._event_regime_evidence_sort_key),
-        )
-
-        candidates, _ = event_analysis._event_regime_candidate_models(
-            run_id=uuid.uuid4(),
-            aggregates=aggregates,
-        )
-        by_granularity = {candidate.evidence_json["granularity"]: candidate for candidate in candidates}
-        self.assertEqual(by_granularity["week"].event_start, date(2026, 1, 5))
-        self.assertEqual(by_granularity["week"].event_end, date(2026, 1, 11))
-        self.assertEqual(by_granularity["month"].event_start, date(2026, 1, 1))
-        self.assertEqual(by_granularity["month"].event_end, date(2026, 1, 31))
-        self.assertEqual(by_granularity["week"].evidence_json["sampling"], "centroid_nearest_top_20_v1")
-        self.assertNotIn(str(far_event_id), by_granularity["week"].evidence_event_ids)
-        self.assertNotIn("远离中心", by_granularity["week"].summary)
-
-    def test_analysis_memory_gate_enforces_configured_rss_limit(self) -> None:
-        rss = event_analysis._proc_memory_value_bytes("/proc/self/status", "VmRSS")
-        if rss is None:
-            self.skipTest("当前平台不提供 /proc/self/status VmRSS")
-
-        with patch.object(event_analysis.settings, "analysis_min_available_memory_bytes", 0):
-            with patch.object(event_analysis.settings, "analysis_max_rss_bytes", max(1, rss - 1)):
-                with self.assertRaises(JobTerminalFailure) as raised:
-                    event_analysis._raise_if_analysis_memory_limit_exceeded()
-
-        self.assertIn("worker RSS", raised.exception.reason)
-
-    def test_snapshot_terminal_failure_rolls_back_partial_output_and_marks_run_failed(self) -> None:
-        playlist_id = uuid.uuid4()
-        run_id = uuid.uuid4()
-        run = EventRegimeRun(
-            id=run_id,
-            playlist_id=playlist_id,
-            status="running",
-            analysis_clock="day",
-            embedding_model="m",
-            embedding_dim=2,
-        )
-        state = EventRegimeState(playlist_id=playlist_id, analysis_dirty=False)
-        job = Job(
-            id=uuid.uuid4(),
-            type="playlist.build_event_regime_snapshot",
-            status="running",
-            params={"playlist_id": str(playlist_id), "regime_run_id": str(run_id)},
-        )
-        session = Mock()
-        session.get.return_value = run
-        failure = JobTerminalFailure("analysis aborted: worker RSS exceeded")
-
-        with patch("raelyn.services.event_analysis._build_event_regime_snapshot", side_effect=failure):
-            with patch("raelyn.services.event_analysis.ensure_event_regime_state", return_value=state):
-                with self.assertRaises(JobTerminalFailure):
-                    event_analysis.build_event_regime_snapshot(session, playlist_id=playlist_id, job=job)
-
-        session.rollback.assert_called_once_with()
-        self.assertEqual(run.status, "failed")
-        self.assertIsNotNone(run.finished_at)
-        self.assertTrue(state.analysis_dirty)
-        self.assertEqual(state.last_error, failure.reason)
-        session.flush.assert_called_once()
-
     def test_update_event_status_accepts_and_enqueues_embedding(self) -> None:
         event_id = uuid.uuid4()
         video_id = uuid.uuid4()
@@ -758,8 +845,9 @@ class EventAnalysisTests(unittest.TestCase):
         )
         session = Mock()
         session.get.return_value = event
+        session.execute.return_value = _ScalarOneOrNone(uuid.uuid4())
 
-        with patch("raelyn.services.event_analysis.schedule_playlists_event_regime_dirty_for_video") as schedule_dirty:
+        with patch("raelyn.services.event_analysis.schedule_playlists_event_map_dirty_for_video") as schedule_dirty:
             with patch("raelyn.services.event_analysis.enqueue_job") as enqueue_job:
                 updated = event_analysis.update_event_status(session, event_id=event_id, status="accepted")
 
@@ -768,7 +856,36 @@ class EventAnalysisTests(unittest.TestCase):
         schedule_dirty.assert_called_once_with(session, video_id=video_id, reason="event_status_changed")
         enqueue_job.assert_called_once_with(session, type_="event.embed", params={"event_id": str(event_id)}, priority=0)
 
-    def test_embed_event_failed_status_schedules_dirty_without_retry(self) -> None:
+    def test_update_event_status_without_ready_embedding_does_not_dirty_map(self) -> None:
+        event_id = uuid.uuid4()
+        video_id = uuid.uuid4()
+        event = MarketEvent(
+            id=event_id,
+            source_video_id=video_id,
+            source_hash="h",
+            event_key="k",
+            status="draft",
+            event_type="macro",
+            time_precision="day",
+            event_time_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        session = Mock()
+        session.get.return_value = event
+        session.execute.return_value = _ScalarOneOrNone(None)
+
+        with patch("raelyn.services.event_analysis.schedule_playlists_event_map_dirty_for_video") as schedule_dirty:
+            with patch("raelyn.services.event_analysis.enqueue_job") as enqueue_job:
+                event_analysis.update_event_status(session, event_id=event_id, status="accepted")
+
+        schedule_dirty.assert_not_called()
+        enqueue_job.assert_called_once_with(
+            session,
+            type_="event.embed",
+            params={"event_id": str(event_id)},
+            priority=0,
+        )
+
+    def test_embed_event_new_failure_does_not_dirty_map(self) -> None:
         event_id = uuid.uuid4()
         video_id = uuid.uuid4()
         embedding_id = uuid.uuid4()
@@ -796,7 +913,7 @@ class EventAnalysisTests(unittest.TestCase):
             with patch("raelyn.services.event_analysis.embedding_spec", return_value=SimpleNamespace(model="m", dim=3)):
                 with patch("raelyn.services.event_analysis._event_embedding_text", return_value="text"):
                     with patch("raelyn.services.event_analysis.embed_text", side_effect=event_analysis.EmbeddingError("bad response")):
-                        with patch("raelyn.services.event_analysis.schedule_playlists_event_regime_dirty_for_video") as schedule_dirty:
+                        with patch("raelyn.services.event_analysis.schedule_playlists_event_map_dirty_for_video") as schedule_dirty:
                             result = event_analysis.embed_event(session, event_id=event_id)
 
         self.assertEqual(result["status"], "failed")
@@ -804,6 +921,83 @@ class EventAnalysisTests(unittest.TestCase):
         created_embedding = session.add.call_args.args[0]
         self.assertEqual(created_embedding.embedding_model, "m")
         self.assertEqual(created_embedding.embedding_dim, 3)
+        schedule_dirty.assert_not_called()
+
+    def test_embed_event_failure_removes_visible_input_and_dirties_map(self) -> None:
+        event_id = uuid.uuid4()
+        video_id = uuid.uuid4()
+        event = MarketEvent(
+            id=event_id,
+            source_video_id=video_id,
+            source_hash="h",
+            event_key="k",
+            status="accepted",
+            event_type="macro",
+            title="Event",
+            event_time_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        embedding = MarketEventEmbedding(
+            id=uuid.uuid4(),
+            event_id=event_id,
+            embedding_model="m",
+            embedding_dim=3,
+            status="ready",
+            text_checksum="old-checksum",
+            vector=[1.0, 0.0, 0.0],
+        )
+        session = Mock()
+        session.get.return_value = event
+        session.execute.return_value = _ScalarOneOrNone(embedding)
+
+        with patch("raelyn.services.event_analysis.embedding_enabled", return_value=True):
+            with patch("raelyn.services.event_analysis.embedding_spec", return_value=SimpleNamespace(model="m", dim=3)):
+                with patch("raelyn.services.event_analysis._event_embedding_text", return_value="text"):
+                    with patch("raelyn.services.event_analysis.embed_text", side_effect=event_analysis.EmbeddingError("bad response")):
+                        with patch("raelyn.services.event_analysis.schedule_playlists_event_map_dirty_for_video") as schedule_dirty:
+                            result = event_analysis.embed_event(session, event_id=event_id)
+
+        self.assertEqual(result["status"], "failed")
+        schedule_dirty.assert_called_once_with(
+            session,
+            video_id=video_id,
+            reason="event_embedding_changed",
+        )
+
+    def test_embed_event_replaces_invalid_cached_vector_and_marks_map_dirty(self) -> None:
+        event_id = uuid.uuid4()
+        video_id = uuid.uuid4()
+        event = MarketEvent(
+            id=event_id,
+            source_video_id=video_id,
+            source_hash="h",
+            event_key="k",
+            status="accepted",
+            event_type="macro",
+            title="Event",
+            event_time_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        embedding = MarketEventEmbedding(
+            id=uuid.uuid4(),
+            event_id=event_id,
+            embedding_model="m",
+            embedding_dim=3,
+            status="ready",
+            text_checksum=event_analysis._sha256_text("text"),
+            vector=[1.0, 0.0],
+        )
+        session = Mock()
+        session.get.return_value = event
+        session.execute.return_value = _ScalarOneOrNone(embedding)
+
+        with patch("raelyn.services.event_analysis.embedding_enabled", return_value=True):
+            with patch("raelyn.services.event_analysis.embedding_spec", return_value=SimpleNamespace(model="m", dim=3)):
+                with patch("raelyn.services.event_analysis._event_embedding_text", return_value="text"):
+                    with patch("raelyn.services.event_analysis.embed_text", return_value=[0.0, 1.0, 0.0]):
+                        with patch("raelyn.services.event_analysis.schedule_playlists_event_map_dirty_for_video") as schedule_dirty:
+                            result = event_analysis.embed_event(session, event_id=event_id)
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(embedding.vector, [0.0, 1.0, 0.0])
         schedule_dirty.assert_called_once_with(session, video_id=video_id, reason="event_embedding_changed")
 
     def test_job_dedupe_keys_use_event_job_types(self) -> None:
@@ -847,14 +1041,14 @@ class EventAnalysisTests(unittest.TestCase):
         self.assertTrue(params["force"])
 
         key, params = _normalize_dedupe_key_and_params(
-            "playlist.mark_event_regime_dirty",
+            "playlist.mark_event_map_dirty",
             {"playlist_id": str(playlist_id), "reason": "video_events_extracted", "source_video_id": str(video_id)},
         )
-        self.assertEqual(key, f"playlist_event_dirty:{playlist_id}")
+        self.assertEqual(key, f"playlist_event_map_dirty:{playlist_id}")
         self.assertEqual(params["playlist_id"], str(playlist_id))
         self.assertEqual(params["source_video_id"], str(video_id))
 
-    def test_schedule_playlists_event_regime_dirty_queries_playlists_in_stable_order(self) -> None:
+    def test_schedule_playlists_event_map_dirty_queries_playlists_in_stable_order(self) -> None:
         video_id = uuid.uuid4()
         media_id = uuid.uuid4()
         playlist_id = uuid.uuid4()
@@ -869,8 +1063,8 @@ class EventAnalysisTests(unittest.TestCase):
         session.get.return_value = video
         session.execute.return_value = _ScalarResult([playlist_id])
 
-        with patch("raelyn.services.event_analysis.schedule_playlist_event_regime_dirty", return_value=uuid.uuid4()):
-            count = event_analysis.schedule_playlists_event_regime_dirty_for_video(
+        with patch("raelyn.services.event_analysis.schedule_playlist_event_map_dirty", return_value=uuid.uuid4()):
+            count = event_analysis.schedule_playlists_event_map_dirty_for_video(
                 session,
                 video_id=video_id,
                 reason="video_events_extracted",
@@ -881,32 +1075,108 @@ class EventAnalysisTests(unittest.TestCase):
         compiled = str(stmt.compile(dialect=postgresql.dialect())).lower()
         self.assertIn("order by playlist_media.playlist_id", compiled)
 
-    def test_mark_playlist_event_regime_dirty_skips_already_dirty_state(self) -> None:
-        playlist_id = uuid.uuid4()
-        updated_at = datetime(2026, 6, 4, tzinfo=timezone.utc)
-        state = EventRegimeState(playlist_id=playlist_id, analysis_dirty=True, updated_at=updated_at)
+    def test_schedule_playlists_event_map_dirty_skips_video_without_map_input(self) -> None:
+        video_id = uuid.uuid4()
+        video = Video(
+            id=video_id,
+            provider="youtube",
+            provider_video_id="abc123",
+            media_id=uuid.uuid4(),
+            url="https://example.test/watch?v=abc123",
+        )
         session = Mock()
-        session.get.return_value = state
+        session.get.return_value = video
 
-        result = event_analysis.mark_playlist_event_regime_dirty_if_needed(session, playlist_id)
+        with patch(
+            "raelyn.services.event_analysis.video_has_event_map_input",
+            return_value=False,
+        ):
+            with patch(
+                "raelyn.services.event_analysis.schedule_playlist_event_map_dirty",
+            ) as schedule_dirty:
+                count = event_analysis.schedule_playlists_event_map_dirty_for_video(
+                    session,
+                    video_id=video_id,
+                    reason="video_published_at_changed",
+                    require_event_map_input=True,
+                )
 
-        self.assertTrue(result["already_dirty"])
-        self.assertIs(state.updated_at, updated_at)
-        session.flush.assert_not_called()
+        self.assertEqual(count, 0)
+        schedule_dirty.assert_not_called()
+        session.execute.assert_not_called()
 
-    def test_mark_playlist_event_regime_dirty_updates_clean_state(self) -> None:
+    def test_manual_event_map_rebuild_promotes_a_deduped_pending_build(self) -> None:
         playlist_id = uuid.uuid4()
-        updated_at = datetime(2026, 6, 4, tzinfo=timezone.utc)
-        state = EventRegimeState(playlist_id=playlist_id, analysis_dirty=False, updated_at=updated_at)
+        job_id = uuid.uuid4()
+        playlist = Playlist(id=playlist_id, name="p")
+        state = EventMapState(playlist_id=playlist_id, dirty_generation=4, built_generation=4)
+        job = Job(
+            id=job_id,
+            type="playlist.build_event_map_snapshot",
+            status="pending",
+            params={"playlist_id": str(playlist_id), "trigger": "dirty", "requested_generation": 4},
+        )
         session = Mock()
-        session.get.return_value = state
 
-        result = event_analysis.mark_playlist_event_regime_dirty_if_needed(session, playlist_id)
+        def _get(model, key):
+            if model is Playlist:
+                return playlist
+            if model is EventMapState:
+                return state
+            if model is Job:
+                return job
+            return None
 
-        self.assertTrue(result["dirty"])
-        self.assertTrue(state.analysis_dirty)
-        self.assertIsNot(state.updated_at, updated_at)
-        session.flush.assert_called_once()
+        session.get.side_effect = _get
+        with patch("raelyn.services.event_analysis.enqueue_job", return_value=job_id):
+            result = event_analysis.request_event_map_rebuild(session, playlist_id, priority=3)
+
+        self.assertIs(result, job)
+        self.assertEqual(state.dirty_generation, 5)
+        self.assertEqual(job.params["trigger"], "manual")
+        self.assertEqual(job.params["requested_generation"], 5)
+        self.assertEqual(job.scheduled_for, state.last_requested_at)
+        self.assertEqual(state.active_job_id, job.id)
+
+    def test_manual_event_map_rebuild_does_not_replace_the_running_owner_with_a_pending_job(self) -> None:
+        playlist_id = uuid.uuid4()
+        running = Job(
+            id=uuid.uuid4(),
+            type="playlist.build_event_map_snapshot",
+            status="running",
+            params={"playlist_id": str(playlist_id)},
+        )
+        pending = Job(
+            id=uuid.uuid4(),
+            type="playlist.build_event_map_snapshot",
+            status="pending",
+            params={"playlist_id": str(playlist_id)},
+        )
+        playlist = Playlist(id=playlist_id, name="p")
+        state = EventMapState(
+            playlist_id=playlist_id,
+            active_job_id=running.id,
+            dirty_generation=4,
+            built_generation=3,
+        )
+        session = Mock()
+
+        def _get(model, key):
+            if model is Playlist:
+                return playlist
+            if model is EventMapState:
+                return state
+            if model is Job and key == running.id:
+                return running
+            if model is Job and key == pending.id:
+                return pending
+            return None
+
+        session.get.side_effect = _get
+        with patch("raelyn.services.event_analysis.enqueue_job", return_value=pending.id):
+            event_analysis.request_event_map_rebuild(session, playlist_id)
+
+        self.assertEqual(state.active_job_id, running.id)
 
     def test_playlist_event_pipeline_job_query_is_scoped_to_playlist(self) -> None:
         playlist_id = uuid.uuid4()
@@ -922,150 +1192,11 @@ class EventAnalysisTests(unittest.TestCase):
         self.assertIn("video.extract_events", compiled)
         self.assertIn("video.extract_events_batch", compiled)
         self.assertIn("event.embed", compiled)
-        self.assertIn("playlist.mark_event_regime_dirty", compiled)
-        self.assertIn("playlist.build_event_regime_snapshot", compiled)
+        self.assertIn("playlist.mark_event_map_dirty", compiled)
+        self.assertIn("playlist.build_event_map_snapshot", compiled)
+        self.assertIn("playlist.prune_event_map_snapshots", compiled)
         self.assertIn(str(playlist_id), compiled)
         self.assertIn("playlist_media.playlist_id", compiled)
-
-    def test_cancel_playlist_event_pipeline_jobs_cancels_active_jobs_and_regime_runs(self) -> None:
-        playlist_id = uuid.uuid4()
-        pending_job = Job(
-            id=uuid.uuid4(),
-            type="playlist.backfill_events",
-            status="pending",
-            params={"playlist_id": str(playlist_id), "force": False},
-        )
-        pending_range_job = Job(
-            id=uuid.uuid4(),
-            type="playlist.backfill_events_range",
-            status="pending",
-            params={"playlist_id": str(playlist_id), "force": False, "range_start": "2026-01-01", "range_end": "2026-02-01"},
-        )
-        running_job = Job(
-            id=uuid.uuid4(),
-            type="video.extract_events",
-            status="running",
-            params={"video_id": str(uuid.uuid4()), "force": True},
-        )
-        run = EventRegimeRun(
-            id=uuid.uuid4(),
-            playlist_id=playlist_id,
-            status="running",
-            analysis_clock="day",
-            embedding_model="m",
-            embedding_dim=3,
-        )
-        state = EventRegimeState(playlist_id=playlist_id, analysis_dirty=False)
-        session = Mock()
-        session.execute.side_effect = [_ScalarResult([pending_job, pending_range_job, running_job]), _ScalarResult([run])]
-        session.get.return_value = state
-
-        result = event_analysis.cancel_playlist_event_pipeline_jobs(session, playlist_id, reason="test")
-
-        self.assertEqual(result["jobs"], 3)
-        self.assertEqual(result["canceled"], 2)
-        self.assertEqual(result["cancel_requested"], 1)
-        self.assertEqual(result["regime_runs_canceled"], 1)
-        self.assertEqual(pending_job.status, "canceled")
-        self.assertIsNotNone(pending_job.finished_at)
-        self.assertEqual(pending_range_job.status, "canceled")
-        self.assertIsNotNone(pending_range_job.finished_at)
-        self.assertEqual(running_job.status, "running")
-        self.assertIsNotNone(running_job.cancel_requested_at)
-        self.assertEqual(run.status, "canceled")
-        self.assertIsNotNone(run.finished_at)
-        self.assertTrue(state.analysis_dirty)
-        session.flush.assert_called_once()
-
-    def test_build_event_regime_snapshot_cancel_keeps_run_canceled_and_dirty(self) -> None:
-        playlist_id = uuid.uuid4()
-        run_id = uuid.uuid4()
-        playlist = Playlist(id=playlist_id, name="p")
-        run = EventRegimeRun(
-            id=run_id,
-            playlist_id=playlist_id,
-            status="pending",
-            analysis_clock="day",
-            embedding_model="m",
-            embedding_dim=3,
-        )
-        state = EventRegimeState(playlist_id=playlist_id, analysis_dirty=False)
-        job = Job(
-            id=uuid.uuid4(),
-            type="playlist.build_event_regime_snapshot",
-            status="running",
-            params={"playlist_id": str(playlist_id), "regime_run_id": str(run_id)},
-            cancel_requested_at=datetime(2026, 6, 4, tzinfo=timezone.utc),
-        )
-        session = Mock()
-
-        def _get(model, key):
-            if model is Playlist:
-                return playlist
-            if model is EventRegimeState:
-                return state
-            if model is EventRegimeRun:
-                return run
-            return None
-
-        session.get.side_effect = _get
-
-        with self.assertRaises(JobCancelRequested):
-            event_analysis.build_event_regime_snapshot(session, playlist_id=playlist_id, job=job)
-
-        self.assertEqual(run.status, "canceled")
-        self.assertIsNotNone(run.finished_at)
-        self.assertTrue(state.analysis_dirty)
-
-    def test_request_playlist_event_backfill_force_false_keeps_active_jobs(self) -> None:
-        playlist_id = uuid.uuid4()
-        job_id = uuid.uuid4()
-        job = Job(id=job_id, type="playlist.backfill_events", status="pending", params={"playlist_id": str(playlist_id)})
-        session = Mock()
-        session.get.return_value = job
-
-        with patch("raelyn.services.event_analysis.cancel_playlist_event_pipeline_jobs") as cancel_jobs:
-            with patch("raelyn.services.event_analysis.enqueue_job", return_value=job_id) as enqueue:
-                result = event_analysis.request_playlist_event_backfill(session, playlist_id=playlist_id, force=False, priority=1)
-
-        self.assertIs(result, job)
-        cancel_jobs.assert_not_called()
-        enqueue.assert_called_once_with(
-            session,
-            type_="playlist.backfill_events",
-            params={"playlist_id": str(playlist_id), "force": False},
-            priority=1,
-        )
-
-    def test_request_playlist_event_backfill_force_true_cancels_then_enqueues_force_job(self) -> None:
-        playlist_id = uuid.uuid4()
-        job_id = uuid.uuid4()
-        job = Job(id=job_id, type="playlist.backfill_events", status="pending", params={"playlist_id": str(playlist_id), "force": True})
-        session = Mock()
-        session.get.return_value = job
-        order: list[str] = []
-
-        def _cancel(*args, **kwargs):
-            order.append("cancel")
-            return {"jobs": 1}
-
-        def _enqueue(*args, **kwargs):
-            order.append("enqueue")
-            return job_id
-
-        with patch("raelyn.services.event_analysis.cancel_playlist_event_pipeline_jobs", side_effect=_cancel) as cancel_jobs:
-            with patch("raelyn.services.event_analysis.enqueue_job", side_effect=_enqueue) as enqueue:
-                result = event_analysis.request_playlist_event_backfill(session, playlist_id=playlist_id, force=True, priority=1)
-
-        self.assertIs(result, job)
-        self.assertEqual(order, ["cancel", "enqueue"])
-        cancel_jobs.assert_called_once_with(session, playlist_id, reason="playlist_event_force_extract")
-        enqueue.assert_called_once_with(
-            session,
-            type_="playlist.backfill_events",
-            params={"playlist_id": str(playlist_id), "force": True},
-            priority=1,
-        )
 
     def test_backfill_playlist_events_enqueues_monthly_range_jobs(self) -> None:
         playlist_id = uuid.uuid4()
@@ -1076,6 +1207,8 @@ class EventAnalysisTests(unittest.TestCase):
             status="running",
             params={"playlist_id": str(playlist_id), "force": True},
             priority=3,
+            worker_id="analysis-worker",
+            execution_token=uuid.uuid4(),
         )
         session = Mock()
         session.get.return_value = playlist
@@ -1084,8 +1217,9 @@ class EventAnalysisTests(unittest.TestCase):
             "raelyn.services.event_analysis._playlist_timeline_bounds",
             return_value=(datetime(2026, 1, 15, tzinfo=timezone.utc), datetime(2026, 3, 2, tzinfo=timezone.utc)),
         ):
-            with patch("raelyn.services.event_analysis.enqueue_job", return_value=uuid.uuid4()) as enqueue:
-                result = event_analysis.backfill_playlist_events(session, playlist_id=playlist_id, force=True, job=job)
+            with patch("raelyn.services.event_analysis.set_job_progress", return_value=True):
+                with patch("raelyn.services.event_analysis.enqueue_job", return_value=uuid.uuid4()) as enqueue:
+                    result = event_analysis.backfill_playlist_events(session, playlist_id=playlist_id, force=True, job=job)
 
         self.assertEqual(result["mode"], "monthly_ranges")
         self.assertEqual(result["range_jobs"], 3)
@@ -1130,6 +1264,8 @@ class EventAnalysisTests(unittest.TestCase):
                 "range_end": "2026-02-01",
             },
             priority=7,
+            worker_id="analysis-worker",
+            execution_token=uuid.uuid4(),
         )
         session = Mock()
         session.execute.return_value = _ScalarResult([video_id])
@@ -1143,7 +1279,7 @@ class EventAnalysisTests(unittest.TestCase):
 
         session.get.side_effect = _get
 
-        with patch("raelyn.services.event_analysis.set_job_progress"):
+        with patch("raelyn.services.event_analysis.set_job_progress", return_value=True):
             with patch("raelyn.services.event_analysis.pick_transcript_asset", return_value=transcript_asset):
                 with patch("raelyn.services.event_analysis.read_text_asset", return_value=("x" * 4000, {})):
                     with patch("raelyn.services.event_analysis.enqueue_job", return_value=uuid.uuid4()) as enqueue:

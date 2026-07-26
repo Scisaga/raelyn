@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">RAELYN 事件视界</title>
+  <defs>
+    <radialGradient id="surface" cx="34%" cy="24%" r="86%">
+      <stop offset="0" stop-color="#10233a"/>
+      <stop offset="0.58" stop-color="#050b18"/>
+      <stop offset="1" stop-color="#01030a"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="7" y1="13" x2="57" y2="54" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#67e8f9" stop-opacity="0.62"/>
+      <stop offset="0.48" stop-color="#2dd4bf" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#8b5cf6" stop-opacity="0.46"/>
+    </linearGradient>
+    <linearGradient id="diskBack" x1="8" y1="35" x2="56" y2="31" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#64748b" stop-opacity="0.22"/>
+      <stop offset="0.42" stop-color="#818cf8" stop-opacity="0.34"/>
+      <stop offset="0.72" stop-color="#8b5cf6" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#475569" stop-opacity="0.12"/>
+    </linearGradient>
+    <linearGradient id="diskFront" x1="8" y1="38" x2="56" y2="33" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#94a3b8" stop-opacity="0.26"/>
+      <stop offset="0.48" stop-color="#c4b5fd" stop-opacity="0.46"/>
+      <stop offset="1" stop-color="#818cf8" stop-opacity="0.26"/>
+    </linearGradient>
+    <radialGradient id="horizon" cx="42%" cy="35%" r="72%">
+      <stop stop-color="#0f2130"/>
+      <stop offset="0.46" stop-color="#020611"/>
+      <stop offset="1"/>
+    </radialGradient>
+    <linearGradient id="mark" x1="102" y1="98" x2="420" y2="404" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#bef264"/>
+      <stop offset="0.52" stop-color="#5eead4"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <filter id="glow" x="-45%" y="-90%" width="190%" height="280%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="1.35" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect x="1" y="1" width="62" height="62" rx="15" fill="url(#surface)"/>
+  <rect x="1.5" y="1.5" width="61" height="61" rx="14.5" fill="none" stroke="url(#rim)"/>
+
+  <g fill="#a5f3fc">
+    <circle cx="43.5" cy="8" r="1" opacity="0.72"/>
+    <circle cx="41.2" cy="13.2" r="0.75" opacity="0.5"/>
+    <circle cx="39.6" cy="18.1" r="0.55" opacity="0.34"/>
+    <circle cx="12" cy="22" r="0.65" opacity="0.32"/>
+    <circle cx="52.5" cy="43.5" r="0.7" opacity="0.3"/>
+    <circle cx="18" cy="51" r="0.5" opacity="0.26"/>
+  </g>
+
+  <g transform="rotate(-14 32 33)" filter="url(#glow)">
+    <ellipse
+      cx="32"
+      cy="33"
+      rx="24"
+      ry="7.2"
+      fill="none"
+      stroke="url(#diskBack)"
+      stroke-width="5.2"
+    />
+  </g>
+  <circle cx="32" cy="33" r="11.3" fill="url(#horizon)" stroke="#67e8f9" stroke-opacity="0.16"/>
+  <g transform="rotate(-14 32 33)">
+    <path
+      d="M8 33C8 38.6 18.8 40.2 32 40.2C45.2 40.2 56 38.6 56 33"
+      fill="none"
+      stroke="url(#diskFront)"
+      stroke-width="2.1"
+      stroke-linecap="round"
+    />
+  </g>
+
+  <path
+    d="M102 98L102 108L116 109L127 115L134 126L136 134L136 369L132 380L125 388L116 392L102 393L103 404L236 404L236 393L222 392L215 389L207 381L203 371L202 271L240 271L302 374L311 387L322 397L342 404L420 403L419 393L404 391L395 386L387 378L316 263L339 256L358 244L376 224L385 203L387 192L385 165L375 142L361 126L335 110L317 104L292 99L102 98ZM202 108L255 108L268 110L285 118L297 131L309 161L311 178L310 202L305 222L298 235L291 244L279 253L265 258L250 260L202 260L202 248L222 238L235 223L243 197L242 182L239 181L230 184L218 191L208 201L202 211L202 108ZM230 196L232 196L231 204L224 220L215 230L203 237L211 216L217 207L230 196Z"
+    fill="url(#mark)"
+    fill-rule="evenodd"
+    transform="translate(5 5) scale(0.10546875)"
+  />
+  <circle cx="51" cy="20.5" r="1.15" fill="#f0fdfa" opacity="0.92"/>
+</svg>

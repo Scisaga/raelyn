@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-from array import array
-from collections import defaultdict, deque
+from collections import defaultdict
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 import hashlib
 import json
 import math
 import re
-import statistics
 import uuid
 from typing import Any, Callable, Iterator, Sequence
 from urllib.parse import urlparse
 
 from sqlalchemy import String, and_, case, cast, delete, func, or_, select
-from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -26,10 +23,8 @@ from raelyn.jobs.reschedule import JobReschedule, JobTerminalFailure
 from raelyn.models import (
     AppConfig,
     Asset,
-    EventRegimeCandidate,
-    EventRegimeRun,
-    EventRegimeSignal,
-    EventRegimeState,
+    EventMapSnapshot,
+    EventMapState,
     Job,
     JobEvent,
     MarketEvent,
@@ -43,6 +38,7 @@ from raelyn.models import (
     Video,
     VideoEventExtractionRun,
 )
+from raelyn.services.event_map_snapshot import build_event_map_snapshot
 from raelyn.services.embeddings import (
     EmbeddingError,
     EmbeddingOverBudgetError,
@@ -50,11 +46,12 @@ from raelyn.services.embeddings import (
     embed_text,
     embedding_enabled,
     embedding_spec,
+    validate_embedding_vector,
 )
 from raelyn.services.inference import get_effective_llm_config
 from raelyn.services.job_cancellation import JobCancelRequested, raise_if_job_cancel_requested, request_job_cancel
 from raelyn.services.llm import llm_enabled, llm_generate
-from raelyn.services.periods import iter_period_starts, local_date, month_add_one, period_bounds_utc, period_end_inclusive
+from raelyn.services.periods import iter_period_starts, local_date, month_add_one, period_bounds_utc
 from raelyn.services.pg_lock import advisory_lock
 from raelyn.services.transcripts import pick_transcript_asset, read_text_asset
 from raelyn.services.video_time import resolve_video_timeline, timeline_time_expr
@@ -62,26 +59,39 @@ from raelyn.timeutil import utcnow
 
 
 EVENT_EXTRACTION_PROMPT_CONFIG_KEY = "llm_event_extraction_prompt"
-EVENT_EXTRACTION_PROMPT_BASE_VERSION = "llm_event_v2_source_provenance"
+EVENT_EXTRACTION_PROMPT_BASE_VERSION = "llm_event_v4_explicit_relation_endpoints"
 EVENT_ACCEPT_CONFIDENCE = 0.8
 EVENT_BATCH_MAX_VIDEOS = 1
 EVENT_BATCH_MAX_SOURCE_CHARS = 10000
 EVENT_BATCH_SINGLE_MAX_SOURCE_CHARS = 3500
 EVENT_SOURCE_SEGMENT_MAX_CHARS = 700
 EVENT_DESCRIPTION_SOURCE_MAX_CHARS = 1600
-EVENT_REGIME_GRANULARITIES = ("day", "week", "month")
-EVENT_REGIME_WINDOWS = {"day": 20, "week": 12, "month": 12}
-EVENT_REGIME_PRECISIONS = {
-    "day": frozenset({"second", "day"}),
-    "week": frozenset({"second", "day"}),
-    "month": frozenset({"second", "day", "month"}),
-}
 _EVENT_PIPELINE_ACTIVE_JOB_STATUSES = ("pending", "running")
 EVENT_EXTRACTION_PROGRESS_TOTAL = 10000
 EVENT_EXTRACTION_PROGRESS_LLM_DONE = 9000
 EVENT_EXTRACTION_PROGRESS_WRITTEN = 9600
 EVENT_EXTRACTION_PROGRESS_POST_PROCESSED = 9900
-EVENT_REGIME_DIRTY_DEBOUNCE_SECONDS = 60
+EVENT_MAP_DIRTY_DEBOUNCE_SECONDS = 0
+
+
+class _EventExtractionResponseError(ValueError):
+    """LLM 事件抽取响应的顶层结构不满足协议。"""
+
+    def __init__(
+        self,
+        warnings: Sequence[str],
+        *,
+        parsed_by_video: dict[str, list[dict[str, Any]]] | None = None,
+        affected_video_ids: Sequence[str] = (),
+    ) -> None:
+        normalized_warnings = tuple(str(item).strip() for item in warnings if str(item).strip())
+        self.warnings = normalized_warnings or ("event extraction response has invalid structure",)
+        self.parsed_by_video = {
+            str(video_id): list(events)
+            for video_id, events in (parsed_by_video or {}).items()
+        }
+        self.affected_video_ids = tuple(dict.fromkeys(str(item) for item in affected_video_ids if str(item)))
+        super().__init__("; ".join(self.warnings[:3]))
 
 
 @dataclass(frozen=True)
@@ -107,39 +117,10 @@ class _EventExtractionTranscriptAssetSnapshot:
     s3_key: str
 
 
-@dataclass(frozen=True)
-class _EventRegimeEvidenceSnapshot:
-    event_id: uuid.UUID
-    source_video_id: uuid.UUID
-    event_time_start: datetime
-    available_at: datetime | None
-    title: str | None
-    summary: str | None
-    event_type: str
-    centroid_distance: float
-
-
-@dataclass
-class _EventRegimePeriodAggregate:
-    period_date: date
-    event_count: int
-    centroid: array
-    drift_score: float | None
-    drift_rolling_mean: float | None
-    drift_rolling_std: float | None
-    drift_rolling_z: float | None
-    dispersion_mean: float | None = None
-    dispersion_std: float | None = None
-    dispersion_p25: float | None = None
-    dispersion_p75: float | None = None
-    evidence: list[_EventRegimeEvidenceSnapshot] = field(default_factory=list)
-    available_at: datetime | None = None
-
-
 DEFAULT_EVENT_EXTRACTION_PROMPT = """
 你是金融市场事件抽取器。请只输出 JSON，不要 Markdown，不要解释。
 
-任务：从一个或多个视频 source 中抽取会影响市场 regime 分析的原子事件。忽略寒暄、主持人串场、重复免责声明、泛泛评论和没有明确事实支撑的预测。
+任务：从一个或多个视频 source 中抽取对金融市场有可验证影响的原子事件。忽略寒暄、主持人串场、重复免责声明、泛泛评论和没有明确事实支撑的预测。
 
 输出格式：
 {
@@ -163,7 +144,7 @@ DEFAULT_EVENT_EXTRACTION_PROMPT = """
         "direction": "positive|negative|mixed|neutral|unknown",
         "magnitude": {"value": null, "unit": "", "description": ""},
         "surprise_or_delta": {"value": null, "unit": "", "description": ""},
-        "cause_effect_chain": [{"cause": "...", "effect": "...", "relation_type": "cause|effect|affects|mentions", "direction": "positive|negative|mixed|neutral|unknown", "magnitude": {"description": ""}, "confidence": 0.0}],
+        "cause_effect_chain": [{"cause": "完整的原因命题", "effect": "完整的结果命题", "source_entity_key": "精确引用本事件对象的 normalized_key；无法对应则为空字符串", "target_entity_key": "精确引用本事件对象的 normalized_key；无法对应则为空字符串", "relation_type": "cause|effect|affects|mentions", "direction": "positive|negative|mixed|neutral|unknown", "magnitude": {"description": ""}, "confidence": 0.0}],
         "evidence_source_ids": ["v1.title", "v1.desc", "v1.t001"],
         "confidence": 0.0
       }
@@ -172,10 +153,13 @@ DEFAULT_EVENT_EXTRACTION_PROMPT = """
 }
 
 约束：
-- 如果前文或自定义提示词与本输出格式冲突，必须以本段 v2 JSON 输出格式为准。
+- 如果前文或自定义提示词与本输出格式冲突，必须以本段 v3 JSON 输出格式为准。
 - 相对时间必须基于输入中的“视频内容时间”解析；无法解析时 time_precision 必须为 "unknown"。
 - evidence_source_ids 只能引用输入 source 列表中的 id；不要输出证据原文，不要输出 evidence_quotes/evidence_text，不要编造 source id。
 - 单个事件只表达一个事实变化；同一事实的原因、影响可以放入 cause_effect_chain。
+- cause_effect_chain 的 cause / effect 必须保留为可独立阅读的自然语言命题，不能改写成实体键。
+- source_entity_key / target_entity_key 只表示关系端点，必须精确引用同一事件 entities / assets / sectors / macro_variables 中某一项由后端生成的 normalized_key；无法精确对应时填写空字符串，禁止拿 cause / effect 文本猜端点。
+- normalized_key 规则：对象 name 转小写，连续空格或除数字、英文字母、中文、`.`、`_`、`:`、`-` 外的字符替换为 `_`，并去掉首尾 `_`。例如 `Federal Reserve` 对应 `federal_reserve`，`美国联储` 对应 `美国联储`。同一事件的四类对象不得产生重复 normalized_key。
 - 不是事件的内容必须过滤掉，不要为了覆盖率而抽取：
   * 操作策略、荐股建议、观察名单、持股建议、进出场点位、回档布局、逢低买进、获利了结、族群轮动建议。
   * 分析师/法人对股票或产业的主观看法、评级框架、分类标签、题材归类，例如“老 AI 股”“金融股操作策略”。
@@ -199,14 +183,16 @@ DEFAULT_EVENT_EXTRACTION_PROMPT = """
 COMPACT_EVENT_EXTRACTION_PROMPT = """
 你是金融市场事件抽取器。只输出合法 JSON，不要 Markdown，不要解释。
 
-任务：从输入 sources 抽取已发生、可验证、可能影响市场 regime 的事件。忽略交易策略、荐股建议、观察名单、纯预测、主持人串场、免责声明和频道推广。
+任务：从输入 sources 抽取已发生、可验证、对金融市场有明确影响对象的事件。忽略交易策略、荐股建议、观察名单、纯预测、主持人串场、免责声明和频道推广。
 
 输出必须严格使用这个紧凑结构：
-{"videos":[{"video_id":"v1","events":[{"event_time":{"start":"YYYY-MM-DD 或空字符串","end":"YYYY-MM-DD 或空字符串","time_precision":"second|day|month|year|unknown","basis":"content_time|explicit_transcript|title|description|unknown"},"available_at_basis":"video_published_at|content_published_at|explicit_transcript|unknown","event_type":"macro|monetary_policy|earnings|guidance|credit|rates|fx|commodities|equity|geopolitical|policy|liquidity|market_structure|other","title":"不超过30中文字","summary":"不超过80中文字，只写可验证事实和市场影响","entities":[{"type":"company|person|country|institution|indicator|asset|sector|other","name":"...","role":"actor|affected|indicator|source|other","confidence":0.0}],"assets":[{"name":"...","ticker":"","market":"TWSE|TPEX|NYSE|NASDAQ|HKEX|A-share|other|unknown","role":"affected|signal|other","confidence":0.0}],"sectors":[{"name":"...","role":"affected|signal|other","confidence":0.0}],"macro_variables":[{"name":"...","role":"indicator|affected|cause|other","confidence":0.0}],"direction":"positive|negative|mixed|neutral|unknown","cause_effect_chain":[{"cause":"...","effect":"...","relation_type":"cause|effect|affects|mentions","direction":"positive|negative|mixed|neutral|unknown","confidence":0.0}],"evidence_source_ids":["v1.t001"],"confidence":0.0}]}]}
+{"videos":[{"video_id":"v1","events":[{"event_time":{"start":"YYYY-MM-DD 或空字符串","end":"YYYY-MM-DD 或空字符串","time_precision":"second|day|month|year|unknown","basis":"content_time|explicit_transcript|title|description|unknown"},"available_at_basis":"video_published_at|content_published_at|explicit_transcript|unknown","event_type":"macro|monetary_policy|earnings|guidance|credit|rates|fx|commodities|equity|geopolitical|policy|liquidity|market_structure|other","title":"不超过30中文字","summary":"不超过80中文字，只写可验证事实和市场影响","entities":[{"type":"company|person|country|institution|indicator|asset|sector|other","name":"...","role":"actor|affected|indicator|source|other","confidence":0.0}],"assets":[{"name":"...","ticker":"","market":"TWSE|TPEX|NYSE|NASDAQ|HKEX|A-share|other|unknown","role":"affected|signal|other","confidence":0.0}],"sectors":[{"name":"...","role":"affected|signal|other","confidence":0.0}],"macro_variables":[{"name":"...","role":"indicator|affected|cause|other","confidence":0.0}],"direction":"positive|negative|mixed|neutral|unknown","cause_effect_chain":[{"cause":"完整原因命题","effect":"完整结果命题","source_entity_key":"本事件对象的精确 normalized_key 或空字符串","target_entity_key":"本事件对象的精确 normalized_key 或空字符串","relation_type":"cause|effect|affects|mentions","direction":"positive|negative|mixed|neutral|unknown","confidence":0.0}],"evidence_source_ids":["v1.t001"],"confidence":0.0}]}]}
 
 硬约束：
 - 每个 video 最多 4 个最高价值事件，不足则更少。
 - 每个数组最多 3 项；cause_effect_chain 最多 2 项；没有明确证据时用 []。
+- cause / effect 是自然语言命题；source_entity_key / target_entity_key 是独立端点，只能精确填写同事件四类对象按后端规则生成的 normalized_key，不能复制命题或猜测；没有端点时用空字符串。
+- normalized_key 将对象 name 转小写，以 `_` 替换不属于数字、英文字母、中文、`.`、`_`、`:`、`-` 的连续字符并去掉首尾 `_`；四类对象之间不得重复该键。
 - 不要输出 magnitude、surprise_or_delta、evidence_text、evidence_quotes 或任何 schema 外字段。
 - evidence_source_ids 只能引用输入 sources 中的 id，至少 1 个。
 - 不能把一个视频的事实归到另一个 video_id。
@@ -449,12 +435,12 @@ def parse_event_extraction_response(text: str) -> tuple[list[dict[str, Any]], li
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        return [], [f"event extraction json parse failed: {exc}"]
+        raise _EventExtractionResponseError([f"event extraction json parse failed: {exc}"]) from exc
     if not isinstance(payload, dict):
-        return [], ["event extraction payload is not a json object"]
+        raise _EventExtractionResponseError(["event extraction payload is not a json object"])
     raw_events = payload.get("events")
     if not isinstance(raw_events, list):
-        return [], ["event extraction payload missing events[]"]
+        raise _EventExtractionResponseError(["event extraction payload missing events[]"])
 
     events: list[dict[str, Any]] = []
     for idx, raw in enumerate(raw_events):
@@ -471,6 +457,7 @@ def parse_event_extraction_response(text: str) -> tuple[list[dict[str, Any]], li
             warnings.append(f"event[{idx}] dropped: missing title and summary")
             continue
         raw["confidence"] = confidence
+        warnings.extend(_relation_endpoint_contract_warnings(raw, prefix=f"event[{idx}]"))
         events.append(raw)
     return events, warnings
 
@@ -480,25 +467,35 @@ def parse_event_extraction_batch_response(
     *,
     expected_video_ids: list[str],
 ) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
+    expected = [str(item) for item in expected_video_ids if str(item)]
+    expected_set = set(expected)
     warnings: list[str] = []
     cleaned = _strip_llm_wrappers(text)
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        return {}, [f"event extraction json parse failed: {exc}"]
+        raise _EventExtractionResponseError(
+            [f"event extraction json parse failed: {exc}"],
+            affected_video_ids=expected,
+        ) from exc
     if not isinstance(payload, dict):
-        return {}, ["event extraction payload is not a json object"]
+        raise _EventExtractionResponseError(
+            ["event extraction payload is not a json object"],
+            affected_video_ids=expected,
+        )
 
-    expected = [str(item) for item in expected_video_ids if str(item)]
-    expected_set = set(expected)
     rows: dict[str, list[dict[str, Any]]] = {item: [] for item in expected}
     raw_videos = payload.get("videos")
-    if raw_videos is None and len(expected) == 1 and isinstance(payload.get("events"), list):
-        raw_videos = [{"video_id": expected[0], "events": payload.get("events")}]
     if not isinstance(raw_videos, list):
-        return {}, ["event extraction payload missing videos[]"]
+        raise _EventExtractionResponseError(
+            ["event extraction payload missing videos[]"],
+            parsed_by_video=rows,
+            affected_video_ids=expected,
+        )
 
-    seen_videos: set[str] = set()
+    declared_videos: set[str] = set()
+    structurally_invalid_videos: set[str] = set()
+    structural_warnings: list[str] = []
     for video_idx, raw_video in enumerate(raw_videos):
         if not isinstance(raw_video, dict):
             warnings.append(f"videos[{video_idx}] dropped: not object")
@@ -507,10 +504,11 @@ def parse_event_extraction_batch_response(
         if alias not in expected_set:
             warnings.append(f"videos[{video_idx}] dropped: unexpected video_id {alias or '<empty>'}")
             continue
-        seen_videos.add(alias)
+        declared_videos.add(alias)
         raw_events = raw_video.get("events")
         if not isinstance(raw_events, list):
-            warnings.append(f"videos[{alias}] dropped: missing events[]")
+            structural_warnings.append(f"videos[{alias}] missing events[]")
+            structurally_invalid_videos.add(alias)
             continue
         events: list[dict[str, Any]] = []
         for event_idx, raw in enumerate(raw_events):
@@ -527,12 +525,25 @@ def parse_event_extraction_batch_response(
                 warnings.append(f"videos[{alias}].event[{event_idx}] dropped: missing title and summary")
                 continue
             raw["confidence"] = confidence
+            warnings.extend(
+                _relation_endpoint_contract_warnings(
+                    raw,
+                    prefix=f"videos[{alias}].event[{event_idx}]",
+                )
+            )
             events.append(raw)
         rows[alias].extend(events)
 
     for alias in expected:
-        if alias not in seen_videos:
-            warnings.append(f"event extraction response missing video_id {alias}")
+        if alias not in declared_videos:
+            structural_warnings.append(f"event extraction response missing video_id {alias}")
+            structurally_invalid_videos.add(alias)
+    if structural_warnings:
+        raise _EventExtractionResponseError(
+            [*structural_warnings, *warnings],
+            parsed_by_video=rows,
+            affected_video_ids=[alias for alias in expected if alias in structurally_invalid_videos],
+        )
     return rows, warnings
 
 
@@ -723,14 +734,15 @@ def _render_event_batch_prompt(
 
     max_events = 4 if compact else 6
     protocol = f"""
-v2 输出协议：
+v3 输出协议：
 - 顶层必须是 {{"videos": [...]}}，每个输入 video_id 必须出现一次。
 - 每个事件只能使用 evidence_source_ids 引用上方 sources 中的 id；不要输出 evidence_quotes / evidence_text。
 - 同一事件至少给 1 个 evidence_source_ids；无法定位证据的内容必须过滤，不能作为 accepted 事件。
-- sports celebration、皇室婚礼、娱乐闲聊、普通人物故事等不影响金融市场 regime 的内容应输出 events: []。
+- sports celebration、皇室婚礼、娱乐闲聊、普通人物故事等没有可验证金融市场影响对象的内容应输出 events: []。
 - 如果输入内有多个视频，不要把一个视频的事实归到另一个 video_id。
-- 每个 video 最多输出 {max_events} 个最高置信、最影响市场 regime 的事件；不足 {max_events} 个就输出更少，不要为了凑数扩写。
+- 每个 video 最多输出 {max_events} 个置信度最高、市场影响对象最明确的事件；不足 {max_events} 个就输出更少，不要为了凑数扩写。
 - 每个事件的 summary 最多 120 个中文字；entities / assets / sectors / macro_variables 各最多 5 项，cause_effect_chain 最多 4 项。
+- cause / effect 必须是自然语言命题；每条关系必须同时输出 source_entity_key / target_entity_key。端点键只能精确引用同事件四类对象按后端 normalized_key 规则得到的唯一键，没有对应实体时用空字符串；禁止用 cause / effect 猜测或代替端点键。
 - magnitude / surprise_or_delta 没有明确数值时只保留空结构，不要在 description 里扩写背景。
 - 不要输出同义重复实体、无证据实体或为贴合格式而补全的空泛对象。
 """.strip()
@@ -976,6 +988,39 @@ def _iter_entity_items(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
+def _relation_endpoint_contract_warnings(raw: dict[str, Any], *, prefix: str) -> list[str]:
+    """校验显式关系端点；只报告契约错误，不改写模型的原始命题。"""
+    key_counts: dict[str, int] = defaultdict(int)
+    for item in _iter_entity_items(raw):
+        key_counts[item["normalized_key"]] += 1
+
+    chain = raw.get("cause_effect_chain")
+    if not isinstance(chain, list):
+        return []
+
+    warnings: list[str] = []
+    for relation_index, relation_raw in enumerate(chain[:24]):
+        if not isinstance(relation_raw, dict):
+            continue
+        for field_name in ("source_entity_key", "target_entity_key"):
+            relation_prefix = f"{prefix}.cause_effect_chain[{relation_index}]"
+            if field_name not in relation_raw:
+                warnings.append(f"{relation_prefix}: missing {field_name}")
+                continue
+            endpoint_key = relation_raw.get(field_name)
+            if endpoint_key == "":
+                continue
+            if not isinstance(endpoint_key, str):
+                warnings.append(f"{relation_prefix}: {field_name} must be string")
+                continue
+            match_count = key_counts.get(endpoint_key, 0)
+            if match_count == 0:
+                warnings.append(f"{relation_prefix}: {field_name} does not exactly match an event entity key")
+            elif match_count > 1:
+                warnings.append(f"{relation_prefix}: {field_name} is ambiguous within event entities")
+    return warnings
+
+
 def _insert_event_children(
     session: Session,
     *,
@@ -1005,11 +1050,12 @@ def _insert_event_children(
             )
         )
 
-    entity_by_name: dict[str, MarketEventEntity] = {}
+    entity_by_key: dict[str, MarketEventEntity | None] = {}
     for item in _iter_entity_items(raw):
         entity = MarketEventEntity(event_id=event.id, **item)
         session.add(entity)
-        entity_by_name[item["normalized_key"]] = entity
+        normalized_key = item["normalized_key"]
+        entity_by_key[normalized_key] = None if normalized_key in entity_by_key else entity
     session.flush()
 
     chain = raw.get("cause_effect_chain")
@@ -1017,8 +1063,6 @@ def _insert_event_children(
         chain = []
     for relation_raw in chain[:24]:
         if isinstance(relation_raw, dict):
-            cause = relation_raw.get("cause") or relation_raw.get("source")
-            effect = relation_raw.get("effect") or relation_raw.get("target")
             relation_type = _normalize_key(relation_raw.get("relation_type") or "affects") or "affects"
             direction = _short_text(relation_raw.get("direction"), max_len=80) or None
             magnitude = _jsonable(relation_raw.get("magnitude"))
@@ -1026,16 +1070,16 @@ def _insert_event_children(
             evidence_text = _short_text(relation_raw.get("evidence_text"), max_len=800) or None
             raw_payload = relation_raw
         else:
-            cause = None
-            effect = None
             relation_type = "mentions"
             direction = None
             magnitude = None
             confidence = _safe_float(raw.get("confidence"))
             evidence_text = _short_text(relation_raw, max_len=800) or None
             raw_payload = {"text": evidence_text}
-        source_entity = entity_by_name.get(_normalize_key(cause))
-        target_entity = entity_by_name.get(_normalize_key(effect))
+        source_key = relation_raw.get("source_entity_key") if isinstance(relation_raw, dict) else None
+        target_key = relation_raw.get("target_entity_key") if isinstance(relation_raw, dict) else None
+        source_entity = entity_by_key.get(source_key) if isinstance(source_key, str) else None
+        target_entity = entity_by_key.get(target_key) if isinstance(target_key, str) else None
         session.add(
             MarketEventRelation(
                 event_id=event.id,
@@ -1062,10 +1106,6 @@ def _delete_video_events(session: Session, *, video_id: uuid.UUID) -> None:
     for model in (MarketEventRelation, MarketEventEntity, MarketEventEvidence, MarketEventEmbedding):
         session.execute(delete(model).where(getattr(model, "event_id").in_(event_ids)))
     session.execute(delete(MarketEvent).where(MarketEvent.id.in_(event_ids)))
-
-
-def _delete_video_event_extraction_runs(session: Session, *, video_id: uuid.UUID) -> None:
-    session.execute(delete(VideoEventExtractionRun).where(VideoEventExtractionRun.video_id == video_id))
 
 
 def _succeeded_event_extraction_run(
@@ -1171,6 +1211,67 @@ def _ready_embedding_event_ids(session: Session, event_ids: list[uuid.UUID]) -> 
     )
 
 
+def _event_map_ready_embedding_clause(spec: Any) -> Any:
+    return and_(
+        MarketEventEmbedding.embedding_model == spec.model,
+        MarketEventEmbedding.embedding_dim == spec.dim,
+        MarketEventEmbedding.status == "ready",
+        MarketEventEmbedding.vector.is_not(None),
+    )
+
+
+def _video_ids_with_event_map_inputs(
+    session: Session,
+    *,
+    video_ids: Sequence[uuid.UUID],
+) -> set[uuid.UUID]:
+    unique_video_ids = list(dict.fromkeys(uuid.UUID(str(item)) for item in video_ids))
+    if not unique_video_ids:
+        return set()
+    spec = embedding_spec()
+    return set(
+        session.execute(
+            select(MarketEvent.source_video_id)
+            .join(
+                MarketEventEmbedding,
+                MarketEventEmbedding.event_id == MarketEvent.id,
+            )
+            .where(
+                MarketEvent.source_video_id.in_(unique_video_ids),
+                MarketEvent.status == "accepted",
+                MarketEvent.event_time_start.is_not(None),
+                _event_map_ready_embedding_clause(spec),
+            )
+            .distinct()
+        )
+        .scalars()
+        .all()
+    )
+
+
+def video_has_event_map_input(session: Session, *, video_id: uuid.UUID) -> bool:
+    return video_id in _video_ids_with_event_map_inputs(session, video_ids=[video_id])
+
+
+def _event_has_ready_map_embedding(
+    session: Session,
+    *,
+    event_id: uuid.UUID,
+    spec: Any,
+) -> bool:
+    return (
+        session.execute(
+            select(MarketEventEmbedding.id)
+            .where(
+                MarketEventEmbedding.event_id == event_id,
+                _event_map_ready_embedding_clause(spec),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
 def enqueue_event_embedding_jobs(session: Session, *, event_ids: list[uuid.UUID], priority: int = 0) -> int:
     unique_event_ids = sorted(set(event_ids), key=lambda item: str(item))
     ready_event_ids = _ready_embedding_event_ids(session, unique_event_ids)
@@ -1183,13 +1284,37 @@ def enqueue_event_embedding_jobs(session: Session, *, event_ids: list[uuid.UUID]
     return enqueued
 
 
-def _set_event_extraction_progress(job_id: uuid.UUID | None, current: int) -> None:
+def _set_job_progress_for_execution(
+    job_id: uuid.UUID | None,
+    worker_id: str,
+    execution_token: uuid.UUID | None,
+    current: int,
+    total: int,
+) -> None:
     if not job_id:
         return
-    set_job_progress(
+    if execution_token is None or not set_job_progress(
         job_id=job_id,
-        current=max(0, min(EVENT_EXTRACTION_PROGRESS_TOTAL, int(current))),
-        total=EVENT_EXTRACTION_PROGRESS_TOTAL,
+        worker_id=worker_id,
+        execution_token=execution_token,
+        current=current,
+        total=total,
+    ):
+        raise JobTerminalFailure("job ownership changed while updating progress")
+
+
+def _set_event_extraction_progress(
+    job_id: uuid.UUID | None,
+    worker_id: str,
+    execution_token: uuid.UUID | None,
+    current: int,
+) -> None:
+    _set_job_progress_for_execution(
+        job_id,
+        worker_id,
+        execution_token,
+        max(0, min(EVENT_EXTRACTION_PROGRESS_TOTAL, int(current))),
+        EVENT_EXTRACTION_PROGRESS_TOTAL,
     )
 
 
@@ -1324,10 +1449,12 @@ def extract_video_events_batch(
         return {"skipped": "llm not configured"}
 
     job_id = getattr(job, "id", None) if job else None
+    claimed_worker_id = str(getattr(job, "worker_id", "") or "").strip() if job else ""
+    claimed_execution_token = getattr(job, "execution_token", None) if job else None
     job_priority = int(getattr(job, "priority", 0) or 0) if job else 0
     spec = event_extraction_spec(session)
     if job_id:
-        _set_event_extraction_progress(job_id, 0)
+        _set_event_extraction_progress(job_id, claimed_worker_id, claimed_execution_token, 0)
 
     unique_video_ids = list(dict.fromkeys([uuid.UUID(str(item)) for item in video_ids]))
     prepared, skipped_rows = _prepare_event_videos(session, video_ids=unique_video_ids, spec=spec)
@@ -1360,7 +1487,12 @@ def extract_video_events_batch(
         work.append(prepared_video)
     session.commit()
     if not work:
-        _set_event_extraction_progress(job_id, EVENT_EXTRACTION_PROGRESS_POST_PROCESSED)
+        _set_event_extraction_progress(
+            job_id,
+            claimed_worker_id,
+            claimed_execution_token,
+            EVENT_EXTRACTION_PROGRESS_POST_PROCESSED,
+        )
         return {
             "ok": True,
             "cached": True,
@@ -1443,7 +1575,12 @@ def extract_video_events_batch(
         if job and job_id:
             raise_if_job_cancel_requested(session, job)
             session.commit()
-            _set_event_extraction_progress(job_id, _event_extraction_llm_progress(idx, len(batches)))
+            _set_event_extraction_progress(
+                job_id,
+                claimed_worker_id,
+                claimed_execution_token,
+                _event_extraction_llm_progress(idx, len(batches)),
+            )
         video_sources: dict[str, list[_EventSource]] = {}
         source_by_id: dict[str, _EventSource] = {}
         batch_videos: list[_PreparedEventVideo] = []
@@ -1474,60 +1611,59 @@ def extract_video_events_batch(
                 except Exception:
                     pass
         expected_aliases = [prepared_video.alias for prepared_video in batch_videos]
-        parsed_by_alias, parse_warnings = parse_event_extraction_batch_response(
-            str(result.get("text") or ""),
-            expected_video_ids=expected_aliases,
-        )
+        response_structure_error: _EventExtractionResponseError | None = None
+        try:
+            parsed_by_alias, parse_warnings = parse_event_extraction_batch_response(
+                str(result.get("text") or ""),
+                expected_video_ids=expected_aliases,
+            )
+        except _EventExtractionResponseError as exc:
+            response_structure_error = exc
+            parsed_by_alias = exc.parsed_by_video
+            parse_warnings = list(exc.warnings)
         for message in parse_warnings:
             warnings.append(message)
             warning_events.append((message, {"batch": idx + 1}))
-        missing_aliases = {
-            message.rsplit(" ", 1)[-1]
-            for message in parse_warnings
-            if message.startswith("event extraction response missing video_id ")
-        }
-        if fallback_to_single and len(batch_videos) > 1 and missing_aliases:
-            missing_videos = [prepared_video for prepared_video in batch_videos if prepared_video.alias in missing_aliases]
-            if missing_videos:
-                fallback_jobs_enqueued += _enqueue_single_event_fallbacks(
-                    session,
-                    videos=missing_videos,
-                    force=force,
-                    priority=job_priority,
-                    parent_job_id=job_id,
-                    reason="batch response missing video id",
-                    job=job,
-                )
-                batch_videos = [prepared_video for prepared_video in batch_videos if prepared_video.alias not in missing_aliases]
-                if not batch_videos:
-                    continue
-        if any("json parse failed" in message or "missing videos[]" in message for message in parse_warnings):
+        if response_structure_error is not None:
+            affected_aliases = set(response_structure_error.affected_video_ids) or set(expected_aliases)
+            affected_videos = [
+                prepared_video
+                for prepared_video in batch_videos
+                if prepared_video.alias in affected_aliases
+            ]
             if fallback_to_single and len(batch_videos) > 1:
                 fallback_jobs_enqueued += _enqueue_single_event_fallbacks(
                     session,
-                    videos=batch_videos,
+                    videos=affected_videos,
                     force=force,
                     priority=job_priority,
                     parent_job_id=job_id,
-                    reason="batch response parse failed",
+                    reason="batch response has invalid structure",
                     job=job,
                 )
-                continue
-            if len(batch_videos) == 1:
-                _write_event_extraction_run(
-                    session,
-                    video_id=batch_videos[0].video.id,
-                    transcript_asset_id=batch_videos[0].transcript_asset.id,
-                    source_hash=batch_videos[0].source_hash,
-                    spec=spec,
-                    status="failed",
-                    event_count=0,
-                    warning_count=len(parse_warnings),
-                    usage=usage,
-                    error_message="; ".join(parse_warnings[:3]),
-                )
+                batch_videos = [
+                    prepared_video
+                    for prepared_video in batch_videos
+                    if prepared_video.alias not in affected_aliases
+                ]
+                if not batch_videos:
+                    continue
+            else:
+                for prepared_video in affected_videos or batch_videos:
+                    _write_event_extraction_run(
+                        session,
+                        video_id=prepared_video.video.id,
+                        transcript_asset_id=prepared_video.transcript_asset.id,
+                        source_hash=prepared_video.source_hash,
+                        spec=spec,
+                        status="failed",
+                        event_count=0,
+                        warning_count=len(parse_warnings),
+                        usage=usage,
+                        error_message=str(response_structure_error),
+                    )
                 session.commit()
-                continue
+                raise response_structure_error
 
         for prepared_video in batch_videos:
             parsed_event_rows.setdefault(prepared_video.video.id, [])
@@ -1573,14 +1709,21 @@ def extract_video_events_batch(
                     reason="batch video returned events without legal provenance",
                     job=job,
                 )
-        _set_event_extraction_progress(job_id, _event_extraction_llm_progress(idx + 1, len(batches)))
+        _set_event_extraction_progress(
+            job_id,
+            claimed_worker_id,
+            claimed_execution_token,
+            _event_extraction_llm_progress(idx + 1, len(batches)),
+        )
 
     if job:
         raise_if_job_cancel_requested(session, job)
     performed_videos = [prepared_video for prepared_video in work if prepared_video.video.id in parsed_event_rows]
+    replaced_map_input_video_ids = _video_ids_with_event_map_inputs(
+        session,
+        video_ids=[prepared_video.video.id for prepared_video in performed_videos],
+    )
     for prepared_video in performed_videos:
-        if force:
-            _delete_video_event_extraction_runs(session, video_id=prepared_video.video.id)
         _delete_video_events(session, video_id=prepared_video.video.id)
 
     accepted_event_ids: list[uuid.UUID] = []
@@ -1648,10 +1791,6 @@ def extract_video_events_batch(
     if job_id:
         for message, data in warning_events:
             session.add(JobEvent(job_id=job_id, level="warning", message=message[:1000], data=data))
-    session.flush()
-    session.commit()
-    _set_event_extraction_progress(job_id, EVENT_EXTRACTION_PROGRESS_WRITTEN)
-
     embedding_jobs_enqueued += enqueue_event_embedding_jobs(
         session,
         event_ids=accepted_event_ids,
@@ -1659,14 +1798,31 @@ def extract_video_events_batch(
     )
     dirty_jobs_enqueued = 0
     for prepared_video in performed_videos:
-        dirty_jobs_enqueued += schedule_playlists_event_regime_dirty_for_video(
+        if prepared_video.video.id not in replaced_map_input_video_ids:
+            continue
+        dirty_jobs_enqueued += schedule_playlists_event_map_dirty_for_video(
             session,
             video_id=prepared_video.video.id,
             reason="video_events_extracted",
             source_job_id=job_id,
             priority=job_priority,
         )
-    _set_event_extraction_progress(job_id, EVENT_EXTRACTION_PROGRESS_POST_PROCESSED)
+    # 事件替换、embedding 投递与 dirty outbox 必须一并提交，避免进程在两次
+    # commit 之间退出后留下“源数据已变、星域却永远不再更新”的窗口。
+    session.flush()
+    session.commit()
+    _set_event_extraction_progress(
+        job_id,
+        claimed_worker_id,
+        claimed_execution_token,
+        EVENT_EXTRACTION_PROGRESS_WRITTEN,
+    )
+    _set_event_extraction_progress(
+        job_id,
+        claimed_worker_id,
+        claimed_execution_token,
+        EVENT_EXTRACTION_PROGRESS_POST_PROCESSED,
+    )
     return {
         "ok": True,
         "videos": len(performed_videos),
@@ -1766,7 +1922,13 @@ def _active_playlist_event_pipeline_jobs(session: Session, playlist_id: uuid.UUI
                     Job.params["event_id"].as_string().in_(event_ids),
                 ),
                 and_(
-                    Job.type.in_(["playlist.mark_event_regime_dirty", "playlist.build_event_regime_snapshot"]),
+                    Job.type.in_(
+                        [
+                            "playlist.mark_event_map_dirty",
+                            "playlist.build_event_map_snapshot",
+                            "playlist.prune_event_map_snapshots",
+                        ]
+                    ),
                     Job.params["playlist_id"].as_string() == playlist_id_text,
                 ),
             ),
@@ -1788,30 +1950,37 @@ def cancel_playlist_event_pipeline_jobs(session: Session, playlist_id: uuid.UUID
             cancel_requested += 1
 
     now = utcnow()
-    runs = (
+    snapshots = (
         session.execute(
-            select(EventRegimeRun).where(
-                EventRegimeRun.playlist_id == playlist_id,
-                EventRegimeRun.status.in_(["pending", "running"]),
+            select(EventMapSnapshot).where(
+                EventMapSnapshot.playlist_id == playlist_id,
+                EventMapSnapshot.status.in_(["pending", "running"]),
             )
         )
         .scalars()
         .all()
     )
-    for run in runs:
-        run.status = "canceled"
-        run.finished_at = now
-        run.updated_at = now
+    for snapshot in snapshots:
+        snapshot.status = "canceled"
+        snapshot.finished_at = now
+        snapshot.updated_at = now
 
-    state = ensure_event_regime_state(session, playlist_id)
-    state.analysis_dirty = True
+    state = session.get(EventMapState, playlist_id)
+    if state is None:
+        state = EventMapState(playlist_id=playlist_id)
+        session.add(state)
+    was_clean = int(state.dirty_generation or 0) <= int(state.built_generation or 0)
+    state.dirty_generation = int(state.dirty_generation or 0) + 1
+    if was_clean or state.first_dirty_at is None:
+        state.first_dirty_at = now
+    state.last_dirty_at = now
     state.updated_at = now
     session.flush()
     return {
         "jobs": len(jobs),
         "canceled": canceled,
         "cancel_requested": cancel_requested,
-        "regime_runs_canceled": len(runs),
+        "event_map_snapshots_canceled": len(snapshots),
     }
 
 
@@ -1859,13 +2028,16 @@ def backfill_playlist_events(session: Session, *, playlist_id: uuid.UUID, force:
     playlist = session.get(Playlist, playlist_id)
     if not playlist:
         return {"skipped": "playlist not found"}
+    job_id = getattr(job, "id", None) if job else None
+    claimed_worker_id = str(getattr(job, "worker_id", "") or "").strip() if job else ""
+    claimed_execution_token = getattr(job, "execution_token", None) if job else None
 
     start_at, end_at = _playlist_timeline_bounds(session, playlist_id)
     start_date = local_date(start_at)
     end_date = local_date(end_at)
     if not start_date or not end_date:
         if job:
-            set_job_progress(job_id=job.id, current=0, total=0)
+            _set_job_progress_for_execution(job_id, claimed_worker_id, claimed_execution_token, 0, 0)
         return {"ok": True, "playlist_id": str(playlist_id), "range_jobs": 0, "enqueued": 0, "skipped": 0}
 
     ranges = [(month_start, month_add_one(month_start)) for month_start in iter_period_starts(start_date, end_date, "month")]
@@ -1874,7 +2046,13 @@ def backfill_playlist_events(session: Session, *, playlist_id: uuid.UUID, force:
     for idx, (range_start, range_end) in enumerate(ranges):
         if job:
             raise_if_job_cancel_requested(session, job)
-            set_job_progress(job_id=job.id, current=idx, total=total)
+            _set_job_progress_for_execution(
+                job_id,
+                claimed_worker_id,
+                claimed_execution_token,
+                idx,
+                total,
+            )
         enqueue_job(
             session,
             type_="playlist.backfill_events_range",
@@ -1889,7 +2067,13 @@ def backfill_playlist_events(session: Session, *, playlist_id: uuid.UUID, force:
         )
         enqueued += 1
     if job:
-        set_job_progress(job_id=job.id, current=total, total=total)
+        _set_job_progress_for_execution(
+            job_id,
+            claimed_worker_id,
+            claimed_execution_token,
+            total,
+            total,
+        )
     return {
         "ok": True,
         "playlist_id": str(playlist_id),
@@ -1917,6 +2101,9 @@ def backfill_playlist_events_range(
         return {"skipped": "playlist not found"}
     if range_start >= range_end:
         raise ValueError("range_start must be before range_end")
+    job_id = getattr(job, "id", None) if job else None
+    claimed_worker_id = str(getattr(job, "worker_id", "") or "").strip() if job else ""
+    claimed_execution_token = getattr(job, "execution_token", None) if job else None
 
     start_at, _ = period_bounds_utc(range_start, "day")
     end_at, _ = period_bounds_utc(range_end, "day")
@@ -1977,7 +2164,13 @@ def backfill_playlist_events_range(
     for idx, video_id in enumerate(rows):
         if job:
             raise_if_job_cancel_requested(session, job)
-            set_job_progress(job_id=job.id, current=idx, total=total)
+            _set_job_progress_for_execution(
+                job_id,
+                claimed_worker_id,
+                claimed_execution_token,
+                idx,
+                total,
+            )
         video = session.get(Video, video_id)
         if not video:
             skipped += 1
@@ -2033,7 +2226,13 @@ def backfill_playlist_events_range(
         pending_batch_chars += source_chars
     _flush_batch()
     if job:
-        set_job_progress(job_id=job.id, current=total, total=total)
+        _set_job_progress_for_execution(
+            job_id,
+            claimed_worker_id,
+            claimed_execution_token,
+            total,
+            total,
+        )
     return {
         "ok": True,
         "playlist_id": str(playlist_id),
@@ -2092,7 +2291,12 @@ def embed_event(session: Session, *, event_id: uuid.UUID) -> dict[str, Any]:
         )
     ).scalar_one_or_none()
     if existing and existing.status == "ready" and existing.text_checksum == checksum and existing.vector:
-        return {"ok": True, "cached": True, "embedding_id": str(existing.id)}
+        try:
+            validate_embedding_vector(existing.vector, spec)
+        except EmbeddingError:
+            pass
+        else:
+            return {"ok": True, "cached": True, "embedding_id": str(existing.id)}
     if not existing:
         existing = MarketEventEmbedding(
             event_id=event_id,
@@ -2106,6 +2310,13 @@ def embed_event(session: Session, *, event_id: uuid.UUID) -> dict[str, Any]:
 
     previous_status = existing.status
     previous_checksum = existing.text_checksum
+    previous_has_vector = existing.vector is not None
+    previous_vector = list(existing.vector or [])
+    was_visible = bool(
+        event.event_time_start is not None
+        and previous_status == "ready"
+        and previous_has_vector
+    )
     try:
         vector = embed_text(text)
         existing.status = "ready"
@@ -2129,8 +2340,20 @@ def embed_event(session: Session, *, event_id: uuid.UUID) -> dict[str, Any]:
         existing.generated_at = utcnow()
 
     session.flush([existing])
-    if previous_status != existing.status or previous_checksum != checksum:
-        schedule_playlists_event_regime_dirty_for_video(
+    current_vector = list(existing.vector or [])
+    is_visible = bool(
+        event.event_time_start is not None
+        and existing.status == "ready"
+        and existing.vector is not None
+    )
+    if was_visible != is_visible or (
+        is_visible
+        and (
+            previous_checksum != existing.text_checksum
+            or previous_vector != current_vector
+        )
+    ):
+        schedule_playlists_event_map_dirty_for_video(
             session,
             video_id=event.source_video_id,
             reason="event_embedding_changed",
@@ -2138,43 +2361,17 @@ def embed_event(session: Session, *, event_id: uuid.UUID) -> dict[str, Any]:
     return {"ok": True, "status": existing.status, "embedding_id": str(existing.id)}
 
 
-def ensure_event_regime_state(session: Session, playlist_id: uuid.UUID) -> EventRegimeState:
-    state = session.get(EventRegimeState, playlist_id)
-    if state:
+def ensure_event_map_state(session: Session, playlist_id: uuid.UUID) -> EventMapState:
+    state = session.get(EventMapState, playlist_id)
+    if state is not None:
         return state
-    state = EventRegimeState(playlist_id=playlist_id, analysis_dirty=False)
+    state = EventMapState(playlist_id=playlist_id)
     session.add(state)
     session.flush([state])
     return state
 
 
-def mark_playlist_event_regime_dirty(session: Session, playlist_id: uuid.UUID, *, changed_at: datetime | None = None) -> None:
-    state = ensure_event_regime_state(session, playlist_id)
-    state.analysis_dirty = True
-    state.updated_at = changed_at or utcnow()
-
-
-def mark_playlist_event_regime_dirty_if_needed(
-    session: Session,
-    playlist_id: uuid.UUID,
-    *,
-    changed_at: datetime | None = None,
-) -> dict[str, Any]:
-    state = session.get(EventRegimeState, playlist_id)
-    if state and state.analysis_dirty:
-        return {"ok": True, "playlist_id": str(playlist_id), "dirty": False, "already_dirty": True}
-
-    now = changed_at or utcnow()
-    if state:
-        state.analysis_dirty = True
-        state.updated_at = now
-    else:
-        session.add(EventRegimeState(playlist_id=playlist_id, analysis_dirty=True, updated_at=now))
-    session.flush()
-    return {"ok": True, "playlist_id": str(playlist_id), "dirty": True, "already_dirty": False}
-
-
-def schedule_playlist_event_regime_dirty(
+def schedule_playlist_event_map_dirty(
     session: Session,
     *,
     playlist_id: uuid.UUID,
@@ -2182,11 +2379,11 @@ def schedule_playlist_event_regime_dirty(
     source_video_id: uuid.UUID | None = None,
     source_job_id: uuid.UUID | None = None,
     priority: int = 0,
-    delay_seconds: int = EVENT_REGIME_DIRTY_DEBOUNCE_SECONDS,
+    delay_seconds: int = EVENT_MAP_DIRTY_DEBOUNCE_SECONDS,
 ) -> uuid.UUID:
     params: dict[str, Any] = {
         "playlist_id": str(playlist_id),
-        "reason": str(reason or "").strip() or "event_regime_dirty",
+        "reason": str(reason or "").strip() or "event_map_dirty",
     }
     if source_video_id:
         params["source_video_id"] = str(source_video_id)
@@ -2194,24 +2391,27 @@ def schedule_playlist_event_regime_dirty(
         params["source_job_id"] = str(source_job_id)
     return enqueue_job(
         session,
-        type_="playlist.mark_event_regime_dirty",
+        type_="playlist.mark_event_map_dirty",
         params=params,
         priority=priority,
         scheduled_for=utcnow() + timedelta(seconds=max(0, int(delay_seconds or 0))),
     )
 
 
-def schedule_playlists_event_regime_dirty_for_video(
+def schedule_playlists_event_map_dirty_for_video(
     session: Session,
     *,
     video_id: uuid.UUID,
     reason: str,
     source_job_id: uuid.UUID | None = None,
     priority: int = 0,
-    delay_seconds: int = EVENT_REGIME_DIRTY_DEBOUNCE_SECONDS,
+    delay_seconds: int = EVENT_MAP_DIRTY_DEBOUNCE_SECONDS,
+    require_event_map_input: bool = False,
 ) -> int:
     video = session.get(Video, video_id)
-    if not video:
+    if video is None:
+        return 0
+    if require_event_map_input and not video_has_event_map_input(session, video_id=video_id):
         return 0
     playlist_ids = (
         session.execute(
@@ -2222,9 +2422,9 @@ def schedule_playlists_event_regime_dirty_for_video(
         .scalars()
         .all()
     )
-    enqueued = 0
+    count = 0
     for playlist_id in list(dict.fromkeys(playlist_ids)):
-        schedule_playlist_event_regime_dirty(
+        schedule_playlist_event_map_dirty(
             session,
             playlist_id=playlist_id,
             reason=reason,
@@ -2233,201 +2433,34 @@ def schedule_playlists_event_regime_dirty_for_video(
             priority=priority,
             delay_seconds=delay_seconds,
         )
-        enqueued += 1
-    return enqueued
+        count += 1
+    return count
 
 
-def mark_playlists_event_regime_dirty_for_video(session: Session, video_id: uuid.UUID, *, changed_at: datetime | None = None) -> None:
-    video = session.get(Video, video_id)
-    if not video:
-        return
-    playlist_ids = (
-        session.execute(
-            select(PlaylistMedia.playlist_id)
-            .where(PlaylistMedia.media_id == video.media_id)
-            .order_by(PlaylistMedia.playlist_id.asc())
-        )
-        .scalars()
-        .all()
-    )
-    for playlist_id in list(dict.fromkeys(playlist_ids)):
-        mark_playlist_event_regime_dirty(session, playlist_id, changed_at=changed_at)
-
-
-def active_event_regime_run(session: Session, playlist_id: uuid.UUID) -> EventRegimeRun | None:
-    return (
-        session.execute(
-            select(EventRegimeRun)
-            .where(EventRegimeRun.playlist_id == playlist_id, EventRegimeRun.status.in_(["pending", "running"]))
-            .order_by(EventRegimeRun.created_at.desc(), EventRegimeRun.id.desc())
-            .limit(1)
-        )
-        .scalars()
-        .first()
-    )
-
-
-def pending_event_regime_job(session: Session, playlist_id: uuid.UUID) -> Job | None:
-    return (
-        session.execute(
-            select(Job)
-            .where(
-                Job.type == "playlist.build_event_regime_snapshot",
-                Job.status.in_(["pending", "running"]),
-                Job.params["playlist_id"].as_string() == str(playlist_id),
-            )
-            .order_by(Job.created_at.desc(), Job.id.desc())
-            .limit(1)
-        )
-        .scalars()
-        .first()
-    )
-
-
-def request_event_regime_rebuild(session: Session, playlist_id: uuid.UUID, *, priority: int = 0) -> EventRegimeRun:
-    playlist = session.get(Playlist, playlist_id)
-    if not playlist:
-        raise ValueError("playlist not found")
+def playlist_event_map_coverage(session: Session, playlist_id: uuid.UUID) -> dict[str, int]:
     spec = embedding_spec()
-    state = ensure_event_regime_state(session, playlist_id)
-    run = active_event_regime_run(session, playlist_id)
-    if run is None:
-        run = EventRegimeRun(
-            playlist_id=playlist_id,
-            status="pending",
-            analysis_clock="day",
-            embedding_model=spec.model,
-            embedding_dim=spec.dim,
-        )
-        session.add(run)
-        session.flush([run])
-    state.analysis_dirty = True
-    state.last_requested_at = utcnow()
-    state.updated_at = state.last_requested_at
-    enqueue_job(
-        session,
-        type_="playlist.build_event_regime_snapshot",
-        params={"playlist_id": str(playlist_id), "regime_run_id": str(run.id)},
-        priority=priority,
-    )
-    return run
-
-
-def _cosine_distance(a: Sequence[float], b: Sequence[float]) -> float:
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    if na <= 0 or nb <= 0:
-        return 0.0
-    return 1.0 - max(-1.0, min(1.0, dot / (na * nb)))
-
-
-def _period_start(value: date, granularity: str) -> date:
-    if granularity == "week":
-        return value - timedelta(days=value.weekday())
-    if granularity == "month":
-        return date(value.year, value.month, 1)
-    return value
-
-
-def _event_regime_period_start(event_time: datetime | None, precision: str | None, granularity: str) -> date | None:
-    normalized_precision = str(precision or "").strip().lower()
-    if not event_time or normalized_precision not in EVENT_REGIME_PRECISIONS[granularity]:
-        return None
-    return _period_start(event_time.date(), granularity)
-
-
-def _event_regime_period_date(event: MarketEvent, granularity: str) -> date | None:
-    return _event_regime_period_start(event.event_time_start, event.time_precision, granularity)
-
-
-def _rolling_z(values: list[float | None], idx: int, window: int) -> tuple[float | None, float | None, float | None]:
-    previous = [v for v in values[max(0, idx - window) : idx] if v is not None]
-    current = values[idx]
-    if current is None or len(previous) < 3:
-        return None, None, None
-    mean = statistics.fmean(previous)
-    std = statistics.pstdev(previous) if len(previous) > 1 else 0.0
-    if std <= 1e-9:
-        return mean, std, 0.0
-    return mean, std, (current - mean) / std
-
-
-def _pctl(values: list[float], ratio: float) -> float | None:
-    if not values:
-        return None
-    ordered = sorted(values)
-    idx = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * ratio))))
-    return ordered[idx]
-
-
-def _proc_memory_value_bytes(path: str, key: str) -> int | None:
-    try:
-        with open(path, encoding="utf-8") as handle:
-            for line in handle:
-                if not line.startswith(f"{key}:"):
-                    continue
-                parts = line.split()
-                if len(parts) < 2:
-                    return None
-                multiplier = 1024 if len(parts) >= 3 and parts[2].lower() == "kb" else 1
-                return int(parts[1]) * multiplier
-    except (OSError, ValueError):
-        return None
-    return None
-
-
-def _raise_if_analysis_memory_limit_exceeded() -> None:
-    available = _proc_memory_value_bytes("/proc/meminfo", "MemAvailable")
-    min_available = max(0, int(settings.analysis_min_available_memory_bytes or 0))
-    if available is not None and min_available > 0 and available < min_available:
-        raise JobTerminalFailure(
-            f"analysis aborted: available memory {available} is below configured minimum {min_available}"
-        )
-
-    rss = _proc_memory_value_bytes("/proc/self/status", "VmRSS")
-    max_rss = max(0, int(settings.analysis_max_rss_bytes or 0))
-    if rss is not None and max_rss > 0 and rss > max_rss:
-        raise JobTerminalFailure(f"analysis aborted: worker RSS {rss} exceeds configured maximum {max_rss}")
-
-
-@contextmanager
-def _event_regime_snapshot_reader(session: Session) -> Iterator[Session | Connection]:
-    bind = session.get_bind()
-    if bind.dialect.name != "postgresql":
-        yield session
-        return
-
-    engine = bind.engine if isinstance(bind, Connection) else bind
-    with engine.connect() as raw_connection:
-        connection = raw_connection.execution_options(isolation_level="REPEATABLE READ")
-        with connection.begin():
-            connection.exec_driver_sql("SET TRANSACTION READ ONLY")
-            yield connection
-
-
-def playlist_event_regime_coverage(session: Session | Connection, playlist_id: uuid.UUID) -> dict[str, int]:
-    spec = embedding_spec()
-    ready = MarketEventEmbedding.status == "ready"
-    eligible = and_(
-        ready,
+    ready = and_(
+        MarketEventEmbedding.status == "ready",
         MarketEventEmbedding.vector.is_not(None),
-        MarketEvent.event_time_start.is_not(None),
     )
-    scale_eligible = and_(
-        eligible,
-        MarketEvent.time_precision.in_(sorted(set().union(*EVENT_REGIME_PRECISIONS.values()))),
-    )
-    failed = MarketEventEmbedding.status.in_(["failed", "skipped_over_budget"])
-    total, embedded, eligible_count, scale_eligible_count, failed_count = session.execute(
+    total, embedded, eligible, missing_time, failed = session.execute(
         select(
             func.count(MarketEvent.id),
             func.coalesce(func.sum(case((ready, 1), else_=0)), 0),
-            func.coalesce(func.sum(case((eligible, 1), else_=0)), 0),
-            func.coalesce(func.sum(case((scale_eligible, 1), else_=0)), 0),
-            func.coalesce(func.sum(case((failed, 1), else_=0)), 0),
+            func.coalesce(
+                func.sum(case((and_(ready, MarketEvent.event_time_start.is_not(None)), 1), else_=0)),
+                0,
+            ),
+            func.coalesce(
+                func.sum(case((and_(ready, MarketEvent.event_time_start.is_(None)), 1), else_=0)),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case((MarketEventEmbedding.status.in_(["failed", "skipped_over_budget"]), 1), else_=0)
+                ),
+                0,
+            ),
         )
         .select_from(MarketEvent)
         .join(Video, Video.id == MarketEvent.source_video_id)
@@ -2443,541 +2476,56 @@ def playlist_event_regime_coverage(session: Session | Connection, playlist_id: u
         .where(PlaylistMedia.playlist_id == playlist_id, MarketEvent.status == "accepted")
     ).one()
     event_total = int(total or 0)
-    event_eligible = int(eligible_count or 0)
-    event_scale_eligible = int(scale_eligible_count or 0)
+    event_embedded = int(embedded or 0)
+    event_eligible = int(eligible or 0)
     return {
         "event_total": event_total,
-        "event_embedded": int(embedded or 0),
+        "event_embedded": event_embedded,
         "event_eligible": event_eligible,
-        "event_scale_excluded": max(0, event_eligible - event_scale_eligible),
         "event_skipped": max(0, event_total - event_eligible),
-        "event_failed": int(failed_count or 0),
+        "event_failed": int(failed or 0),
+        "missing_event_time": int(missing_time or 0),
     }
 
 
-def _event_rows_for_regime(
-    session: Session | Connection,
-    playlist_id: uuid.UUID,
-    *,
-    embedding_model: str,
-    embedding_dim: int,
-) -> Iterator[Any]:
-    batch_size = max(1, int(settings.analysis_stream_batch_size or 0))
-    stmt = (
-        select(
-            MarketEvent.id,
-            MarketEvent.source_video_id,
-            MarketEvent.event_time_start,
-            MarketEvent.time_precision,
-            MarketEvent.available_at,
-            MarketEvent.title,
-            MarketEvent.summary,
-            MarketEvent.event_type,
-            MarketEventEmbedding.vector,
-        )
-        .join(Video, Video.id == MarketEvent.source_video_id)
-        .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
-        .join(
-            MarketEventEmbedding,
-            and_(
-                MarketEventEmbedding.event_id == MarketEvent.id,
-                MarketEventEmbedding.embedding_model == embedding_model,
-                MarketEventEmbedding.embedding_dim == embedding_dim,
-            ),
-        )
-        .where(
-            PlaylistMedia.playlist_id == playlist_id,
-            MarketEvent.status == "accepted",
-            MarketEvent.event_time_start.is_not(None),
-            MarketEventEmbedding.status == "ready",
-            MarketEventEmbedding.vector.is_not(None),
-        )
-        .order_by(MarketEvent.event_time_start.asc(), MarketEvent.id.asc())
-        .execution_options(stream_results=True, yield_per=batch_size)
-    )
-    result = session.execute(stmt)
-    try:
-        yield from result
-    finally:
-        close = getattr(result, "close", None)
-        if close:
-            close()
-
-
-def _validated_regime_vector(raw_vector: Any, *, event_id: uuid.UUID, embedding_dim: int) -> Sequence[float]:
-    if not isinstance(raw_vector, list) or len(raw_vector) != embedding_dim:
-        actual_dim = len(raw_vector) if isinstance(raw_vector, list) else 0
-        raise JobTerminalFailure(
-            f"analysis aborted: ready embedding for event {event_id} has dimension {actual_dim}, expected {embedding_dim}"
-        )
-    return raw_vector
-
-
-def _event_regime_evidence_sort_key(item: _EventRegimeEvidenceSnapshot) -> tuple[float, datetime, str]:
-    return item.centroid_distance, item.event_time_start, str(item.event_id)
-
-
-def _offer_event_regime_evidence(
-    aggregate: _EventRegimePeriodAggregate,
-    snapshot: _EventRegimeEvidenceSnapshot,
-) -> None:
-    if len(aggregate.evidence) < 20:
-        aggregate.evidence.append(snapshot)
-        aggregate.evidence.sort(key=_event_regime_evidence_sort_key)
-        return
-    if _event_regime_evidence_sort_key(snapshot) >= _event_regime_evidence_sort_key(aggregate.evidence[-1]):
-        return
-    aggregate.evidence[-1] = snapshot
-    aggregate.evidence.sort(key=_event_regime_evidence_sort_key)
-
-
-def _build_event_regime_period_aggregates(
-    rows: Iterator[Any],
-    *,
-    embedding_dim: int,
-    batch_size: int,
-    checkpoint: Callable[[int], None],
-) -> tuple[dict[str, list[_EventRegimePeriodAggregate]], int]:
-    aggregates: dict[str, list[_EventRegimePeriodAggregate]] = {
-        granularity: [] for granularity in EVENT_REGIME_GRANULARITIES
-    }
-    current_dates: dict[str, date | None] = {granularity: None for granularity in EVENT_REGIME_GRANULARITIES}
-    current_sums: dict[str, array | None] = {granularity: None for granularity in EVENT_REGIME_GRANULARITIES}
-    current_counts = {granularity: 0 for granularity in EVENT_REGIME_GRANULARITIES}
-    previous_centroids: dict[str, array | None] = {granularity: None for granularity in EVENT_REGIME_GRANULARITIES}
-    rolling_drifts = {
-        granularity: deque(maxlen=EVENT_REGIME_WINDOWS[granularity])
-        for granularity in EVENT_REGIME_GRANULARITIES
-    }
-
-    def finalize(granularity: str) -> None:
-        period_date = current_dates[granularity]
-        vector_sum = current_sums[granularity]
-        count = current_counts[granularity]
-        if period_date is None or vector_sum is None or count <= 0:
-            return
-
-        centroid = array("d", (value / count for value in vector_sum))
-        previous = previous_centroids[granularity]
-        drift = _cosine_distance(centroid, previous) if previous is not None else None
-        rolling_values = list(rolling_drifts[granularity]) + [drift]
-        mean, std, z = _rolling_z(rolling_values, len(rolling_values) - 1, EVENT_REGIME_WINDOWS[granularity])
-        aggregates[granularity].append(
-            _EventRegimePeriodAggregate(
-                period_date=period_date,
-                event_count=count,
-                centroid=centroid,
-                drift_score=drift,
-                drift_rolling_mean=mean,
-                drift_rolling_std=std,
-                drift_rolling_z=z,
-            )
-        )
-        previous_centroids[granularity] = centroid
-        rolling_drifts[granularity].append(drift)
-        current_dates[granularity] = None
-        current_sums[granularity] = None
-        current_counts[granularity] = 0
-
-        if granularity == "day":
-            add_contribution("week", _period_start(period_date, "week"), vector_sum, count)
-            add_contribution("month", _period_start(period_date, "month"), vector_sum, count)
-
-    def add_contribution(granularity: str, period_date: date, vector_sum: Sequence[float], count: int) -> None:
-        if current_dates[granularity] != period_date:
-            finalize(granularity)
-            current_dates[granularity] = period_date
-            current_sums[granularity] = array("d", [0.0]) * embedding_dim
-        target = current_sums[granularity]
-        assert target is not None
-        for idx, value in enumerate(vector_sum):
-            target[idx] += float(value)
-        current_counts[granularity] += count
-
-    processed = 0
-    previous_event_date: date | None = None
-    for row in rows:
-        event_id, _video_id, event_time, precision, _available_at, _title, _summary, _event_type, raw_vector = row
-        vector = _validated_regime_vector(raw_vector, event_id=event_id, embedding_dim=embedding_dim)
-        event_date = event_time.date()
-        if previous_event_date is not None and event_date != previous_event_date:
-            finalize("day")
-        previous_event_date = event_date
-        normalized_precision = str(precision or "").strip().lower()
-        if normalized_precision in EVENT_REGIME_PRECISIONS["day"]:
-            add_contribution("day", event_date, vector, 1)
-        elif normalized_precision == "month":
-            add_contribution("month", _period_start(event_date, "month"), vector, 1)
-        processed += 1
-        if processed % batch_size == 0:
-            checkpoint(processed)
-
-    finalize("day")
-    finalize("week")
-    finalize("month")
-    checkpoint(processed)
-    return aggregates, processed
-
-
-def _populate_event_regime_dispersions_and_evidence(
-    rows: Iterator[Any],
-    *,
-    aggregates: dict[str, list[_EventRegimePeriodAggregate]],
-    embedding_dim: int,
-    batch_size: int,
-    checkpoint: Callable[[int], None],
-) -> int:
-    aggregate_by_date = {
-        granularity: {item.period_date: item for item in items}
-        for granularity, items in aggregates.items()
-    }
-    candidate_dates = {
-        granularity: {
-            item.period_date
-            for item in items
-            if granularity != "day" and item.drift_rolling_z is not None and item.drift_rolling_z >= 2.0
-        }
-        for granularity, items in aggregates.items()
-    }
-    current_dates: dict[str, date | None] = {granularity: None for granularity in EVENT_REGIME_GRANULARITIES}
-    current_distances: dict[str, list[float]] = {granularity: [] for granularity in EVENT_REGIME_GRANULARITIES}
-
-    def finalize(granularity: str) -> None:
-        period_date = current_dates[granularity]
-        distances = current_distances[granularity]
-        if period_date is None:
-            return
-        aggregate = aggregate_by_date[granularity][period_date]
-        if len(distances) != aggregate.event_count:
-            raise RuntimeError(
-                "event analysis snapshot changed between streaming passes: "
-                f"{granularity} {period_date} expected {aggregate.event_count} events, got {len(distances)}"
-            )
-        aggregate.dispersion_mean = statistics.fmean(distances)
-        aggregate.dispersion_std = statistics.pstdev(distances) if len(distances) > 1 else None
-        aggregate.dispersion_p25 = _pctl(distances, 0.25)
-        aggregate.dispersion_p75 = _pctl(distances, 0.75)
-        current_dates[granularity] = None
-        current_distances[granularity] = []
-
-    processed = 0
-    for row in rows:
-        event_id, source_video_id, event_time, precision, available_at, title, summary, event_type, raw_vector = row
-        vector = _validated_regime_vector(raw_vector, event_id=event_id, embedding_dim=embedding_dim)
-        for granularity in EVENT_REGIME_GRANULARITIES:
-            period_date = _event_regime_period_start(event_time, precision, granularity)
-            if period_date is None:
-                continue
-            if current_dates[granularity] != period_date:
-                finalize(granularity)
-                current_dates[granularity] = period_date
-            aggregate = aggregate_by_date[granularity].get(period_date)
-            if aggregate is None:
-                raise RuntimeError(
-                    "event analysis snapshot changed between streaming passes: "
-                    f"unexpected {granularity} period {period_date}"
-                )
-            centroid_distance = _cosine_distance(vector, aggregate.centroid)
-            current_distances[granularity].append(centroid_distance)
-            if period_date in candidate_dates[granularity]:
-                if available_at is not None and (aggregate.available_at is None or available_at < aggregate.available_at):
-                    aggregate.available_at = available_at
-                _offer_event_regime_evidence(
-                    aggregate,
-                    _EventRegimeEvidenceSnapshot(
-                        event_id=event_id,
-                        source_video_id=source_video_id,
-                        event_time_start=event_time,
-                        available_at=available_at,
-                        title=title,
-                        summary=summary,
-                        event_type=event_type,
-                        centroid_distance=centroid_distance,
-                    ),
-                )
-        processed += 1
-        if processed % batch_size == 0:
-            checkpoint(processed)
-
-    for granularity in EVENT_REGIME_GRANULARITIES:
-        finalize(granularity)
-    checkpoint(processed)
-    return processed
-
-
-def _event_regime_candidate_models(
-    *,
-    run_id: uuid.UUID,
-    aggregates: dict[str, list[_EventRegimePeriodAggregate]],
-) -> tuple[list[EventRegimeCandidate], dict[date, EventRegimeCandidate]]:
-    selected_candidates: dict[date, tuple[str, _EventRegimePeriodAggregate]] = {}
-    supporting_granularities: dict[date, set[str]] = defaultdict(set)
-    for granularity in sorted({"week", "month"}):
-        for aggregate in aggregates[granularity]:
-            z = aggregate.drift_rolling_z
-            if z is None or z < 2.0 or aggregate.event_count <= 0:
-                continue
-            supporting_granularities[aggregate.period_date].add(granularity)
-            selected = selected_candidates.get(aggregate.period_date)
-            if selected is None or z > float(selected[1].drift_rolling_z or 0.0):
-                selected_candidates[aggregate.period_date] = (granularity, aggregate)
-
-    candidate_models: list[EventRegimeCandidate] = []
-    candidate_by_date: dict[date, EventRegimeCandidate] = {}
-    for period_date, (granularity, aggregate) in sorted(selected_candidates.items()):
-        evidence = aggregate.evidence
-        event_ids = [str(item.event_id) for item in evidence]
-        video_ids = sorted({str(item.source_video_id) for item in evidence})
-        summaries = [item.title or item.summary or item.event_type for item in evidence[:5]]
-        z = float(aggregate.drift_rolling_z or 0.0)
-        candidate = EventRegimeCandidate(
-            id=uuid.uuid4(),
-            regime_run_id=run_id,
-            candidate_date=period_date,
-            effective_trade_date=period_date,
-            peak_date=period_date,
-            event_start=period_date,
-            event_end=period_end_inclusive(period_date, granularity),
-            event_type="event_regime_shift",
-            status="draft",
-            score=z,
-            confidence=max(0.0, min(1.0, z / 5.0)),
-            uncertainty=max(0.0, 1.0 - min(1.0, z / 5.0)),
-            drift_score=aggregate.drift_score,
-            dispersion_score=aggregate.dispersion_mean,
-            drift_rolling_z=z,
-            summary="；".join(summaries)[:1500],
-            top_terms=[],
-            evidence_event_ids=event_ids,
-            evidence_video_ids=video_ids,
-            evidence_json={
-                "granularity": granularity,
-                "supporting_granularities": sorted(supporting_granularities[period_date]),
-                "event_count": aggregate.event_count,
-                "sampling": "centroid_nearest_top_20_v1",
-            },
-            available_at=aggregate.available_at,
-        )
-        candidate_models.append(candidate)
-        candidate_by_date[period_date] = candidate
-    return candidate_models, candidate_by_date
-
-
-def _build_event_regime_snapshot(session: Session, *, playlist_id: uuid.UUID, job: Job | None = None) -> dict[str, Any]:
-    playlist = session.get(Playlist, playlist_id)
-    if not playlist:
-        return {"skipped": "playlist not found"}
-
-    spec = embedding_spec()
-    state = ensure_event_regime_state(session, playlist_id)
-    run_id = None
-    if job and isinstance(job.params, dict) and job.params.get("regime_run_id"):
-        try:
-            run_id = uuid.UUID(str(job.params["regime_run_id"]))
-        except Exception:
-            run_id = None
-    run = session.get(EventRegimeRun, run_id) if run_id else active_event_regime_run(session, playlist_id)
-    if run is None:
-        run = EventRegimeRun(
-            playlist_id=playlist_id,
-            status="pending",
-            analysis_clock="day",
-            embedding_model=spec.model,
-            embedding_dim=spec.dim,
-        )
-        session.add(run)
-        session.flush([run])
-
-    def raise_if_snapshot_cancel_requested() -> None:
-        if not job:
-            return
-        try:
-            raise_if_job_cancel_requested(session, job)
-        except JobCancelRequested:
-            finished_at = utcnow()
-            run.status = "canceled"
-            run.finished_at = finished_at
-            run.updated_at = finished_at
-            state.analysis_dirty = True
-            state.updated_at = finished_at
-            session.flush([run, state])
-            raise
-
-    started = utcnow()
-    run.status = "running"
-    run.started_at = started
-    run.embedding_model = spec.model
-    run.embedding_dim = spec.dim
+def request_event_map_rebuild(session: Session, playlist_id: uuid.UUID, *, priority: int = 0) -> Job:
+    if session.get(Playlist, playlist_id) is None:
+        raise ValueError("playlist not found")
+    now = utcnow()
+    state = ensure_event_map_state(session, playlist_id)
+    was_clean = int(state.dirty_generation or 0) <= int(state.built_generation or 0)
+    state.dirty_generation = int(state.dirty_generation or 0) + 1
+    if was_clean or state.first_dirty_at is None:
+        state.first_dirty_at = now
+    state.last_dirty_at = now
+    state.last_requested_at = now
     state.last_error = None
-    session.flush([run, state])
-    raise_if_snapshot_cancel_requested()
+    job_id = enqueue_job(
+        session,
+        type_="playlist.build_event_map_snapshot",
+        params={
+            "playlist_id": str(playlist_id),
+            "trigger": "manual",
+            "requested_generation": int(state.dirty_generation),
+        },
+        priority=priority,
+        scheduled_for=now,
+    )
+    job = session.get(Job, job_id)
+    if job is None:
+        raise RuntimeError("failed to enqueue event map snapshot")
+    if job.status == "pending":
+        job.scheduled_for = now
+        params = dict(job.params or {})
+        params["trigger"] = "manual"
+        params["requested_generation"] = int(state.dirty_generation)
+        job.params = params
+    active_job = session.get(Job, state.active_job_id) if state.active_job_id else None
+    if active_job is None or active_job.status not in {"pending", "running"}:
+        state.active_job_id = job.id
+    session.flush([state])
+    return job
 
-    _raise_if_analysis_memory_limit_exceeded()
-    with _event_regime_snapshot_reader(session) as snapshot_reader:
-        coverage = playlist_event_regime_coverage(snapshot_reader, playlist_id)
-        run.event_total = coverage["event_total"]
-        run.event_embedded = coverage["event_embedded"]
-        run.event_skipped = coverage["event_skipped"]
-        run.event_failed = coverage["event_failed"]
-
-        session.execute(delete(EventRegimeSignal).where(EventRegimeSignal.regime_run_id == run.id))
-        session.execute(delete(EventRegimeCandidate).where(EventRegimeCandidate.regime_run_id == run.id))
-        batch_size = max(1, int(settings.analysis_stream_batch_size or 0))
-        scan_total = max(1, coverage["event_eligible"] * 2)
-        if job:
-            set_job_progress(job_id=job.id, current=0, total=scan_total)
-
-        def first_pass_checkpoint(processed: int) -> None:
-            raise_if_snapshot_cancel_requested()
-            _raise_if_analysis_memory_limit_exceeded()
-            if job:
-                set_job_progress(job_id=job.id, current=min(processed, scan_total), total=scan_total)
-
-        aggregates, first_pass_count = _build_event_regime_period_aggregates(
-            _event_rows_for_regime(
-                snapshot_reader,
-                playlist_id,
-                embedding_model=spec.model,
-                embedding_dim=spec.dim,
-            ),
-            embedding_dim=spec.dim,
-            batch_size=batch_size,
-            checkpoint=first_pass_checkpoint,
-        )
-        if first_pass_count != coverage["event_eligible"]:
-            raise RuntimeError(
-                "event analysis snapshot coverage mismatch: "
-                f"expected {coverage['event_eligible']} eligible events, got {first_pass_count}"
-            )
-
-        def second_pass_checkpoint(processed: int) -> None:
-            raise_if_snapshot_cancel_requested()
-            _raise_if_analysis_memory_limit_exceeded()
-            if job:
-                current = min(first_pass_count + processed, scan_total)
-                set_job_progress(job_id=job.id, current=current, total=scan_total)
-
-        second_pass_count = _populate_event_regime_dispersions_and_evidence(
-            _event_rows_for_regime(
-                snapshot_reader,
-                playlist_id,
-                embedding_model=spec.model,
-                embedding_dim=spec.dim,
-            ),
-            aggregates=aggregates,
-            embedding_dim=spec.dim,
-            batch_size=batch_size,
-            checkpoint=second_pass_checkpoint,
-        )
-        if second_pass_count != first_pass_count:
-            raise RuntimeError(
-                "event analysis snapshot changed between streaming passes: "
-                f"first pass read {first_pass_count} events, second pass read {second_pass_count}"
-            )
-
-    candidate_models, candidate_by_date = _event_regime_candidate_models(run_id=run.id, aggregates=aggregates)
-    for candidate in candidate_models:
-        session.add(candidate)
-    if candidate_models:
-        session.flush(candidate_models)
-
-    signal_count = 0
-    signal_batch: list[EventRegimeSignal] = []
-    for granularity in EVENT_REGIME_GRANULARITIES:
-        for idx, aggregate in enumerate(aggregates[granularity]):
-            candidate = candidate_by_date.get(aggregate.period_date) if granularity in {"week", "month"} else None
-            signal = EventRegimeSignal(
-                id=uuid.uuid4(),
-                regime_run_id=run.id,
-                granularity=granularity,
-                period_date=aggregate.period_date,
-                rolling_window=EVENT_REGIME_WINDOWS[granularity],
-                event_count=aggregate.event_count,
-                ready_embedding_count=aggregate.event_count,
-                centroid_vector=list(aggregate.centroid),
-                drift_score=aggregate.drift_score,
-                drift_rolling_mean=aggregate.drift_rolling_mean,
-                drift_rolling_std=aggregate.drift_rolling_std,
-                drift_rolling_z=aggregate.drift_rolling_z,
-                dispersion_mean=aggregate.dispersion_mean,
-                dispersion_std=aggregate.dispersion_std,
-                dispersion_p25=aggregate.dispersion_p25,
-                dispersion_p75=aggregate.dispersion_p75,
-                projection_id=f"{run.id}:timeline",
-                projection_method="event_centroid_index_v1",
-                projection_x=float(idx),
-                projection_y=aggregate.drift_score if aggregate.drift_score is not None else 0.0,
-                projection_z=aggregate.dispersion_mean if aggregate.dispersion_mean is not None else 0.0,
-                projection_explained_variance_ratio=[],
-                linked_candidate_id=candidate.id if candidate else None,
-            )
-            session.add(signal)
-            signal_batch.append(signal)
-            signal_count += 1
-            if len(signal_batch) >= batch_size:
-                raise_if_snapshot_cancel_requested()
-                _raise_if_analysis_memory_limit_exceeded()
-                session.flush(signal_batch)
-                for item in signal_batch:
-                    session.expunge(item)
-                signal_batch.clear()
-    if signal_batch:
-        raise_if_snapshot_cancel_requested()
-        _raise_if_analysis_memory_limit_exceeded()
-        session.flush(signal_batch)
-        for item in signal_batch:
-            session.expunge(item)
-
-    raise_if_snapshot_cancel_requested()
-    finished = utcnow()
-    run.status = "ready"
-    run.finished_at = finished
-    state.analysis_dirty = False
-    state.last_ready_run_id = run.id
-    state.last_built_at = finished
-    state.updated_at = finished
-    session.flush()
-    if job:
-        set_job_progress(job_id=job.id, current=scan_total, total=scan_total)
-    return {
-        "ok": True,
-        "playlist_id": str(playlist_id),
-        "run_id": str(run.id),
-        "event_total": run.event_total,
-        "event_embedded": run.event_embedded,
-        "event_eligible": coverage["event_eligible"],
-        "event_scale_excluded": coverage["event_scale_excluded"],
-        "event_skipped": run.event_skipped,
-        "event_failed": run.event_failed,
-        "streamed_first_pass": first_pass_count,
-        "streamed_second_pass": second_pass_count,
-        "signal_count": signal_count,
-        "candidate_count": len(candidate_models),
-    }
-
-
-def build_event_regime_snapshot(session: Session, *, playlist_id: uuid.UUID, job: Job | None = None) -> dict[str, Any]:
-    try:
-        return _build_event_regime_snapshot(session, playlist_id=playlist_id, job=job)
-    except JobTerminalFailure as exc:
-        session.rollback()
-        run = None
-        if job and isinstance(job.params, dict) and job.params.get("regime_run_id"):
-            try:
-                run = session.get(EventRegimeRun, uuid.UUID(str(job.params["regime_run_id"])))
-            except (TypeError, ValueError):
-                run = None
-        state = ensure_event_regime_state(session, playlist_id)
-        finished_at = utcnow()
-        if run is not None:
-            run.status = "failed"
-            run.finished_at = finished_at
-            run.updated_at = finished_at
-        state.analysis_dirty = True
-        state.last_error = exc.reason
-        state.updated_at = finished_at
-        session.flush([item for item in (run, state) if item is not None])
-        raise
 
 
 def update_event_status(session: Session, *, event_id: uuid.UUID, status: str) -> MarketEvent:
@@ -2988,14 +2536,36 @@ def update_event_status(session: Session, *, event_id: uuid.UUID, status: str) -
     if normalized not in {"accepted", "draft", "rejected"}:
         raise ValueError("status must be one of: accepted, draft, rejected")
     previous = event.status
+    has_ready_embedding = False
+    if (
+        previous != normalized
+        and event.event_time_start is not None
+        and "accepted" in {previous, normalized}
+    ):
+        has_ready_embedding = _event_has_ready_map_embedding(
+            session,
+            event_id=event.id,
+            spec=embedding_spec(),
+        )
+    was_visible = bool(
+        previous == "accepted"
+        and event.event_time_start is not None
+        and has_ready_embedding
+    )
     event.status = normalized
     event.updated_at = utcnow()
     if previous != normalized:
-        schedule_playlists_event_regime_dirty_for_video(
-            session,
-            video_id=event.source_video_id,
-            reason="event_status_changed",
+        is_visible = bool(
+            normalized == "accepted"
+            and event.event_time_start is not None
+            and has_ready_embedding
         )
+        if was_visible != is_visible:
+            schedule_playlists_event_map_dirty_for_video(
+                session,
+                video_id=event.source_video_id,
+                reason="event_status_changed",
+            )
         if normalized == "accepted":
             enqueue_job(session, type_="event.embed", params={"event_id": str(event.id)}, priority=0)
     return event

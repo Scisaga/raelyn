@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 from pathlib import Path
+import re
 from typing import Any
 import uuid
 
@@ -48,6 +49,10 @@ SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, clas
 
 _CREATE_ALL_LOCK_KEY = "raelyn.schema.create_all"
 _BEST_EFFORT_DDL_LOCK_TIMEOUT = "2s"
+_CREATE_INDEX_IF_MISSING_RE = re.compile(
+    r"^\s*create\s+(?:unique\s+)?index\s+if\s+not\s+exists\s+([a-zA-Z_][a-zA-Z0-9_]*)\b",
+    re.IGNORECASE,
+)
 
 
 def _uuid_column_sql(dialect_name: str) -> str:
@@ -67,6 +72,9 @@ def _timestamp_sql(dialect_name: str) -> str:
 
 def _execute_best_effort_ddl(conn, statement: str) -> None:
     try:
+        match = _CREATE_INDEX_IF_MISSING_RE.match(statement)
+        if match and _database_index_exists(conn, match.group(1)):
+            return
         if conn.dialect.name == "postgresql":
             with conn.begin_nested():
                 conn.execute(text(f"set local lock_timeout = '{_BEST_EFFORT_DDL_LOCK_TIMEOUT}'"))
@@ -76,6 +84,37 @@ def _execute_best_effort_ddl(conn, statement: str) -> None:
             conn.execute(text(statement))
     except Exception:
         pass
+
+
+def _database_index_exists(conn, index_name: str) -> bool:
+    if conn.dialect.name == "postgresql":
+        statement = text(
+            "select 1 from pg_class "
+            "where relkind in ('i', 'I') and relname = :index_name "
+            "and pg_table_is_visible(oid) limit 1"
+        )
+    elif conn.dialect.name == "sqlite":
+        statement = text(
+            "select 1 from sqlite_master "
+            "where type = 'index' and name = :index_name limit 1"
+        )
+    else:
+        return False
+    return conn.execute(statement, {"index_name": index_name}).scalar_one_or_none() is not None
+
+
+def _postgres_table_has_analyze_options(conn, table_name: str) -> bool:
+    if conn.dialect.name != "postgresql":
+        return False
+    options = conn.execute(
+        text("select reloptions from pg_class where oid = to_regclass(:table_name)"),
+        {"table_name": table_name},
+    ).scalar_one_or_none()
+    values = set(options or [])
+    return {
+        "autovacuum_analyze_scale_factor=0.005",
+        "autovacuum_analyze_threshold=500",
+    }.issubset(values)
 
 
 def _create_job_query_indexes(conn) -> None:
@@ -175,6 +214,8 @@ where type in ({placeholders})
         ),
         params,
     ).mappings().all()
+    if not rows:
+        return
     conn.execute(
         text(
             f"""
@@ -183,7 +224,8 @@ set status = 'canceled',
     error_message = 'legacy transcript embedding / playlist analysis chain removed',
     finished_at = coalesce(finished_at, {_timestamp_sql(conn.dialect.name)}),
     lease_expires_at = null,
-    worker_id = null
+    worker_id = null,
+    execution_token = null
 where type in ({placeholders})
   and status in ('pending', 'running')
 """
@@ -228,11 +270,35 @@ def _create_event_analysis_indexes(conn) -> None:
         "create index if not exists market_event_embedding_status_idx on market_event_embedding(status, embedding_model, embedding_dim)",
         "create index if not exists video_event_extraction_run_video_idx on video_event_extraction_run(video_id)",
         "create index if not exists video_event_extraction_run_status_idx on video_event_extraction_run(status, updated_at)",
-        "create index if not exists event_regime_run_playlist_status_idx on event_regime_run(playlist_id, status)",
-        "create index if not exists event_regime_signal_run_granularity_period_idx on event_regime_signal(regime_run_id, granularity, period_date)",
-        "create index if not exists event_regime_signal_linked_candidate_idx on event_regime_signal(linked_candidate_id)",
-        "create index if not exists event_regime_candidate_run_status_idx on event_regime_candidate(regime_run_id, status)",
+        "create index if not exists event_map_snapshot_playlist_status_idx on event_map_snapshot(playlist_id, status, created_at desc)",
+        "create index if not exists event_map_snapshot_playlist_generation_idx on event_map_snapshot(playlist_id, input_generation desc)",
+        "create index if not exists event_map_snapshot_parent_idx on event_map_snapshot(parent_snapshot_id)",
+        "create unique index if not exists event_map_snapshot_ready_build_ux on event_map_snapshot(playlist_id, build_key) where status = 'ready' and build_key <> ''",
+        "create index if not exists event_map_state_current_snapshot_idx on event_map_state(current_snapshot_id)",
+        "create index if not exists event_map_record_revision_event_idx on event_map_record_revision(event_id)",
+        "create index if not exists event_map_canonical_identity_created_snapshot_idx on event_map_canonical_identity(created_snapshot_id)",
+        "create index if not exists event_map_canonical_identity_retired_snapshot_idx on event_map_canonical_identity(retired_snapshot_id)",
+        "create index if not exists event_map_canonical_time_idx on event_map_canonical(snapshot_id, event_start_day, event_end_day)",
+        "create index if not exists event_map_canonical_type_idx on event_map_canonical(snapshot_id, event_type_code, point_index)",
+        "create index if not exists event_map_canonical_member_canonical_idx on event_map_canonical_member(snapshot_id, canonical_id)",
+        "create index if not exists event_map_entity_index_key_idx on event_map_entity_index(snapshot_id, entity_type, normalized_key, point_index)",
+        "create index if not exists event_map_topic_level_idx on event_map_topic(snapshot_id, level)",
+        "create index if not exists event_map_topic_anchor_idx on event_map_topic(snapshot_id, anchor_canonical_id)",
+        "create index if not exists event_map_topic_member_topic_idx on event_map_topic_member(snapshot_id, topic_id, level)",
+        "create index if not exists event_map_topic_member_level_canonical_idx on event_map_topic_member(snapshot_id, level, canonical_id)",
+        "create index if not exists event_map_story_member_canonical_idx on event_map_story_member(snapshot_id, canonical_id)",
+        "create index if not exists event_map_story_edge_source_idx on event_map_story_edge(snapshot_id, source_canonical_id)",
+        "create index if not exists event_map_story_edge_target_idx on event_map_story_edge(snapshot_id, target_canonical_id)",
+        "create index if not exists event_map_story_edge_story_idx on event_map_story_edge(snapshot_id, story_id)",
     ]
+    if conn.dialect.name == "postgresql":
+        for table_name in ("event_map_canonical", "event_map_entity_index"):
+            if not _postgres_table_has_analyze_options(conn, table_name):
+                statements.append(
+                    f"alter table {table_name} set ("
+                    "autovacuum_analyze_scale_factor = 0.005, "
+                    "autovacuum_analyze_threshold = 500)"
+                )
     for statement in statements:
         _execute_best_effort_ddl(conn, statement)
 
@@ -291,6 +357,77 @@ insert into asset (
 def _migrate_schema(conn) -> None:
     insp = inspect(conn)
     tables = set(insp.get_table_names())
+
+    if "event_map_canonical" in tables:
+        cols = {c.get("name") for c in insp.get_columns("event_map_canonical")}
+        if "z" not in cols:
+            conn.execute(text("alter table event_map_canonical add column z real not null default 0"))
+
+    if "event_map_projection_anchor" in tables:
+        cols = {c.get("name") for c in insp.get_columns("event_map_projection_anchor")}
+        if "z" not in cols:
+            conn.execute(text("alter table event_map_projection_anchor add column z real not null default 0"))
+
+    if "event_map_topic" in tables:
+        cols = {c.get("name") for c in insp.get_columns("event_map_topic")}
+        for column_name in ("center_x", "center_y", "center_z", "radius"):
+            if column_name not in cols:
+                conn.execute(
+                    text(
+                        f"alter table event_map_topic add column {column_name} "
+                        "real not null default 0"
+                    )
+                )
+        if "label_x" in cols:
+            conn.execute(text("update event_map_topic set center_x = label_x"))
+        if "label_y" in cols:
+            conn.execute(text("update event_map_topic set center_y = label_y"))
+        for legacy_column in ("label_x", "label_y", "geometry"):
+            if legacy_column in cols:
+                _execute_best_effort_ddl(
+                    conn,
+                    f"alter table event_map_topic drop column {legacy_column}",
+                )
+
+    if "event_map_snapshot" in tables:
+        cols = {c.get("name") for c in insp.get_columns("event_map_snapshot")}
+        if "monthly_distribution" not in cols:
+            column_type = "jsonb" if conn.dialect.name == "postgresql" else "json"
+            conn.execute(text(f"alter table event_map_snapshot add column monthly_distribution {column_type}"))
+        if "entity_count" not in cols:
+            conn.execute(text("alter table event_map_snapshot add column entity_count integer not null default 0"))
+        if "execution_token" not in cols:
+            conn.execute(
+                text(
+                    f"alter table event_map_snapshot add column execution_token "
+                    f"{_uuid_column_sql(conn.dialect.name)}"
+                )
+            )
+        if conn.dialect.name == "postgresql":
+            _execute_best_effort_ddl(
+                conn,
+                "alter table event_map_snapshot drop constraint if exists event_map_snapshot_job_attempt_ux",
+            )
+            _execute_best_effort_ddl(
+                conn,
+                "alter table event_map_snapshot add constraint event_map_snapshot_job_execution_ux "
+                "unique (job_id, execution_token)",
+            )
+        else:
+            _execute_best_effort_ddl(
+                conn,
+                "create unique index if not exists event_map_snapshot_job_execution_ux "
+                "on event_map_snapshot(job_id, execution_token)",
+            )
+        if "lod_node_count" in cols:
+            _execute_best_effort_ddl(
+                conn,
+                "alter table event_map_snapshot drop column lod_node_count",
+            )
+
+    for table_name in ("event_map_lod_member", "event_map_lod_node"):
+        suffix = " cascade" if conn.dialect.name == "postgresql" else ""
+        _execute_best_effort_ddl(conn, f"drop table if exists {table_name}{suffix}")
 
     if "asset" in tables:
         cols = {c.get("name") for c in insp.get_columns("asset")}
@@ -419,6 +556,13 @@ where job.type = 'video.download'
                 conn.execute(text("alter table job add column cancel_requested_at timestamptz"))
             else:
                 conn.execute(text("alter table job add column cancel_requested_at datetime"))
+        if "execution_token" not in cols:
+            conn.execute(
+                text(
+                    f"alter table job add column execution_token "
+                    f"{_uuid_column_sql(conn.dialect.name)}"
+                )
+            )
         _execute_best_effort_ddl(conn, "drop index if exists job_brief_dedupe_active_ux")
         _execute_best_effort_ddl(
             conn,

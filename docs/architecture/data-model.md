@@ -135,7 +135,7 @@
 
 关键字段：
 
-- `event_time_start/end`、`time_precision`：事件目标时间；语义时间轴按 `event_time_start` 聚合，无法解析时不进入语义快照。
+- `event_time_start/end`、`time_precision`：事件发生或覆盖时间；地图时间轴按该区间筛选，无法解析时不进入事件地图。
 - `available_at`：事件在系统中最早可被观察到的时间，仅用于溯源与导出审计，不作为事件发生时间或语义信号周期。
 - `event_type`、`title`、`summary`、`direction`、`magnitude`、`surprise_or_delta`：事件语义与强度。
 - `title` / `summary` 应保留具体市场对象；例如房地产、住房、楼市语境不能只写“市场”，必须与实体、资产、行业标签保持同一对象口径。
@@ -152,7 +152,7 @@
 
 - `market_event_evidence` 保存事件到视频标题、描述或 transcript source 的可验证证据引用与证据文本。
 - `market_event_entity` 保存实体、资产、行业与宏观变量节点。
-- `market_event_relation` 保存事件内部的 `cause / effect / affects / mentions` 等边，第一版以关系表承载知识图谱，不接外部图数据库。
+- `market_event_relation` 保存事件内部的 `cause / effect / affects / mentions` 等边，第一版以关系表承载知识图谱，不接外部图数据库。抽取载荷中的 `cause` / `effect` 保持为完整自然语言命题；关系端点由独立的 `source_entity_key` / `target_entity_key` 声明。
 
 关键字段：
 
@@ -160,11 +160,14 @@
 - `market_event_evidence.evidence_json` 的 v2 provenance 结构为 `schema_version=event_provenance_v1`、`source_id`、`source_kind=title|description|transcript`、`source_label`、`char_start`、`char_end`、`source_sha256`、`verified=true`；`evidence_text` 由后端根据 source map 写入原文段，不直接信任 LLM 生成的证据文本。
 - `market_event_entity.entity_type`、`name`、`normalized_key`、`role`、`confidence`。
 - `market_event_relation.source_entity_id`、`target_entity_id`、`relation_type`、`direction`、`magnitude`、`confidence`、`evidence_text`。
+- 写入关系端点时，后端只按 `source_entity_key` / `target_entity_key` 与同一事件 `market_event_entity.normalized_key` 做精确且唯一的匹配；空键、缺失键、不匹配键或事件内重复键均写成空端点，不使用 `cause` / `effect`、名称相似度或跨事件实体做兜底推断。关系原始载荷仍保留命题和模型给出的键，便于审计。
 
 约束：
 
 - `market_event_evidence`：`(event_id, video_id, evidence_key)` 唯一。
 - `market_event_entity`：`(event_id, entity_type, normalized_key, role)` 唯一。
+
+协议升级只作用于后续新分析或显式重新抽取；不会自动重抽、回写或猜补已有历史关系端点。
 
 ### `video_event_extraction_run`
 
@@ -189,8 +192,8 @@
 
 当前职责：
 
-- 基于结构化事件文本生成 embedding，供事件图谱与语义分析使用。
-- 只对 `accepted` 事件生成；`draft` / `rejected` 不进入自动分析。
+- 基于结构化事件文本生成 embedding，供事件地图 canonical、topic 和投影使用。
+- 只对 `accepted` 事件生成；`draft` / `rejected` 不进入地图构建。
 
 关键字段：
 
@@ -203,32 +206,34 @@
 
 - `(event_id, embedding_model, embedding_dim)` 唯一。
 
-### `event_regime_run` / `event_regime_signal` / `event_regime_candidate`（兼容命名）
+### `event_map_*`
 
-当前职责：
+事件地图采用不可变快照，物理表按职责拆分：
 
-- `event_regime_run` 保存一次播放列表语义快照的状态、embedding 口径与覆盖率。
-- `event_regime_signal` 保存 day / week / month 多尺度事件 embedding 语义信号。
-- `event_regime_candidate` 保存语义变化点和人工状态。
-- `event_regime_state` 保存播放列表级 dirty 状态与最新 ready run。
-- 这些表名属于历史兼容标识；产品与 UI 不使用 Regime 概念。
+- `event_map_state`：播放列表唯一 current ready 指针、`dirty_generation`、`built_generation` 与活跃任务；
+- `event_map_snapshot`：输入指纹、embedding/算法版本、布局连续性、边界、对象计数、跳过原因、RSS/临时磁盘峰值和状态；其中 `entity_count` 是快照内不同 `(entity_type, normalized_key)` 的数量，`job_id + execution_token` 标识本次 claim 的 staging snapshot；
+- `event_map_record_revision`：冻结事件记录标题、摘要、发生时间、类型、实体、来源和证据；
+- `event_map_canonical_identity` / `event_map_canonical` / `event_map_canonical_member` / `event_map_canonical_lineage`：稳定真实事件身份、快照节点、成员归属与 merge/split 延续；
+- `event_map_entity_index`：快照原生的实体—canonical 倒排索引；每行保存实体类型、规范键、展示名、固定 `point_index` 和该 canonical 内的底层记录数，实体筛选不再扫描可变的 `market_event_entity` 或 revision JSON；
+- `event_map_topic` / `event_map_topic_member`：确定性的一级星域与二级主题团；保存三维中心、包围半径和每层唯一归属，不保存二维 polygon；
+- `event_map_story` / `event_map_story_member` / `event_map_story_edge`：有证据的事件序列和有向关系；
+- `event_map_projection_anchor`：三维布局继承所需的 canonical anchor、x/y/z 与 float32 centroid。
 
-关键字段：
+关键约束：
 
-- `event_regime_signal.granularity`：`day | week | month`。
-- `event_regime_signal.period_date`：按事件 `event_time_start` 与 `time_precision` 归属后的周期起点；年精度事件不伪装成 1 月 1 日的日/月事件。
-- `event_count`、`ready_embedding_count`：当前周期事件数和 ready embedding 数。
-- `drift_score`、`drift_rolling_mean/std/z`：事件语义中心漂移及其 rolling z。
-- `dispersion_mean/std/p25/p75`：同一 period 内部事件 embedding 分散度。
-- `linked_candidate_id`：该 signal period 命中的语义变化点。
-- `event_regime_candidate.candidate_date` / `event_start` / `event_end` / `peak_date`：候选日期与区间。
-- `evidence_event_ids` / `evidence_video_ids` / `evidence_json`：候选解释与证据事件。
-- `available_at`：候选窗口中最早可观察证据时间。
+- state 是 current snapshot 的唯一事实源，不能用“最新创建”隐式解析；
+- ready snapshot 不再修改，所有子查询必须 pin `snapshot_id`；
+- `(job_id, execution_token)` 唯一；同一 job 重领后的新 execution 使用新的 staging snapshot，`job_attempt` 仅保留为审计字段，不作为 staging 身份或执行所有权；
+- 每个 record revision 在一个 snapshot 中恰好属于一个 canonical；
+- `(snapshot_id, point_index)` 唯一且连续；
+- canonical 与 projection anchor 的 x/y/z 全部非空；快照 bounds 同时保存三轴范围；
+- 同一 canonical 的同一规范实体只保留一行；`(snapshot_id, point_index, entity_type, normalized_key)` 唯一，并为 `(snapshot_id, entity_type, normalized_key, point_index)` 建立查询索引；
+- 每个 canonical 在一级星域和二级主题团各有且仅有一个成员归属；
+- story edge 禁止 self-edge，`(snapshot, source, target, relation_type)` 唯一；
+- occurrence interval 只来自 `event_time_start/end`；`available_at` 不进入地图表；
+- 原始 embedding 不通过地图 API 传输。
 
-约束：
-
-- `event_regime_signal`：`(regime_run_id, granularity, period_date, rolling_window)` 唯一。
-- `event_regime_candidate`：`(regime_run_id, candidate_date)` 唯一。
+旧 `event_regime_*` 与 `event_graph_projection_point` 不属于现行模型，仅可能在显式旧链删除迁移中被识别。
 
 ### `job` / `job_event`
 
@@ -244,7 +249,10 @@
 - `progress_current` / `progress_total`
 - `attempt` / `max_attempts`
 - `scheduled_for` / `started_at` / `finished_at` / `lease_expires_at`
+- `worker_id` / `execution_token`：前者标识 worker 进程，后者是每次 claim 新生成的 UUID；两者连同 `job_id + running` 状态构成进度、lease 与终态收尾的 CAS 所有权条件
 - `parent_job_id`
+
+requeue / reschedule 与所有终态都会清空旧 `execution_token`。失去该 token 所有权的旧执行不得覆盖新执行的 job、事件地图 snapshot 或 `event_map_state`。
 
 ### `worker_heartbeat`
 

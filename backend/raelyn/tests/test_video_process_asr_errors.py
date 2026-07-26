@@ -109,6 +109,7 @@ class VideoAsrTranscribeErrorTests(unittest.TestCase):
             status="running",
             params={"video_id": str(video_id)},
             worker_id="worker-asr-1",
+            execution_token=uuid.uuid4(),
             lease_expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
         return _FakeSession(video=video, audio_asset=audio_asset), job
@@ -319,6 +320,8 @@ class VideoAsrTranscribeErrorTests(unittest.TestCase):
             set_lease.call_args.kwargs["lease_expires_at"],
             now + timedelta(seconds=7988 + 300),
         )
+        self.assertEqual(set_lease.call_args.kwargs["worker_id"], "worker-asr-1")
+        self.assertEqual(set_lease.call_args.kwargs["execution_token"], job.execution_token)
 
 
 if __name__ == "__main__":

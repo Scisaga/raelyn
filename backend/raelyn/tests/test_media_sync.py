@@ -18,11 +18,13 @@ from raelyn.jobs.handlers.media_sync import (
     _compact_raw_info,
     _compact_youtube_metadata_info,
     _insert_discovered_video_if_new,
+    _youtube_profile_avatar_url,
     _youtube_metadata_enrichment_terminal_failed,
     _ytdlp_extract_info_child,
     media_sync_videos,
     youtube_metadata_enrich,
 )
+from raelyn.jobs.worker_activity import touch_current_worker_activity
 from raelyn.models import Job, Media, Video
 from raelyn.services.provider_pause import ProviderPauseRequestError
 from raelyn.services.video_meta import parse_published_at
@@ -62,6 +64,58 @@ def _fake_insert_collector(added_videos: list[Video]):
         return video
 
     return _fake_insert
+
+
+class MediaProfileAvatarTests(unittest.TestCase):
+    def test_youtube_profile_prefers_avatar_over_channel_banner(self) -> None:
+        info = {
+            "thumbnails": [
+                {
+                    "id": "banner_uncropped",
+                    "url": "https://yt3.example/banner",
+                    "preference": -5,
+                },
+                {
+                    "id": "7",
+                    "url": "https://yt3.example/avatar-900",
+                    "width": 900,
+                    "height": 900,
+                },
+                {
+                    "id": "avatar_uncropped",
+                    "url": "https://yt3.example/avatar-original",
+                    "preference": 1,
+                },
+            ]
+        }
+
+        self.assertEqual(
+            _youtube_profile_avatar_url(info),
+            "https://yt3.example/avatar-original",
+        )
+
+    def test_youtube_profile_uses_square_thumbnail_when_avatar_id_is_absent(self) -> None:
+        info = {
+            "thumbnails": [
+                {
+                    "id": "banner",
+                    "url": "https://yt3.example/banner",
+                    "width": 2560,
+                    "height": 424,
+                },
+                {
+                    "id": "channel-image",
+                    "url": "https://yt3.example/avatar",
+                    "width": 800,
+                    "height": 800,
+                },
+            ]
+        }
+
+        self.assertEqual(
+            _youtube_profile_avatar_url(info),
+            "https://yt3.example/avatar",
+        )
 
 
 class MediaSyncVideoOrderingTests(unittest.TestCase):
@@ -473,6 +527,7 @@ class MediaSyncVideoOrderingTests(unittest.TestCase):
         self.assertEqual(result, {"created": 1, "metadata_enrichment_enqueued": 0})
         self.assertEqual(len(added_videos), 1)
         self.assertFalse(ytdlp_extract_info.call_args.kwargs["use_provider_cookies"])
+        self.assertIs(ytdlp_extract_info.call_args.kwargs["activity_hook"], touch_current_worker_activity)
         enqueue_job.assert_called_once_with(
             session,
             type_="video.download.youtube",
@@ -633,7 +688,7 @@ class YoutubeMetadataEnrichTests(unittest.TestCase):
 
         with patch("raelyn.jobs.handlers.media_sync.advisory_lock_any", return_value=nullcontext("youtube:sync")), patch(
             "raelyn.jobs.handlers.media_sync._extract_youtube_video_metadata_with_timeout", return_value=info
-        ), patch("raelyn.jobs.handlers.media_sync.schedule_playlists_event_regime_dirty_for_video") as dirty:
+        ), patch("raelyn.jobs.handlers.media_sync.schedule_playlists_event_map_dirty_for_video") as dirty:
             result = youtube_metadata_enrich(session, job)
 
         self.assertEqual(result, {"ok": True, "published_at_updated": True})
@@ -648,6 +703,7 @@ class YoutubeMetadataEnrichTests(unittest.TestCase):
             reason="video_published_at_changed",
             source_job_id=job.id,
             priority=job.priority,
+            require_event_map_input=True,
         )
 
     def test_youtube_metadata_enrich_reschedules_when_provider_lock_busy(self) -> None:

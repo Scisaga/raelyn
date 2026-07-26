@@ -10,7 +10,7 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn.services import embeddings
-from raelyn.services.embeddings import EmbeddingOverBudgetError, EmbeddingTransientError
+from raelyn.services.embeddings import EmbeddingError, EmbeddingOverBudgetError, EmbeddingSpec, EmbeddingTransientError
 
 
 class _FakeResponse:
@@ -61,8 +61,9 @@ class EmbeddingClientTests(unittest.TestCase):
         )
 
         with patch.object(embeddings.settings, "embedding_url", "http://embedding.test"):
-            with patch.object(embeddings.httpx, "Client", lambda **_kwargs: _FakeClient(response, calls)):
-                vectors = embeddings.embed_texts(["第一条", "第二条"])
+            with patch.object(embeddings.settings, "embedding_dim", 2):
+                with patch.object(embeddings.httpx, "Client", lambda **_kwargs: _FakeClient(response, calls)):
+                    vectors = embeddings.embed_texts(["第一条", "第二条"])
 
         self.assertEqual(vectors, [[1.0, 2.0], [3.0, 4.0]])
         self.assertEqual(calls[0]["json"]["input"], ["第一条", "第二条"])
@@ -124,10 +125,20 @@ class EmbeddingClientTests(unittest.TestCase):
             return _FakeClient(response, calls)
 
         with patch.object(embeddings.settings, "embedding_url", "http://embedding.test"):
-            with patch.object(embeddings.httpx, "Client", _client):
-                embeddings.embed_texts(["文本"])
+            with patch.object(embeddings.settings, "embedding_dim", 2):
+                with patch.object(embeddings.httpx, "Client", _client):
+                    embeddings.embed_texts(["文本"])
 
         self.assertEqual(client_kwargs[0]["trust_env"], False)
+
+    def test_embedding_vector_rejects_wrong_dimension_non_finite_and_zero(self) -> None:
+        spec = EmbeddingSpec(model="test", dim=2)
+        with self.assertRaisesRegex(EmbeddingError, "dimension"):
+            embeddings.validate_embedding_vector([1.0], spec)
+        with self.assertRaisesRegex(EmbeddingError, "NaN"):
+            embeddings.validate_embedding_vector([float("nan"), 1.0], spec)
+        with self.assertRaisesRegex(EmbeddingError, "all zero"):
+            embeddings.validate_embedding_vector([0.0, 0.0], spec)
 
 
 if __name__ == "__main__":

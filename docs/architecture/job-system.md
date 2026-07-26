@@ -19,6 +19,7 @@
 - `attempt` / `max_attempts`
 - `scheduled_for`：定时执行（分钟级同步依赖它）
 - `lease_expires_at`：`running` 的租约到期时间，用于卡死回收
+- `execution_token`：每次成功 claim 生成的新 UUID，用于标识本次逻辑执行；它不是 `attempt` 的别名
 - `progress_current` / `progress_total`
 - `cancel_requested_at`：协作式取消请求时间；`running` 任务收到请求后由 handler 在安全检查点退出
 
@@ -33,19 +34,23 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 
 - `started_at`
 - `worker_id`
+- `execution_token = uuid4()`；同一个 job 被回收并再次 claim 时必须换新 token
 - `lease_expires_at = now() + lease_duration`
+
+`(job_id, status=running, worker_id, execution_token)` 共同构成本次执行的所有权条件。`worker_id` 只标识进程，无法区分同一 job 被回收、重领前后的两个逻辑执行，因此不能单独作为写入授权依据。
 
 ## 租约 / 心跳与回收
 
-- Worker 执行长任务时周期性刷新 `lease_expires_at`
-- 长任务若在业务函数内部有明显批处理检查点，可以通过进度更新同步刷新 `lease_expires_at`，使 DB 中的任务事实源持续反映真实运行状态；例如播放列表分析快照会在 embedding 批读取、离散度计算、事件检测和写库阶段更新进度。
+- Worker 执行长任务时周期性刷新 `lease_expires_at`。进度和 lease 更新都必须按 `(job_id, status=running, worker_id, execution_token)` 做 CAS；受影响行数为 0 表示本次执行已经失去所有权，handler 必须退出。
+- 长任务若在业务函数内部有明显批处理检查点，可以通过同一条 token-aware CAS 同步更新进度和 `lease_expires_at`，使 DB 中的任务事实源持续反映真实运行状态；例如事件地图快照会在 embedding 批读取、离散度计算、事件检测和写库阶段更新进度。
 - 下载任务的 yt-dlp 进度回调会同步刷新 `lease_expires_at`，避免大文件或慢速下载超过初始 1 小时租约后被误回收成 `pending`，但原 worker 仍继续占用 provider 下载锁。
-- 本地 `video.asr_transcribe` 在音频下载完成、发起单次 ASR 请求前，按 `4x realtime + 120s` 计算 timeout，并将 lease 一次性延长到请求窗口后 300 秒；更新带 `status=running + worker_id` 所有权条件，避免旧 worker 覆盖新 owner。超时前两次走 worker 退避，第三次终止，防止确定性慢样本连续占用 5 次推理资源。
+- YouTube 下载的 yt-dlp logger 产生活动日志时会刷新 `worker_heartbeat.active_at`，覆盖连接建立、同一 URL 短重试和重新解析等尚未产生字节进度回调的阶段；真正长时间无日志、无进度的阻塞仍由执行 watchdog 回收。
+- 本地 `video.asr_transcribe` 在音频下载完成、发起单次 ASR 请求前，按 `4x realtime + 120s` 计算 timeout，并将 lease 一次性延长到请求窗口后 300 秒；更新带 `status=running + worker_id + execution_token` 所有权条件，避免旧执行覆盖新 owner。超时前两次走 worker 退避，第三次终止，防止确定性慢样本连续占用 5 次推理资源。
 - `worker_heartbeat.updated_at` 是进程心跳，由心跳线程维护，只能证明 worker 进程和心跳线程仍在运行。
 - `worker_heartbeat.active_at` 是主执行线程活动心跳，由 worker 主循环、任务领取点和下载进度更新维护；同步 / 下载任务回收必须同时检查它，避免“心跳线程活着”掩盖主执行循环已经卡死。
 - `worker_heartbeat.current_job_id` 记录主执行线程最近声明的任务，用于排障时定位哪个任务导致执行心跳停止推进。
 - `video.backfill_subtitles.*` 属于 provider-facing 下载角色任务：它只执行 yt-dlp subtitle-only 抓取，不下载媒体文件，但仍复用 provider 下载并发门控、平台暂停、cookies 失效暂停和长执行心跳语义。
-- `media.sync_videos` 在平台 flat 列表提取完成后和逐条处理循环中刷新执行活动心跳；YouTube 缺失发布时间的单视频详情解析已拆到 `video.enrich_metadata.youtube`，避免同步任务在批量补 metadata 时长期不推进 `active_at`。
+- `media.sync_videos` 在 yt-dlp flat 列表提取期间复用 yt-dlp 的真实分页 / 条目日志刷新执行活动心跳，并在提取完成后和逐条处理循环中继续刷新；这使万级频道全量枚举不会因单次提取超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 被误判卡死，同时真实无日志、无进展的阻塞仍会由 watchdog 回收。YouTube 缺失发布时间的单视频详情解析已拆到 `video.enrich_metadata.youtube`，避免同步任务在批量补 metadata 时长期不推进 `active_at`。
 - `video.enrich_metadata.youtube` 是低优先级单视频补全任务，自身通过可终止子进程给 yt-dlp 详情解析设置 45 秒硬超时；子进程只向父进程回传 compact metadata，避免完整 yt-dlp `info` 大对象在进程队列中阻塞；超时只使该补全任务失败或重试，不扩大 `media.sync_videos` 的执行窗口。同一视频达到 `max_attempts` 终止失败后，后续自动同步不会再为同一 `dedupe_key` 反复投递补全任务，避免 best-effort 补全绕过任务重试上限。
 - provider-facing worker（同步 / 下载）会在本进程内启动执行 watchdog；当 `current_job_id` 指向同步或下载任务且 `active_at` 超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进时，worker 主动退出，让 supervisor 重启并释放 PostgreSQL session 级 advisory lock。
 - YouTube 频道/播放列表的 `youtube_auth_check` 可能由一次瞬时网页下载失败触发。worker 在当前任务仍有剩余 attempt 时只按既有退避重试，不持久化 provider pause；仅最终尝试仍返回同一错误时才暂停 YouTube。明确 cookies 无效、`youtube_bot_check` 与其他 provider 风控仍立即暂停，避免重复请求扩大风控。
@@ -55,6 +60,15 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
   - 对 `media.sync_profile` / `media.sync_videos`，若进程心跳仍新鲜但执行心跳过期，按一次同步尝试失败处理：增加 `attempt`、按既有退避重试，且不使用 orphan priority bump；达到 `max_attempts` 后标记 `failed`
   - `media.sync_videos` 因执行心跳过期达到终止失败时，会推进对应媒体的 `last_video_sync_at` 作为冷却时间，避免同一媒体立即被 scheduler 重新投递并堵塞同步队列
   - 回收动作应记录原因，便于后续排障
+- requeue / reschedule 必须清空旧 `execution_token`，下次 claim 再生成新 UUID；`succeeded / failed / canceled` 等终态收尾也必须清空 token。
+- Worker 在 handler 返回或抛错后的收尾阶段仍需用领取时捕获的 token 锁定并核对 owner。若 job 已被回收或重领，只退出本次执行，不得覆盖新执行的 job 状态、结果或错误。
+
+## 业务终态与可重试失败
+
+- 下载 handler 的 `downloading` 属于当前事务内的中间状态，异常回滚后不能作为终止失败判据。下载 job 耗尽重试时，worker 会重新锁定对应 `Video` 行并查询是否已有 `Asset.type=video`：仅当视频仍为 `discovered/downloading` 且没有视频资产时改为 `failed`；已有视频资产或已进入其它可用状态时保留原状态，只记录最新错误。该收尾只发生在终止失败，不影响中间退避重试。
+- `video.download.youtube` 将媒体传输恢复分为两层：代理 `CONNECT ... 502`、`connection closed`、`connection reset` 或媒体 URL `HTTP 502` 在单轮解析内只对同一 URL 执行 `retries=2`，随后从原视频页重新解析，最多两轮。每轮使用独立临时产物，并保持 cookies、代理、impersonation 与 format 选择策略不变；重新解析可能刷新签名 URL，但不保证更换 CDN。两轮均失败后才抛给外层 `attempt/max_attempts` 退避。
+- 事件抽取把“响应顶层结构不满足协议”视为可重试错误，包括 JSON 无法解析、顶层不是对象、缺少 `videos[]`、缺少预期 `video_id` 或对应项缺少 `events[]`。服务会先把当前 `video_event_extraction_run` 持久化为 `failed`，再把异常抛给 worker 进入既有 `attempt/max_attempts` 退避；结构错误不会删除该视频已有事件。
+- `events: []` 是合法的零事件结果，会写入 `succeeded` run；空 `plain` transcript 继续按 `skipped` 成功收口，不强制失败或重试。单条事件字段不合法仍只丢弃该条并记录 warning，不能把内容质量问题扩大成整个响应的结构失败。
 
 ## Worker 角色暂停（Claim Gate）
 
@@ -75,6 +89,14 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
   - PostgreSQL 下，创建 pending dedupe job 时先按 `dedupe_key` 获取事务级 advisory lock，再查询已有 `pending`，最后才插入新 job；`job(dedupe_key) where status='pending'` 唯一索引只作为兜底约束，不作为常规并发控制机制。
   - 同一事务需要投递多个 dedupe job 时，调用方必须按稳定 key 顺序投递，避免多个 worker 对同一批 key 反向等待。
   - 手动重试失败任务时，若同一 `dedupe_key` 已有 pending 任务，重试接口会取消那个 pending 任务并复用当前任务，避免提交时撞 pending dedupe 唯一约束
+
+事件地图快照额外使用执行级 staging 所有权：
+
+- `event_map_snapshot(job_id, execution_token)` 唯一；同一个 job 被重领后使用新 token 创建新的 staging snapshot。
+- `job_attempt` 仅用于审计和排障，不参与 staging 身份或写入授权，因为 lease 回收和重领未必能靠 attempt 唯一区分。
+- checkpoint、ready finalize 和失败收尾都必须校验领取时捕获的 worker/token。失权执行不得写 snapshot，也不得更新 `event_map_state.last_error` 或 current snapshot 指针。
+- ready 切换后由独立的 `playlist.prune_event_map_snapshots` analysis job 做保留清理；它按播放列表去重、每次只删除一个旧快照并再次投递自己，current、上一版 ready 与所有运行中 staging 始终受保护。清理不进入 API 请求线程，也不扩大 ready 原子切换事务。
+- 应用启动迁移会先查询目录并跳过已经存在的索引和已经生效的表级分析参数；没有旧分析任务时也不会执行空 `UPDATE job`。这样启动进程不会在持有 job 表锁时等待事件地图大表 DDL 锁，避免与正在清理/构建的 analysis worker 形成锁顺序死锁。
 
 ## 并发与外部依赖门控（Guardrails）
 
@@ -105,7 +127,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 
 ## 可观测性（Visibility by Design）
 
-- 每个 job 记录 `type / status / params / result / error / attempt / worker_id`
+- 每个 job 记录 `type / status / params / result / error / attempt / worker_id / execution_token`
 - 结构化日志带 `job_id` 与 `video_id / media_id`
 - `job_events` 保存关键事件，便于 UI 展示与排障
 

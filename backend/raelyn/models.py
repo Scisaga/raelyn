@@ -3,7 +3,23 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -328,127 +344,496 @@ class VideoEventExtractionRun(Base):
     )
 
 
-class EventRegimeRun(Base):
-    __tablename__ = "event_regime_run"
+class EventMapState(Base):
+    __tablename__ = "event_map_state"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    playlist_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("playlist.id", ondelete="CASCADE"), nullable=False)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
-    analysis_clock: Mapped[str] = mapped_column(String, nullable=False, default="day")
-    embedding_model: Mapped[str] = mapped_column(String, nullable=False)
-    embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
-    event_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    event_embedded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    event_skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    event_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-    started_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
-
-
-class EventRegimeState(Base):
-    __tablename__ = "event_regime_state"
-
-    playlist_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("playlist.id", ondelete="CASCADE"), primary_key=True)
-    analysis_dirty: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    last_ready_run_id: Mapped[uuid.UUID | None] = mapped_column(
+    playlist_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("event_regime_run.id", ondelete="SET NULL"),
+        ForeignKey("playlist.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    current_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_snapshot.id", ondelete="SET NULL"),
         nullable=True,
     )
+    dirty_generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    built_generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    active_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("job.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    first_dirty_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_dirty_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_requested_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_built_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
-class EventRegimeSignal(Base):
-    __tablename__ = "event_regime_signal"
+class EventMapSnapshot(Base):
+    __tablename__ = "event_map_snapshot"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    regime_run_id: Mapped[uuid.UUID] = mapped_column(
+    playlist_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("event_regime_run.id", ondelete="CASCADE"),
+        ForeignKey("playlist.id", ondelete="CASCADE"),
         nullable=False,
     )
-    granularity: Mapped[str] = mapped_column(String, nullable=False)
-    period_date: Mapped[Any] = mapped_column(Date, nullable=False)
-    rolling_window: Mapped[int] = mapped_column(Integer, nullable=False)
-    event_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    ready_embedding_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    centroid_vector: Mapped[list[float] | None] = mapped_column(JSONB, nullable=True)
-    drift_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    drift_rolling_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
-    drift_rolling_std: Mapped[float | None] = mapped_column(Float, nullable=True)
-    drift_rolling_z: Mapped[float | None] = mapped_column(Float, nullable=True)
-    dispersion_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
-    dispersion_std: Mapped[float | None] = mapped_column(Float, nullable=True)
-    dispersion_p25: Mapped[float | None] = mapped_column(Float, nullable=True)
-    dispersion_p75: Mapped[float | None] = mapped_column(Float, nullable=True)
-    projection_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    projection_method: Mapped[str | None] = mapped_column(String, nullable=True)
-    projection_x: Mapped[float | None] = mapped_column(Float, nullable=True)
-    projection_y: Mapped[float | None] = mapped_column(Float, nullable=True)
-    projection_z: Mapped[float | None] = mapped_column(Float, nullable=True)
-    projection_explained_variance_ratio: Mapped[list[float] | None] = mapped_column(JSONB, nullable=True)
-    linked_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+    job_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("event_regime_candidate.id", ondelete="SET NULL"),
+        ForeignKey("job.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    job_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    execution_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    parent_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_snapshot.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    input_generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    input_fingerprint: Mapped[str] = mapped_column(String, nullable=False, default="")
+    build_key: Mapped[str] = mapped_column(String, nullable=False, default="")
+    embedding_model: Mapped[str] = mapped_column(String, nullable=False)
+    embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding_checksum: Mapped[str | None] = mapped_column(String, nullable=True)
+    canonical_algorithm_version: Mapped[str] = mapped_column(String, nullable=False, default="canonical-v1")
+    story_algorithm_version: Mapped[str] = mapped_column(String, nullable=False, default="story-v1")
+    topic_algorithm_version: Mapped[str] = mapped_column(String, nullable=False, default="topic-v1")
+    layout_algorithm_version: Mapped[str] = mapped_column(String, nullable=False, default="layout-v1")
+    projection_method: Mapped[str | None] = mapped_column(String, nullable=True)
+    projection_seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    layout_continuity: Mapped[str] = mapped_column(String, nullable=False, default="rebased")
+    alignment_transform: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    alignment_residual: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bounds: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    type_categories: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    monthly_distribution: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    input_record_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    canonical_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    entity_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    story_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    topic_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_reason_counts: Mapped[dict[str, int] | None] = mapped_column(JSONB, nullable=True)
+    peak_rss_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    temp_disk_peak_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    started_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "execution_token", name="event_map_snapshot_job_execution_ux"),
+        Index("event_map_snapshot_parent_idx", "parent_snapshot_id"),
+        Index(
+            "event_map_snapshot_ready_build_ux",
+            "playlist_id",
+            "build_key",
+            unique=True,
+            postgresql_where=text("status = 'ready' and build_key <> ''"),
+            sqlite_where=text("status = 'ready' and build_key <> ''"),
+        ),
+    )
+
+
+class EventMapRecordRevision(Base):
+    __tablename__ = "event_map_record_revision"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("market_event.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_video_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("video.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    embedding_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("market_event_embedding.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    content_hash: Mapped[str] = mapped_column(String, nullable=False)
+    embedding_checksum: Mapped[str] = mapped_column(String, nullable=False)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event_time_start: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+    event_time_end: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+    time_precision: Mapped[str] = mapped_column(String, nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    direction: Mapped[str | None] = mapped_column(String, nullable=True)
+    entities_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    source_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    evidence_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "event_id",
+            "content_hash",
+            "embedding_checksum",
+            name="event_map_record_revision_content_ux",
+        ),
+    )
+
+
+class EventMapCanonicalIdentity(Base):
+    __tablename__ = "event_map_canonical_identity"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    playlist_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playlist.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    created_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_snapshot.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    retired_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_snapshot.id", ondelete="SET NULL"),
         nullable=True,
     )
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
     __table_args__ = (
+        Index("event_map_canonical_identity_created_snapshot_idx", "created_snapshot_id"),
+        Index("event_map_canonical_identity_retired_snapshot_idx", "retired_snapshot_id"),
+    )
+
+
+class EventMapCanonical(Base):
+    __tablename__ = "event_map_canonical"
+
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_snapshot.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    canonical_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_canonical_identity.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    representative_revision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_record_revision.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    event_time_start: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+    event_time_end: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+    time_precision: Mapped[str] = mapped_column(String, nullable=False)
+    time_basis: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    event_start_day: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_end_day: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    time_precision_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    identity_state: Mapped[str] = mapped_column(String, nullable=False, default="new")
+    decision_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    runner_up_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reason_codes: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    time_disagreement_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    centroid_checksum: Mapped[str] = mapped_column(String, nullable=False)
+    point_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    x: Mapped[float] = mapped_column(Float(precision=24), nullable=False)
+    y: Mapped[float] = mapped_column(Float(precision=24), nullable=False)
+    z: Mapped[float] = mapped_column(Float(precision=24), nullable=False)
+    uncertainty_flags: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "point_index", name="event_map_canonical_point_index_ux"),
+    )
+
+
+class EventMapEntityIndex(Base):
+    __tablename__ = "event_map_entity_index"
+
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    canonical_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String, primary_key=True)
+    normalized_key: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    point_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    record_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["snapshot_id", "canonical_id"],
+            ["event_map_canonical.snapshot_id", "event_map_canonical.canonical_id"],
+            ondelete="CASCADE",
+        ),
         UniqueConstraint(
-            "regime_run_id",
-            "granularity",
-            "period_date",
-            "rolling_window",
-            name="event_regime_signal_ux",
+            "snapshot_id",
+            "point_index",
+            "entity_type",
+            "normalized_key",
+            name="event_map_entity_index_point_key_ux",
+        ),
+        CheckConstraint("record_count > 0", name="event_map_entity_index_record_count_ck"),
+        Index(
+            "event_map_entity_index_key_idx",
+            "snapshot_id",
+            "entity_type",
+            "normalized_key",
+            "point_index",
         ),
     )
 
 
-class EventRegimeCandidate(Base):
-    __tablename__ = "event_regime_candidate"
+class EventMapCanonicalMember(Base):
+    __tablename__ = "event_map_canonical_member"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    regime_run_id: Mapped[uuid.UUID] = mapped_column(
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    record_revision_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("event_regime_run.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("event_map_record_revision.id", ondelete="RESTRICT"),
+        primary_key=True,
     )
-    candidate_date: Mapped[Any] = mapped_column(Date, nullable=False)
-    effective_trade_date: Mapped[Any] = mapped_column(Date, nullable=False)
-    peak_date: Mapped[Any | None] = mapped_column(Date, nullable=True)
-    event_start: Mapped[Any | None] = mapped_column(Date, nullable=True)
-    event_end: Mapped[Any | None] = mapped_column(Date, nullable=True)
-    event_type: Mapped[str] = mapped_column(String, nullable=False, default="regime_shift")
-    status: Mapped[str] = mapped_column(String, nullable=False, default="draft")
-    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
-    uncertainty: Mapped[float | None] = mapped_column(Float, nullable=True)
-    drift_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    dispersion_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    drift_rolling_z: Mapped[float | None] = mapped_column(Float, nullable=True)
-    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    top_terms: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
-    evidence_event_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
-    evidence_video_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
-    evidence_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-    available_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    train_start: Mapped[Any | None] = mapped_column(Date, nullable=True)
-    train_end: Mapped[Any | None] = mapped_column(Date, nullable=True)
-    valid_start: Mapped[Any | None] = mapped_column(Date, nullable=True)
-    valid_end: Mapped[Any | None] = mapped_column(Date, nullable=True)
-    test_start: Mapped[Any | None] = mapped_column(Date, nullable=True)
-    test_end: Mapped[Any | None] = mapped_column(Date, nullable=True)
+    canonical_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    is_representative: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    assignment_kind: Mapped[str] = mapped_column(String, nullable=False, default="singleton")
+    decision_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    runner_up_canonical_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    runner_up_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    runner_up_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rule_version: Mapped[str] = mapped_column(String, nullable=False, default="canonical-v1")
+    reason_codes: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
-    __table_args__ = (UniqueConstraint("regime_run_id", "candidate_date", name="event_regime_candidate_ux"),)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["snapshot_id", "canonical_id"],
+            ["event_map_canonical.snapshot_id", "event_map_canonical.canonical_id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+
+class EventMapCanonicalLineage(Base):
+    __tablename__ = "event_map_canonical_lineage"
+
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_snapshot.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    predecessor_canonical_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_canonical_identity.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    successor_canonical_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_canonical_identity.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    relation_type: Mapped[str] = mapped_column(String, nullable=False, primary_key=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "predecessor_canonical_id <> successor_canonical_id or relation_type = 'retained'",
+            name="event_map_canonical_lineage_distinct_ck",
+        ),
+    )
+
+
+class EventMapTopic(Base):
+    __tablename__ = "event_map_topic"
+
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_snapshot.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    topic_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    level: Mapped[int] = mapped_column(Integer, nullable=False)
+    parent_topic_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    predecessor_topic_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    label: Mapped[str] = mapped_column(String, nullable=False)
+    top_terms: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    centroid_vector: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    anchor_canonical_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    center_x: Mapped[float] = mapped_column(Float(precision=24), nullable=False)
+    center_y: Mapped[float] = mapped_column(Float(precision=24), nullable=False)
+    center_z: Mapped[float] = mapped_column(Float(precision=24), nullable=False)
+    radius: Mapped[float] = mapped_column(Float(precision=24), nullable=False, default=0.0)
+    stability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    assignment_margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    canonical_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["snapshot_id", "anchor_canonical_id"],
+            ["event_map_canonical.snapshot_id", "event_map_canonical.canonical_id"],
+        ),
+        Index("event_map_topic_anchor_idx", "snapshot_id", "anchor_canonical_id"),
+    )
+
+
+class EventMapTopicMember(Base):
+    __tablename__ = "event_map_topic_member"
+
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    canonical_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    level: Mapped[int] = mapped_column(Integer, primary_key=True)
+    topic_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    margin: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["snapshot_id", "canonical_id"],
+            ["event_map_canonical.snapshot_id", "event_map_canonical.canonical_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["snapshot_id", "topic_id"],
+            ["event_map_topic.snapshot_id", "event_map_topic.topic_id"],
+            ondelete="CASCADE",
+        ),
+        Index(
+            "event_map_topic_member_level_canonical_idx",
+            "snapshot_id",
+            "level",
+            "canonical_id",
+        ),
+    )
+
+
+class EventMapStory(Base):
+    __tablename__ = "event_map_story"
+
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_snapshot.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    story_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    story_type: Mapped[str] = mapped_column(String, nullable=False, default="sequence")
+    event_time_start: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    event_time_end: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canonical_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class EventMapStoryMember(Base):
+    __tablename__ = "event_map_story_member"
+
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    story_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    canonical_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["snapshot_id", "story_id"],
+            ["event_map_story.snapshot_id", "event_map_story.story_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["snapshot_id", "canonical_id"],
+            ["event_map_canonical.snapshot_id", "event_map_canonical.canonical_id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("snapshot_id", "story_id", "canonical_id", name="event_map_story_member_canonical_ux"),
+    )
+
+
+class EventMapStoryEdge(Base):
+    __tablename__ = "event_map_story_edge"
+
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    edge_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    story_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_canonical_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    target_canonical_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    relation_type: Mapped[str] = mapped_column(String, nullable=False)
+    direction: Mapped[str | None] = mapped_column(String, nullable=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="automatic")
+    evidence_revision_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    method_version: Mapped[str] = mapped_column(String, nullable=False, default="story-v1")
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["snapshot_id", "story_id"],
+            ["event_map_story.snapshot_id", "event_map_story.story_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["snapshot_id", "source_canonical_id"],
+            ["event_map_canonical.snapshot_id", "event_map_canonical.canonical_id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["snapshot_id", "target_canonical_id"],
+            ["event_map_canonical.snapshot_id", "event_map_canonical.canonical_id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "snapshot_id",
+            "source_canonical_id",
+            "target_canonical_id",
+            "relation_type",
+            name="event_map_story_edge_relation_ux",
+        ),
+        CheckConstraint("source_canonical_id <> target_canonical_id", name="event_map_story_edge_distinct_ck"),
+        Index("event_map_story_edge_story_idx", "snapshot_id", "story_id"),
+    )
+
+
+class EventMapProjectionAnchor(Base):
+    __tablename__ = "event_map_projection_anchor"
+
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_snapshot.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    anchor_rank: Mapped[int] = mapped_column(Integer, primary_key=True)
+    canonical_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    x: Mapped[float] = mapped_column(Float(precision=24), nullable=False)
+    y: Mapped[float] = mapped_column(Float(precision=24), nullable=False)
+    z: Mapped[float] = mapped_column(Float(precision=24), nullable=False)
+    centroid_vector: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    vector_checksum: Mapped[str] = mapped_column(String, nullable=False)
+    inherited_parent_anchor_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["snapshot_id", "canonical_id"],
+            ["event_map_canonical.snapshot_id", "event_map_canonical.canonical_id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("snapshot_id", "canonical_id", name="event_map_projection_anchor_canonical_ux"),
+    )
 
 
 class DailyBrief(Base):
@@ -509,6 +894,7 @@ class Job(Base):
     finished_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_expires_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
     worker_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    execution_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
     parent_job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("job.id", ondelete="SET NULL"), nullable=True)
 

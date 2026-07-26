@@ -36,6 +36,7 @@ def cancel_active_jobs(*, include_running: bool = True, include_pending: bool = 
             j.finished_at = now
             j.lease_expires_at = None
             j.worker_id = None
+            j.execution_token = None
             session.add(JobEvent(job_id=j.id, level="info", message="canceled (bulk)"))
             n += 1
         session.flush()

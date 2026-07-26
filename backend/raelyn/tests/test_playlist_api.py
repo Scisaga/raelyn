@@ -9,7 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from fastapi import HTTPException
 from sqlalchemy.dialects import postgresql
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -17,22 +16,31 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn.api.playlists import (
+    _EVENT_MAP_SCENE_RECORD,
     _active_playlist_event_backfill_job,
-    _candidate_detail_out,
-    _event_regime_summary,
+    _event_map_day,
+    _event_map_local_entity_relations,
+    _event_map_query_timeout,
+    _event_map_scene_chunks,
+    _event_map_scene_statement,
     _playlist_event_backfill_job_out,
-    EventRegimeCandidatePatch,
     PlaylistEventsSummaryOut,
     get_playlist_events_summary,
-    get_playlist_event_regime_candidates,
-    get_playlist_event_regime_signals,
+    get_playlist_event_map_manifest,
     list_playlist_event_entity_suggestions,
     list_playlist_events,
     list_playlist_video_counts_by_period,
     list_playlist_videos_by_period,
-    patch_playlist_event_regime_candidate,
+    search_playlist_event_map,
 )
-from raelyn.models import EventRegimeRun, EventRegimeState, Job
+from raelyn.models import EventMapCanonical, EventMapSnapshot, EventMapState, EventMapTopic, Job, Playlist
+
+
+class EventMapQueryGuardTests(unittest.TestCase):
+    def test_only_postgresql_statement_timeout_is_reported_as_timeout(self) -> None:
+        self.assertTrue(_event_map_query_timeout(SimpleNamespace(orig=SimpleNamespace(sqlstate="57014"))))
+        self.assertFalse(_event_map_query_timeout(SimpleNamespace(orig=SimpleNamespace(sqlstate="23505"))))
+        self.assertFalse(_event_map_query_timeout(SimpleNamespace(orig=SimpleNamespace())))
 
 
 class _ScalarResult:
@@ -55,6 +63,18 @@ class _RowsResult:
 
     def one(self):
         return self._rows[0]
+
+
+class _IterableRows:
+    def __init__(self, rows):
+        self.rows = rows
+        self.closed = False
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def close(self):
+        self.closed = True
 
 
 class _ScalarOneResult:
@@ -127,6 +147,249 @@ def _fake_session_scope(session):
 
 
 class PlaylistApiTests(unittest.TestCase):
+    def test_compact_event_map_manifest_skips_heavy_scene_metadata(self) -> None:
+        playlist_id = uuid.uuid4()
+        snapshot_id = uuid.uuid4()
+        state = SimpleNamespace(
+            current_snapshot_id=snapshot_id,
+            dirty_generation=4,
+            built_generation=4,
+            last_error=None,
+            last_requested_at=None,
+            last_built_at=None,
+        )
+        snapshot = SimpleNamespace(
+            id=snapshot_id,
+            status="ready",
+            layout_algorithm_version="event_map_projection_v2",
+            projection_method="incremental_pca50_umap3_cosine",
+            canonical_count=12,
+            member_count=18,
+            input_record_count=18,
+            skipped_reason_counts={"missing_event_time": 2},
+        )
+        session = Mock()
+
+        def get(model, key):
+            if model is Playlist:
+                return object()
+            if model is EventMapState:
+                return state
+            if model is EventMapSnapshot:
+                return snapshot
+            return None
+
+        session.get.side_effect = get
+        with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
+            with patch("raelyn.api.playlists._active_event_map_build_job", return_value=None):
+                with patch("raelyn.api.playlists._active_playlist_event_backfill_job", return_value=None):
+                    with patch("raelyn.api.playlists.playlist_event_map_coverage") as coverage:
+                        result = get_playlist_event_map_manifest(playlist_id, compact=True)
+
+        coverage.assert_not_called()
+        session.execute.assert_not_called()
+        self.assertEqual(result["snapshot_id"], str(snapshot_id))
+        self.assertEqual(result["canonical_count"], 12)
+        self.assertEqual(result["record_count"], 18)
+        self.assertNotIn("topics", result)
+        self.assertNotIn("topics", result)
+
+    def test_event_map_local_entities_keep_frozen_roles_and_relations(self) -> None:
+        source_entity_id = uuid.uuid4()
+        target_entity_id = uuid.uuid4()
+        revision = SimpleNamespace(
+            id=uuid.uuid4(),
+            entities_json=[
+                {
+                    "id": str(source_entity_id),
+                    "entity_type": "country",
+                    "normalized_key": "United States",
+                    "name": "United States",
+                    "role": "actor",
+                },
+                {
+                    "id": str(target_entity_id),
+                    "entity_type": "sector",
+                    "normalized_key": "Energy",
+                    "name": "Energy",
+                    "role": "target",
+                },
+            ],
+            source_json={
+                "relations": [
+                    {
+                        "id": str(uuid.uuid4()),
+                        "source_entity_id": str(source_entity_id),
+                        "target_entity_id": str(target_entity_id),
+                        "relation_type": "regulates",
+                        "direction": "directed",
+                        "confidence": 0.9,
+                    }
+                ]
+            },
+        )
+        entities = {
+            ("country", "unitedstates"): {"id": "country:unitedstates"},
+            ("sector", "energy"): {"id": "sector:energy"},
+        }
+
+        relations = _event_map_local_entity_relations([(SimpleNamespace(), revision)], entities)
+
+        self.assertEqual(entities[("country", "unitedstates")]["role_label"], "actor")
+        self.assertEqual(entities[("sector", "energy")]["role_label"], "target")
+        self.assertEqual(relations[0]["source_entity_id"], "country:unitedstates")
+        self.assertEqual(relations[0]["target_entity_id"], "sector:energy")
+        self.assertEqual(relations[0]["relation_type"], "regulates")
+
+    def test_event_map_scene_record_is_fixed_canonical_layout(self) -> None:
+        canonical_id = uuid.uuid4()
+        payload = _EVENT_MAP_SCENE_RECORD.pack(
+            7,
+            canonical_id.bytes,
+            1.25,
+            -3.5,
+            2.75,
+            _event_map_day(date(2012, 3, 1)),
+            _event_map_day(date(2012, 3, 31)),
+            4,
+            2,
+            1,
+            0,
+            17,
+            3,
+            8,
+        )
+
+        self.assertEqual(_EVENT_MAP_SCENE_RECORD.size, 56)
+        values = _EVENT_MAP_SCENE_RECORD.unpack(payload)
+        self.assertEqual(values[0], 7)
+        self.assertEqual(uuid.UUID(bytes=values[1]), canonical_id)
+        self.assertEqual(values[11:], (17, 3, 8))
+
+    def test_event_map_scene_query_selects_only_binary_record_columns(self) -> None:
+        statement = _event_map_scene_statement(snapshot_id=uuid.uuid4())
+
+        self.assertEqual(
+            list(statement.selected_columns.keys()),
+            [
+                "point_index",
+                "canonical_id",
+                "x",
+                "y",
+                "z",
+                "event_start_day",
+                "event_end_day",
+                "event_type_code",
+                "time_precision_code",
+                "uncertainty_flags",
+                "time_disagreement_count",
+                "member_count",
+                "macro_topic_id",
+                "local_topic_id",
+            ],
+        )
+        compiled = str(statement.compile(dialect=postgresql.dialect())).lower()
+        self.assertNotIn("event_map_canonical.title", compiled)
+        self.assertNotIn("event_map_canonical.summary", compiled)
+        self.assertNotIn("event_map_canonical.time_basis", compiled)
+        self.assertNotIn("event_map_canonical.reason_codes", compiled)
+
+    def test_event_map_scene_batches_binary_records_into_one_chunk(self) -> None:
+        topic_id = uuid.uuid4()
+        canonical_ids = [uuid.uuid4(), uuid.uuid4()]
+        rows = [
+            (
+                index,
+                canonical_id,
+                float(index),
+                -float(index),
+                float(index) * 0.5,
+                10 + index,
+                11 + index,
+                2,
+                1,
+                ["uncertain"] if index == 0 else [],
+                index,
+                3 + index,
+                topic_id,
+                topic_id,
+            )
+            for index, canonical_id in enumerate(canonical_ids)
+        ]
+
+        chunks = list(
+            _event_map_scene_chunks(
+                rows,
+                canonical_count=2,
+                topic_order={topic_id: 4},
+            )
+        )
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(len(chunks[0]), 2 * _EVENT_MAP_SCENE_RECORD.size)
+        first = _EVENT_MAP_SCENE_RECORD.unpack_from(chunks[0], 0)
+        second = _EVENT_MAP_SCENE_RECORD.unpack_from(chunks[0], _EVENT_MAP_SCENE_RECORD.size)
+        self.assertEqual(first[0], 0)
+        self.assertEqual(uuid.UUID(bytes=first[1]), canonical_ids[0])
+        self.assertEqual(first[3:5], (0.0, 0.0))
+        self.assertEqual(first[9], 1)
+        self.assertEqual(first[11:], (3, 4, 4))
+        self.assertEqual(second[0], 1)
+        self.assertEqual(second[9], 2)
+
+    def test_event_map_topic_search_returns_anchor_location(self) -> None:
+        playlist_id = uuid.uuid4()
+        snapshot_id = uuid.uuid4()
+        topic_id = uuid.uuid4()
+        canonical_id = uuid.uuid4()
+        snapshot = SimpleNamespace(
+            id=snapshot_id,
+            playlist_id=playlist_id,
+            status="ready",
+            layout_algorithm_version="event_map_projection_v2",
+            projection_method="incremental_pca50_umap3_cosine",
+        )
+        topic = SimpleNamespace(
+            topic_id=topic_id,
+            label="人工智能产业",
+            canonical_count=8,
+            anchor_canonical_id=canonical_id,
+        )
+        anchor = SimpleNamespace(canonical_id=canonical_id, point_index=27)
+        session = Mock()
+        session.get.return_value = snapshot
+        session.execute.side_effect = [
+            _ScalarResult([]),
+            _RowsResult([(topic, anchor)]),
+            _RowsResult([]),
+        ]
+
+        with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
+            result = search_playlist_event_map(
+                playlist_id=playlist_id,
+                snapshot_id=snapshot_id,
+                q="人工智能",
+            )
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "kind": "topic",
+                    "id": str(topic_id),
+                    "canonical_id": str(canonical_id),
+                    "point_index": 27,
+                    "title": "人工智能产业",
+                    "label": "人工智能产业",
+                }
+            ],
+        )
+        topic_stmt = session.execute.call_args_list[1].args[0]
+        compiled = str(topic_stmt.compile(dialect=postgresql.dialect())).lower()
+        self.assertIn("join event_map_canonical", compiled)
+        self.assertIn("event_map_canonical.snapshot_id = event_map_topic.snapshot_id", compiled)
+        self.assertIn("event_map_canonical.canonical_id = event_map_topic.anchor_canonical_id", compiled)
+
     def test_active_backfill_detects_running_video_child_after_range_finished(self) -> None:
         playlist_id = uuid.uuid4()
         range_id = uuid.uuid4()
@@ -235,205 +498,6 @@ class PlaylistApiTests(unittest.TestCase):
         self.assertEqual(payload.video_total, 10646)
         self.assertGreater(payload.estimated_total_seconds or 0, elapsed_seconds * 5)
 
-    def test_regime_summary_uses_live_coverage_and_month_only_signal_range(self) -> None:
-        playlist_id = uuid.uuid4()
-        run_id = uuid.uuid4()
-        state = EventRegimeState(
-            playlist_id=playlist_id,
-            analysis_dirty=True,
-            last_ready_run_id=run_id,
-        )
-        run = EventRegimeRun(
-            id=run_id,
-            playlist_id=playlist_id,
-            status="ready",
-            analysis_clock="day",
-            embedding_model="old",
-            embedding_dim=3,
-            event_total=10,
-            event_embedded=8,
-            event_skipped=2,
-            event_failed=1,
-        )
-        session = Mock()
-        session.get.return_value = run
-        session.execute.side_effect = [
-            _ScalarOneResult(4),
-            _RowsResult([(date(2010, 1, 1), date(2026, 6, 1))]),
-        ]
-        live_coverage = {
-            "event_total": 161840,
-            "event_embedded": 161840,
-            "event_eligible": 160876,
-            "event_scale_excluded": 3231,
-            "event_skipped": 964,
-            "event_failed": 0,
-        }
-
-        with patch("raelyn.api.playlists.ensure_event_regime_state", return_value=state):
-            with patch("raelyn.api.playlists.active_event_regime_run", return_value=None):
-                with patch("raelyn.api.playlists.pending_event_regime_job", return_value=None):
-                    with patch("raelyn.api.playlists._active_playlist_event_backfill_job", return_value=None):
-                        with patch("raelyn.api.playlists.playlist_event_regime_coverage", return_value=live_coverage):
-                            payload = _event_regime_summary(session, playlist_id)
-
-        self.assertEqual(payload.event_total, 161840)
-        self.assertEqual(payload.event_embedded, 161840)
-        self.assertEqual(payload.event_eligible, 160876)
-        self.assertEqual(payload.event_scale_excluded, 3231)
-        self.assertEqual(payload.event_skipped, 964)
-        self.assertEqual(payload.event_failed, 0)
-        self.assertEqual(payload.candidate_count, 4)
-        self.assertEqual(payload.signal_start_date, date(2010, 1, 1))
-        self.assertEqual(payload.signal_end_date, date(2026, 6, 1))
-        range_stmt = session.execute.call_args_list[1].args[0]
-        compiled = str(range_stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
-        self.assertIn("event_regime_signal.regime_run_id", compiled)
-        self.assertNotIn("event_regime_signal.granularity", compiled)
-
-    def test_regime_candidate_detail_exposes_event_evidence_without_training_windows(self) -> None:
-        candidate_id = uuid.uuid4()
-        event_id = uuid.uuid4()
-        candidate = SimpleNamespace(
-            id=candidate_id,
-            candidate_date=date(2026, 5, 4),
-            effective_trade_date=date(2026, 5, 5),
-            peak_date=date(2026, 5, 4),
-            event_start=date(2026, 5, 4),
-            event_end=date(2026, 5, 4),
-            event_type="event_regime_shift",
-            status="draft",
-            score=2.75,
-            confidence=0.68,
-            uncertainty=0.1,
-            drift_score=0.42,
-            dispersion_score=0.1,
-            drift_rolling_z=2.75,
-            summary="候选断点",
-            top_terms=[],
-            evidence_event_ids=[str(event_id)],
-            evidence_video_ids=["v1"],
-            evidence_json={"preview": "候选断点", "granularity": "week"},
-            available_at=datetime(2026, 5, 4, 1, 0, tzinfo=timezone.utc),
-            train_start=date(2025, 1, 1),
-            valid_start=date(2026, 1, 1),
-            test_start=date(2026, 5, 5),
-        )
-
-        payload = _candidate_detail_out(candidate).model_dump()
-
-        self.assertEqual(payload["id"], candidate_id)
-        self.assertEqual(payload["breakpoint_date"], date(2026, 5, 4))
-        self.assertEqual(payload["detection_method"], "event_embedding_regime_v1")
-        self.assertEqual(payload["detection_granularity"], "week")
-        self.assertEqual(payload["evidence_event_ids"], [str(event_id)])
-        self.assertEqual(payload["evidence_video_ids"], ["v1"])
-        self.assertNotIn("train_start", payload)
-        self.assertNotIn("valid_start", payload)
-        self.assertNotIn("test_start", payload)
-
-    def test_regime_candidate_detail_expands_evidence_videos(self) -> None:
-        candidate_id = uuid.uuid4()
-        event_id = uuid.uuid4()
-        video_id = uuid.uuid4()
-        media_id = uuid.uuid4()
-        published_at = datetime(2026, 5, 4, 2, 0, tzinfo=timezone.utc)
-        candidate = SimpleNamespace(
-            id=candidate_id,
-            candidate_date=date(2026, 5, 4),
-            effective_trade_date=date(2026, 5, 5),
-            peak_date=date(2026, 5, 4),
-            event_start=date(2026, 5, 4),
-            event_end=date(2026, 5, 4),
-            event_type="event_regime_shift",
-            status="draft",
-            score=2.75,
-            confidence=0.68,
-            uncertainty=0.1,
-            drift_score=0.42,
-            dispersion_score=0.1,
-            drift_rolling_z=2.75,
-            summary="候选断点",
-            top_terms=[],
-            evidence_event_ids=[str(event_id)],
-            evidence_video_ids=[str(video_id)],
-            evidence_json={
-                "preview": "候选断点",
-                "granularity": "week",
-                "videos": [{"video_id": str(video_id), "shift_score": 0.42}],
-            },
-            available_at=published_at,
-            train_start=date(2025, 1, 1),
-            valid_start=date(2026, 1, 1),
-            test_start=date(2026, 5, 5),
-        )
-        video = SimpleNamespace(
-            id=video_id,
-            media_id=media_id,
-            url="https://example.com/watch?v=1",
-            title="证据视频标题",
-            published_at=published_at,
-        )
-        media = SimpleNamespace(id=media_id, name="宏观频道")
-        session = Mock()
-        session.execute.return_value = _RowsResult([(video, media)])
-
-        payload = _candidate_detail_out(candidate, session=session).model_dump()
-
-        self.assertEqual(
-            payload["evidence"]["videos"],
-            [
-                {
-                    "video_id": str(video_id),
-                    "title": "证据视频标题",
-                    "url": "https://example.com/watch?v=1",
-                    "published_at": published_at,
-                    "media_id": str(media_id),
-                    "media_name": "宏观频道",
-                    "shift_score": 0.42,
-                }
-            ],
-        )
-
-    def test_regime_signals_accepts_date_range_filters(self) -> None:
-        playlist_id = uuid.uuid4()
-        run_id = uuid.uuid4()
-        session = Mock()
-        session.get.return_value = object()
-        session.execute.return_value = _ScalarResult([])
-
-        with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
-            with patch("raelyn.api.playlists._playlist_last_ready_regime_run_id", return_value=run_id):
-                result = get_playlist_event_regime_signals(
-                    playlist_id=playlist_id,
-                    granularity="day",
-                    since=date(2026, 1, 1),
-                    until=date(2026, 1, 31),
-                )
-
-        self.assertEqual(result, [])
-        stmt = session.execute.call_args.args[0]
-        compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
-        self.assertIn("event_regime_signal.granularity = 'day'", compiled)
-        self.assertIn("event_regime_signal.period_date >= '2026-01-01'", compiled)
-        self.assertIn("event_regime_signal.period_date <= '2026-01-31'", compiled)
-
-    def test_regime_candidates_orders_events_descending(self) -> None:
-        playlist_id = uuid.uuid4()
-        run_id = uuid.uuid4()
-        session = Mock()
-        session.get.return_value = object()
-        session.execute.return_value = _ScalarResult([])
-
-        with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
-            with patch("raelyn.api.playlists._playlist_last_ready_regime_run_id", return_value=run_id):
-                result = get_playlist_event_regime_candidates(playlist_id=playlist_id)
-
-        self.assertEqual(result, [])
-        stmt = session.execute.call_args.args[0]
-        compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
-        self.assertIn("event_regime_candidate.candidate_date desc", compiled)
-
     def test_list_playlist_events_orders_by_observable_time_before_target_time(self) -> None:
         playlist_id = uuid.uuid4()
         session = Mock()
@@ -504,65 +568,6 @@ class PlaylistApiTests(unittest.TestCase):
         self.assertIn("market_event.status = 'accepted'", compiled)
         self.assertIn("market_event_entity.name ilike", compiled)
         self.assertIn("group by market_event_entity.entity_type", compiled)
-
-    def test_regime_candidate_patch_accepts_event_status_names(self) -> None:
-        playlist_id = uuid.uuid4()
-        candidate_id = uuid.uuid4()
-        run_id = uuid.uuid4()
-        candidate = SimpleNamespace(
-            id=candidate_id,
-            regime_run_id=run_id,
-            candidate_date=date(2026, 5, 4),
-            effective_trade_date=date(2026, 5, 5),
-            peak_date=date(2026, 5, 4),
-            event_start=date(2026, 5, 4),
-            event_end=date(2026, 5, 4),
-            event_type="event_regime_shift",
-            status="draft",
-            score=2.75,
-            confidence=0.68,
-            uncertainty=0.1,
-            drift_score=0.42,
-            dispersion_score=0.1,
-            drift_rolling_z=2.75,
-            summary="候选断点",
-            top_terms=[],
-            evidence_event_ids=[],
-            evidence_video_ids=[],
-            evidence_json={},
-            available_at=None,
-        )
-        session = Mock()
-        session.get.side_effect = [object(), candidate]
-
-        with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
-            with patch("raelyn.api.playlists._playlist_last_ready_regime_run_id", return_value=run_id):
-                result = patch_playlist_event_regime_candidate(
-                    playlist_id=playlist_id,
-                    candidate_id=candidate_id,
-                    payload=EventRegimeCandidatePatch(status="accepted"),
-                )
-
-        self.assertEqual(candidate.status, "accepted")
-        self.assertEqual(result.status, "accepted")
-        session.flush.assert_called_once_with([candidate])
-
-    def test_regime_signals_rejects_invalid_date_range(self) -> None:
-        playlist_id = uuid.uuid4()
-        session = Mock()
-        session.get.return_value = object()
-
-        with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
-            with patch("raelyn.api.playlists._playlist_last_ready_regime_run_id", return_value=uuid.uuid4()):
-                with self.assertRaises(HTTPException) as cm:
-                    get_playlist_event_regime_signals(
-                        playlist_id=playlist_id,
-                        since=date(2026, 2, 1),
-                        until=date(2026, 1, 1),
-                    )
-
-        self.assertEqual(cm.exception.status_code, 400)
-        session.execute.assert_not_called()
 
     def test_list_playlist_video_counts_by_period_requires_playback_admission(self) -> None:
         playlist_id = uuid.uuid4()

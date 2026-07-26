@@ -8,7 +8,8 @@ import time
 
 import httpx
 
-from raelyn.services.http_client import httpx_client
+from raelyn.services.browser_identity import BROWSER_USER_AGENT
+from raelyn.services.http_client import browser_http_client, httpx_client
 from raelyn.services.provider_cookies import load_provider_cookie_text
 from raelyn.services.provider_pause import (
     BILIBILI_PROVIDER_PAUSE_REASON,
@@ -23,7 +24,6 @@ _ATTR_RE = re.compile(
     re.IGNORECASE,
 )
 _TITLE_RE = re.compile(r"<title\b[^>]*>(?P<title>.*?)</title>", re.IGNORECASE | re.DOTALL)
-
 _BILIBILI_SPACE_MID_RE = re.compile(r"^/(?P<mid>\d{1,20})(?:/|$)")
 
 
@@ -56,29 +56,28 @@ def _parse_title(html: str) -> str | None:
 
 
 def fetch_open_graph(url: str, *, timeout_seconds: float = 10.0) -> dict[str, Any] | None:
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-    }
-    timeout = httpx.Timeout(timeout_seconds)
+    is_bilibili = "bilibili.com" in (url or "").lower()
+    headers = {} if is_bilibili else {"User-Agent": BROWSER_USER_AGENT}
     cookie_header = None
-    if "bilibili.com" in (url or "").lower():
+    if is_bilibili:
         cookie_header = _load_cookie_header_for_url(url)
         if cookie_header:
             headers["Cookie"] = cookie_header
-    with httpx_client(timeout=timeout, follow_redirects=True) as client:
-        r = client.get(url, headers=headers)
-        if "bilibili.com" in (url or "").lower() and r.status_code in {412, 429}:
-            raise ProviderPauseRequestError(
-                provider="bilibili",
-                reason=BILIBILI_PROVIDER_PAUSE_REASON,
-                message=bilibili_provider_pause_message(),
-            )
-        if r.status_code < 200 or r.status_code >= 300:
-            return None
-        text = r.text or ""
+        with browser_http_client(timeout=timeout_seconds, follow_redirects=True, headers=headers) as client:
+            r = client.get(url)
+    else:
+        timeout = httpx.Timeout(timeout_seconds)
+        with httpx_client(timeout=timeout, follow_redirects=True, headers=headers) as client:
+            r = client.get(url)
+    if is_bilibili and r.status_code in {412, 429}:
+        raise ProviderPauseRequestError(
+            provider="bilibili",
+            reason=BILIBILI_PROVIDER_PAUSE_REASON,
+            message=bilibili_provider_pause_message(),
+        )
+    if r.status_code < 200 or r.status_code >= 300:
+        return None
+    text = r.text or ""
 
     meta = _parse_meta_tags(text)
     title = _parse_title(text)
@@ -86,26 +85,6 @@ def fetch_open_graph(url: str, *, timeout_seconds: float = 10.0) -> dict[str, An
         return None
 
     return {"meta": meta, "title": title}
-
-
-def _extract_bilibili_mid(url: str) -> str | None:
-    try:
-        u = (url or "").strip()
-        if not u:
-            return None
-        p = urlparse(u)
-        host = (p.netloc or "").lower()
-        if "space.bilibili.com" not in host:
-            return None
-        m = _BILIBILI_SPACE_MID_RE.match(p.path or "")
-        if not m:
-            return None
-        mid = m.group("mid")
-        return mid if mid.isdigit() else None
-    except ProviderPauseRequestError:
-        raise
-    except Exception:
-        return None
 
 
 def _parse_netscape_cookies_for_host(text: str, host: str) -> dict[str, str]:
@@ -181,81 +160,97 @@ def _looks_like_bilibili_site_icon(url: str | None) -> bool:
     return False
 
 
-def _fetch_bilibili_space_profile(*, mid: str) -> dict[str, Any] | None:
-    url = f"https://api.bilibili.com/x/space/acc/info?mid={mid}&jsonp=jsonp"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        ),
-        "Referer": f"https://space.bilibili.com/{mid}/",
-        "Accept": "application/json,text/plain,*/*",
-    }
-    cookie_header = _load_cookie_header_for_url(url)
-    if cookie_header:
-        headers["Cookie"] = cookie_header
-    timeout = httpx.Timeout(10.0)
-    try:
-        with httpx_client(timeout=timeout, follow_redirects=True, headers=headers) as client:
-            r = client.get(url)
-            if r.status_code in {412, 429}:
-                raise ProviderPauseRequestError(
-                    provider="bilibili",
-                    reason=BILIBILI_PROVIDER_PAUSE_REASON,
-                    message=bilibili_provider_pause_message(),
-                )
-            if r.status_code < 200 or r.status_code >= 300:
-                return None
-            payload = r.json()
-    except Exception:
+def _extract_bilibili_mid(url: str) -> str | None:
+    parsed = urlparse(str(url or "").strip())
+    if "space.bilibili.com" not in (parsed.netloc or "").lower():
+        return None
+    match = _BILIBILI_SPACE_MID_RE.match(parsed.path or "")
+    return match.group("mid") if match else None
+
+
+def _parse_bilibili_card_profile(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict) or payload.get("code") != 0:
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    card = data.get("card")
+    if not isinstance(card, dict):
         return None
 
-    if not isinstance(payload, dict):
+    name = str(card.get("name") or "").strip() or None
+    description = str(card.get("sign") or card.get("description") or "").strip() or None
+    avatar_url = str(card.get("face") or "").strip() or None
+    if avatar_url and not _looks_like_bilibili_face_url(avatar_url):
+        avatar_url = None
+
+    follower_count = data.get("follower")
+    if not isinstance(follower_count, int) or isinstance(follower_count, bool) or follower_count < 0:
+        follower_count = None
+    video_count = data.get("archive_count")
+    if not isinstance(video_count, int) or isinstance(video_count, bool) or video_count < 0:
+        video_count = None
+
+    profile = {
+        "name": name,
+        "description": description,
+        "avatar_url": avatar_url,
+        "subscriber_count": follower_count,
+        "video_count": video_count,
+        "source": "bilibili_card",
+    }
+    if not any(
+        profile[key] is not None
+        for key in ("name", "description", "avatar_url", "subscriber_count", "video_count")
+    ):
         return None
-    code = payload.get("code")
-    if code in {-799, -412, 412}:
+    return profile
+
+
+def _fetch_bilibili_card_profile(*, url: str, timeout_seconds: float = 10.0) -> dict[str, Any] | None:
+    mid = _extract_bilibili_mid(url)
+    if not mid:
+        return None
+
+    endpoint = f"https://api.bilibili.com/x/web-interface/card?mid={mid}"
+    headers = {
+        "User-Agent": BROWSER_USER_AGENT,
+        "Referer": url,
+        "Accept": "application/json,text/plain,*/*",
+    }
+    cookie_header = _load_cookie_header_for_url(endpoint)
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+
+    with browser_http_client(timeout=timeout_seconds, follow_redirects=True, headers=headers) as client:
+        response = client.get(endpoint)
+    if response.status_code in {412, 429}:
         raise ProviderPauseRequestError(
             provider="bilibili",
             reason=BILIBILI_PROVIDER_PAUSE_REASON,
             message=bilibili_provider_pause_message(),
         )
-    data = payload.get("data")
-    if not isinstance(data, dict):
+    if response.status_code < 200 or response.status_code >= 300:
         return None
 
-    name = data.get("name")
-    avatar_url = data.get("face")
-    description = data.get("sign")
-    if isinstance(name, str):
-        name = name.strip() or None
-    else:
-        name = None
-    if isinstance(avatar_url, str):
-        avatar_url = avatar_url.strip() or None
-    else:
-        avatar_url = None
-    if isinstance(description, str):
-        description = description.strip() or None
-    else:
-        description = None
-
-    if not any([name, avatar_url, description]):
+    try:
+        payload = response.json()
+    except ValueError:
         return None
-    return {
-        "name": name,
-        "description": description,
-        "avatar_url": avatar_url,
-        "source": "bilibili_api",
-    }
+    if isinstance(payload, dict) and payload.get("code") in {-799, -412, 412}:
+        raise ProviderPauseRequestError(
+            provider="bilibili",
+            reason=BILIBILI_PROVIDER_PAUSE_REASON,
+            message=bilibili_provider_pause_message(),
+        )
+    return _parse_bilibili_card_profile(payload)
 
 
 def fetch_media_profile(*, provider: str, url: str) -> dict[str, Any] | None:
     if provider == "bilibili":
-        mid = _extract_bilibili_mid(url)
-        if mid:
-            api_profile = _fetch_bilibili_space_profile(mid=mid)
-            if api_profile:
-                return api_profile
+        card_profile = _fetch_bilibili_card_profile(url=url)
+        if card_profile:
+            return card_profile
 
     og = fetch_open_graph(url)
     if not og:

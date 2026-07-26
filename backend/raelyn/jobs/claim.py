@@ -6,10 +6,10 @@ from datetime import timedelta
 from sqlalchemy import case
 from sqlalchemy import exists
 from sqlalchemy import func
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from raelyn.models import Job, JobEvent, Media, WorkerHeartbeat
+from raelyn.models import EventMapSnapshot, Job, JobEvent, Media, WorkerHeartbeat
 from raelyn.services.provider_pause import is_provider_paused, is_public_discovery_allowed_during_provider_pause, job_provider
 from raelyn.services.system_pause import is_paused
 from raelyn.services.worker_role_pause import is_worker_role_paused
@@ -45,6 +45,35 @@ _DIRECT_PROVIDER_JOB_TYPES = {
     "video.backfill_subtitles.bilibili": "bilibili",
     "video.enrich_metadata.youtube": "youtube",
 }
+
+
+def _finalize_requeued_event_map_execution(
+    session: Session,
+    *,
+    job: Job,
+    execution_token: uuid.UUID | None,
+    now,
+    reason: str,
+) -> int:
+    """由回收方终结旧 token 的快照；不触碰新执行仍会复用的 EventMapState。"""
+
+    if job.type != "playlist.build_event_map_snapshot" or execution_token is None:
+        return 0
+    result = session.execute(
+        update(EventMapSnapshot)
+        .where(
+            EventMapSnapshot.job_id == job.id,
+            EventMapSnapshot.execution_token == execution_token,
+            EventMapSnapshot.status == "running",
+        )
+        .values(
+            status="failed",
+            error_message=str(reason or "event map execution requeued")[:2000],
+            finished_at=now,
+            updated_at=now,
+        )
+    )
+    return int(result.rowcount or 0)
 
 
 def _all_claim_types_worker_role_paused(session: Session, type_in: list[str] | None) -> bool:
@@ -107,6 +136,14 @@ def _merge_requeue_into_existing_pending_job(
     if not pending:
         return False
 
+    old_execution_token = job.execution_token
+    _finalize_requeued_event_map_execution(
+        session,
+        job=job,
+        execution_token=old_execution_token,
+        now=scheduled_for,
+        reason=reason,
+    )
     previous_scheduled_for = pending.scheduled_for
     previous_priority = int(pending.priority or 0)
     pending.scheduled_for = min(previous_scheduled_for or scheduled_for, scheduled_for)
@@ -116,11 +153,13 @@ def _merge_requeue_into_existing_pending_job(
     pending.error_stack = None
     pending.started_at = None
     pending.finished_at = None
+    pending.execution_token = None
 
     job.status = "failed"
     job.finished_at = utcnow()
     job.worker_id = None
     job.lease_expires_at = None
+    job.execution_token = None
     job.progress_current = None
     job.progress_total = None
     job.error_message = reason
@@ -211,6 +250,7 @@ def _fail_sync_job_for_execution_heartbeat_stale(
     job.error_stack = None
     job.worker_id = None
     job.lease_expires_at = None
+    job.execution_token = None
     job.progress_current = None
     job.progress_total = None
 
@@ -245,7 +285,11 @@ def _fail_sync_job_for_execution_heartbeat_stale(
 
 def requeue_expired_running_jobs(session: Session) -> int:
     now = utcnow()
-    stmt = select(Job).where(Job.status == "running", Job.lease_expires_at.is_not(None), Job.lease_expires_at < now)
+    stmt = (
+        select(Job)
+        .where(Job.status == "running", Job.lease_expires_at.is_not(None), Job.lease_expires_at < now)
+        .with_for_update(skip_locked=True)
+    )
     jobs = session.execute(stmt).scalars().all()
     for job in jobs:
         if _merge_requeue_into_existing_pending_job(
@@ -256,9 +300,17 @@ def requeue_expired_running_jobs(session: Session) -> int:
             reason="lease expired; merged into existing pending job",
         ):
             continue
+        _finalize_requeued_event_map_execution(
+            session,
+            job=job,
+            execution_token=job.execution_token,
+            now=now,
+            reason="event map execution lease expired; requeued",
+        )
         job.status = "pending"
         job.worker_id = None
         job.lease_expires_at = None
+        job.execution_token = None
         session.add(JobEvent(job_id=job.id, level="warn", message="lease expired; requeued"))
         job.started_at = None
         job.finished_at = None
@@ -347,9 +399,17 @@ def requeue_orphan_running_jobs(
             reason="worker stale; merged into existing pending job",
         ):
             continue
+        _finalize_requeued_event_map_execution(
+            session,
+            job=job,
+            execution_token=job.execution_token,
+            now=now,
+            reason="event map worker stale; execution requeued",
+        )
         job.status = "pending"
         job.worker_id = None
         job.lease_expires_at = None
+        job.execution_token = None
         job.scheduled_for = now
         job.progress_current = None
         job.progress_total = None
@@ -420,6 +480,7 @@ def claim_next_job(
 
     job.status = "running"
     job.worker_id = worker_id
+    job.execution_token = uuid.uuid4()
     # Clear stale errors from previous attempts so the UI doesn't show an old error
     # while the job is currently running.
     job.error_message = None

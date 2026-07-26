@@ -63,6 +63,7 @@
 - 返回概览页统计数据、最近媒体 / 视频 / 播放列表，以及 ASR / LLM 使用量。
 - 默认使用短 TTL 缓存，避免普通页面刷新反复扫描 `job` / `asset` 等大表。
 - query：`refresh=true` 可绕过缓存重新计算。
+- `database_size_bytes` 返回 PostgreSQL 当前数据库的总占用，口径为 `pg_database_size(current_database())`，包含表、索引和 TOAST；非 PostgreSQL 数据库返回 `null`。
 - 资产容量统计会优先使用配置的 `S3_BUCKET`；若资产表中没有该 bucket 且只存在一个实际 bucket，则返回实际 bucket 的统计，并通过 `s3_configured_bucket_mismatch` 标记配置漂移。
 
 ## Media
@@ -365,8 +366,8 @@
 - 手动创建 `playlist.backfill_events` 父任务；父任务按播放列表内容时间轴拆分月份范围并投递 `playlist.backfill_events_range` 子任务，范围任务运行时再查询该月内已有 `plain` transcript 的视频并投递 `video.extract_events_batch` 或 `video.extract_events` 子任务。批量抽取任务执行时每次 LLM 请求只包含 1 个视频，避免多个视频共用一个大 JSON 生成导致本地模型长时间无返回。
 - 事件抽取在 Ollama `/api/generate` 模式下使用 JSON 输出约束、低温度采样、流式读取、`num_ctx/num_predict` 上限和 per-model advisory lock，降低标题、实体和证据之间的结构化抽取漂移，并避免同一 Ollama 大模型被多个事件抽取请求同时压满。v2 协议要求 LLM 只返回 `evidence_source_ids`，后端用 source map 写入可验证证据。
 - 月份范围任务的优先级低于它投递的视频事件抽取任务；同一批回填中，一旦 `video.extract_events_batch` 或 `video.extract_events` 入队，worker 会优先消费事件抽取，再继续领取后续月份范围任务。
-- body：`{ "force": false }`；`force=false` 只补齐缺失当前 transcript / prompt / model 口径事件的视频，`force=true` 会先取消当前播放列表相关的活跃事件抽取、事件 embedding 与语义快照构建任务，再重新抽取同一 prompt / model 口径下的视频事件。
-- `force=true` 的任务清理只取消 `pending/running` 任务并保留历史记录：`pending` 立即变为 `canceled`，`running` 设置取消请求；同时将当前播放列表 `pending/running` 的 event-regime run 收敛为 `canceled` 并保持 dirty。
+- body：`{ "force": false }`；`force=false` 只补齐缺失当前 transcript / prompt / model 口径事件的视频，`force=true` 会先取消当前播放列表相关的活跃事件抽取、事件 embedding 与事件地图构建任务，再重新抽取同一 prompt / model 口径下的视频事件。
+- `force=true` 的任务清理只取消 `pending/running` 任务并保留历史记录；地图 state 保持 dirty，现有 ready 快照不因重抽被提前切走。
 - 返回任务 ID、任务状态与进度。新 transcript 生成后也可由 `AUTO_EXTRACT_NEW_VIDEO_EVENTS=true` 自动投递单视频抽取。
 
 ### `GET /api/playlists/{playlist_id}/events/summary`
@@ -389,56 +390,74 @@
 
 ### `GET /api/playlists/{playlist_id}/events/{event_id}`
 
-- 返回单个事件详情，包含实体、证据视频文本、事件内 cause/effect/affects/mentions 边与原始抽取载荷。
+- 返回单个事件详情，包含实体、证据视频文本、事件内 cause/effect/affects/mentions 边与原始抽取载荷。新抽取关系的 `cause` / `effect` 自然语言命题保留在原始载荷；边的实体 ID 只由显式 `source_entity_key` / `target_entity_key` 精确解析，不由命题文本推断。
 - `evidence[]` 额外返回 `source_id`、`source_kind`、`source_label`、`verified`；v2 证据按标题、描述、转写片段定位，`verified=true` 表示 source id 已命中当前请求 source map 且写入 source sha256。
 
 ### `PATCH /api/playlists/{playlist_id}/events/{event_id}`
 
 - body：`{ "status": "accepted|draft|rejected" }`。
-- 将低置信或人工审核事件改为 accepted 后，会投递 `event.embed` 并标记播放列表语义快照 dirty；rejected/draft 不进入自动语义分析。内部 dirty 标识仍沿用 `event_regime` 兼容命名。
+- 将低置信或人工审核事件改为 accepted 后，会投递 `event.embed` 并标记播放列表事件地图 dirty；rejected/draft 不进入地图构建。
 
-### `GET /api/playlists/{playlist_id}/events/graph`
+### `GET /api/playlists/{playlist_id}/events/map/manifest`
 
-- 返回第一版关系图数据：`nodes` 包含事件与实体，`edges` 包含事件证据、事件-实体关系以及事件内因果/影响边。
-- 该接口基于关系表生成，不依赖外部图数据库。
+- 唯一可省略 `snapshot_id` 的地图接口；解析 `event_map_state.current_snapshot_id`。
+- query 可选 `compact=true`，供构建状态轮询使用；该模式跳过覆盖统计与两级主题数据，完成后客户端应重新请求完整 manifest。
+- 返回构建/dirty generation、当前 ready snapshot、`dimension=3`、场景协议版本、canonical/record/topic/story/entity 数量、三维固定坐标边界、类别映射、两级主题中心/半径/父子索引、主题代表事件的 `anchor_canonical_id/anchor_point_index/anchor_title`、按事件覆盖区间计算的月度 canonical/record 分布、时间边界和峰值 RSS。
+- 完整 manifest 的 `semantic_families[]` 给出稳定语义族的 `code/label/color`；每个 `type_categories[]` 项通过 `semantic_family/semantic_family_label/semantic_color` 归入其中一个语义族。该映射同时适用于既有 ready 快照，无需仅为颜色重建投影。
+- `status` 描述当前可浏览快照；`build_status=idle|pending|running|failed` 和 `build_error` 独立描述下一版构建，因此后台失败不会让旧 ready 地图消失。
+- 有旧 ready 快照且后台构建新版本时，`status=ready`、`building=true`，浏览仍固定到旧快照。
+- 覆盖字段：`event_total`、`event_embedded`、`event_eligible`、`event_skipped`、`event_failed`。事件时间缺失不能进入地图，不能用 `available_at` 补位。
 
-### `POST /api/playlists/{playlist_id}/regime/rebuild`
+### `GET /api/playlists/{playlist_id}/events/map/scene`
 
-- `/regime/*` 是兼容路由名；产品概念为“事件图谱 / 语义快照”，不表示市场 Regime。
-- 手动创建 `playlist.build_event_regime_snapshot` 兼容任务。
-- 语义快照只消费 `accepted`、`event_time_start` 可解析且当前口径 `market_event_embedding.status=ready`、vector 有效的事件。
-- 信号按 `event_time_start` 归入 day / week / month 周期，不使用平台发布时间、采集时间或 `available_at` 作为事件发生时间。`second/day` 精度进入三个尺度，`month` 精度只进入月尺度，`year/unknown` 不进入当前细尺度，避免伪造 1 月 1 日峰值。
-- 同一播放列表整体作为一个语料库，不按来源拆分或加权。
-- 同一播放列表已有 `pending/running` 的重建 run 时复用现有 run。
+- query：必填 `snapshot_id`，且该快照必须属于播放列表并为 ready。
+- 返回不可变 `application/octet-stream`，按 `point_index` 递增；协议 v2 每条 56 字节，小端布局 `<I16sfffiiBBBBIII>`。
+- 字段依次是 point index、canonical UUID、float32 x/y/z、事件起止 epoch-day、类型/精度/flags/保留位、member 数、一级星域索引、二级主题索引。
+- 全局节点是一件 canonical 真实事件，不是一条原始记录；不传输原始 embedding。响应可按 snapshot 长期缓存。
 
-### `GET /api/playlists/{playlist_id}/regime/summary`
+### `GET /api/playlists/{playlist_id}/events/map/entities`
 
-- 返回语义快照状态、ready run、所有有效 granularity 合并后的 signal 日期边界、变化点数量、活跃构建任务与当前活跃历史抽取任务 `backfill_job`；仅有 month precision 信号时也会返回时间范围。
-- 覆盖字段为实时口径：`event_total` 是 accepted 总数，`event_embedded` 是当前口径 ready embedding 数，`event_eligible` 是同时具备事件时间与有效 ready vector 的数量，`event_skipped=event_total-event_eligible`，`event_failed` 是 failed / skipped-over-budget 数；`event_scale_excluded` 单列时间精度不足以进入当前日/周/月尺度、但不属于整体 skipped 的数量。
+- query：必填 `snapshot_id`；可选 `start_date`、`end_date`、`q`、`limit`。
+- 从该快照的 `event_map_entity_index` 统计 canonical 去重数；时间窗口只使用事件发生区间，不扫描 revision JSON，也不回连实时实体表。
+- PostgreSQL 查询使用事务级 `EVENT_MAP_ENTITY_QUERY_TIMEOUT_SECONDS`，并固定为快照段线性扫描 + Hash Join，禁止退化成逐 canonical 随机 Nested Loop；超时返回 `503`，不会留下后台无限查询。
 
-### `GET /api/playlists/{playlist_id}/regime/signals`
+### `GET /api/playlists/{playlist_id}/events/map/entity-indices`
 
-- query：可选 `granularity=day|week|month`、`since=YYYY-MM-DD`、`until=YYYY-MM-DD`。
-- 返回当前 ready 语义快照的连续多尺度信号面板，日期轴使用事件 `event_time_start`。
-- 关键字段：`granularity`、`period_date`、`rolling_window`、`event_count`、`ready_embedding_count`、`drift_score`、`drift_rolling_mean/std/z`、`dispersion_mean/std/p25/p75`、`projection_*`、`linked_candidate_id`。
+- query：必填 `snapshot_id`、`normalized_key`；可选 `entity_type`、`start_date`、`end_date`。
+- 返回按升序排列的小端 uint32 canonical point index。
+- 同样受事务级事件地图查询超时保护；实体键索引查询继续允许选择性 Nested Loop，不强制扫描整个快照。
 
-### `GET /api/playlists/{playlist_id}/regime/candidates`
+### `GET /api/playlists/{playlist_id}/events/map/canonical/{canonical_id}`
 
-- 返回当前 ready 语义快照的语义变化点，默认按 `candidate_date` 倒序排列。
-- 候选证据来自 LLM 事件与 KG 实体，不再来自整段 transcript embedding 的视频候选。
+- query：必填 `snapshot_id`。
+- 返回真实事件摘要、时间、topic、最多 100 条 member 记录、实体角色、冻结的实体关系、证据及相邻 story edge。记录、关系和证据来自快照 revision，不回查可变事件子表，也不读写另一版快照。
 
-### `GET /api/playlists/{playlist_id}/regime/candidates/{candidate_id}`
+### `GET /api/playlists/{playlist_id}/events/map/topic/{topic_id}`
 
-- 返回变化点详情，包含完整周/月窗口、分数、代表事件 ID、证据视频 ID 与检测元数据；代表事件是在候选周期内按 centroid 距离选出的至多 20 条样本，`evidence.videos` 会按其视频 ID 展开视频标题、媒体名、发布时间与 URL。
+- query：必填 `snapshot_id`；可选 `start_date`、`end_date`、`event_type_code` 和 `limit`（1–24，前端使用 20）。日期与类型条件按 canonical 的事件时间区间和类型过滤。
+- 返回主题层级（`level`、`parent_topic_id`）、标签、关键词、快照全量计数及过滤后的代表 canonical；每个代表项包含 point index、标题、事件时间区间、类型和成员记录数。该接口供右侧“星域 → 主题 → 当前窗口代表事件”下钻使用。
 
-### `PATCH /api/playlists/{playlist_id}/regime/candidates/{candidate_id}`
+### `GET /api/playlists/{playlist_id}/events/map/story/{story_id}`
 
-- body：`{ "status": "draft|accepted|rejected", "event_type": "event_regime_shift|transition|regime|burst" }`，字段均可选。
+- query：必填 `snapshot_id`。
+- 返回故事线及有证据的有向 edge；普通三维近邻不会自动成为 story。
 
-### `GET /api/playlists/{playlist_id}/regime/export/events`
+### `GET /api/playlists/{playlist_id}/events/map/search`
 
-- 返回 `{ "window_mode": "event_regime", "events": [...] }`；`window_mode` 值仅为兼容标识。
-- 每个事件窗口同时保留 `event_time_start` 与 `available_at`：前者表示事件发生 / 覆盖时间，后者只作来源审计。本项目不定义市场回测或人工 Regime 验证流程。
+- query：必填 `snapshot_id`、`q`；可选 `limit`。
+- 在 canonical、topic 和 entity 中搜索；topic 通过快照内 anchor canonical 返回可定位 `point_index`。
+
+### `POST /api/playlists/{playlist_id}/events/map/rebuild`
+
+- 递增 dirty generation 并立即投递 `playlist.build_event_map_snapshot`；相同播放列表已有 pending/running build 时复用任务。
+- 构建只消费 accepted、事件时间可解析且当前 embedding 口径 ready 的记录。
+- 构建失败、取消或超出 12 GiB 进程树 RSS 时保留现有 ready 指针。
+
+### `GET /api/playlists/{playlist_id}/events/export`
+
+- query：`level=canonical|record`，可选 `snapshot_id`；省略时使用 current ready。
+- canonical 口径用于消费去重后的真实事件；record 口径保留每条来源记录与所属 canonical。
+- 返回 `time_basis=event_time`，不把 `available_at` 导出为发生时间。
 
 ### `POST /api/briefs/generate`
 

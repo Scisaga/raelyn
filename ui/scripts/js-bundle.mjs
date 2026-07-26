@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { readdirSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 function listFilesRecursive(dir) {
@@ -30,7 +30,22 @@ export async function buildAppBundle({ uiDir, root, minify = true }) {
     legalComments: "none",
   });
 
+  const vendorDir = resolve(root, "static/vendor");
+  mkdirSync(vendorDir, { recursive: true });
+  await build({
+    entryPoints: [resolve(uiDir, "src/vendor/event-map-three-entry.js")],
+    outfile: resolve(vendorDir, "event-map-three.js"),
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    target: ["es2020"],
+    minify,
+    sourcemap: false,
+    legalComments: "none",
+  });
+
   console.log("[ui] built:", outfile);
+  console.log("[ui] built:", resolve(vendorDir, "event-map-three.js"));
 }
 
 export function jsSourceSignature(uiDir) {

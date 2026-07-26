@@ -6,6 +6,10 @@ export function createOverviewViewMethods() {
       this.stats.videoCount = payload.video_count || 0;
       this.stats.pendingJobs = payload.pending_jobs || 0;
       this.stats.failedJobs = payload.failed_jobs || 0;
+      this.stats.databaseSizeBytes =
+        payload.database_size_bytes === null || payload.database_size_bytes === undefined
+          ? null
+          : Number(payload.database_size_bytes);
       this.stats.recentMedia = Array.isArray(payload.recent_media) ? payload.recent_media : [];
       this.stats.recentVideos = Array.isArray(payload.recent_videos) ? payload.recent_videos : [];
       this.stats.recentPlaylists = Array.isArray(payload.recent_playlists) ? payload.recent_playlists : [];

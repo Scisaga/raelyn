@@ -27,6 +27,10 @@
   - 单进程在连接池已满时允许临时额外打开的 DB 连接数，默认 `2`；空闲后不会作为常驻连接保留。
 - `DATABASE_POOL_TIMEOUT_SECONDS`
   - 获取 DB 连接的等待超时，默认 `30` 秒。
+- `EVENT_MAP_ENTITY_QUERY_TIMEOUT_SECONDS`
+  - 事件地图实体排行和实体索引查询的事务级 PostgreSQL 超时，默认 `10` 秒；超时只终止当前请求，不污染连接池后续事务。
+- `EVENT_MAP_READY_SNAPSHOT_RETENTION`
+  - 每个播放列表保留的 ready 事件地图快照数，默认 `2`（current 与上一版）；更旧快照由 analysis worker 的保留任务逐个清理。
 - `S3_ENDPOINT`
 - `S3_ACCESS_KEY`
 - `S3_SECRET_KEY`
@@ -60,8 +64,8 @@
 
 ### 高优先级代理规则
 
-- `YTDLP_PROXY` 只用于 YouTube 的 `yt-dlp` 同步 / 下载请求。
-- 非 `yt-dlp` 的资料抓取 / 头像缓存、B 站请求、ASR / LLM / Embedding / 健康检查都不使用 `YTDLP_PROXY`。
+- `YTDLP_PROXY` 只用于 YouTube 的 `yt-dlp` 资料同步、频道头像下载和视频同步 / 下载请求。
+- 非 `yt-dlp` 的资料 / 头像抓取、B 站请求、ASR / LLM / Embedding / 健康检查都不使用 `YTDLP_PROXY`。
 - 应用默认不隐式读取进程环境中的 `HTTP_PROXY` / `HTTPS_PROXY`；这些变量存在于 shell 或 systemd 环境里，不代表本应用会把外部请求送进代理。
 - 若 YouTube 同步/下载需要代理，必须配置 `YTDLP_PROXY`，不要依赖 `HTTP_PROXY` / `HTTPS_PROXY` 的副作用。
 - 若运行环境本身设置了 `HTTP_PROXY` / `HTTPS_PROXY`，需要让 `NO_PROXY` / `no_proxy` 包含 `127.0.0.1`、`localhost`、`::1` 和 `host.docker.internal`，避免 bgutil provider、MinIO 等本机服务被环境代理劫持。
@@ -141,22 +145,26 @@
   - 可设为 `0`，表示当前节点不启动 `embedding` worker；事件 embedding 任务会保留在 `pending`，直到有 embedding worker 可领取。
 - `ANALYSIS_WORKER_CONCURRENCY`
   - `devctl.sh` / Docker 单容器入口启动 `analysis` worker 的进程数，默认 `1`。
-  - 可设为 `0`，表示当前节点不启动 `analysis` worker；兼容任务 `playlist.mark_event_regime_dirty` 与语义快照构建任务会保留在 `pending`，直到有 analysis worker 可领取。
-  - 事件抽取、embedding 状态变化和人工事件状态修改后的 dirty 合并也由 `analysis` worker 处理；需要事件图谱链路正常推进时至少保留 1 个。
+  - 可设为 `0`，表示当前节点不启动 `analysis` worker；`playlist.mark_event_map_dirty`、`playlist.build_event_map_snapshot` 与 `playlist.prune_event_map_snapshots` 会保留在 `pending`。
+  - 新记录按 2 分钟静默、15 分钟最大等待合并为地图快照；需要事件地图自动更新时至少保留 1 个。
+- `ANALYSIS_CPU_THREADS`
+  - 每个 `analysis` worker 的 CPU 线程预算，默认 `2`。
+  - Python worker 入口会在导入 NumPy / sklearn 前，把该值统一设置给 `OMP_NUM_THREADS`、`OPENBLAS_NUM_THREADS` 和 `MKL_NUM_THREADS`；开发脚本、Docker 与直接执行 `python -m raelyn.worker` 的行为一致。
+  - 该配置作用于 `analysis`、all-types 及 `WORKER_TYPES` 显式包含 analysis 任务的 worker，不改变 API、scheduler 或其他专职 worker 的线程环境；修改后必须重启对应 worker 才会生效。
 - `AI_WORKER_CONCURRENCY`
   - `devctl.sh` / Docker 单容器入口启动 `ai` worker 的进程数，默认 `1`。
   - 每个 `ai` worker 同一时间执行一个 LLM 任务，例如 `video.extract_events`、播放列表事件回填范围扫描、转写润色或简报生成。
-  - 大型同播放列表事件回填可适当提高该值；AI worker 只竞争单个视频自己的事件写入，播放列表 dirty 由 `analysis` worker 的 `playlist.mark_event_regime_dirty` 延迟合并。
+  - 大型同播放列表事件回填可适当提高该值；AI worker 只竞争单个视频自己的事件写入，播放列表 dirty 由 `analysis` worker 的 `playlist.mark_event_map_dirty` 合并。
   - 该配置只增加 worker 进程数，不改变 LLM 请求认证、连接复用或模型参数；提升前应确认 LLM 服务可承受对应并发。Ollama `/api/generate` 事件抽取还会额外使用 per-model advisory lock，忙时重排任务，避免多个事件抽取请求同时压到同一个本地大模型。
 - `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES`
-  - 语义快照开始和每批处理中允许继续执行的最低 `/proc/meminfo` `MemAvailable`，默认 `1073741824`（1 GiB）。
+  - 事件地图快照开始和每批处理中允许继续执行的最低 `/proc/meminfo` `MemAvailable`，默认 `1073741824`（1 GiB）。
   - 低于该值时任务直接失败并记录原因，不进入重试队列。
 - `ANALYSIS_MAX_RSS_BYTES`
-  - 语义快照允许的最大 worker 进程 RSS，代码默认值和 `.env.example` 都是 `6442450944`（6 GiB）。每批读取前后都会检查当前进程 RSS。
+  - 事件地图快照允许的最大进程树 RSS，代码默认值和 `.env.example` 都是 `12884901888`（12 GiB）。流式处理每批检查 worker RSS；UMAP 阶段检查父任务与投影子进程的合计 RSS。
   - 高于该值时任务直接失败并记录原因，不进入重试队列；生产环境若使用 systemd / cgroup，应设置相同或略高的硬上限。
-  - 该值是安全上限，不是预分配内存。快照已按批流式聚合，32 GiB 主机无需仅因物理内存更大就提高；只有观测到实际 RSS 接近 6 GiB、`MemAvailable` 仍持续充足且没有同机资源竞争时，再同步调整环境变量与 cgroup 上限。
+  - 该值是安全上限，不是预分配内存。当前 32 GiB 主机为快照任务保留至少 1 GiB `MemAvailable`，并把峰值写入 `event_map_snapshot.peak_rss_bytes`；调高时必须同步核对同机竞争和 cgroup 上限。
 - `ANALYSIS_STREAM_BATCH_SIZE`
-  - 语义快照两遍流式读取 ready event embedding 的批大小，代码默认 `2000`；`.env.example` 可给部署提供更保守的覆盖值。
+  - 事件地图输入冻结、投影 memmap、IncrementalPCA 和对象写库的批大小，代码默认 `2000`；`.env.example` 可给部署提供更保守的覆盖值。
 - `EVENT_EXTRACTION_CHUNK_MAX_CHARS`
   - `video.extract_events` 读取 `plain` transcript 后的 LLM 分块字符上限，默认 `12000`。
 - `EVENT_EXTRACTION_OLLAMA_STREAM`
@@ -185,9 +193,9 @@
 - `WORKER_STALE_AFTER_SECONDS`
   - 进程心跳超过该阈值未更新时，其他 worker 可将其 `running` 任务回收到 `pending`，默认 `20` 秒。
 - `WORKER_EXECUTION_STALE_AFTER_SECONDS`
-  - 下载类任务额外检查主执行线程活动心跳 `worker_heartbeat.active_at`，默认 `120` 秒。
-  - 该阈值用于发现“心跳线程仍活着，但主执行循环已经卡死”的情况；下载进度更新会刷新执行心跳。
-  - 下载类 worker 超过该阈值未推进时会主动退出，由 supervisor 重启并释放下载并发锁。
+  - 同步/下载类任务额外检查主执行线程活动心跳 `worker_heartbeat.active_at`，默认 `120` 秒。
+  - 该阈值用于发现“心跳线程仍活着，但主执行循环已经卡死”的情况；YouTube 全量同步按 yt-dlp 的真实分页与条目日志刷新执行心跳，下载任务按下载进度刷新。
+  - 同步/下载类 worker 超过该阈值未推进时会主动退出，由 supervisor 重启并释放对应并发锁。
 - `ORPHAN_REQUEUE_PRIORITY_BUMP`
   - 孤儿 `running` 任务被回收后提升的优先级基数，默认 `1000`，用于让回收任务回到队头。
 
@@ -225,6 +233,7 @@
 - `EMBEDDING_DIM`
 - `EMBEDDING_TIMEOUT_SECONDS`
 - `EMBEDDING_WORKER_CONCURRENCY`
+- `ANALYSIS_CPU_THREADS`
 - `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES`
 - `ANALYSIS_MAX_RSS_BYTES`
 - `ANALYSIS_STREAM_BATCH_SIZE`
@@ -358,7 +367,9 @@ Embedding 健康检查固定探测 `${EMBEDDING_URL}/health`；实际向量请�
 说明：
 
 - 用于 `video.extract_events` / `video.extract_events_batch` 从视频标题、描述与 transcript source map 抽取结构化市场原子事件。
-- 当前事件抽取最终请求会追加 v2 输出协议：顶层为 `videos[]`，事件证据使用 `evidence_source_ids` 引用输入 source id，后端再写入 verified provenance。自定义 prompt 若描述旧 `events[]` 或 `evidence_quotes` 格式，以最终追加的 v2 协议为准。
+- 当前事件抽取最终请求会追加 v3 输出协议：顶层为 `videos[]`，事件证据使用 `evidence_source_ids` 引用输入 source id，后端再写入 verified provenance。自定义 prompt 若描述旧 `events[]` 或 `evidence_quotes` 格式，以最终追加的 v3 协议为准。
+- v3 关系契约把语义命题与图端点分开：`cause` / `effect` 保持可独立阅读的自然语言命题；`source_entity_key` / `target_entity_key` 只能精确引用同事件 `entities / assets / sectors / macro_variables` 中对象由后端规则生成的唯一 `normalized_key`，无对应端点时用空字符串。后端不会拿命题文本、近似名称或跨事件实体猜端点。
+- 默认 `prompt_version` 基线为 `llm_event_v4_explicit_relation_endpoints`。升级不会自动重抽历史视频；只有新视频分析或显式重新投递的抽取任务使用新契约。
 - 默认提示词要求 `title`、`summary`、`assets`、`sectors`、`entities` 的对象口径一致；房地产、住房、楼市等具体市场对象不能泛化成单独的“市场”。
 - 默认提示词要求股票事件在可可靠判断时写明上市市场、交易所或代码，并拆分发行公司、可交易证券、行业、国家和交易所实体；普通词不能误标成公司或资产。
 - 默认提示词会过滤操作策略、荐股建议、观察名单、族群归类、关注提醒与纯预测；只有其中包含已发生事实变化时，才抽取事实变化本身。

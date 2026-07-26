@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 import httpx
@@ -35,6 +36,25 @@ def embedding_spec() -> EmbeddingSpec:
 
 def embedding_enabled() -> bool:
     return bool(str(settings.embedding_url or "").strip())
+
+
+def validate_embedding_vector(vector: Any, spec: EmbeddingSpec | None = None) -> list[float]:
+    expected = spec or embedding_spec()
+    if not isinstance(vector, list):
+        raise EmbeddingError("embedding response vector is not a list")
+    if len(vector) != expected.dim:
+        raise EmbeddingError(
+            f"embedding response vector dimension {len(vector)} does not match configured dimension {expected.dim}"
+        )
+    try:
+        values = [float(value) for value in vector]
+    except (TypeError, ValueError) as exc:
+        raise EmbeddingError("embedding response vector contains a non-numeric value") from exc
+    if not all(math.isfinite(value) for value in values):
+        raise EmbeddingError("embedding response vector contains NaN or infinity")
+    if not any(value != 0.0 for value in values):
+        raise EmbeddingError("embedding response vector is all zero")
+    return values
 
 
 def _embedding_endpoint_url() -> str:
@@ -152,9 +172,7 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
         if not isinstance(index, int) or index < 0 or index >= len(texts):
             raise EmbeddingError("embedding response row index is invalid")
         vector = row.get("embedding")
-        if not isinstance(vector, list) or not vector:
-            raise EmbeddingError("embedding response missing vector")
-        vectors[index] = [float(value) for value in vector]
+        vectors[index] = validate_embedding_vector(vector, spec)
 
     if any(vector is None for vector in vectors):
         raise EmbeddingError("embedding response missing indexed vectors")

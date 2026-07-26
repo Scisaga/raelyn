@@ -18,26 +18,33 @@
         class="fixed inset-0 z-50 overflow-hidden raelyn-startup-screen"
         x-show="startupGateVisible"
         x-transition.opacity.duration.300ms
-        :class="startupFluidActive ? 'raelyn-startup-screen-fluid' : ''"
+        :class="startupStarfieldActive ? 'raelyn-startup-screen-starfield' : ''"
         :role="apiAuthPromptVisible ? 'dialog' : 'status'"
         aria-live="polite"
         :aria-label="startupGateAriaLabel()"
       >
-        <canvas x-ref="startupFluidCanvas" class="absolute inset-0 h-full w-full raelyn-startup-canvas" aria-hidden="true"></canvas>
+        <canvas x-ref="startupStarfieldCanvas" class="absolute inset-0 h-full w-full raelyn-startup-canvas" aria-hidden="true"></canvas>
         <div class="absolute inset-0 raelyn-startup-overlay" aria-hidden="true"></div>
 
         <div class="pointer-events-none relative z-[3] flex min-h-screen items-center justify-center px-6 py-8">
           <div class="raelyn-startup-stage w-full max-w-md">
             <div class="raelyn-startup-panel">
-              <div class="raelyn-startup-logo" aria-hidden="true">
-                <div class="raelyn-startup-orb">
-                  <img src="/static/brand/logo-r.png" alt="" class="raelyn-startup-orb-mark" loading="eager" decoding="async" />
+              <div class="raelyn-startup-singularity" aria-hidden="true">
+                <div class="raelyn-startup-accretion"></div>
+                <div class="raelyn-startup-horizon">
+                  <img src="/static/brand/logo-r.png" alt="" class="raelyn-startup-horizon-mark" loading="eager" decoding="async" />
                 </div>
+                <div class="raelyn-startup-front-arc"></div>
               </div>
 
-              <div class="mt-7 text-center">
+              <div class="mt-6 text-center">
                 <div class="text-[11px] font-semibold uppercase tracking-[0.48em] text-slate-500">RAELYN</div>
-                <div class="mt-4 text-lg font-medium tracking-[0.01em] text-slate-100" x-text="startupGateMessage()"></div>
+                <div class="mt-3 text-sm font-medium tracking-[0.22em] text-slate-300">事件语义星域</div>
+                <div
+                  class="mt-4 text-sm text-slate-400"
+                  x-show="!apiAuthPromptVisible"
+                  x-text="startupGateMessage()"
+                ></div>
               </div>
 
               <div class="raelyn-startup-dots mt-5" x-show="!apiAuthPromptVisible" x-transition.opacity.duration.200ms aria-hidden="true">

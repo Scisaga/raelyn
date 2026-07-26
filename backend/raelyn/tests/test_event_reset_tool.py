@@ -26,7 +26,8 @@ class EventResetToolTests(unittest.TestCase):
 
     def test_reset_job_types_include_batch_event_pipeline(self) -> None:
         self.assertIn("video.extract_events_batch", reset_event_extraction_v2.EVENT_RESET_JOB_TYPES)
-        self.assertIn("playlist.build_event_regime_snapshot", reset_event_extraction_v2.EVENT_RESET_JOB_TYPES)
+        self.assertIn("playlist.build_event_map_snapshot", reset_event_extraction_v2.EVENT_RESET_JOB_TYPES)
+        self.assertIn("playlist.prune_event_map_snapshots", reset_event_extraction_v2.EVENT_RESET_JOB_TYPES)
 
 
 if __name__ == "__main__":

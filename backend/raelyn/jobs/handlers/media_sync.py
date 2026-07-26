@@ -22,7 +22,7 @@ from raelyn.services.provider import build_media_videos_url
 from raelyn.services.transcripts import TRANSCRIPT_VARIANTS
 from raelyn.services.video_actions import schedule_video_download
 from raelyn.services.video_meta import parse_published_at
-from raelyn.services.event_analysis import schedule_playlists_event_regime_dirty_for_video
+from raelyn.services.event_analysis import schedule_playlists_event_map_dirty_for_video
 from raelyn.services.ytdlp import YtdlpCookiesInvalidError, ytdlp_extract_info
 from raelyn.services.ytdlp_errors import is_provider_media_unavailable_error
 from raelyn.timeutil import utcnow
@@ -61,6 +61,44 @@ _RAW_INFO_KEEP_KEYS = [
     "duration",
     "webpage_url",
 ]
+
+
+def _youtube_profile_avatar_url(info: dict[str, Any]) -> str | None:
+    channel_thumbnail = str(info.get("channel_thumbnail") or "").strip()
+    if channel_thumbnail:
+        return channel_thumbnail
+
+    thumbnails = [
+        item
+        for item in (info.get("thumbnails") or [])
+        if isinstance(item, dict) and str(item.get("url") or "").strip()
+    ]
+    if not thumbnails:
+        return None
+
+    def score(item: dict[str, Any]) -> tuple[float, int]:
+        preference = item.get("preference")
+        width = item.get("width")
+        return (
+            float(preference) if isinstance(preference, (int, float)) else 0.0,
+            int(width) if isinstance(width, int) else 0,
+        )
+
+    avatar_items = [item for item in thumbnails if "avatar" in str(item.get("id") or "").lower()]
+    if avatar_items:
+        return str(max(avatar_items, key=score)["url"]).strip()
+
+    square_items = []
+    for item in thumbnails:
+        width = item.get("width")
+        height = item.get("height")
+        if not isinstance(width, int) or not isinstance(height, int) or width <= 0 or height <= 0:
+            continue
+        if 0.9 <= width / height <= 1.1:
+            square_items.append(item)
+    if square_items:
+        return str(max(square_items, key=score)["url"]).strip()
+    return str(info.get("thumbnail") or "").strip() or None
 
 
 def _auto_disable_media_source_unavailable(session: Session, *, job: Job, media: Media, err: Exception) -> dict:
@@ -387,12 +425,13 @@ def youtube_metadata_enrich(session: Session, job: Job) -> dict | None:
 
         published_at_updated = _update_video_from_youtube_metadata(video, info)
         if published_at_updated:
-            schedule_playlists_event_regime_dirty_for_video(
+            schedule_playlists_event_map_dirty_for_video(
                 session,
                 video_id=video.id,
                 reason="video_published_at_changed",
                 source_job_id=job.id,
                 priority=job.priority,
+                require_event_map_input=True,
             )
         job_log(session, job, f"youtube metadata enrich done published_at_updated={published_at_updated}", level="info")
         return {"ok": True, "published_at_updated": published_at_updated}
@@ -427,11 +466,15 @@ def media_sync_profile(session: Session, job: Job) -> dict | None:
             job_log(session, job, f"profile scrape failed: {e}", level="warn")
 
         if not profile:
-            job_log(session, job, "profile open_graph: no data; fallback to yt-dlp", level="info")
+            job_log(session, job, "profile scrape: no data; fallback to yt-dlp", level="info")
 
         if profile:
             media.name = profile.get("name") or media.name
             media.description = profile.get("description") or media.description
+            if profile.get("subscriber_count") is not None:
+                media.subscriber_count = int(profile["subscriber_count"])
+            if profile.get("video_count") is not None:
+                media.video_count = int(profile["video_count"])
             new_avatar = profile.get("avatar_url")
             if new_avatar:
                 media.avatar_url = new_avatar
@@ -440,12 +483,19 @@ def media_sync_profile(session: Session, job: Job) -> dict | None:
                 media.avatar_s3_key = None
                 job_log(session, job, "cleared non-face bilibili avatar (likely site icon)", level="warn")
 
-        if profile and profile.get("avatar_url"):
-            if media.avatar_url and (media.provider != "bilibili" or _looks_like_bilibili_face_url(media.avatar_url)):
-                _cache_media_avatar(session, job=job, media=media, avatar_url=media.avatar_url)
+        if profile:
+            if (
+                profile.get("avatar_url")
+                and media.avatar_url
+                and (media.provider != "bilibili" or _looks_like_bilibili_face_url(media.avatar_url))
+            ):
+                cached = _cache_media_avatar(session, job=job, media=media, avatar_url=media.avatar_url)
+                if not cached and not media.avatar_asset_id:
+                    raise RuntimeError("profile avatar cache failed")
             media.last_profile_sync_at = utcnow()
-            job_log(session, job, "profile updated from open_graph", level="info")
-            return {"ok": True, "source": profile.get("source")}
+            source = str(profile.get("source") or "profile")
+            job_log(session, job, f"profile updated from {source}", level="info")
+            return {"ok": True, "source": source, "avatar_cached": bool(media.avatar_asset_id)}
 
         try:
             info = ytdlp_extract_info(media.url, provider=media.provider, flat=True, max_entries=1)
@@ -470,14 +520,19 @@ def media_sync_profile(session: Session, job: Job) -> dict | None:
 
         media.name = info.get("channel") or info.get("uploader") or info.get("title") or media.name
         media.description = info.get("description") or media.description
-        media.avatar_url = info.get("channel_thumbnail") or info.get("thumbnail") or media.avatar_url
+        if media.provider == "youtube":
+            media.avatar_url = _youtube_profile_avatar_url(info) or media.avatar_url
+        else:
+            media.avatar_url = info.get("channel_thumbnail") or info.get("thumbnail") or media.avatar_url
         media.subscriber_count = info.get("channel_follower_count") or info.get("subscriber_count") or media.subscriber_count
         media.video_count = info.get("playlist_count") or info.get("video_count") or media.video_count
         if media.avatar_url:
-            _cache_media_avatar(session, job=job, media=media, avatar_url=media.avatar_url)
+            cached = _cache_media_avatar(session, job=job, media=media, avatar_url=media.avatar_url)
+            if not cached and not media.avatar_asset_id:
+                raise RuntimeError("profile avatar cache failed")
         media.last_profile_sync_at = utcnow()
         job_log(session, job, "profile updated from yt-dlp flat", level="info")
-        return {"ok": True, "source": "yt_dlp_flat"}
+        return {"ok": True, "source": "yt_dlp_flat", "avatar_cached": bool(media.avatar_asset_id)}
 
 
 @registry.register("media.sync_videos")
@@ -537,6 +592,7 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                 flat=True,
                 max_entries=playlist_limit if raw_max is not None else process_limit,
                 use_provider_cookies=not public_discovery,
+                activity_hook=touch_current_worker_activity,
             )
         except YtdlpCookiesInvalidError as e:
             _pause_all_jobs_for_cookies(session, job=job, err=e)
@@ -623,12 +679,13 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                 continue
             created += 1
             if video.published_at:
-                schedule_playlists_event_regime_dirty_for_video(
+                schedule_playlists_event_map_dirty_for_video(
                     session,
                     video_id=video.id,
                     reason="video_published_at_changed",
                     source_job_id=job.id,
                     priority=job.priority,
+                    require_event_map_input=True,
                 )
             elif media.provider == "youtube" and _enqueue_youtube_metadata_enrichment_if_needed(session, video=video):
                 metadata_enrichment_enqueued += 1

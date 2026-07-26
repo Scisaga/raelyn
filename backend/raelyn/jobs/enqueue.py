@@ -28,6 +28,8 @@ def _default_max_attempts(type_: str) -> int | None:
         "video.backfill_subtitles.bilibili",
     }:
         return 2
+    if type_ in {"playlist.build_event_map_snapshot", "playlist.prune_event_map_snapshots"}:
+        return 2
     return None
 
 
@@ -163,7 +165,7 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
         dim = max(1, int(settings.embedding_dim or 1024))
         return f"event_embedding:{event_id}:{model}:{dim}", params2
 
-    if type_ == "playlist.build_event_regime_snapshot":
+    if type_ == "playlist.build_event_map_snapshot":
         if not isinstance(params, dict):
             return None, params
         params2 = dict(params)
@@ -173,9 +175,12 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
             return None, params2
         model = str(settings.embedding_model or "").strip() or "Qwen/Qwen3-Embedding-8B"
         dim = max(1, int(settings.embedding_dim or 1024))
-        return f"playlist_event_regime:{playlist_id}:day:{model}:{dim}", params2
+        params2["playlist_id"] = str(playlist_id)
+        params2["embedding_model"] = model
+        params2["embedding_dim"] = dim
+        return f"playlist_event_map_build:{playlist_id}", params2
 
-    if type_ == "playlist.mark_event_regime_dirty":
+    if type_ == "playlist.prune_event_map_snapshots":
         if not isinstance(params, dict):
             return None, params
         params2 = dict(params)
@@ -184,7 +189,18 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
         except Exception:
             return None, params2
         params2["playlist_id"] = str(playlist_id)
-        reason = str(params2.get("reason") or "").strip() or "event_regime_dirty"
+        return f"playlist_event_map_prune:{playlist_id}", params2
+
+    if type_ == "playlist.mark_event_map_dirty":
+        if not isinstance(params, dict):
+            return None, params
+        params2 = dict(params)
+        try:
+            playlist_id = uuid.UUID(str(params2.get("playlist_id")))
+        except Exception:
+            return None, params2
+        params2["playlist_id"] = str(playlist_id)
+        reason = str(params2.get("reason") or "").strip() or "event_map_dirty"
         params2["reason"] = reason
         for key in ("source_video_id", "source_job_id"):
             raw = params2.get(key)
@@ -195,7 +211,7 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
                 params2[key] = str(uuid.UUID(str(raw)))
             except Exception:
                 params2.pop(key, None)
-        return f"playlist_event_dirty:{playlist_id}", params2
+        return f"playlist_event_map_dirty:{playlist_id}", params2
 
     if type_ in {"playlist.backfill_events", "playlist.backfill_events_range"}:
         if not isinstance(params, dict):
@@ -274,13 +290,36 @@ def _lock_pending_dedupe_key(session: Session, dedupe_key: str) -> None:
     session.execute(text("select pg_advisory_xact_lock(:k)").bindparams(k=key))
 
 
-def _pending_job_id_for_dedupe(session: Session, dedupe_key: str) -> uuid.UUID | None:
-    return session.execute(
-        select(Job.id)
+def _pending_job_for_dedupe(
+    session: Session,
+    dedupe_key: str,
+    *,
+    lock: bool = False,
+) -> Job | None:
+    statement = (
+        select(Job)
         .where(Job.dedupe_key == dedupe_key, Job.status == "pending")
         .order_by(Job.created_at.asc(), Job.id.asc())
         .limit(1)
-    ).scalar_one_or_none()
+    )
+    if lock:
+        # dirty job 同时承担“源数据已经提交”的 outbox 信号。复用 pending
+        # 行时必须持有行锁到源事务提交，避免 worker 抢先领取旧信号。
+        statement = statement.with_for_update()
+    return session.execute(statement).scalar_one_or_none()
+
+
+def _merge_pending_dirty_job(existing: Job, params: dict[str, Any], priority: int) -> None:
+    current = dict(existing.params or {})
+    reasons: list[str] = []
+    for value in [*(current.get("reasons") or []), current.get("reason"), params.get("reason")]:
+        reason = str(value or "").strip()
+        if reason and reason not in reasons:
+            reasons.append(reason)
+    current.update(params)
+    current["reasons"] = reasons[-8:]
+    existing.params = current
+    existing.priority = max(int(existing.priority or 0), int(priority or 0))
 
 
 def enqueue_job(
@@ -306,9 +345,12 @@ def enqueue_job(
     )
     if dedupe_key:
         _lock_pending_dedupe_key(session, dedupe_key)
-        existing_id = _pending_job_id_for_dedupe(session, dedupe_key)
-        if existing_id:
-            return existing_id
+        lock_existing = type_ == "playlist.mark_event_map_dirty"
+        existing = _pending_job_for_dedupe(session, dedupe_key, lock=lock_existing)
+        if existing:
+            if lock_existing:
+                _merge_pending_dirty_job(existing, params2, priority)
+            return existing.id
         try:
             with session.begin_nested():
                 session.add(job)
@@ -318,9 +360,11 @@ def enqueue_job(
                 session.expunge(job)
             except Exception:
                 pass
-            existing_id = _pending_job_id_for_dedupe(session, dedupe_key)
-            if existing_id:
-                return existing_id
+            existing = _pending_job_for_dedupe(session, dedupe_key, lock=lock_existing)
+            if existing:
+                if lock_existing:
+                    _merge_pending_dirty_job(existing, params2, priority)
+                return existing.id
             raise
     else:
         session.add(job)

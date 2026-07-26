@@ -12,14 +12,30 @@ const root = resolve(uiDir, "..");
 
 const cssOut = resolve(root, "static/css/tailwind.min.css");
 const vendorDir = resolve(root, "static/vendor");
+const dataDir = resolve(root, "static/data");
+const brandDir = resolve(root, "static/brand");
 
 mkdirSync(resolve(root, "static/css"), { recursive: true });
 mkdirSync(vendorDir, { recursive: true });
+mkdirSync(dataDir, { recursive: true });
+mkdirSync(brandDir, { recursive: true });
 
 copyFileSync(resolve(uiDir, "node_modules/alpinejs/dist/cdn.min.js"), resolve(vendorDir, "alpine.min.js"));
 copyFileSync(
   resolve(uiDir, "node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js"),
   resolve(vendorDir, "lightweight-charts.min.js")
+);
+copyFileSync(
+  resolve(uiDir, "assets/startup-event-field.bin"),
+  resolve(dataDir, "startup-event-field.bin")
+);
+copyFileSync(
+  resolve(uiDir, "assets/brand/raelyn-event-horizon.svg"),
+  resolve(brandDir, "raelyn-event-horizon.svg")
+);
+copyFileSync(
+  resolve(uiDir, "assets/brand/raelyn-favicon.svg"),
+  resolve(brandDir, "raelyn-favicon.svg")
 );
 
 await buildAppBundle({ uiDir, root, minify: false });

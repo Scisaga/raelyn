@@ -12,9 +12,11 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn.config import settings
+from raelyn.services.browser_identity import BROWSER_USER_AGENT
 from raelyn.services.ytdlp import (
     _GENERIC_MP4_FORMAT,
     _GENERIC_MP4_720_FORMAT,
+    _YtdlpCaptureLogger,
     _YOUTUBE_HLS_FIRST_FORMAT,
     _apply_common_ytdlp_opts,
     _build_dash_mp4_format,
@@ -25,6 +27,18 @@ from raelyn.services.ytdlp import (
 
 
 class YtdlpProxyTests(unittest.TestCase):
+    def test_capture_logger_reports_extractor_activity(self) -> None:
+        activities: list[str] = []
+        logger = _YtdlpCaptureLogger(activity_hook=lambda: activities.append("touch"))
+
+        logger.debug("[youtube:tab] channel page 1: Downloading API JSON")
+        logger.warning("warning")
+        logger.error("error")
+
+        self.assertEqual(activities, ["touch", "touch", "touch"])
+        self.assertEqual(logger.warnings, ["warning"])
+        self.assertEqual(logger.errors, ["error"])
+
     def test_bilibili_explicitly_disables_proxy(self) -> None:
         original = settings.ytdlp_proxy
         try:
@@ -39,10 +53,7 @@ class YtdlpProxyTests(unittest.TestCase):
             self.assertEqual(
                 opts.get("http_headers"),
                 {
-                    "User-Agent": (
-                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                    ),
+                    "User-Agent": BROWSER_USER_AGENT,
                     "Referer": "https://www.bilibili.com/",
                     "Origin": "https://www.bilibili.com",
                 },
@@ -215,6 +226,7 @@ class YtdlpProxyTests(unittest.TestCase):
 
     def test_extract_info_can_disable_provider_cookies(self) -> None:
         captured: dict[str, object] = {}
+        activities: list[str] = []
 
         class FakeYoutubeDL:
             def __init__(self, opts):
@@ -228,6 +240,7 @@ class YtdlpProxyTests(unittest.TestCase):
 
             def extract_info(self, _url, *, download):
                 assert download is False
+                captured["logger"].debug("[youtube:tab] channel page 1: Downloading API JSON")
                 return {"entries": []}
 
         with (
@@ -241,9 +254,11 @@ class YtdlpProxyTests(unittest.TestCase):
                 flat=True,
                 max_entries=1,
                 use_provider_cookies=False,
+                activity_hook=lambda: activities.append("touch"),
             )
 
         self.assertEqual(result, {"entries": []})
+        self.assertEqual(activities, ["touch"])
         self.assertNotIn("cookiefile", captured)
         ensure_cookie_file.assert_not_called()
 

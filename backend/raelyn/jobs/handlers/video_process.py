@@ -275,6 +275,8 @@ def video_normalize_subtitle(session: Session, job: Job) -> dict | None:
 @registry.register("video.asr_transcribe")
 def video_asr_transcribe(session: Session, job: Job) -> dict | None:
     video_id = uuid.UUID(job.params["video_id"])
+    claimed_worker_id = str(job.worker_id or "").strip()
+    claimed_execution_token = job.execution_token
     video = session.get(Video, video_id)
     if not video:
         return {"skipped": "video not found"}
@@ -320,10 +322,10 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
                 seconds=request_timeout_seconds + _LOCAL_ASR_LEASE_GRACE_SECONDS
             )
             if lease_expires_at is None or lease_expires_at < requested_lease_expires_at:
-                worker_id = str(job.worker_id or "").strip()
-                if not worker_id or not set_job_lease_deadline(
+                if claimed_execution_token is None or not set_job_lease_deadline(
                     job_id=job.id,
-                    worker_id=worker_id,
+                    worker_id=claimed_worker_id,
+                    execution_token=claimed_execution_token,
                     lease_expires_at=requested_lease_expires_at,
                 ):
                     raise RuntimeError("asr job lease extension rejected because job ownership changed")

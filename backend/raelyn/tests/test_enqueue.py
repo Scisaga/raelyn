@@ -11,7 +11,8 @@ _BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-from raelyn.jobs.enqueue import _normalize_dedupe_key_and_params, enqueue_job
+from raelyn.jobs.enqueue import _merge_pending_dirty_job, _normalize_dedupe_key_and_params, enqueue_job
+from raelyn.models import Job
 
 
 class EnqueueDedupeTests(unittest.TestCase):
@@ -57,11 +58,12 @@ class EnqueueDedupeTests(unittest.TestCase):
     def test_youtube_metadata_enrich_reuses_existing_pending_job(self) -> None:
         video_id = uuid.uuid4()
         existing_job_id = uuid.uuid4()
+        existing_job = Job(id=existing_job_id, type="video.enrich_metadata.youtube", status="pending")
         session = Mock()
         session.get_bind.return_value = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
         session.execute.side_effect = [
             Mock(),
-            Mock(scalar_one_or_none=Mock(return_value=existing_job_id)),
+            Mock(scalar_one_or_none=Mock(return_value=existing_job)),
         ]
 
         job_id = enqueue_job(
@@ -92,11 +94,12 @@ class EnqueueDedupeTests(unittest.TestCase):
     def test_enqueue_dedupe_locks_and_reuses_existing_pending_job_on_postgres(self) -> None:
         media_id = uuid.uuid4()
         existing_job_id = uuid.uuid4()
+        existing_job = Job(id=existing_job_id, type="media.sync_videos", status="pending")
         session = Mock()
         session.get_bind.return_value = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
         session.execute.side_effect = [
             Mock(),
-            Mock(scalar_one_or_none=Mock(return_value=existing_job_id)),
+            Mock(scalar_one_or_none=Mock(return_value=existing_job)),
         ]
 
         job_id = enqueue_job(
@@ -111,6 +114,26 @@ class EnqueueDedupeTests(unittest.TestCase):
         self.assertIn("pg_advisory_xact_lock", first_stmt)
         session.begin_nested.assert_not_called()
         session.flush.assert_not_called()
+
+    def test_pending_dirty_merge_keeps_bounded_unique_reasons_and_highest_priority(self) -> None:
+        job = Job(
+            id=uuid.uuid4(),
+            type="playlist.mark_event_map_dirty",
+            status="pending",
+            priority=2,
+            params={"reason": "first", "reasons": ["first", "second"]},
+        )
+
+        _merge_pending_dirty_job(
+            job,
+            {"reason": "third", "source_video_id": str(uuid.uuid4())},
+            priority=5,
+        )
+        _merge_pending_dirty_job(job, {"reason": "first"}, priority=1)
+
+        self.assertEqual(job.params["reasons"], ["first", "second", "third"])
+        self.assertEqual(job.params["reason"], "first")
+        self.assertEqual(job.priority, 5)
 
 
 if __name__ == "__main__":

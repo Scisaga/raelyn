@@ -36,6 +36,24 @@ _REQUIRED_S3_KEYS = (
     "S3_BUCKET",
     "S3_USE_SSL",
 )
+_BEST_EFFORT_DDL_LOCK_TIMEOUT = "2s"
+
+
+def _uuid_column_sql(dialect_name: str) -> str:
+    return "uuid" if dialect_name == "postgresql" else "varchar(36)"
+
+
+def _execute_best_effort_ddl(conn, statement: str) -> None:
+    """历史地图清理不能因等待 PostgreSQL 表锁而阻塞维护或启动。"""
+    try:
+        if conn.dialect.name == "postgresql":
+            with conn.begin_nested():
+                conn.execute(text(f"set local lock_timeout = '{_BEST_EFFORT_DDL_LOCK_TIMEOUT}'"))
+                conn.execute(text(statement))
+        else:
+            conn.execute(text(statement))
+    except Exception:
+        pass
 
 
 def _parse_bool(v: str) -> bool:
@@ -271,6 +289,18 @@ _LEGACY_ANALYSIS_TABLES = (
     "video_embedding",
 )
 
+_LEGACY_EVENT_ANALYSIS_JOB_TYPES = (
+    "playlist.mark_event_regime_dirty",
+    "playlist.build_event_regime_snapshot",
+)
+_LEGACY_EVENT_ANALYSIS_TABLES = (
+    "event_regime_signal",
+    "event_regime_candidate",
+    "event_graph_projection_point",
+    "event_regime_state",
+    "event_regime_run",
+)
+
 
 def _cancel_and_drop_legacy_analysis(conn) -> None:
     if "job" in set(inspect(conn).get_table_names()):
@@ -296,7 +326,8 @@ set status = 'canceled',
     error_message = 'legacy transcript embedding / playlist analysis chain removed',
     finished_at = coalesce(finished_at, CURRENT_TIMESTAMP),
     lease_expires_at = null,
-    worker_id = null
+    worker_id = null,
+    execution_token = null
 where type in ({placeholders})
   and status in ('pending', 'running')
 """
@@ -338,24 +369,121 @@ def _create_event_analysis_indexes(conn) -> None:
         "create index if not exists market_event_relation_event_idx on market_event_relation(event_id)",
         "create index if not exists market_event_embedding_event_idx on market_event_embedding(event_id)",
         "create index if not exists market_event_embedding_status_idx on market_event_embedding(status, embedding_model, embedding_dim)",
-        "create index if not exists event_regime_run_playlist_status_idx on event_regime_run(playlist_id, status)",
-        "create index if not exists event_regime_signal_run_granularity_period_idx on event_regime_signal(regime_run_id, granularity, period_date)",
-        "create index if not exists event_regime_signal_linked_candidate_idx on event_regime_signal(linked_candidate_id)",
-        "create index if not exists event_regime_candidate_run_status_idx on event_regime_candidate(regime_run_id, status)",
+        "create index if not exists event_map_snapshot_playlist_status_idx on event_map_snapshot(playlist_id, status, created_at desc)",
+        "create index if not exists event_map_snapshot_playlist_generation_idx on event_map_snapshot(playlist_id, input_generation desc)",
+        "create index if not exists event_map_snapshot_parent_idx on event_map_snapshot(parent_snapshot_id)",
+        "create unique index if not exists event_map_snapshot_ready_build_ux on event_map_snapshot(playlist_id, build_key) where status = 'ready' and build_key <> ''",
+        "create index if not exists event_map_state_current_snapshot_idx on event_map_state(current_snapshot_id)",
+        "create index if not exists event_map_record_revision_event_idx on event_map_record_revision(event_id)",
+        "create index if not exists event_map_canonical_identity_created_snapshot_idx on event_map_canonical_identity(created_snapshot_id)",
+        "create index if not exists event_map_canonical_identity_retired_snapshot_idx on event_map_canonical_identity(retired_snapshot_id)",
+        "create index if not exists event_map_canonical_time_idx on event_map_canonical(snapshot_id, event_start_day, event_end_day)",
+        "create index if not exists event_map_canonical_type_idx on event_map_canonical(snapshot_id, event_type_code, point_index)",
+        "create index if not exists event_map_canonical_member_canonical_idx on event_map_canonical_member(snapshot_id, canonical_id)",
+        "create index if not exists event_map_entity_index_key_idx on event_map_entity_index(snapshot_id, entity_type, normalized_key, point_index)",
+        "create index if not exists event_map_topic_level_idx on event_map_topic(snapshot_id, level)",
+        "create index if not exists event_map_topic_anchor_idx on event_map_topic(snapshot_id, anchor_canonical_id)",
+        "create index if not exists event_map_topic_member_topic_idx on event_map_topic_member(snapshot_id, topic_id, level)",
+        "create index if not exists event_map_topic_member_level_canonical_idx on event_map_topic_member(snapshot_id, level, canonical_id)",
+        "create index if not exists event_map_story_member_canonical_idx on event_map_story_member(snapshot_id, canonical_id)",
+        "create index if not exists event_map_story_edge_source_idx on event_map_story_edge(snapshot_id, source_canonical_id)",
+        "create index if not exists event_map_story_edge_target_idx on event_map_story_edge(snapshot_id, target_canonical_id)",
+        "create index if not exists event_map_story_edge_story_idx on event_map_story_edge(snapshot_id, story_id)",
     ]
+    if conn.dialect.name == "postgresql":
+        statements.extend(
+            [
+                "alter table event_map_canonical set (autovacuum_analyze_scale_factor = 0.005, autovacuum_analyze_threshold = 500)",
+                "alter table event_map_entity_index set (autovacuum_analyze_scale_factor = 0.005, autovacuum_analyze_threshold = 500)",
+            ]
+        )
     for statement in statements:
         try:
             conn.execute(text(statement))
         except Exception:
             pass
-
-
 def _migrate_schema(conn) -> None:
     """
     Copied from backend/raelyn/db.py::_migrate_schema to avoid importing raelyn.db (which binds to .env at import).
     """
     insp = inspect(conn)
     tables = set(insp.get_table_names())
+
+    if "event_map_canonical" in tables:
+        cols = {c.get("name") for c in insp.get_columns("event_map_canonical")}
+        if "z" not in cols:
+            conn.execute(text("alter table event_map_canonical add column z real not null default 0"))
+
+    if "event_map_projection_anchor" in tables:
+        cols = {c.get("name") for c in insp.get_columns("event_map_projection_anchor")}
+        if "z" not in cols:
+            conn.execute(text("alter table event_map_projection_anchor add column z real not null default 0"))
+
+    if "event_map_topic" in tables:
+        cols = {c.get("name") for c in insp.get_columns("event_map_topic")}
+        for column_name in ("center_x", "center_y", "center_z", "radius"):
+            if column_name not in cols:
+                conn.execute(
+                    text(
+                        f"alter table event_map_topic add column {column_name} "
+                        "real not null default 0"
+                    )
+                )
+        if "label_x" in cols:
+            conn.execute(text("update event_map_topic set center_x = label_x"))
+        if "label_y" in cols:
+            conn.execute(text("update event_map_topic set center_y = label_y"))
+        for legacy_column in ("label_x", "label_y", "geometry"):
+            if legacy_column in cols:
+                _execute_best_effort_ddl(
+                    conn,
+                    f"alter table event_map_topic drop column {legacy_column}",
+                )
+
+    if "event_map_snapshot" in tables:
+        cols = {c.get("name") for c in insp.get_columns("event_map_snapshot")}
+        if "monthly_distribution" not in cols:
+            column_type = "jsonb" if conn.dialect.name == "postgresql" else "json"
+            conn.execute(text(f"alter table event_map_snapshot add column monthly_distribution {column_type}"))
+        if "entity_count" not in cols:
+            conn.execute(text("alter table event_map_snapshot add column entity_count integer not null default 0"))
+        if "execution_token" not in cols:
+            conn.execute(
+                text(
+                    f"alter table event_map_snapshot add column execution_token "
+                    f"{_uuid_column_sql(conn.dialect.name)}"
+                )
+            )
+        if conn.dialect.name == "postgresql":
+            conn.execute(
+                text("alter table event_map_snapshot drop constraint if exists event_map_snapshot_job_attempt_ux")
+            )
+            constraint_names = {
+                item.get("name") for item in inspect(conn).get_unique_constraints("event_map_snapshot")
+            }
+            if "event_map_snapshot_job_execution_ux" not in constraint_names:
+                conn.execute(
+                    text(
+                        "alter table event_map_snapshot add constraint event_map_snapshot_job_execution_ux "
+                        "unique (job_id, execution_token)"
+                    )
+                )
+        else:
+            conn.execute(
+                text(
+                    "create unique index if not exists event_map_snapshot_job_execution_ux "
+                    "on event_map_snapshot(job_id, execution_token)"
+                )
+            )
+        if "lod_node_count" in cols:
+            _execute_best_effort_ddl(
+                conn,
+                "alter table event_map_snapshot drop column lod_node_count",
+            )
+
+    for table_name in ("event_map_lod_member", "event_map_lod_node"):
+        suffix = " cascade" if conn.dialect.name == "postgresql" else ""
+        _execute_best_effort_ddl(conn, f"drop table if exists {table_name}{suffix}")
 
     if "asset" in tables:
         cols = {c.get("name") for c in insp.get_columns("asset")}
@@ -471,6 +599,13 @@ where job.type = 'video.download'
         cols = {c.get("name") for c in insp.get_columns("job")}
         if "dedupe_key" not in cols:
             conn.execute(text("alter table job add column dedupe_key varchar"))
+        if "execution_token" not in cols:
+            conn.execute(
+                text(
+                    f"alter table job add column execution_token "
+                    f"{_uuid_column_sql(conn.dialect.name)}"
+                )
+            )
         try:
             conn.execute(text("drop index if exists job_brief_dedupe_active_ux"))
         except Exception:
@@ -525,6 +660,129 @@ where job.type = 'video.download'
                 )
         except Exception:
             pass
+
+
+def _legacy_event_analysis_drop_blockers(conn) -> list[str]:
+    tables = set(inspect(conn).get_table_names())
+    present = [name for name in _LEGACY_EVENT_ANALYSIS_TABLES if name in tables]
+    if not present:
+        return []
+
+    blockers: list[str] = []
+    if "event_map_snapshot" not in tables or "event_map_state" not in tables:
+        blockers.append("new event_map_snapshot/event_map_state tables are missing")
+        return blockers
+
+    if "event_regime_state" in tables and "event_regime_run" in tables:
+        missing_ready = int(
+            conn.execute(
+                text(
+                    """
+select count(*)
+from event_regime_state legacy_state
+join event_regime_run legacy_run on legacy_run.id = legacy_state.last_ready_run_id
+where legacy_run.status = 'ready'
+  and not exists (
+    select 1
+    from event_map_state map_state
+    join event_map_snapshot map_snapshot on map_snapshot.id = map_state.current_snapshot_id
+    where map_state.playlist_id = legacy_state.playlist_id
+      and map_snapshot.playlist_id = legacy_state.playlist_id
+      and map_snapshot.status = 'ready'
+  )
+"""
+                )
+            ).scalar_one()
+            or 0
+        )
+        if missing_ready:
+            blockers.append(f"{missing_ready} playlist(s) still lack a current ready event-map snapshot")
+
+    if "job" in tables:
+        placeholders = ", ".join(f":legacy_job_{idx}" for idx, _ in enumerate(_LEGACY_EVENT_ANALYSIS_JOB_TYPES))
+        params = {f"legacy_job_{idx}": value for idx, value in enumerate(_LEGACY_EVENT_ANALYSIS_JOB_TYPES)}
+        running = int(
+            conn.execute(
+                text(f"select count(*) from job where type in ({placeholders}) and status = 'running'"),
+                params,
+            ).scalar_one()
+            or 0
+        )
+        if running:
+            blockers.append(f"{running} legacy event-analysis job(s) are still running")
+    return blockers
+
+
+def _drop_legacy_event_analysis(*, database_url: str, yes: bool) -> dict[str, Any]:
+    migration_engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        with migration_engine.begin() as conn:
+            tables = set(inspect(conn).get_table_names())
+            present = [name for name in _LEGACY_EVENT_ANALYSIS_TABLES if name in tables]
+            blockers = _legacy_event_analysis_drop_blockers(conn)
+            if blockers:
+                raise RuntimeError("legacy event-analysis cleanup blocked: " + "; ".join(blockers))
+
+            pending_jobs = 0
+            if "job" in tables:
+                placeholders = ", ".join(
+                    f":legacy_job_{idx}" for idx, _ in enumerate(_LEGACY_EVENT_ANALYSIS_JOB_TYPES)
+                )
+                params = {
+                    f"legacy_job_{idx}": value for idx, value in enumerate(_LEGACY_EVENT_ANALYSIS_JOB_TYPES)
+                }
+                pending_jobs = int(
+                    conn.execute(
+                        text(f"select count(*) from job where type in ({placeholders}) and status = 'pending'"),
+                        params,
+                    ).scalar_one()
+                    or 0
+                )
+                if yes and pending_jobs:
+                    pending_rows = conn.execute(
+                        text(f"select id from job where type in ({placeholders}) and status = 'pending'"),
+                        params,
+                    ).mappings().all()
+                    conn.execute(
+                        text(
+                            f"""
+update job
+set status = 'canceled',
+    error_message = 'legacy event analysis removed after event-map cutover',
+    finished_at = coalesce(finished_at, CURRENT_TIMESTAMP),
+    lease_expires_at = null,
+    worker_id = null,
+    execution_token = null
+where type in ({placeholders})
+  and status = 'pending'
+"""
+                        ),
+                        params,
+                    )
+                    if "job_event" in tables:
+                        data_expr = "cast(:data as jsonb)" if conn.dialect.name == "postgresql" else ":data"
+                        for row in pending_rows:
+                            conn.execute(
+                                text(
+                                    f"""
+insert into job_event (job_id, ts, level, message, data)
+values (:job_id, CURRENT_TIMESTAMP, 'warning', 'legacy event-analysis job canceled by event-map cutover', {data_expr})
+"""
+                                ),
+                                {
+                                    "job_id": row["id"],
+                                    "data": json.dumps({"reason": "legacy_event_analysis_removed"}),
+                                },
+                            )
+
+            if yes:
+                suffix = " cascade" if conn.dialect.name == "postgresql" else ""
+                for table_name in _LEGACY_EVENT_ANALYSIS_TABLES:
+                    if table_name in tables:
+                        conn.execute(text(f"drop table {table_name}{suffix}"))
+            return {"tables": present, "pending_jobs": pending_jobs, "executed": bool(yes)}
+    finally:
+        migration_engine.dispose()
 
 
 def _quote_ident(name: str) -> str:
@@ -963,9 +1221,14 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Migrate data from source (.env) to destination (.env.migrate).")
     ap.add_argument("--src-env", default=".env", help="Source env file (default: .env)")
     ap.add_argument("--dst-env", default=".env.migrate", help="Destination env file (default: .env.migrate)")
-    ap.add_argument("--yes", action="store_true", help="Actually perform the migration (will CLEAR destination DB + S3)")
+    ap.add_argument("--yes", action="store_true", help="Actually perform the requested destructive migration action")
     ap.add_argument("--db", action="store_true", help="Migrate DB only")
     ap.add_argument("--s3", action="store_true", help="Migrate S3 only")
+    ap.add_argument(
+        "--drop-legacy-event-analysis",
+        action="store_true",
+        help="After every legacy playlist has a ready event-map snapshot, cancel pending old jobs and drop old analysis tables",
+    )
     ap.add_argument("--s3-concurrency", type=int, default=8, help="S3 copy concurrency (default: 8)")
     ap.add_argument(
         "--allow-bucket-mismatch",
@@ -973,6 +1236,29 @@ def main(argv: list[str] | None = None) -> int:
         help="Allow dst S3_BUCKET != src S3_BUCKET and remap copied assets to the destination bucket",
     )
     args = ap.parse_args(argv)
+
+    if args.drop_legacy_event_analysis:
+        if args.db or args.s3:
+            print("--drop-legacy-event-analysis cannot be combined with --db or --s3", file=sys.stderr)
+            return 2
+        try:
+            source = EnvConfig.from_env_file(path=Path(args.src_env), require_db=True, require_s3=False)
+            print("[plan] db:", _sanitize_dsn(source.database_url))
+            result = _drop_legacy_event_analysis(database_url=source.database_url, yes=bool(args.yes))
+        except FileNotFoundError as e:
+            print(f"env file not found: {e}", file=sys.stderr)
+            return 2
+        except Exception as e:
+            print(f"[error] {e}", file=sys.stderr)
+            return 1
+        mode = "executed" if result["executed"] else "dry-run"
+        print(
+            f"[legacy-event-analysis] mode={mode} tables={','.join(result['tables']) or 'none'} "
+            f"pending_jobs={result['pending_jobs']}"
+        )
+        if not result["executed"]:
+            print("[plan] no changes made; add --yes after reviewing the readiness checks")
+        return 0
 
     do_db = args.db or (not args.db and not args.s3)
     do_s3 = args.s3 or (not args.db and not args.s3)

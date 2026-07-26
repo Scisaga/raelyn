@@ -19,7 +19,14 @@ class WorkerRoleTests(unittest.TestCase):
         self.assertEqual(WORKER_ROLE_TYPES["download_bilibili"], ["video.download.bilibili", "video.backfill_subtitles.bilibili"])
         self.assertIn("video.enrich_metadata.youtube", WORKER_ROLE_TYPES["sync"])
         self.assertEqual(WORKER_ROLE_TYPES["embedding"], ["event.embed"])
-        self.assertEqual(WORKER_ROLE_TYPES["analysis"], ["playlist.mark_event_regime_dirty", "playlist.build_event_regime_snapshot"])
+        self.assertEqual(
+            WORKER_ROLE_TYPES["analysis"],
+            [
+                "playlist.mark_event_map_dirty",
+                "playlist.build_event_map_snapshot",
+                "playlist.prune_event_map_snapshots",
+            ],
+        )
         self.assertEqual(
             WORKER_ROLE_TYPES["ai"],
             [
@@ -35,8 +42,9 @@ class WorkerRoleTests(unittest.TestCase):
 
     def test_job_type_worker_role_maps_new_job_types(self) -> None:
         self.assertEqual(job_type_worker_role("event.embed"), "embedding")
-        self.assertEqual(job_type_worker_role("playlist.mark_event_regime_dirty"), "analysis")
-        self.assertEqual(job_type_worker_role("playlist.build_event_regime_snapshot"), "analysis")
+        self.assertEqual(job_type_worker_role("playlist.mark_event_map_dirty"), "analysis")
+        self.assertEqual(job_type_worker_role("playlist.build_event_map_snapshot"), "analysis")
+        self.assertEqual(job_type_worker_role("playlist.prune_event_map_snapshots"), "analysis")
         self.assertEqual(job_type_worker_role("video.extract_events"), "ai")
         self.assertEqual(job_type_worker_role("video.extract_events_batch"), "ai")
         self.assertEqual(job_type_worker_role("playlist.backfill_events"), "ai")

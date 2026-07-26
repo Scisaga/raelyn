@@ -1,5 +1,5 @@
 import { createApiDocLinks, createNavItems } from "../navigation.js";
-import { mountStartupFluid } from "../startup-fluid/adapter.js";
+import { mountStartupStarfield } from "../startup-starfield/adapter.js";
 
 function readStoredBool(key) {
   try {
@@ -71,8 +71,8 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
     startupGateSeenInSession,
     startupGateVisible: !startupGateSeenInSession,
     startupGateStage: startupGateSeenInSession ? "idle" : "boot",
-    startupFluidActive: false,
-    _startupFluidHandle: null,
+    startupStarfieldActive: false,
+    _startupStarfieldHandle: null,
     pause: { paused: false, reason: null, message: null, set_at: null },
     providerPauses: {},
     assetDelivery: {
@@ -115,6 +115,7 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
       videoCount: 0,
       pendingJobs: 0,
       failedJobs: 0,
+      databaseSizeBytes: null,
       recentMedia: [],
       recentVideos: [],
       recentPlaylists: [],
@@ -308,35 +309,34 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
       writeSessionBool(startupGateSeenSessionKey, true);
     },
 
-    _destroyStartupFluid() {
+    _destroyStartupStarfield() {
       try {
-        const handle = this._startupFluidHandle;
+        const handle = this._startupStarfieldHandle;
         if (handle && typeof handle.destroy === "function") handle.destroy();
       } catch {
         // ignore
       }
-      this._startupFluidHandle = null;
-      this.startupFluidActive = false;
+      this._startupStarfieldHandle = null;
+      this.startupStarfieldActive = false;
     },
 
-    _mountStartupFluid() {
-      this._destroyStartupFluid();
+    _mountStartupStarfield() {
+      this._destroyStartupStarfield();
       try {
-        const canvas = this.$refs && this.$refs.startupFluidCanvas ? this.$refs.startupFluidCanvas : null;
+        const canvas = this.$refs && this.$refs.startupStarfieldCanvas ? this.$refs.startupStarfieldCanvas : null;
         if (!canvas) return;
-        const interactiveTarget = this.$refs && this.$refs.startupGate ? this.$refs.startupGate : canvas;
-        const handle = mountStartupFluid({ canvas, interactive: true, interactiveTarget });
+        const handle = mountStartupStarfield({ canvas });
         if (!handle || typeof handle.destroy !== "function") return;
-        this._startupFluidHandle = handle;
-        this.startupFluidActive = handle.active !== false;
+        this._startupStarfieldHandle = handle;
+        this.startupStarfieldActive = handle.active !== false;
       } catch {
-        this._startupFluidHandle = null;
-        this.startupFluidActive = false;
+        this._startupStarfieldHandle = null;
+        this.startupStarfieldActive = false;
       }
     },
 
     _closeStartupGate() {
-      this._destroyStartupFluid();
+      this._destroyStartupStarfield();
       this.startupGateVisible = false;
       this.startupGateStage = "idle";
     },
@@ -354,13 +354,13 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
       try {
         if (this.$nextTick) {
           this.$nextTick(() => {
-            this._mountStartupFluid();
+            this._mountStartupStarfield();
             this.focusStartupTokenInput();
           });
         }
       } catch {
         setTimeout(() => {
-          this._mountStartupFluid();
+          this._mountStartupStarfield();
           this.focusStartupTokenInput();
         }, 0);
       }

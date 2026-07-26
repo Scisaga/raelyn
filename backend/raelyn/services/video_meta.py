@@ -7,7 +7,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from raelyn.models import Video
-from raelyn.services.event_analysis import schedule_playlists_event_regime_dirty_for_video
+from raelyn.services.event_analysis import schedule_playlists_event_map_dirty_for_video
 
 
 def parse_published_at(info: dict[str, Any] | None) -> datetime | None:
@@ -62,10 +62,11 @@ def backfill_video_published_at(session: Session, *, limit: int = 5000) -> int:
             continue
         if video.published_at != published_at:
             video.published_at = published_at
-            schedule_playlists_event_regime_dirty_for_video(
+            schedule_playlists_event_map_dirty_for_video(
                 session,
                 video_id=video.id,
                 reason="video_published_at_changed",
+                require_event_map_input=True,
             )
             updated += 1
     if updated:

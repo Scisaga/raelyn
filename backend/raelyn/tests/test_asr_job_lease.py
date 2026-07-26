@@ -20,6 +20,7 @@ class AsrJobLeaseIntegrationTests(unittest.TestCase):
     def test_lease_extension_keeps_running_job_out_of_expired_scan(self) -> None:
         engine = create_engine("sqlite+pysqlite:///:memory:")
         job_id = uuid.uuid4()
+        execution_token = uuid.uuid4()
         now = datetime(2026, 7, 20, 0, 0, 0)
         initial_lease = now + timedelta(hours=1)
         extended_lease = now + timedelta(seconds=7988 + 300)
@@ -30,17 +31,19 @@ class AsrJobLeaseIntegrationTests(unittest.TestCase):
                 "id char(32) primary key, "
                 "status varchar not null, "
                 "worker_id varchar, "
+                "execution_token char(32), "
                 "lease_expires_at datetime"
                 ")"
             )
             conn.execute(
                 text(
-                    "insert into job (id, status, worker_id, lease_expires_at) "
-                    "values (:id, 'running', :worker_id, :lease_expires_at)"
+                    "insert into job (id, status, worker_id, execution_token, lease_expires_at) "
+                    "values (:id, 'running', :worker_id, :execution_token, :lease_expires_at)"
                 ),
                 {
                     "id": job_id.hex,
                     "worker_id": "worker-asr-1",
+                    "execution_token": execution_token.hex,
                     "lease_expires_at": initial_lease,
                 },
             )
@@ -49,6 +52,7 @@ class AsrJobLeaseIntegrationTests(unittest.TestCase):
                 conn,
                 job_id=job_id,
                 worker_id="worker-asr-1",
+                execution_token=execution_token,
                 lease_expires_at=extended_lease,
             )
             expired_job_ids = conn.execute(
@@ -64,6 +68,7 @@ class AsrJobLeaseIntegrationTests(unittest.TestCase):
     def test_lease_extension_never_shortens_and_checks_worker_ownership(self) -> None:
         engine = create_engine("sqlite+pysqlite:///:memory:")
         job_id = uuid.uuid4()
+        execution_token = uuid.uuid4()
         now = datetime(2026, 7, 20, 0, 0, 0)
         existing_lease = now + timedelta(hours=3)
 
@@ -73,17 +78,19 @@ class AsrJobLeaseIntegrationTests(unittest.TestCase):
                 "id char(32) primary key, "
                 "status varchar not null, "
                 "worker_id varchar, "
+                "execution_token char(32), "
                 "lease_expires_at datetime"
                 ")"
             )
             conn.execute(
                 text(
-                    "insert into job (id, status, worker_id, lease_expires_at) "
-                    "values (:id, 'running', :worker_id, :lease_expires_at)"
+                    "insert into job (id, status, worker_id, execution_token, lease_expires_at) "
+                    "values (:id, 'running', :worker_id, :execution_token, :lease_expires_at)"
                 ),
                 {
                     "id": job_id.hex,
                     "worker_id": "worker-asr-1",
+                    "execution_token": execution_token.hex,
                     "lease_expires_at": existing_lease,
                 },
             )
@@ -93,6 +100,7 @@ class AsrJobLeaseIntegrationTests(unittest.TestCase):
                     conn,
                     job_id=job_id,
                     worker_id="worker-asr-1",
+                    execution_token=execution_token,
                     lease_expires_at=now + timedelta(hours=2),
                 )
             )
@@ -101,6 +109,16 @@ class AsrJobLeaseIntegrationTests(unittest.TestCase):
                     conn,
                     job_id=job_id,
                     worker_id="another-worker",
+                    execution_token=execution_token,
+                    lease_expires_at=now + timedelta(hours=4),
+                )
+            )
+            self.assertFalse(
+                _set_job_lease_deadline(
+                    conn,
+                    job_id=job_id,
+                    worker_id="worker-asr-1",
+                    execution_token=uuid.uuid4(),
                     lease_expires_at=now + timedelta(hours=4),
                 )
             )

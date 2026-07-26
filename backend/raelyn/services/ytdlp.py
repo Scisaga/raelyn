@@ -4,10 +4,11 @@ import json
 import os
 import re
 import shutil
+from collections.abc import Callable
 from importlib import metadata
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
-from collections.abc import Callable
 
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, ExtractorError
@@ -17,6 +18,7 @@ from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.jobs.reschedule import JobReschedule
 from raelyn.models import AppConfig
+from raelyn.services.browser_identity import BROWSER_USER_AGENT
 from raelyn.services.provider_cookies import (
     cookie_config_name,
     cookie_provider_for_target,
@@ -82,22 +84,31 @@ _DEFAULT_SUBTITLE_LANGS = [*_CHINESE_SUBTITLE_LANGS, *_ENGLISH_SUBTITLE_LANGS]
 _BILIBILI_CHINESE_SUBTITLE_LANGS = ["ai-zh", *_CHINESE_SUBTITLE_LANGS]
 _BILIBILI_ENGLISH_SUBTITLE_LANGS = ["ai-en", *_ENGLISH_SUBTITLE_LANGS]
 _BILIBILI_DEFAULT_SUBTITLE_LANGS = [*_BILIBILI_CHINESE_SUBTITLE_LANGS, *_BILIBILI_ENGLISH_SUBTITLE_LANGS]
+_YOUTUBE_MEDIA_URL_RETRIES = 2
+_YOUTUBE_MEDIA_URL_RESOLVE_ATTEMPTS = 2
 
 
 class _YtdlpCaptureLogger:
-    def __init__(self) -> None:
+    def __init__(self, *, activity_hook: Callable[[], object] | None = None) -> None:
         self.warnings: list[str] = []
         self.errors: list[str] = []
+        self._activity_hook = activity_hook
+
+    def _touch_activity(self) -> None:
+        if self._activity_hook:
+            self._activity_hook()
 
     def debug(self, msg: str) -> None:  # noqa: D401
-        return
+        self._touch_activity()
 
     def warning(self, msg: str) -> None:
+        self._touch_activity()
         m = str(msg or "").strip()
         if m:
             self.warnings.append(m)
 
     def error(self, msg: str) -> None:
+        self._touch_activity()
         m = str(msg or "").strip()
         if m:
             self.errors.append(m)
@@ -561,6 +572,54 @@ def _is_http_403_forbidden_error(err: Exception) -> bool:
     return "http error 403" in msg and "forbidden" in msg
 
 
+def _is_youtube_media_transport_error(message: str) -> bool:
+    normalized_message = _normalize_msg(message)
+    if "unable to download video subtitles" in normalized_message:
+        return False
+    for line in str(message or "").splitlines():
+        normalized_line = _normalize_msg(line)
+        if "[download]" not in normalized_line:
+            continue
+        if any(
+            marker in normalized_line
+            for marker in (
+                "connect tunnel failed",
+                "connection closed abruptly",
+                "connection reset by peer",
+                "connection was reset",
+                "http error 502",
+                "response 502",
+            )
+        ):
+            return True
+    return False
+
+
+def _rewrite_ytdlp_attempt_paths(value: Any, *, attempt_dir: Path, out_dir: Path) -> Any:
+    attempt_text = str(attempt_dir)
+    attempt_prefix = f"{attempt_text}{os.sep}"
+    if isinstance(value, dict):
+        for key, item in value.items():
+            value[key] = _rewrite_ytdlp_attempt_paths(item, attempt_dir=attempt_dir, out_dir=out_dir)
+        return value
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = _rewrite_ytdlp_attempt_paths(item, attempt_dir=attempt_dir, out_dir=out_dir)
+        return value
+    if isinstance(value, tuple):
+        return tuple(
+            _rewrite_ytdlp_attempt_paths(item, attempt_dir=attempt_dir, out_dir=out_dir)
+            for item in value
+        )
+    if not isinstance(value, str):
+        return value
+    if value == attempt_text:
+        return str(out_dir)
+    if value.startswith(attempt_prefix):
+        return str(out_dir / value[len(attempt_prefix) :])
+    return value
+
+
 def _youtube_bot_check_hint() -> str:
     return (
         "YouTube 拒绝访问（需要登录/人机验证）。解决方法：在 UI 的 Settings 页面配置 "
@@ -607,13 +666,7 @@ def _apply_common_ytdlp_opts(
     if is_bili:
         # B 站对 UA / referer 较敏感，保留最小必要请求头。
         headers = dict(opts.get("http_headers") or {})
-        headers.setdefault(
-            "User-Agent",
-            (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
-        )
+        headers.setdefault("User-Agent", BROWSER_USER_AGENT)
         headers.setdefault("Referer", "https://www.bilibili.com/")
         headers.setdefault("Origin", "https://www.bilibili.com")
         opts["http_headers"] = headers
@@ -659,8 +712,9 @@ def ytdlp_extract_info(
     max_entries: int | None = None,
     socket_timeout: int | None = None,
     use_provider_cookies: bool = True,
+    activity_hook: Callable[[], object] | None = None,
 ) -> dict[str, Any]:
-    logger = _YtdlpCaptureLogger()
+    logger = _YtdlpCaptureLogger(activity_hook=activity_hook)
     cookie_provider = cookie_provider_for_target(url, provider)
     sock = None
     if socket_timeout is not None:
@@ -765,6 +819,60 @@ def ytdlp_extract_info(
         return info
 
 
+def ytdlp_fetch_bytes(
+    url: str,
+    *,
+    provider: str,
+    max_bytes: int,
+    socket_timeout: int = 15,
+) -> tuple[bytes, str | None]:
+    target_url = str(url or "").strip()
+    if not target_url:
+        raise ValueError("yt-dlp fetch URL is empty")
+
+    limit = max(1, int(max_bytes))
+    opts: dict[str, Any] = {
+        "ignoreconfig": True,
+        "quiet": True,
+        "no_warnings": True,
+        "socket_timeout": max(1, int(socket_timeout)),
+        "http_headers": {
+            "User-Agent": BROWSER_USER_AGENT,
+            "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
+        },
+    }
+    _apply_common_ytdlp_opts(
+        opts,
+        url=target_url,
+        provider=provider,
+        use_provider_cookies=True,
+    )
+
+    with YoutubeDL(opts) as ydl:
+        with ydl.urlopen(target_url) as response:
+            status = getattr(response, "status", None)
+            if isinstance(status, int) and not 200 <= status < 300:
+                raise RuntimeError(f"yt-dlp fetch http {status}")
+            data = response.read(limit + 1)
+            content_type = (response.headers.get("content-type") or "").split(";", 1)[0].strip().lower() or None
+
+    if not data:
+        raise RuntimeError("yt-dlp fetch returned empty body")
+    if len(data) > limit:
+        raise RuntimeError("yt-dlp fetch response too large")
+    return data, content_type
+
+
+def _promote_ytdlp_attempt_files(attempt_dir: Path, out_dir: Path) -> None:
+    sources = sorted(attempt_dir.iterdir(), key=lambda item: item.name)
+    collisions = [source.name for source in sources if (out_dir / source.name).exists()]
+    if collisions:
+        names = ", ".join(collisions[:10])
+        raise RuntimeError(f"yt-dlp attempt output conflicts with existing files: {names}")
+    for source in sources:
+        shutil.move(str(source), str(out_dir / source.name))
+
+
 def ytdlp_download(
     *,
     url: str,
@@ -775,9 +883,9 @@ def ytdlp_download(
     write_auto_subtitles: bool = True,
     subtitles_langs: list[str] | None = None,
     progress_hook: Callable[[dict[str, Any]], None] | None = None,
+    activity_hook: Callable[[], object] | None = None,
 ) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    outtmpl = str(out_dir / "%(id)s.%(ext)s")
     cookie_provider = cookie_provider_for_target(url, provider)
     effective_use_provider_cookies = bool(use_provider_cookies)
     cookie_invalid_line: str | None = None
@@ -785,11 +893,16 @@ def ytdlp_download(
     captured_errors: list[str] = []
 
     class _YtdlpLogger:
+        def _touch_activity(self) -> None:
+            if activity_hook:
+                activity_hook()
+
         def debug(self, msg: str) -> None:  # noqa: D401
-            return
+            self._touch_activity()
 
         def warning(self, msg: str) -> None:
             nonlocal cookie_invalid_line
+            self._touch_activity()
             m = str(msg or "")
             if not m.strip():
                 return
@@ -800,6 +913,7 @@ def ytdlp_download(
 
         def error(self, msg: str) -> None:
             nonlocal cookie_invalid_line
+            self._touch_activity()
             m = str(msg or "")
             if not m.strip():
                 return
@@ -815,7 +929,6 @@ def ytdlp_download(
     base_opts: dict[str, Any] = {
         # Do not let a user's global yt-dlp config break the app (e.g. an overly strict -f selector).
         "ignoreconfig": True,
-        "outtmpl": {"default": outtmpl},
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
@@ -832,8 +945,8 @@ def ytdlp_download(
         "noplaylist": True,
         # Network resilience (common failure: "bytes read ... more expected").
         "continuedl": True,
-        "retries": 8,
-        "fragment_retries": 8,
+        "retries": _YOUTUBE_MEDIA_URL_RETRIES if cookie_provider == "youtube" else 8,
+        "fragment_retries": _YOUTUBE_MEDIA_URL_RETRIES if cookie_provider == "youtube" else 8,
         "socket_timeout": 30,
         # More stable for flaky networks; slower but avoids bursts.
         "concurrent_fragment_downloads": 1,
@@ -854,7 +967,70 @@ def ytdlp_download(
     format_attempts = _download_format_attempts(cookie_provider=cookie_provider, configured_format=user_format)
 
     last_error: Exception | None = None
+    last_attempt_warnings: list[str] = []
+    last_attempt_errors: list[str] = []
     tried_progressive_mp4 = False
+
+    def _extract_download(opts: dict[str, Any], *, attempt_label: str) -> dict[str, Any]:
+        nonlocal cookie_invalid_line, last_attempt_warnings, last_attempt_errors
+        resolve_attempts = _YOUTUBE_MEDIA_URL_RESOLVE_ATTEMPTS if cookie_provider == "youtube" else 1
+        last_attempt_error: Exception | None = None
+
+        for resolve_attempt in range(1, resolve_attempts + 1):
+            cookie_invalid_line = None
+            warning_start = len(captured_warnings)
+            error_start = len(captured_errors)
+            if activity_hook:
+                activity_hook()
+
+            with TemporaryDirectory(prefix=".ytdlp-resolve-", dir=out_dir) as attempt_dir_text:
+                attempt_dir = Path(attempt_dir_text)
+                attempt_opts = dict(opts)
+                attempt_opts["outtmpl"] = {"default": str(attempt_dir / "%(id)s.%(ext)s")}
+                try:
+                    if "ffmpeg_location" in attempt_opts:
+                        print(f"[ytdlp] ffmpeg_location={attempt_opts.get('ffmpeg_location')}", flush=True)
+                    with YoutubeDL(attempt_opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                    last_attempt_warnings = captured_warnings[warning_start:]
+                    last_attempt_errors = captured_errors[error_start:]
+                    if cookie_invalid_line:
+                        _raise_if_cookie_invalid_messages([cookie_invalid_line], provider=cookie_provider)
+                        _raise_if_provider_pause_messages([cookie_invalid_line])
+                    _promote_ytdlp_attempt_files(attempt_dir, out_dir)
+                    _rewrite_ytdlp_attempt_paths(info, attempt_dir=attempt_dir, out_dir=out_dir)
+                    return info
+                except (DownloadError, ExtractorError) as e:
+                    last_attempt_error = e
+                    last_attempt_warnings = captured_warnings[warning_start:]
+                    last_attempt_errors = captured_errors[error_start:]
+                    joined = "\n".join(
+                        [cookie_invalid_line or "", *last_attempt_warnings[-12:], *last_attempt_errors[-12:], str(e)]
+                    ).strip()
+                    _raise_if_cookie_invalid_messages([joined], provider=cookie_provider)
+                    _raise_if_youtube_bot_check_messages(
+                        [joined],
+                        provider=cookie_provider,
+                        using_cookies=effective_use_provider_cookies,
+                    )
+                    _raise_if_provider_pause_messages([joined])
+                    if (
+                        cookie_provider == "youtube"
+                        and resolve_attempt < resolve_attempts
+                        and _is_youtube_media_transport_error(joined)
+                    ):
+                        print(
+                            f"[ytdlp] media transport failed for {attempt_label}; "
+                            f"re-resolving original video URL ({resolve_attempt + 1}/{resolve_attempts})",
+                            flush=True,
+                        )
+                        continue
+                    raise
+
+        if last_attempt_error:
+            raise last_attempt_error
+        raise RuntimeError("yt-dlp download attempt failed without error")
+
     for idx, (label, fmt, merge) in enumerate(format_attempts, start=1):
         opts = dict(base_opts)
         _apply_common_ytdlp_opts(
@@ -870,17 +1046,12 @@ def ytdlp_download(
             opts.pop("merge_output_format", None)
 
         try:
-            if "ffmpeg_location" in opts:
-                print(f"[ytdlp] ffmpeg_location={opts.get('ffmpeg_location')}", flush=True)
-            with YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if cookie_invalid_line:
-                    _raise_if_cookie_invalid_messages([cookie_invalid_line], provider=cookie_provider)
-                    _raise_if_provider_pause_messages([cookie_invalid_line])
-                return info
+            return _extract_download(opts, attempt_label=label)
         except (DownloadError, ExtractorError) as e:
             last_error = e
-            joined = "\n".join([cookie_invalid_line or "", *captured_warnings[-12:], *captured_errors[-12:], str(e)]).strip()
+            joined = "\n".join(
+                [cookie_invalid_line or "", *last_attempt_warnings[-12:], *last_attempt_errors[-12:], str(e)]
+            ).strip()
             _raise_if_cookie_invalid_messages([joined], provider=cookie_provider)
             _raise_if_youtube_bot_check_messages(
                 [joined],
@@ -890,7 +1061,7 @@ def ytdlp_download(
             _raise_if_provider_pause_messages([joined])
             if _is_youtube_bot_check_error(e):
                 raise RuntimeError(_youtube_bot_check_hint()) from e
-            if _is_youtube_js_challenge_failed_messages(captured_warnings + captured_errors + [str(e)]):
+            if _is_youtube_js_challenge_failed_messages(last_attempt_warnings + last_attempt_errors + [str(e)]):
                 raise RuntimeError(_youtube_js_challenge_hint()) from e
             if cookie_provider == "youtube" and _is_youtube_no_video_formats_messages([joined]):
                 raise RuntimeError(_youtube_no_video_formats_hint()) from e
@@ -926,16 +1097,11 @@ def ytdlp_download(
                 prog_opts.pop("merge_output_format", None)
                 print("[ytdlp] ffmpeg crash detected; retrying with progressive mp4 (<=720p) to avoid merge", flush=True)
                 try:
-                    with YoutubeDL(prog_opts) as ydl:
-                        info = ydl.extract_info(url, download=True)
-                        if cookie_invalid_line:
-                            _raise_if_cookie_invalid_messages([cookie_invalid_line], provider=cookie_provider)
-                            _raise_if_provider_pause_messages([cookie_invalid_line])
-                        return info
+                    return _extract_download(prog_opts, attempt_label="progressive_mp4_720")
                 except (DownloadError, ExtractorError) as e2:
                     last_error = e2
                     joined2 = "\n".join(
-                        [cookie_invalid_line or "", *captured_warnings[-12:], *captured_errors[-12:], str(e2)]
+                        [cookie_invalid_line or "", *last_attempt_warnings[-12:], *last_attempt_errors[-12:], str(e2)]
                     ).strip()
                     _raise_if_cookie_invalid_messages([joined2], provider=cookie_provider)
                     _raise_if_youtube_bot_check_messages(
@@ -949,13 +1115,13 @@ def ytdlp_download(
                     # Fall through to raise a readable error below.
                     joined = joined2 or joined
                     e = e2
-            last = captured_errors[-1] if captured_errors else str(e)
+            last = last_attempt_errors[-1] if last_attempt_errors else str(e)
             important_warns: list[str] = []
-            for w in captured_warnings[-24:]:
+            for w in last_attempt_warnings[-24:]:
                 lw = str(w or "").lower()
                 if "ffmpeg does not support socks proxies" in lw:
                     important_warns.append(str(w))
-            tail_err = "\n".join(captured_errors[-8:]).strip()
+            tail_err = "\n".join(last_attempt_errors[-8:]).strip()
             lines = [*important_warns[-3:], *(tail_err.split("\n") if tail_err else []), str(e)]
             out: list[str] = []
             for ln in [str(x or "").rstrip() for x in lines]:

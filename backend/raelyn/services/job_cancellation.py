@@ -26,6 +26,7 @@ def request_job_cancel(session: Session, job: Job, *, reason: str = "manual") ->
         job.finished_at = now
         job.lease_expires_at = None
         job.worker_id = None
+        job.execution_token = None
         session.add(
             JobEvent(
                 job_id=job.id,
@@ -56,6 +57,7 @@ def finalize_canceled_job(session: Session, job: Job, *, message: str, reason: s
     job.finished_at = now
     job.lease_expires_at = None
     job.worker_id = None
+    job.execution_token = None
     session.add(
         JobEvent(
             job_id=job.id,

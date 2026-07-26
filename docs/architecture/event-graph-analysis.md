@@ -1,222 +1,132 @@
-# 事件图谱与事件语义分析
+# 事件语义星域
 
-本文记录播放列表级事件图谱、事件 embedding 与语义时间演化链路。事实源不是整段 transcript embedding，而是视频级 LLM 原子事件。
+事件语义星域（内部 API 与数据模型仍称 event map）用于浏览播放列表中“发生了什么、哪些记录描述同一件事、事件如何延续、涉及哪些实体”。它不是市场 Regime 分析，也不输出收益率、波动率、流动性或人工 Regime 标签。
 
 ## 产品边界
 
-- 页面与文档统一使用“事件图谱”“语义快照”“语义变化”，不把结果解释为市场 `Regime`。现存 `event_regime_*` 表、`/regime/*` 路由和任务名属于兼容标识，暂不做破坏性迁移。
-- 一个播放列表作为一个完整语义语料库分析。当前不按媒体、频道或其它来源继续切分，也不做来源权重；拆分后样本不足，不能稳定支撑当前统计。后续不得把“缺少来源加权”当作缺陷反复提出，除非播放列表语义或数据规模约束发生变化。
-- 本项目不引入收益率、波动率、流动性、人工 `Regime` 标签或样本外市场验证，也不以这些指标决定功能去留。输出只描述事件内容、事件密度与 embedding 语义随事件时间的变化。
-- 历史批量上架不是同日事件。平台发布时间、采集时间和 `available_at` 只用于溯源审计；语义时间轴以已抽取或推断的 `event_time_start` 为准。
+- 播放列表内的事件视为同一内容来源集合，不再按媒体来源切分样本。
+- 来源权重暂不进入 canonical、topic、story 或布局计算。该限制是明确决策，不是遗漏；引入前必须先定义可验证目标。
+- 所有时间筛选、排序和月度统计只使用 `event_time_start/event_time_end`。`available_at` 只表示系统何时获得记录，不能替代事件发生时间。
+- 2012-03-23 集中的 17,166 条记录是 `available_at` 批次；其中 17,106 条已有推断事件时间，60 条因缺少事件时间不能进入地图。地图不会把该批次堆到 2012-03-23。
+- 页面删除“时间演化”和“变化点”。底部时间轴只控制地图窗口，不再生成 centroid drift、rolling z 或断点候选。
 
-## 核心口径
+## 六种可见对象
 
-- `market_event` 是事实源：每条视频 transcript 先抽取结构化事件，再进入实体、证据、关系和语义分析。
-- `event_time_start/end` 表示事件目标时间，即事件本身声称发生、预计发生或覆盖的时间；语义信号按 `event_time_start` 聚合。
-- `available_at` 表示该事件在系统中最早可被观察到的时间，仅用于溯源和导出审计，不作为事件图谱时间轴。
-- `confidence >= 0.8` 且至少有 1 条 verified source-id provenance 的事件自动进入 `accepted`；低置信或无合法 provenance 的事件进入 `draft`，只展示，不进入语义快照。
-- 没有 `event_time_start` 的 accepted 事件不进入语义快照。时间精度还会决定事件能进入哪个聚合尺度，避免把“仅知道年份”的事件伪装成某年 1 月 1 日的日级峰值。
+| 对象 | 含义 | 何时显示 |
+| --- | --- | --- |
+| 主题区域 | 当前窗口内真实事件形成的三维彩色语义点云 | 远景 |
+| 主题 | 一级星域与二级主题团；标签可追溯到结构化实体、事件类型和代表事件 | 远景 / 中景 |
+| 真实事件 Canonical | 一件保守归并后的现实事件，是固定三维语义星点 | 近景 |
+| 事件记录 Member | 视频分析产生的一条原始事件记录 | 右侧详情 |
+| 故事线 Story | 有证据的 continuation/causes/response/corrects 关系 | 选中 canonical 后显示短程曲线 |
+| 实体与证据 | 人物、组织、国家、行业、标题、转写片段和来源链接 | 右侧结构化详情或实体筛选 |
 
-## 事件抽取
+原始记录始终可追溯，但不会全部成为全局点。这样既保留证据，也避免重复报道把局部区域涂成无法阅读的点云。
 
-任务：
+## 事件抽取与入图边界
 
-- `video.extract_events`：读取单个视频的 `plain` transcript，按 `EVENT_EXTRACTION_CHUNK_MAX_CHARS` 分块调用 LLM；当有效 LLM URL 为 Ollama `/api/generate` 时，实际分块上限还会被 `EVENT_EXTRACTION_OLLAMA_CHUNK_MAX_CHARS` 封顶，避免本地 35B 模型在小上下文下吃进过大的 prompt。
-- `video.extract_events_batch`：短视频批量抽取任务。任务可以携带多个 video id，但执行时每次 LLM 请求只包含 1 个视频；单视频 source 字符数超过 3500 或 transcript 需要分块时回退到 `video.extract_events`。
-- `playlist.backfill_events`：按播放列表内容时间轴规划月份范围任务。
-- `playlist.backfill_events_range`：查询单个月份范围内已有 `plain` transcript 的视频，按 source 字符数投递 `video.extract_events_batch` 或 `video.extract_events` 子任务；范围任务优先级低于它投递的视频抽取任务。
-- `playlist.mark_event_regime_dirty`：由 `analysis` worker 延迟合并播放列表语义快照 dirty 标记，不在 `ai` worker 的事件抽取热路径直接更新兼容表 `event_regime_state`。
+事件抽取只读取 `plain` transcript。空 transcript 保持宽松语义：任务返回 `skipped`，不会因为没有文字而强制失败或重试。LLM 返回合法的 `{"videos":[{"video_id":"v1","events":[]}]}` 时，会记录 `succeeded` 且 `event_count=0`；后续 `force=false` 可以复用该结果。
 
-抽取输入包含：
+JSON 无法解析、顶层不是对象、缺少 `videos[]`、缺少预期视频或对应视频缺少 `events[]` 属于协议结构错误。当前每次 LLM 请求只处理一个视频；结构错误会先持久化该视频的 failed extraction run，再抛给 worker 进入任务退避重试，不删除已有事件。单条坏事件、非法字段或无法形成合法证据的条目仍按 warning 丢弃，避免因局部内容质量把整个视频判为失败。
 
-- 视频标题
-- 媒体名
-- 内容时间
-- 平台发布时间
-- source 列表：`v1.title`、`v1.desc`、`v1.t001...`。标题、经过确定性清洗的描述和 transcript 片段都按 source id 进入 prompt；LLM 不能直接返回证据文本。描述清洗会移除 URL、hashtag、频道推广、会员/社群导流、推荐影片列表和免责声明等对事件抽取无帮助的噪音。
+星域输入严格限定为同时满足以下条件的事件：
 
-抽取输出必须是 JSON，顶层为 `videos[]`。每个 `videos[].video_id` 对应输入 video id，例如 `v1`。单个事件包含：
+- `market_event.status=accepted`；
+- `event_time_start` 非空；
+- 当前 embedding 模型和维度的记录为 `ready`；
+- embedding 向量非空。
 
-- `title` / `summary`：必须保留具体市场对象；不能把 `housing market`、`real estate market`、房地产市场、住房市场、楼市等具体对象泛化为单独的“市场”。股票事件必须在可可靠判断时写明上市市场、交易所或代码，并覆盖触发因素、持续性、估值/风险或影响对象。
-- `event_time`
-- `available_at_basis`
-- `event_type`
-- `entities`
-- `assets`
-- `sectors`
-- `macro_variables`
-- `direction`
-- `magnitude`
-- `surprise_or_delta`
-- `cause_effect_chain`
-- `evidence_source_ids`
-- `confidence`
+## Canonical 规则
 
-解析规则：
+归并优先高精度，允许漏合并，不允许为了减少点数而扩大误合并：
 
-- 解析器会剥离 Markdown 代码块与 `<think>`。
-- JSON 必须严格可解析。
-- `evidence_source_ids` 必须命中本次请求的 source map；非法 source id 会被丢弃并写入 job warning。
-- `market_event_evidence.evidence_text` 由后端写入 source 原文段，`evidence_json` 写入 `schema_version=event_provenance_v1`、`source_id`、`source_kind`、`source_label`、`char_start/end`、`source_sha256`、`verified=true`。
-- `video_event_extraction_run` 记录 `video_id/source_hash/prompt_version/model/status/event_count`；`force=false` 命中 succeeded run 时跳过，即使 `event_count=0` 也不重复抽取。
-- `event_time` 中非法年月日（例如不存在的日期或月份）按不可解析处理，写入时变为 `time_precision=unknown`，不让单条 LLM 坏日期导致整个 `video.extract_events` 失败。
-- 单条坏事件只丢弃该事件并记录 job warning，不影响同视频其它有效事件。
-- 同一视频内重复事件按 `event_key` 去重。
-- `title`、`summary`、`assets`、`sectors`、`entities` 的对象口径应一致；例如实体为 `US Housing Market` / `US Real Estate` 时，标题应写“美国房地产市场”或同等具体口径，而不是单独写“市场”。
-- 股票事件要求拆分发行公司与可交易证券：`company` 表示发行公司，`asset` 表示股票/ETF/商品等可交易资产，`country` / `institution` 表示上市市场或交易所；普通词不能误标成公司或资产。
-- 操作策略、荐股建议、观察名单、族群归类、关注提醒、条件式交易计划和纯预测不单独构成事件；若同段内容包含已发生事实变化，只抽取事实变化本身，例如股价创新高、营收公布、资金流、公司行动或政策结果。
+- exact 分支要求时间区间、类型和 action/entity/period 指纹兼容；
+- fuzzy 分支同时要求时间区间相交、类型兼容、强实体重叠、语义 cosine 阈值和 runner-up margin；
+- month 精度采用更高阈值；year 精度只允许 exact；
+- 加入 cluster 前检查全体成员时间交集及实体、动作、数值冲突，禁止普通 union-find 的传递扩张；
+- 证据不足时保留 singleton；普通相关性由 topic 表达，不伪造 story 边。
 
-执行边界：
+一对一且语义未冲突时可延续 canonical ID。merge/split 创建新 ID并写 lineage，不能为了固定坐标错误复用身份。
 
-- `video.extract_events` 只在读取 video / media / transcript asset 元数据和最终写入事件时短暂持有数据库事务；S3 transcript 读取与 JSON 解析不持有业务行锁。Ollama `/api/generate` 事件抽取在 LLM 调用期间会持有一个 session-level advisory lock，key 为 endpoint + model，用来把同一模型的事件抽取请求限制为 1；锁忙时任务重排，而不是进入 Ollama 内部长队列。
-- Ollama `/api/generate` 事件抽取固定使用紧凑 JSON schema、`think=false`、`format=json`、`options.temperature=0`，并带上 `EVENT_EXTRACTION_OLLAMA_NUM_CTX` / `EVENT_EXTRACTION_OLLAMA_NUM_PREDICT`。紧凑 schema 保留事件时间、类型、标题、摘要、实体、资产、行业、宏观变量、方向、因果链、source-id provenance 与置信度，但限制每个视频最多 4 个核心事件和数组长度，避免本地模型生成过长 JSON 后被 `num_predict` 截断。默认 `stream=true`，调用方会流式读取并累积最终 JSON；超过 `EVENT_EXTRACTION_OLLAMA_IDLE_TIMEOUT_SECONDS` 没有任何流式输出时请求失败，交给任务系统重试。
-- 任务进度使用 `total=10000`：LLM 阶段最多推进到 `9000`，事件写库后到 `9600`，投递 embedding 与 dirty 后处理任务后到 `9900`，worker 成功收尾时才到 `10000`。
-- 事件写库提交后才投递 `event.embed` 与 `playlist.mark_event_regime_dirty`，避免同一事务同时持有 `market_event`、`job` 与 `event_regime_state` 相关锁。
+## 固定投影与时间窗口
 
-## 关系表知识图谱
+首次构建把 canonical centroid 流式写入 `float32 memmap`，经 IncrementalPCA 降到最多 50 维，再以固定参数 UMAP 投影到三维：`n_components=3`、cosine、`n_neighbors=15`、`min_dist=0.1`、seed 42、单线程。X/Y/Z 都是语义坐标，时间不作为 Z 轴。
 
-第一版不引入外部图数据库，使用关系表表达图结构：
+同 embedding 口径的后续快照优先继承保留 canonical 的坐标；新 canonical 按高维近邻 anchor 定位。embedding 口径改变、保留比例不足或 anchor 质量失败时执行 rebase，并通过 `layout_continuity` 明确告知坐标连续性中断。
 
-- `market_event`：事件节点。
-- `market_event_entity`：公司、人物、机构、国家、指标、资产、行业、宏观变量等实体节点。
-- `market_event_evidence`：事件到视频 transcript 证据的引用。
-- `market_event_relation`：事件内部的 `cause / effect / affects / mentions` 等边。
+地图只有一个固定长度的观察窗口，默认 12 个月，可切换 1/3/6/12 个月。点击、键盘、整体拖动和播放都只移动窗口，不再维护两层时间状态。点云只包含窗口内真实事件，没有全期参照、装饰星点或虚构连线。类型筛选和实体筛选不重新布局。
 
-图谱 API：
+快照按 `clamp(round(sqrt(N)/16), 16, 32)` 生成一级星域，每个星域再按约 800 个 canonical 拆分二级主题团。每个事件恰好归属一级和二级各一个主题。缩放只切换一级标签、二级标签和真实事件近景；数字聚合节点、二维 polygon geometry 与实体卫星不属于业务对象，已从快照、协议和 UI 中删除。
 
-- `GET /api/playlists/{playlist_id}/events/graph`
+三维前端使用本地固定版本 Three.js。主画面只保留单层清晰事件点，不再使用大尺寸光晕、bloom 或模糊星云；点的局部疏密表达当前窗口的事件聚集程度。点云后方的低透明度弯曲坐标网格只依据快照一级星域中心与规模生成一次，用作无刻度的空间参照；它不是新的业务对象，不随时间窗口重算，也不赋予 UMAP 的 X/Y/Z 物理含义。事件类型在 API 中映射为八个稳定语义族并着色，避免几十个原始类型造成随机彩噪；选中事件用白芯金环与带引线标签在原坐标标明，实体筛选命中为绿色，故事关系为紫色或青色。选中主题时，其当前窗口成员保持语义色并加亮、绘制细金边，其他事件仅降低不透明度，因此主题选中不依赖虚构连线或重新布局。直接点选星点、主题和代表事件不改变镜头；只有右侧“定位”或搜索结果可以显式聚焦。右侧按一级星域、二级主题、当前窗口代表事件逐层下钻。镜头支持旋转、缩放、平移、复位和正交俯视。
 
-该接口由关系表生成 `nodes` 与 `edges`，用于 UI 展示和事件关系解释。
+每个点的发生时间区间作为 GPU attribute 常驻显存，窗口边界作为 shader uniform 更新。拖动时间轴时只更新四个窗口参数即可实时预览，不上传十万级透明度数组；释放拖动后再更新 CPU 侧标签、统计和实体查询。播放和手动提交窗口时执行约 220ms 原位交叉淡化，不改变相机矩阵和事件坐标。
 
-## 事件 Embedding
+Three.js controller、scene、camera、material 和矩阵对象不得作为 Alpine 深层响应式对象使用；页面状态读取 controller 时必须先通过 `Alpine.raw` 解包。否则浏览器会代理 Three.js 的只读矩阵字段，出现“标签更新但粒子停止渲染”的分裂状态。
 
-任务：
+## 快照与任务
 
-- `event.embed`
+任务只有：
 
-`video.extract_events` 会先提交事件写入并释放 `market_event` 相关锁，再投递 accepted 事件的 `event.embed` 任务，避免事件写入事务同时持有 `market_event` 与 `job` 锁。若事件抽取重试时命中同一 `source_hash` 缓存，也会补投 accepted 事件缺失的 embedding 任务。
+- `playlist.mark_event_map_dirty`
+- `playlist.build_event_map_snapshot`
+- `playlist.prune_event_map_snapshots`
 
-输入文本由结构化事件字段确定性生成，包含：
+dirty 使用 generation 防止构建期间的新变化丢失，具体约束如下：
 
-- event type
-- event time
-- title / summary
-- direction
-- magnitude
-- surprise_or_delta
-- entities
+- 只有可能改变上述可入图集合或其内容的变化才投递 dirty：播放列表成员变化、事件进入或退出 accepted+时间+ready-vector 集合、已有可入图事件内容被替换，以及 ready 向量或 checksum 变化。新发现视频、尚无可入图事件的发布时间变化、事件刚抽取但 embedding 尚未 ready，以及原本就未入图的 embedding 进入 failed/skipped，都不会单独触发无效构建；已入图向量转为失败仍会因退出集合而触发更新。
+- 源数据变化与 `playlist.mark_event_map_dirty` outbox 在同一短事务提交。复用同一播放列表的 pending dirty job 时会锁定该 job 行到源事务提交，避免 worker 在源数据提交前抢走旧信号；多个 reason 最多保留最近 8 个用于排障。
+- dirty handler 锁定 `event_map_state` 后递增 `dirty_generation`。自动构建等待最后一次 dirty 后 120 秒安静期；若变化持续不断，最晚在第一次 dirty 后 900 秒启动。手动重建不等待 quiet window。
+- 自动 build 领取后会先在 state 行锁下检查 generation；`dirty_generation <= built_generation` 时直接返回 `skipped_generation_current`，不创建 staging，也不读取输入。
+- 真正读取输入时使用同一个 PostgreSQL `REPEATABLE READ READ ONLY` 快照，同时冻结 `dirty_generation`、current snapshot、active dirty job 和全部事件/embedding 输入。该视图内若仍有 pending/running dirty job，构建返回 `superseded_by_active_dirty`，等待该 outbox 提交并由后续 build 收敛，避免用“新 generation + 旧输入”错误宣告完成。
+- 冻结输入按 event id、内容 hash 和向量 checksum 计算 `input_fingerprint/build_key`。若同播放列表已有相同算法与模型口径的 ready 快照，当前 staging 会取消并复用该 ready 快照，同时把 `built_generation` 推进到冻结 generation，不再执行 PCA、近邻、UMAP 和对象写入。
 
-只对 `accepted` 事件生成 embedding。事件状态从 `draft` 改为 `accepted` 时，会自动投递 `event.embed`，并投递所在播放列表的 `playlist.mark_event_regime_dirty`。
+构建完成后以短事务原子切换 ready 指针。若切换时 live `dirty_generation` 大于冻结的 `input_generation`，当前快照仍保持自洽，并继续排一个 follow-up build；否则清空 dirty 时间窗。
 
-`event.embed` 在 embedding 状态变为 `ready`、`failed` 或 `skipped` 时也会投递 `playlist.mark_event_regime_dirty`。dirty job 使用 `playlist_event_dirty:{playlist_id}` 作为 pending dedupe key，默认延迟 60 秒执行，用来合并同一播放列表在回填期间产生的多次事件抽取、embedding 状态变化和人工状态修改。批量 dirty 投递按 playlist id 稳定排序，并复用任务系统的 pending dedupe advisory lock，避免多个 worker 在同一批 playlist key 上通过唯一索引反向等待。
+手动重建直接提交 build job。每次 claim 生成独立 `execution_token`，并以 `(job_id, execution_token)` 隔离 staging snapshot；失败、取消、worker 失联、任务重领或内存超限都不能改变 `event_map_state.current_snapshot_id`。
 
-## 语义快照
+## 资源与取消
 
-任务：
+- `ANALYSIS_CPU_THREADS=2` 是每个 analysis worker 的 CPU 线程预算；Python worker 入口会在导入 NumPy / sklearn 前，将它统一设置给 `OMP_NUM_THREADS`、`OPENBLAS_NUM_THREADS` 和 `MKL_NUM_THREADS`。该预算也覆盖 all-types 或显式包含 analysis 任务类型的 worker，不影响其他专职角色；修改后需重启对应 worker；
+- `ANALYSIS_MAX_RSS_BYTES=12884901888`，限制父任务与 UMAP 子进程的进程树总 RSS；
+- `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES=1073741824`，低于 1 GiB 可用内存立即终止；
+- ANN 与 UMAP 子进程不并存；向量、PCA 和 canonical centroid 使用 memmap/分批处理；
+- canonical/member/entity/topic/story 数据先顺序写入临时行缓冲，再按 2,000 行批量入库；每个对象族提交后立即删除缓冲，不在内存中同时保留百万级字典；
+- 构建期间数据库只包含不可见的 staging snapshot；对象族可分事务提交，只有最后的小事务在 execution token CAS 成功后切换 current ready 指针；
+- 任务在读取、归并、写入、子进程监控和最终切换前检查取消；取消后终止子进程并清理临时目录；
+- 快照记录 `peak_rss_bytes` 与临时磁盘峰值。
 
-- `playlist.build_event_regime_snapshot`
+## 快照保留与在线查询
 
-消费条件：
+- 每次 ready 原子切换成功后，build job 提交按播放列表去重的 `playlist.prune_event_map_snapshots` 任务；清理任务一次只删除一个快照并依赖外键级联，避免在 API 请求或 ready 切换事务中执行大规模删除。
+- 默认只保留 current 与上一版 ready；`running/pending` staging 永不清理，失败和取消快照随旧 ready 逐批回收。上一版用于承接切换前已经 pin 的浏览器请求。
+- 所有参与快照级联删除或 `SET NULL` 的组合外键都有对应前缀索引，避免删除 canonical、故事线和 identity 引用时反复扫描整张子表。
+- `event_map_canonical` 与 `event_map_entity_index` 使用较低的自动分析阈值，使新 snapshot UUID 及时进入 PostgreSQL 统计信息；在线实体排行仍显式采用 Hash Join，避免统计短暂滞后时退化为百万次随机索引探测。
+- 实体排行与实体索引查询都设置事务级查询超时。该设置只在当前请求事务生效，不会通过 SQLAlchemy 连接池泄漏到其他 API 或 worker；排行额外禁用 Nested Loop，索引查询保留选择性执行计划。
 
-- 事件状态为 `accepted`
-- `event_time_start` 可解析
-- 对应当前 embedding 口径的 `market_event_embedding.status=ready` 且向量有效
+## API 一致性
 
-输出表：
+`manifest` 是唯一可不带 `snapshot_id` 的地图接口，用于解析当前 ready 快照；轮询时可使用 `compact=true`，只读取状态和快照计数，避免重复装载主题数据与实时覆盖统计。`scene`、搜索、实体索引和对象详情都必须 pin `snapshot_id`，避免一次交互混用两版数据。实体数量、搜索和窗口筛选只查询 `event_map_entity_index`，局部角色与实体关系来自冻结的 record revision，不会回连可变的 `market_event_entity/relation`。播放期间前端不请求实体排行；暂停或手动完成窗口移动后，以单飞队列只提交最后一个窗口查询。新视频关系只有在抽取载荷显式给出的 `source_entity_key` / `target_entity_key` 与同事件规范键精确且唯一匹配时才形成局部连线；自然语言 `cause` / `effect` 本身不参与端点猜测。
 
-- `event_regime_run`
-- `event_regime_state`
-- `event_regime_signal`
-- `event_regime_candidate`
+场景二进制协议 v2 每条 56 字节，小端布局 `<I16sfffiiBBBBIII>`：
 
-Dirty 标记：
+```text
+uint32 point_index
+uuid canonical_id
+float32 x, y, z
+int32 event_start_day, event_end_day
+uint8 event_type_code, time_precision_code, flags, reserved
+uint32 member_count, macro_topic_index, local_topic_index
+```
 
-- 高频路径统一投递 `playlist.mark_event_regime_dirty`，包括事件抽取结果变化、事件 embedding 状态变化与人工修改事件状态。
-- `playlist.mark_event_regime_dirty` 归属 `analysis` worker；handler 仅在 `event_regime_state` 不存在或 `analysis_dirty != true` 时写入。若状态已 dirty，则直接 no-op，不刷新 `updated_at`，避免大型同播放列表回填时反复竞争同一热行。
-- 强制回填取消、手动 rebuild 等低频显式操作仍可直接更新 `event_regime_state`，保证人工操作即时可见。
+不向浏览器传输原始 embedding。
 
-当前聚合口径：
+## 旧链清理
 
-- `day / week / month` 三个尺度；播放列表整体视为一个语料库，不按来源拆分或加权。
-- 每条事件按 `event_time_start` 归入对应周期。`second/day` 精度可进入日、周、月尺度，`month` 精度只进入月尺度；`year/unknown` 不进入当前三个细尺度，并单独计入 `event_scale_excluded`，不能落到 1 月 1 日制造伪峰。
-- 每个周期对事件 embedding 求 centroid。
-- `drift_score` 使用相邻周期 centroid cosine distance。
-- `drift_rolling_z` 用前序窗口计算 rolling z。
-- week / month 级 z 分数达到阈值时生成语义变化点；兼容表名仍为 `event_regime_candidate`。
+代码、页面和常规启动流程不再包含 `event_regime_*`、`event_graph_projection_point`、旧任务或 `/regime/*` 路由。旧表只在显式迁移工具中作为待删除对象出现：
 
-覆盖率口径：
+```bash
+python -m raelyn.tools.migrate_data --drop-legacy-event-analysis --yes
+```
 
-- `event_total`：当前 accepted 事件总数。
-- `event_embedded`：当前 embedding 口径下 ready 的 accepted 事件数。
-- `event_eligible`：同时具备 `event_time_start` 和有效 ready vector、可进入语义快照的事件数。
-- `event_skipped = event_total - event_eligible`：页面显示为“不可入图”。它与 embedding coverage 分开，不能用旧 run 的历史计数覆盖实时状态。
-- `event_scale_excluded`：已满足整体入图条件、但时间精度不足以进入当前日/周/月细尺度的事件数；不重复计入 `event_skipped`。
-
-构建方式：
-
-- 按 `ANALYSIS_STREAM_BATCH_SIZE` 从数据库顺序流式读取，不把全部 Python 向量和 ORM 行同时留在内存。
-- 第一遍只维护当前周期的向量和、计数与紧凑 centroid；第二遍基于 centroid 流式计算周期内 dispersion。空间复杂度由“全量事件向量”降为“全部周期 centroid + 数据库读取批次 + 当前单个周期的距离标量”，不再随全量事件向量数线性增长；分位数仍要求保留当前周期的距离数组。
-- 每批检查进程 RSS 与 `/proc/meminfo` 的 `MemAvailable`；`ANALYSIS_MAX_RSS_BYTES` 和 `ANALYSIS_MIN_AVAILABLE_MEMORY_BYTES` 分别是应用内最大 RSS 与最低可用内存门槛。
-
-候选证据：
-
-- `evidence_event_ids` 最多保存 20 条最接近候选周期 centroid 的代表事件，不是候选窗口全部事件，也不按来源加权。
-- `evidence_video_ids` 保存这些代表事件对应的视频。
-- `evidence_json` 保存检测粒度、周期事件总数和 `sampling=centroid_nearest_top_20_v1`，使 UI 能区分“代表样本”与全量证据。
-- 候选详情 API 会把 `evidence_video_ids` 展开为 `evidence.videos`，包含视频标题、媒体名、发布时间与 URL，供前端展示证据视频列表。
-- 周、月变化点的 `event_start/end` 分别覆盖完整周或完整月，不把周期起点误写成单日区间。
-
-## API
-
-事件层：
-
-- `POST /api/playlists/{playlist_id}/events/extract`
-- `GET /api/playlists/{playlist_id}/events/summary`
-- `GET /api/playlists/{playlist_id}/events`
-- `GET /api/playlists/{playlist_id}/events/{event_id}`
-- `PATCH /api/playlists/{playlist_id}/events/{event_id}`
-- `GET /api/playlists/{playlist_id}/events/graph`
-
-语义快照层（路由保留 `/regime` 仅为兼容）：
-
-- `POST /api/playlists/{playlist_id}/regime/rebuild`
-- `GET /api/playlists/{playlist_id}/regime/summary`
-- `GET /api/playlists/{playlist_id}/regime/signals`
-- `GET /api/playlists/{playlist_id}/regime/candidates`
-- `GET /api/playlists/{playlist_id}/regime/candidates/{candidate_id}`
-- `PATCH /api/playlists/{playlist_id}/regime/candidates/{candidate_id}`
-- `GET /api/playlists/{playlist_id}/regime/export/events`
-
-## UI
-
-播放列表主界面：
-
-- 原简报区域默认替换为事件审核 / 证据面板。
-- 顶部展示抽取覆盖率、accepted / draft / rejected 数量。
-- 支持事件状态过滤、实体过滤、详情查看、确认与拒绝。
-
-播放列表设置页：
-
-- 提供事件图谱数据维护区，支持补齐事件抽取、全部重新抽取、停止当前抽取任务与构建语义快照；只有存在 ready run 时才显示“语义快照已就绪”，否则明确显示“尚未构建”，不能把空结果写成“未发现变化点”。
-- 全部重新抽取使用 `force=true`，会先取消当前播放列表相关的活跃事件抽取、月份范围任务、事件 embedding 与语义快照构建任务，再投递新的全量回填父任务；父任务按月拆分后由范围任务逐月查询并投递视频抽取任务。
-
-分析页：
-
-- 标题为“事件图谱”。
-- “事件时间演化”消费兼容 API 返回的 signal，展示事件时间上的语义变化与不确定性；“焦点窗口周期语义轨迹”明确表示日级周期 centroid，不冒充事件级二维 embedding 地图。
-- 候选详情统一称“语义变化点”，使用 LLM 事件、实体与证据解释。
-
-## 语义地图演进方向
-
-参考 [Apple Embedding Atlas](https://apple.github.io/embedding-atlas/) 的呈现原则与其[预计算二维投影建议](https://apple.github.io/embedding-atlas/tool.html#visualizing-embeddings)，但不直接嵌入其完整 WebGPU / Mosaic / DuckDB-WASM / Svelte 组件：
-
-- 后端在同一全局快照中预计算稳定的事件级二维投影并记录 embedding 模型与 projection version；切换焦点时间窗只做筛选，不重新拟合坐标。
-- 页面目标结构为“语义地图 / 时间演化 / 事件列表”。全量事件可作为低亮度密度背景，焦点窗口事件作为高亮前景，颜色按事件类型或方向，而不是来源。
-- 地图支持点选、矩形或套索选择，并联动事件列表；详情按 event id 懒加载，API 不向浏览器传输 1024 维原始向量。
-- 当前前端继续保持轻量，第一阶段不在浏览器对全量事件运行 UMAP，也不把二维视觉簇解释为原始高维空间中的严格聚类。
-
-## 迁移边界
-
-- 启动迁移会删除旧 transcript embedding / playlist analysis 表。
-- 旧 `video.embed_transcript`、`playlist.backfill_embeddings`、`playlist.build_analysis_snapshot` 的 pending/running job 会被标记为 `canceled`，原因写入 `job_event`。
-- brief 后端表与 API 继续保留；只是播放列表主 UI 不再默认展示每日简报。
+工具会先确认每个相关播放列表已有 current ready 新快照，并拒绝存在运行中旧任务的数据库；不会在应用启动时无条件删除历史表。

@@ -33,8 +33,9 @@ class JobRegistryImportTests(unittest.TestCase):
             "event.embed",
             "playlist.backfill_events",
             "playlist.backfill_events_range",
-            "playlist.mark_event_regime_dirty",
-            "playlist.build_event_regime_snapshot",
+            "playlist.mark_event_map_dirty",
+            "playlist.build_event_map_snapshot",
+            "playlist.prune_event_map_snapshots",
             "brief.generate_period",
             "brief.generate_daily",
         }

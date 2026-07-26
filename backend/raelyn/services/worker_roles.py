@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from raelyn.models import Job, Media, Video
+from raelyn.worker_runtime_env import ANALYSIS_JOB_TYPES
 
 
 WORKER_ROLE_ALL = "all"
@@ -30,7 +31,7 @@ WORKER_ROLE_TYPES: dict[str, list[str]] = {
     "asr": ["video.asr_transcribe"],
     "sync": ["media.sync_profile", "media.sync_videos", "media.delete", "video.enrich_metadata.youtube"],
     "embedding": ["event.embed"],
-    "analysis": ["playlist.mark_event_regime_dirty", "playlist.build_event_regime_snapshot"],
+    "analysis": list(ANALYSIS_JOB_TYPES),
     "ai": [
         "video.extract_events",
         "video.extract_events_batch",

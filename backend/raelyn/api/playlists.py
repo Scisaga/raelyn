@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import tempfile
+import struct
 import uuid
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Iterator
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import Date, case, cast, func, literal, or_, select
+from sqlalchemy import Date, and_, case, cast, func, literal, or_, select, text
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import aliased
 
 from raelyn.api.asset_refs import AssetRef, build_asset_ref
 from raelyn.api.orm import OrmModel
@@ -17,10 +21,17 @@ from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.models import (
     Asset,
-    EventRegimeCandidate,
-    EventRegimeRun,
-    EventRegimeSignal,
-    EventRegimeState,
+    EventMapCanonical,
+    EventMapCanonicalMember,
+    EventMapEntityIndex,
+    EventMapRecordRevision,
+    EventMapSnapshot,
+    EventMapState,
+    EventMapStory,
+    EventMapStoryEdge,
+    EventMapTopic,
+    EventMapTopicMember,
+    Job,
     Media,
     MarketEvent,
     MarketEventEntity,
@@ -29,22 +40,27 @@ from raelyn.models import (
     Playlist,
     PlaylistMedia,
     Video,
-    Job,
 )
 from raelyn.services.brief_schedule import schedule_brief_refresh_for_media_change
 from raelyn.services.assets import replace_standalone_asset
 from raelyn.services.periods import day_bounds_utc, local_date, normalize_granularity, period_bounds_utc, period_start
 from raelyn.services.event_analysis import (
-    active_event_regime_run,
-    ensure_event_regime_state,
     event_filter_clause,
-    mark_playlist_event_regime_dirty,
-    pending_event_regime_job,
     playlist_event_coverage,
-    playlist_event_regime_coverage,
-    request_event_regime_rebuild,
+    playlist_event_map_coverage,
+    request_event_map_rebuild,
     request_playlist_event_backfill,
+    schedule_playlist_event_map_dirty,
     update_event_status,
+)
+from raelyn.services.event_map_domain import (
+    EVENT_MAP_SEMANTIC_FAMILIES,
+    enrich_event_map_type_categories,
+    normalize_event_map_entity,
+)
+from raelyn.services.event_map_projection import (
+    EVENT_MAP_PROJECTION_METHOD,
+    EVENT_MAP_PROJECTION_VERSION,
 )
 from raelyn.services.video_admission import (
     ensure_video_published_at_backfilled,
@@ -60,6 +76,32 @@ from raelyn.timeutil import utcnow
 router = APIRouter(tags=["playlists"])
 
 _PLAYLIST_IMG_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _configure_event_map_query(
+    session: Any,
+    *,
+    force_hash_join: bool = False,
+) -> None:
+    """给事件地图在线聚合设置事务级边界，不改变连接池中后续请求。"""
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+    timeout_seconds = max(1, min(120, int(settings.event_map_entity_query_timeout_seconds or 10)))
+    session.execute(
+        text("select set_config('statement_timeout', :timeout, true)"),
+        {"timeout": f"{timeout_seconds}s"},
+    )
+    if force_hash_join:
+        # 单个 ready 快照包含十万至百万实体行；随机 canonical Nested Loop
+        # 会在保留多版快照的大索引上退化为数小时查询。该排行必须线性扫描并 Hash Join。
+        session.execute(text("select set_config('enable_nestloop', 'off', true)"))
+
+
+def _event_map_query_timeout(exc: DBAPIError) -> bool:
+    return str(getattr(exc.orig, "sqlstate", "") or "") == "57014"
+
+
 class PlaylistCreate(BaseModel):
     name: str
     description: str | None = None
@@ -229,95 +271,6 @@ class MarketEventDetailOut(MarketEventOut):
 
 class MarketEventPatch(BaseModel):
     status: str | None = None
-
-
-class EventRegimeSummaryOut(BaseModel):
-    playlist_id: uuid.UUID
-    analysis_dirty: bool
-    running: bool
-    backfill_job: PlaylistEventBackfillJobOut | None = None
-    active_run_id: uuid.UUID | None = None
-    last_ready_run_id: uuid.UUID | None = None
-    last_requested_at: Any | None = None
-    last_built_at: Any | None = None
-    last_error: str | None = None
-    event_total: int = 0
-    event_embedded: int = 0
-    event_eligible: int = 0
-    event_scale_excluded: int = 0
-    event_skipped: int = 0
-    event_failed: int = 0
-    candidate_count: int = 0
-    signal_start_date: date | None = None
-    signal_end_date: date | None = None
-
-
-class EventRegimeSignalOut(BaseModel):
-    id: uuid.UUID
-    granularity: str
-    period_date: date
-    rolling_window: int
-    event_count: int
-    ready_embedding_count: int
-    drift_score: float | None = None
-    drift_rolling_mean: float | None = None
-    drift_rolling_std: float | None = None
-    drift_rolling_z: float | None = None
-    dispersion_mean: float | None = None
-    dispersion_std: float | None = None
-    dispersion_p25: float | None = None
-    dispersion_p75: float | None = None
-    projection_id: str | None = None
-    projection_method: str | None = None
-    projection_x: float | None = None
-    projection_y: float | None = None
-    projection_z: float | None = None
-    projection_explained_variance_ratio: list[float] | None = None
-    linked_candidate_id: uuid.UUID | None = None
-
-
-class EventRegimeCandidateOut(BaseModel):
-    id: uuid.UUID
-    candidate_date: date
-    effective_trade_date: date
-    peak_date: date | None = None
-    event_start: date | None = None
-    event_end: date | None = None
-    event_type: str = "burst"
-    status: str
-    score: float
-    confidence: float | None = None
-    uncertainty: float | None = None
-    drift_score: float | None = None
-    dispersion_score: float | None = None
-    drift_rolling_z: float | None = None
-    breakpoint_date: date | None = None
-    detection_method: str = ""
-    detection_granularity: str = ""
-    boundary_score: float | None = None
-    boundary_z: float | None = None
-    before_start: date | None = None
-    before_end: date | None = None
-    after_start: date | None = None
-    after_end: date | None = None
-    supporting_granularities: list[str] = Field(default_factory=list)
-    summary: str | None = None
-    top_terms: list[str] = Field(default_factory=list)
-    evidence_event_ids: list[str] = Field(default_factory=list)
-    evidence_video_ids: list[str] = Field(default_factory=list)
-    evidence_preview: str = ""
-    available_at: Any | None = None
-
-
-class EventRegimeCandidateDetailOut(EventRegimeCandidateOut):
-    evidence: dict[str, Any] = Field(default_factory=dict)
-
-
-class EventRegimeCandidatePatch(BaseModel):
-    status: str | None = None
-    candidate_date: date | None = None
-    effective_trade_date: date | None = None
-    event_type: str | None = None
 
 
 def _media_avatar_asset(session, m: Any) -> AssetRef | None:
@@ -783,11 +736,6 @@ def _playlist_event_backfill_job_out(session, job: Job) -> PlaylistEventBackfill
     )
 
 
-def _playlist_last_ready_regime_run_id(session, playlist_id: uuid.UUID) -> uuid.UUID | None:
-    state = ensure_event_regime_state(session, playlist_id)
-    return state.last_ready_run_id
-
-
 def _event_entities(session, event_id: uuid.UUID) -> list[MarketEventEntityOut]:
     rows = (
         session.execute(
@@ -932,166 +880,6 @@ def _event_belongs_to_playlist(session, *, playlist_id: uuid.UUID, event_id: uui
     )
 
 
-def _event_regime_summary(session, playlist_id: uuid.UUID) -> EventRegimeSummaryOut:
-    state = ensure_event_regime_state(session, playlist_id)
-    active_run = active_event_regime_run(session, playlist_id)
-    pending_job = pending_event_regime_job(session, playlist_id)
-    backfill_job = _active_playlist_event_backfill_job(session, playlist_id)
-    last_ready_run = session.get(EventRegimeRun, state.last_ready_run_id) if state.last_ready_run_id else None
-    coverage = playlist_event_regime_coverage(session, playlist_id)
-    candidate_count = 0
-    signal_start_date = None
-    signal_end_date = None
-    if last_ready_run:
-        candidate_count = int(
-            session.execute(
-                select(func.count()).select_from(EventRegimeCandidate).where(EventRegimeCandidate.regime_run_id == last_ready_run.id)
-            ).scalar_one()
-            or 0
-        )
-        signal_start_date, signal_end_date = session.execute(
-            select(func.min(EventRegimeSignal.period_date), func.max(EventRegimeSignal.period_date)).where(
-                EventRegimeSignal.regime_run_id == last_ready_run.id,
-            )
-        ).one()
-    return EventRegimeSummaryOut(
-        playlist_id=playlist_id,
-        analysis_dirty=bool(state.analysis_dirty),
-        running=active_run is not None or pending_job is not None,
-        backfill_job=_playlist_event_backfill_job_out(session, backfill_job) if backfill_job else None,
-        active_run_id=getattr(active_run, "id", None),
-        last_ready_run_id=state.last_ready_run_id,
-        last_requested_at=state.last_requested_at,
-        last_built_at=state.last_built_at,
-        last_error=state.last_error,
-        event_total=coverage["event_total"],
-        event_embedded=coverage["event_embedded"],
-        event_eligible=coverage["event_eligible"],
-        event_scale_excluded=coverage["event_scale_excluded"],
-        event_skipped=coverage["event_skipped"],
-        event_failed=coverage["event_failed"],
-        candidate_count=candidate_count,
-        signal_start_date=signal_start_date,
-        signal_end_date=signal_end_date,
-    )
-
-
-def _candidate_out(candidate: EventRegimeCandidate) -> EventRegimeCandidateOut:
-    evidence = candidate.evidence_json if isinstance(candidate.evidence_json, dict) else {}
-    top_terms = getattr(candidate, "top_terms", None) if isinstance(getattr(candidate, "top_terms", None), list) else []
-    evidence_event_ids = getattr(candidate, "evidence_event_ids", None) if isinstance(getattr(candidate, "evidence_event_ids", None), list) else []
-    evidence_video_ids = getattr(candidate, "evidence_video_ids", None) if isinstance(getattr(candidate, "evidence_video_ids", None), list) else []
-    return EventRegimeCandidateOut(
-        id=candidate.id,
-        candidate_date=candidate.candidate_date,
-        effective_trade_date=candidate.effective_trade_date,
-        peak_date=getattr(candidate, "peak_date", None),
-        event_start=getattr(candidate, "event_start", None),
-        event_end=getattr(candidate, "event_end", None),
-        event_type=str(getattr(candidate, "event_type", None) or "burst"),
-        status=candidate.status,
-        score=float(candidate.score or 0.0),
-        confidence=getattr(candidate, "confidence", None),
-        uncertainty=getattr(candidate, "uncertainty", None),
-        drift_score=candidate.drift_score,
-        dispersion_score=candidate.dispersion_score,
-        drift_rolling_z=candidate.drift_rolling_z,
-        breakpoint_date=candidate.peak_date,
-        detection_method="event_embedding_regime_v1",
-        detection_granularity=str(evidence.get("granularity") or "").strip(),
-        boundary_score=candidate.score,
-        boundary_z=candidate.drift_rolling_z,
-        before_start=getattr(candidate, "train_start", None),
-        before_end=getattr(candidate, "train_end", None),
-        after_start=getattr(candidate, "valid_start", None),
-        after_end=getattr(candidate, "valid_end", None),
-        supporting_granularities=[
-            str(item)
-            for item in (
-                evidence.get("supporting_granularities")
-                if isinstance(evidence.get("supporting_granularities"), list)
-                else ([evidence.get("granularity")] if evidence.get("granularity") else [])
-            )
-            if str(item).strip()
-        ],
-        summary=getattr(candidate, "summary", None),
-        top_terms=[str(item) for item in top_terms],
-        evidence_event_ids=[str(item) for item in evidence_event_ids],
-        evidence_video_ids=[str(item) for item in evidence_video_ids],
-        evidence_preview=str(evidence.get("preview") or "").strip(),
-        available_at=getattr(candidate, "available_at", None),
-    )
-
-
-def _candidate_evidence_videos(session: Any, candidate: EventRegimeCandidate, evidence: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_ids = getattr(candidate, "evidence_video_ids", None)
-    if not isinstance(raw_ids, list) or not raw_ids:
-        videos = evidence.get("videos")
-        return [item for item in videos if isinstance(item, dict)] if isinstance(videos, list) else []
-
-    video_ids: list[uuid.UUID] = []
-    for raw_id in raw_ids:
-        try:
-            video_ids.append(uuid.UUID(str(raw_id)))
-        except (TypeError, ValueError):
-            continue
-    if not video_ids:
-        return []
-
-    existing_videos = evidence.get("videos")
-    existing_by_id = (
-        {
-            str(item.get("video_id")): item
-            for item in existing_videos
-            if isinstance(item, dict) and item.get("video_id")
-        }
-        if isinstance(existing_videos, list)
-        else {}
-    )
-
-    rows = (
-        session.execute(
-            select(Video, Media)
-            .join(Media, Media.id == Video.media_id)
-            .where(Video.id.in_(video_ids))
-        )
-        .all()
-    )
-    by_id = {str(video.id): (video, media) for video, media in rows}
-    out: list[dict[str, Any]] = []
-    for raw_id in raw_ids:
-        item = by_id.get(str(raw_id))
-        if not item:
-            continue
-        video, media = item
-        existing = existing_by_id.get(str(video.id), {})
-        out.append(
-            {
-                "video_id": str(video.id),
-                "title": video.title,
-                "url": video.url,
-                "published_at": video.published_at,
-                "media_id": str(media.id),
-                "media_name": media.name,
-                "shift_score": existing.get("shift_score") if isinstance(existing, dict) else None,
-            }
-        )
-    return out
-
-
-def _candidate_detail_out(candidate: EventRegimeCandidate, session: Any | None = None) -> EventRegimeCandidateDetailOut:
-    base = _candidate_out(candidate)
-    evidence = dict(candidate.evidence_json) if isinstance(candidate.evidence_json, dict) else {}
-    if session is not None:
-        videos = _candidate_evidence_videos(session, candidate, evidence)
-        if videos:
-            evidence["videos"] = videos
-    return EventRegimeCandidateDetailOut(
-        **base.model_dump(),
-        evidence=evidence,
-    )
-
-
 @router.post("/playlists", response_model=PlaylistOut)
 def create_playlist(payload: PlaylistCreate) -> PlaylistOut:
     with session_scope() as session:
@@ -1107,7 +895,7 @@ def create_playlist(payload: PlaylistCreate) -> PlaylistOut:
                 raise HTTPException(status_code=404, detail=f"media not found: {', '.join(missing)}")
             for mid in media_ids:
                 session.add(PlaylistMedia(playlist_id=playlist.id, media_id=mid))
-            mark_playlist_event_regime_dirty(session, playlist.id)
+            _schedule_playlist_event_map_dirty(session, playlist.id, reason="playlist_created")
 
         schedule_brief_refresh_for_media_change(
             session,
@@ -1421,58 +1209,1152 @@ def list_playlist_event_entity_suggestions(
         ]
 
 
-@router.get("/playlists/{playlist_id}/events/graph")
-def get_playlist_events_graph(
+_EVENT_MAP_SCENE_RECORD = struct.Struct("<I16sfffiiBBBBIII")
+_EVENT_MAP_SCENE_PROTOCOL_VERSION = 2
+_EVENT_MAP_SCENE_ROWS_PER_CHUNK = 2048
+_EVENT_MAP_INDEX_RECORD = struct.Struct("<I")
+_EVENT_MAP_EPOCH_ORDINAL = date(1970, 1, 1).toordinal()
+_EVENT_MAP_NO_INDEX = 0xFFFFFFFF
+
+
+def _event_map_day(value: date) -> int:
+    return int(value.toordinal() - _EVENT_MAP_EPOCH_ORDINAL)
+
+
+def _event_map_date(value: int) -> date:
+    return date.fromordinal(_EVENT_MAP_EPOCH_ORDINAL + int(value))
+
+
+def _event_map_state(session: Any, playlist_id: uuid.UUID) -> EventMapState:
+    state = session.get(EventMapState, playlist_id)
+    if state is not None:
+        return state
+    state = EventMapState(playlist_id=playlist_id)
+    session.add(state)
+    session.flush([state])
+    return state
+
+
+def _schedule_playlist_event_map_dirty(
+    session: Any,
     playlist_id: uuid.UUID,
-    status: str | None = "accepted",
-    limit: int = 300,
+    *,
+    reason: str,
+    source_video_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    return schedule_playlist_event_map_dirty(
+        session,
+        playlist_id=playlist_id,
+        reason=reason,
+        source_video_id=source_video_id,
+        priority=0,
+    )
+
+
+def _active_event_map_build_job(session: Any, playlist_id: uuid.UUID) -> Job | None:
+    return (
+        session.execute(
+            select(Job)
+            .where(
+                Job.type == "playlist.build_event_map_snapshot",
+                Job.status.in_(["pending", "running", "cancel_requested"]),
+                Job.params["playlist_id"].as_string() == str(playlist_id),
+            )
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+
+
+def _event_map_job_payload(job: Job | None) -> dict[str, Any] | None:
+    if job is None:
+        return None
+    return {
+        "job_id": str(job.id),
+        "status": job.status,
+        "progress_current": job.progress_current,
+        "progress_total": job.progress_total,
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "cancel_requested_at": job.cancel_requested_at,
+    }
+
+
+def _event_map_snapshot_is_current(snapshot: EventMapSnapshot | None) -> bool:
+    return bool(
+        snapshot is not None
+        and snapshot.status == "ready"
+        and getattr(snapshot, "layout_algorithm_version", None) == EVENT_MAP_PROJECTION_VERSION
+        and getattr(snapshot, "projection_method", None) == EVENT_MAP_PROJECTION_METHOD
+    )
+
+
+def _resolve_event_map_snapshot(
+    session: Any,
+    *,
+    playlist_id: uuid.UUID,
+    snapshot_id: uuid.UUID | None = None,
+) -> EventMapSnapshot:
+    if snapshot_id is None:
+        state = session.get(EventMapState, playlist_id)
+        snapshot_id = state.current_snapshot_id if state is not None else None
+    snapshot = session.get(EventMapSnapshot, snapshot_id) if snapshot_id is not None else None
+    if (
+        snapshot is None
+        or snapshot.playlist_id != playlist_id
+        or not _event_map_snapshot_is_current(snapshot)
+    ):
+        raise HTTPException(status_code=409, detail="event map snapshot is not ready")
+    return snapshot
+
+
+def _event_map_topics(session: Any, snapshot_id: uuid.UUID) -> list[EventMapTopic]:
+    return (
+        session.execute(
+            select(EventMapTopic)
+            .where(EventMapTopic.snapshot_id == snapshot_id)
+            .order_by(EventMapTopic.level.asc(), EventMapTopic.label.asc(), EventMapTopic.topic_id.asc())
+        )
+        .scalars()
+        .all()
+    )
+
+@router.get("/playlists/{playlist_id}/events/map/manifest")
+def get_playlist_event_map_manifest(playlist_id: uuid.UUID, compact: bool = False) -> dict[str, Any]:
+    with session_scope() as session:
+        if not session.get(Playlist, playlist_id):
+            raise HTTPException(status_code=404, detail="playlist not found")
+        state = session.get(EventMapState, playlist_id)
+        snapshot = None
+        if state is not None and state.current_snapshot_id is not None:
+            candidate = session.get(EventMapSnapshot, state.current_snapshot_id)
+            if _event_map_snapshot_is_current(candidate):
+                snapshot = candidate
+        build_job = _active_event_map_build_job(session, playlist_id)
+        backfill_job = _active_playlist_event_backfill_job(session, playlist_id)
+        coverage = {} if compact else playlist_event_map_coverage(session, playlist_id)
+        dirty_generation = int(state.dirty_generation or 0) if state is not None else 0
+        built_generation = int(state.built_generation or 0) if state is not None else 0
+        dirty = dirty_generation > built_generation
+        if snapshot is not None:
+            status = "ready"
+        elif build_job is not None:
+            status = "running" if build_job.status == "running" else "pending"
+        elif state is not None and state.last_error:
+            status = "failed"
+        else:
+            status = "missing"
+        if build_job is not None:
+            build_status = "running" if build_job.status == "running" else "pending"
+        elif state is not None and state.last_error and dirty:
+            build_status = "failed"
+        else:
+            build_status = "idle"
+
+        payload: dict[str, Any] = {
+            "playlist_id": str(playlist_id),
+            "snapshot_id": str(snapshot.id) if snapshot is not None else None,
+            "status": status,
+            "build_status": build_status,
+            "build_error": state.last_error if state is not None else None,
+            "building": build_job is not None,
+            "dirty": dirty,
+            "dirty_generation": dirty_generation,
+            "built_generation": built_generation,
+            "last_requested_at": state.last_requested_at if state is not None else None,
+            "last_built_at": state.last_built_at if state is not None else None,
+            "last_error": state.last_error if state is not None else None,
+            "build_job": _event_map_job_payload(build_job),
+            "backfill_job": (
+                _playlist_event_backfill_job_out(session, backfill_job).model_dump()
+                if backfill_job is not None
+                else None
+            ),
+            **coverage,
+        }
+        if compact:
+            payload.update(
+                {
+                    "canonical_count": int(snapshot.canonical_count or 0) if snapshot is not None else 0,
+                    "record_count": int(snapshot.member_count or snapshot.input_record_count or 0) if snapshot is not None else 0,
+                    "event_skipped": (
+                        sum((snapshot.skipped_reason_counts or {}).values())
+                        if snapshot is not None
+                        else 0
+                    ),
+                }
+            )
+            return payload
+        if snapshot is None:
+            payload.update(
+                {
+                    "canonical_count": 0,
+                    "record_count": 0,
+                    "story_count": 0,
+                    "topic_count": 0,
+                    "entity_count": 0,
+                    "type_categories": [],
+                    "semantic_families": list(EVENT_MAP_SEMANTIC_FAMILIES),
+                    "topics": [],
+                    "monthly_distribution": [],
+                    "time_bounds": {},
+                    "dimension": 3,
+                    "scene_protocol_version": _EVENT_MAP_SCENE_PROTOCOL_VERSION,
+                    "scene_record_size": _EVENT_MAP_SCENE_RECORD.size,
+                }
+            )
+            return payload
+
+        time_start, time_end = session.execute(
+            select(
+                func.min(EventMapCanonical.event_time_start),
+                func.max(EventMapCanonical.event_time_end),
+            ).where(EventMapCanonical.snapshot_id == snapshot.id)
+        ).one()
+        topics = _event_map_topics(session, snapshot.id)
+        topic_order = {topic.topic_id: index for index, topic in enumerate(topics)}
+        anchor_rows = session.execute(
+            select(
+                EventMapCanonical.canonical_id,
+                EventMapCanonical.point_index,
+                EventMapCanonical.title,
+            ).where(
+                EventMapCanonical.snapshot_id == snapshot.id,
+                EventMapCanonical.canonical_id.in_(
+                    [topic.anchor_canonical_id for topic in topics if topic.anchor_canonical_id is not None]
+                ),
+            )
+        ).all()
+        topic_anchors = {
+            canonical_id: {
+                "point_index": int(point_index),
+                "title": str(title or "").strip(),
+            }
+            for canonical_id, point_index, title in anchor_rows
+        }
+        payload.update(
+            {
+                "snapshot_id": str(snapshot.id),
+                "parent_snapshot_id": str(snapshot.parent_snapshot_id) if snapshot.parent_snapshot_id else None,
+                "input_generation": int(snapshot.input_generation or 0),
+                "build_key": snapshot.build_key,
+                "layout_continuity": snapshot.layout_continuity,
+                "projection_method": snapshot.projection_method,
+                "projection_seed": snapshot.projection_seed,
+                "dimension": 3,
+                "scene_protocol_version": _EVENT_MAP_SCENE_PROTOCOL_VERSION,
+                "scene_record_size": _EVENT_MAP_SCENE_RECORD.size,
+                "bounds": snapshot.bounds or {},
+                "canonical_count": int(snapshot.canonical_count or 0),
+                "record_count": int(snapshot.member_count or snapshot.input_record_count or 0),
+                "story_count": int(snapshot.story_count or 0),
+                "topic_count": len(topics),
+                "topic_count_total": int(snapshot.topic_count or 0),
+                "entity_count": int(snapshot.entity_count or 0),
+                "event_skipped": sum((snapshot.skipped_reason_counts or {}).values()),
+                "skipped_reason_counts": snapshot.skipped_reason_counts or {},
+                "peak_rss_bytes": snapshot.peak_rss_bytes,
+                "type_categories": enrich_event_map_type_categories(snapshot.type_categories),
+                "semantic_families": list(EVENT_MAP_SEMANTIC_FAMILIES),
+                "time_bounds": {
+                    "start": time_start.date().isoformat() if time_start is not None else None,
+                    "end": time_end.date().isoformat() if time_end is not None else None,
+                },
+                "monthly_distribution": snapshot.monthly_distribution or [],
+                "topics": [
+                    {
+                        "topic_index": topic_order[topic.topic_id],
+                        "topic_id": str(topic.topic_id),
+                        "level": int(topic.level),
+                        "parent_topic_index": (
+                            topic_order.get(topic.parent_topic_id)
+                            if topic.parent_topic_id is not None
+                            else None
+                        ),
+                        "label": topic.label,
+                        "top_terms": topic.top_terms or [],
+                        "center_x": topic.center_x,
+                        "center_y": topic.center_y,
+                        "center_z": topic.center_z,
+                        "radius": topic.radius,
+                        "canonical_count": int(topic.canonical_count or 0),
+                        "record_count": int(topic.member_count or 0),
+                        "anchor_canonical_id": (
+                            str(topic.anchor_canonical_id)
+                            if topic.anchor_canonical_id is not None
+                            else None
+                        ),
+                        "anchor_point_index": (
+                            topic_anchors.get(topic.anchor_canonical_id, {}).get("point_index")
+                            if topic.anchor_canonical_id is not None
+                            else None
+                        ),
+                        "anchor_title": (
+                            topic_anchors.get(topic.anchor_canonical_id, {}).get("title") or None
+                            if topic.anchor_canonical_id is not None
+                            else None
+                        ),
+                    }
+                    for topic in topics
+                ],
+                "capabilities": {
+                    "topic_regions": bool(topics),
+                    "stories": int(snapshot.story_count or 0) > 0,
+                    "records": True,
+                    "entities": True,
+                },
+            }
+        )
+        return payload
+
+
+def _event_map_scene_topic_order(session: Any, snapshot_id: uuid.UUID) -> dict[uuid.UUID, int]:
+    """返回场景流所需的小型索引，不把 canonical membership 全量载入内存。"""
+    topics = _event_map_topics(session, snapshot_id)
+    topic_order = {topic.topic_id: index for index, topic in enumerate(topics)}
+    return topic_order
+
+
+def _event_map_scene_statement(
+    *,
+    snapshot_id: uuid.UUID,
+) -> Any:
+    """只读取二进制场景记录所需列，避免为全量点创建 ORM 实体。"""
+    macro_topic_member = aliased(EventMapTopicMember)
+    local_topic_member = aliased(EventMapTopicMember)
+    statement = (
+        select(
+            EventMapCanonical.point_index,
+            EventMapCanonical.canonical_id,
+            EventMapCanonical.x,
+            EventMapCanonical.y,
+            EventMapCanonical.z,
+            EventMapCanonical.event_start_day,
+            EventMapCanonical.event_end_day,
+            EventMapCanonical.event_type_code,
+            EventMapCanonical.time_precision_code,
+            EventMapCanonical.uncertainty_flags,
+            EventMapCanonical.time_disagreement_count,
+            EventMapCanonical.member_count,
+            macro_topic_member.topic_id.label("macro_topic_id"),
+            local_topic_member.topic_id.label("local_topic_id"),
+        )
+        .select_from(EventMapCanonical)
+        .outerjoin(
+            macro_topic_member,
+            and_(
+                macro_topic_member.snapshot_id == EventMapCanonical.snapshot_id,
+                macro_topic_member.canonical_id == EventMapCanonical.canonical_id,
+                macro_topic_member.level == 0,
+            ),
+        )
+        .outerjoin(
+            local_topic_member,
+            and_(
+                local_topic_member.snapshot_id == EventMapCanonical.snapshot_id,
+                local_topic_member.canonical_id == EventMapCanonical.canonical_id,
+                local_topic_member.level == 1,
+            ),
+        )
+    )
+    return statement.where(EventMapCanonical.snapshot_id == snapshot_id).order_by(
+        EventMapCanonical.point_index.asc()
+    )
+
+
+def _event_map_scene_chunks(
+    rows: Any,
+    *,
+    canonical_count: int,
+    topic_order: dict[uuid.UUID, int],
+) -> Iterator[bytes]:
+    chunk = bytearray()
+    expected_index = 0
+    for (
+        point_index,
+        canonical_id,
+        x,
+        y,
+        z,
+        event_start_day,
+        event_end_day,
+        event_type_code,
+        time_precision_code,
+        uncertainty_flags,
+        time_disagreement_count,
+        member_count,
+        macro_topic_id,
+        local_topic_id,
+    ) in rows:
+        if int(point_index) != expected_index:
+            raise RuntimeError("event map point_index is not contiguous")
+        flags = (1 if uncertainty_flags else 0) | (2 if int(time_disagreement_count or 0) else 0)
+        chunk.extend(
+            _EVENT_MAP_SCENE_RECORD.pack(
+                expected_index,
+                canonical_id.bytes,
+                float(x),
+                float(y),
+                float(z),
+                int(event_start_day),
+                int(event_end_day),
+                int(event_type_code) & 0xFF,
+                int(time_precision_code) & 0xFF,
+                flags,
+                0,
+                int(member_count or 0),
+                int(topic_order.get(macro_topic_id, _EVENT_MAP_NO_INDEX)),
+                int(topic_order.get(local_topic_id, _EVENT_MAP_NO_INDEX)),
+            )
+        )
+        expected_index += 1
+        if expected_index % _EVENT_MAP_SCENE_ROWS_PER_CHUNK == 0:
+            yield bytes(chunk)
+            chunk.clear()
+    if expected_index != canonical_count:
+        raise RuntimeError("event map canonical count changed inside immutable snapshot")
+    if chunk:
+        yield bytes(chunk)
+
+
+@router.get("/playlists/{playlist_id}/events/map/scene")
+def get_playlist_event_map_scene(
+    playlist_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+) -> StreamingResponse:
+    with session_scope() as session:
+        if not session.get(Playlist, playlist_id):
+            raise HTTPException(status_code=404, detail="playlist not found")
+        snapshot = _resolve_event_map_snapshot(
+            session,
+            playlist_id=playlist_id,
+            snapshot_id=snapshot_id,
+        )
+        canonical_count = int(snapshot.canonical_count or 0)
+
+    def stream_scene() -> Iterator[bytes]:
+        with session_scope() as stream_session:
+            pinned = _resolve_event_map_snapshot(
+                stream_session,
+                playlist_id=playlist_id,
+                snapshot_id=snapshot_id,
+            )
+            topic_order = _event_map_scene_topic_order(stream_session, pinned.id)
+            statement = _event_map_scene_statement(
+                snapshot_id=pinned.id,
+            )
+            rows = stream_session.execute(
+                statement.execution_options(yield_per=_EVENT_MAP_SCENE_ROWS_PER_CHUNK)
+            )
+            yield from _event_map_scene_chunks(
+                rows,
+                canonical_count=canonical_count,
+                topic_order=topic_order,
+            )
+
+    return StreamingResponse(
+        stream_scene(),
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "ETag": f'"event-map-scene-{snapshot_id}"',
+            "X-Event-Map-Snapshot-Id": str(snapshot_id),
+            "X-Event-Map-Record-Size": str(_EVENT_MAP_SCENE_RECORD.size),
+            "X-Event-Map-Protocol-Version": str(_EVENT_MAP_SCENE_PROTOCOL_VERSION),
+            "X-Event-Map-Canonical-Count": str(canonical_count),
+        },
+    )
+
+
+@router.get("/playlists/{playlist_id}/events/map/entities")
+def get_playlist_event_map_entities(
+    playlist_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    q: str | None = None,
+    limit: int = 40,
+) -> list[dict[str, Any]]:
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise HTTPException(status_code=400, detail="invalid date range")
+    query = str(q or "").strip()
+    with session_scope() as session:
+        if not session.get(Playlist, playlist_id):
+            raise HTTPException(status_code=404, detail="playlist not found")
+        snapshot = _resolve_event_map_snapshot(session, playlist_id=playlist_id, snapshot_id=snapshot_id)
+        _configure_event_map_query(session, force_hash_join=True)
+        clauses: list[Any] = [EventMapEntityIndex.snapshot_id == snapshot.id]
+        if start_date is not None:
+            clauses.append(EventMapCanonical.event_end_day >= _event_map_day(start_date))
+        if end_date is not None:
+            clauses.append(EventMapCanonical.event_start_day <= _event_map_day(end_date))
+        if query:
+            pattern = f"%{query}%"
+            clauses.append(
+                or_(
+                    EventMapEntityIndex.name.ilike(pattern),
+                    EventMapEntityIndex.normalized_key.ilike(pattern),
+                    EventMapEntityIndex.entity_type.ilike(pattern),
+                )
+            )
+        canonical_count = func.count(EventMapEntityIndex.canonical_id)
+        try:
+            rows = session.execute(
+                select(
+                    EventMapEntityIndex.entity_type,
+                    EventMapEntityIndex.normalized_key,
+                    func.min(EventMapEntityIndex.name),
+                    canonical_count.label("canonical_count"),
+                )
+                .join(
+                    EventMapCanonical,
+                    and_(
+                        EventMapCanonical.snapshot_id == EventMapEntityIndex.snapshot_id,
+                        EventMapCanonical.canonical_id == EventMapEntityIndex.canonical_id,
+                    ),
+                )
+                .where(*clauses)
+                .group_by(EventMapEntityIndex.entity_type, EventMapEntityIndex.normalized_key)
+                .order_by(
+                    canonical_count.desc(),
+                    EventMapEntityIndex.entity_type.asc(),
+                    EventMapEntityIndex.normalized_key.asc(),
+                )
+                .limit(max(1, min(100, int(limit or 40))))
+            ).all()
+        except DBAPIError as exc:
+            if _event_map_query_timeout(exc):
+                raise HTTPException(status_code=503, detail="event map entity ranking timed out") from exc
+            raise
+        return [
+            {
+                "entity_type": str(entity_type),
+                "normalized_key": str(normalized_key),
+                "name": str(name or normalized_key),
+                "canonical_count": int(count or 0),
+            }
+            for entity_type, normalized_key, name, count in rows
+        ]
+
+
+@router.get("/playlists/{playlist_id}/events/map/entity-indices")
+def get_playlist_event_map_entity_indices(
+    playlist_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    normalized_key: str,
+    entity_type: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> Response:
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise HTTPException(status_code=400, detail="invalid date range")
+    key = str(normalized_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="normalized_key is required")
+    with session_scope() as session:
+        if not session.get(Playlist, playlist_id):
+            raise HTTPException(status_code=404, detail="playlist not found")
+        snapshot = _resolve_event_map_snapshot(session, playlist_id=playlist_id, snapshot_id=snapshot_id)
+        _configure_event_map_query(session)
+        clauses: list[Any] = [
+            EventMapEntityIndex.snapshot_id == snapshot.id,
+            EventMapEntityIndex.normalized_key == key,
+        ]
+        if entity_type:
+            clauses.append(EventMapEntityIndex.entity_type == entity_type)
+        if start_date is not None:
+            clauses.append(EventMapCanonical.event_end_day >= _event_map_day(start_date))
+        if end_date is not None:
+            clauses.append(EventMapCanonical.event_start_day <= _event_map_day(end_date))
+        try:
+            indices = session.execute(
+                select(EventMapEntityIndex.point_index)
+                .join(
+                    EventMapCanonical,
+                    and_(
+                        EventMapCanonical.snapshot_id == EventMapEntityIndex.snapshot_id,
+                        EventMapCanonical.canonical_id == EventMapEntityIndex.canonical_id,
+                    ),
+                )
+                .where(*clauses)
+                .order_by(EventMapEntityIndex.point_index.asc())
+            ).scalars().all()
+        except DBAPIError as exc:
+            if _event_map_query_timeout(exc):
+                raise HTTPException(status_code=503, detail="event map entity index query timed out") from exc
+            raise
+        body = b"".join(_EVENT_MAP_INDEX_RECORD.pack(int(index)) for index in indices)
+        return Response(
+            content=body,
+            media_type="application/octet-stream",
+            headers={
+                "Cache-Control": "private, max-age=300",
+                "X-Event-Map-Snapshot-Id": str(snapshot.id),
+                "X-Event-Map-Record-Size": str(_EVENT_MAP_INDEX_RECORD.size),
+                "X-Event-Map-Index-Count": str(len(indices)),
+            },
+        )
+
+
+def _event_map_record_payload(revision: EventMapRecordRevision, member: EventMapCanonicalMember) -> dict[str, Any]:
+    source = dict(revision.source_json or {})
+    relations = list(source.pop("relations", []) or [])
+    return {
+        "id": str(revision.id),
+        "record_id": str(revision.event_id) if revision.event_id else str(revision.id),
+        "event_id": str(revision.event_id) if revision.event_id else None,
+        "title": revision.title,
+        "summary": revision.summary,
+        "event_time_start": revision.event_time_start,
+        "event_time_end": revision.event_time_end,
+        "time_precision": revision.time_precision,
+        "event_type": revision.event_type,
+        "source": source,
+        "entities": list(revision.entities_json or []),
+        "relations": relations,
+        "source_label": source.get("media_name") or source.get("title") or source.get("provider"),
+        "is_representative": bool(member.is_representative),
+        "assignment_kind": member.assignment_kind,
+        "decision_score": member.decision_score,
+        "reason_codes": member.reason_codes or [],
+    }
+
+
+def _event_map_local_entity_relations(
+    member_rows: list[tuple[EventMapCanonicalMember, EventMapRecordRevision]],
+    entity_values: dict[tuple[str, str], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """从冻结 revision 中恢复局部实体角色和实体间关系，不回查可变业务表。"""
+    entity_id_to_key: dict[str, str] = {}
+    for _, revision in member_rows:
+        for raw_entity in list(revision.entities_json or []):
+            entity_type = str(raw_entity.get("entity_type") or "other")
+            normalized = normalize_event_map_entity(
+                entity_type,
+                str(raw_entity.get("name") or ""),
+                str(raw_entity.get("normalized_key") or ""),
+            )
+            if not normalized or ":" not in normalized:
+                continue
+            normalized_type, normalized_key = normalized.split(":", 1)
+            value = entity_values.get((normalized_type, normalized_key))
+            if value is None:
+                continue
+            raw_id = str(raw_entity.get("id") or "").strip()
+            if raw_id:
+                entity_id_to_key[raw_id] = normalized
+            role = str(raw_entity.get("role") or "other").strip() or "other"
+            role_counts = value.setdefault("_role_counts", {})
+            role_counts[role] = int(role_counts.get(role, 0)) + 1
+
+    entity_relations: list[dict[str, Any]] = []
+    seen_entity_relations: set[tuple[str, str, str, str]] = set()
+    for _, revision in member_rows:
+        source = dict(revision.source_json or {})
+        for relation in list(source.get("relations") or []):
+            source_key = entity_id_to_key.get(str(relation.get("source_entity_id") or ""))
+            target_key = entity_id_to_key.get(str(relation.get("target_entity_id") or ""))
+            if not source_key or not target_key or source_key == target_key:
+                continue
+            relation_type = str(relation.get("relation_type") or "related_to")
+            direction = str(relation.get("direction") or "directed")
+            identity = (source_key, target_key, relation_type, direction)
+            if identity in seen_entity_relations:
+                continue
+            seen_entity_relations.add(identity)
+            entity_relations.append(
+                {
+                    "id": str(relation.get("id") or f"{revision.id}:{len(entity_relations)}"),
+                    "source_entity_id": source_key,
+                    "target_entity_id": target_key,
+                    "relation_type": relation_type,
+                    "direction": direction,
+                    "confidence": relation.get("confidence"),
+                    "evidence_text": relation.get("evidence_text"),
+                }
+            )
+            if len(entity_relations) >= 24:
+                break
+        if len(entity_relations) >= 24:
+            break
+
+    for value in entity_values.values():
+        role_counts = value.pop("_role_counts", {})
+        roles = [
+            {"role": role, "record_count": count}
+            for role, count in sorted(role_counts.items(), key=lambda item: (-item[1], item[0]))
+        ]
+        value["roles"] = roles
+        value["role_label"] = roles[0]["role"] if roles else ""
+    return entity_relations
+
+
+@router.get("/playlists/{playlist_id}/events/map/canonical/{canonical_id}")
+def get_playlist_event_map_canonical(
+    playlist_id: uuid.UUID,
+    canonical_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
 ) -> dict[str, Any]:
     with session_scope() as session:
         if not session.get(Playlist, playlist_id):
             raise HTTPException(status_code=404, detail="playlist not found")
-        clauses = event_filter_clause(playlist_id=playlist_id, status=status)
-        events = (
+        snapshot = _resolve_event_map_snapshot(session, playlist_id=playlist_id, snapshot_id=snapshot_id)
+        canonical = session.get(
+            EventMapCanonical,
+            {"snapshot_id": snapshot.id, "canonical_id": canonical_id},
+        )
+        if canonical is None:
+            raise HTTPException(status_code=404, detail="canonical event not found")
+        topic = (
             session.execute(
-                select(MarketEvent)
-                .join(Video, Video.id == MarketEvent.source_video_id)
-                .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
-                .where(*clauses)
-                .order_by(MarketEvent.event_time_start.desc().nullslast(), MarketEvent.id.desc())
-                .limit(max(1, min(1000, int(limit or 300))))
+                select(EventMapTopic)
+                .join(
+                    EventMapTopicMember,
+                    and_(
+                        EventMapTopicMember.snapshot_id == EventMapTopic.snapshot_id,
+                        EventMapTopicMember.topic_id == EventMapTopic.topic_id,
+                    ),
+                )
+                .where(
+                    EventMapTopicMember.snapshot_id == snapshot.id,
+                    EventMapTopicMember.canonical_id == canonical_id,
+                    EventMapTopicMember.level == 0,
+                )
+                .limit(1)
             )
             .scalars()
-            .all()
+            .first()
         )
-        event_ids = [event.id for event in events]
-        entities = (
-            session.execute(select(MarketEventEntity).where(MarketEventEntity.event_id.in_(event_ids))).scalars().all()
-            if event_ids
-            else []
-        )
-        relations = (
-            session.execute(select(MarketEventRelation).where(MarketEventRelation.event_id.in_(event_ids))).scalars().all()
-            if event_ids
-            else []
-        )
-        nodes: list[dict[str, Any]] = []
-        edges: list[dict[str, Any]] = []
-        for event in events:
-            nodes.append({"id": str(event.id), "type": "event", "label": event.title or event.event_type, "status": event.status})
-        for entity in entities:
-            nodes.append({"id": str(entity.id), "type": entity.entity_type, "label": entity.name, "role": entity.role})
-            edges.append({"source": str(entity.event_id), "target": str(entity.id), "type": entity.role or "mentions", "confidence": entity.confidence})
-        for relation in relations:
-            if relation.source_entity_id and relation.target_entity_id:
-                edges.append(
-                    {
-                        "source": str(relation.source_entity_id),
-                        "target": str(relation.target_entity_id),
-                        "type": relation.relation_type,
-                        "direction": relation.direction,
-                        "confidence": relation.confidence,
-                    }
+        member_rows = session.execute(
+            select(EventMapCanonicalMember, EventMapRecordRevision)
+            .join(
+                EventMapRecordRevision,
+                EventMapRecordRevision.id == EventMapCanonicalMember.record_revision_id,
+            )
+            .where(
+                EventMapCanonicalMember.snapshot_id == snapshot.id,
+                EventMapCanonicalMember.canonical_id == canonical_id,
+            )
+            .order_by(
+                EventMapCanonicalMember.is_representative.desc(),
+                EventMapRecordRevision.event_time_start.asc(),
+                EventMapRecordRevision.id.asc(),
+            )
+            .limit(100)
+        ).all()
+        members = [_event_map_record_payload(revision, member) for member, revision in member_rows]
+
+        entity_values = {
+            (row.entity_type, row.normalized_key): {
+                "id": f"{row.entity_type}:{row.normalized_key}",
+                "entity_type": row.entity_type,
+                "normalized_key": row.normalized_key,
+                "name": row.name,
+                "record_count": int(row.record_count or 0),
+            }
+            for row in session.execute(
+                select(EventMapEntityIndex)
+                .where(
+                    EventMapEntityIndex.snapshot_id == snapshot.id,
+                    EventMapEntityIndex.canonical_id == canonical_id,
                 )
-        return {"nodes": nodes, "edges": edges}
+                .order_by(
+                    EventMapEntityIndex.record_count.desc(),
+                    EventMapEntityIndex.entity_type.asc(),
+                    EventMapEntityIndex.normalized_key.asc(),
+                )
+            ).scalars()
+        }
+        entity_relations = _event_map_local_entity_relations(member_rows, entity_values)
+        evidence: list[dict[str, Any]] = []
+        for _, revision in member_rows:
+            for item in list(revision.evidence_json or []):
+                if len(evidence) >= 24:
+                    break
+                payload = dict(item)
+                payload.setdefault("id", f"{revision.id}:{len(evidence)}")
+                payload.setdefault("text", payload.get("evidence_text"))
+                evidence.append(payload)
+
+        edge_rows = session.execute(
+            select(EventMapStoryEdge).where(
+                EventMapStoryEdge.snapshot_id == snapshot.id,
+                or_(
+                    EventMapStoryEdge.source_canonical_id == canonical_id,
+                    EventMapStoryEdge.target_canonical_id == canonical_id,
+                ),
+            )
+            .order_by(EventMapStoryEdge.score.desc().nullslast(), EventMapStoryEdge.edge_id.asc())
+            .limit(24)
+        ).scalars().all()
+        other_ids = {
+            edge.target_canonical_id if edge.source_canonical_id == canonical_id else edge.source_canonical_id
+            for edge in edge_rows
+        }
+        other_canonicals = {
+            row.canonical_id: row
+            for row in session.execute(
+                select(EventMapCanonical).where(
+                    EventMapCanonical.snapshot_id == snapshot.id,
+                    EventMapCanonical.canonical_id.in_(other_ids),
+                )
+            ).scalars()
+        } if other_ids else {}
+        story_ids = {edge.story_id for edge in edge_rows}
+        stories = {
+            row.story_id: row
+            for row in session.execute(
+                select(EventMapStory).where(
+                    EventMapStory.snapshot_id == snapshot.id,
+                    EventMapStory.story_id.in_(story_ids),
+                )
+            ).scalars()
+        } if story_ids else {}
+        story_edges: list[dict[str, Any]] = []
+        for edge in edge_rows:
+            outgoing = edge.source_canonical_id == canonical_id
+            other_id = edge.target_canonical_id if outgoing else edge.source_canonical_id
+            other = other_canonicals.get(other_id)
+            story = stories.get(edge.story_id)
+            story_edges.append(
+                {
+                    "id": str(edge.edge_id),
+                    "story_id": str(edge.story_id),
+                    "type": edge.relation_type,
+                    "status": edge.status,
+                    "score": edge.score,
+                    "direction": "outgoing" if outgoing else "incoming",
+                    "other_canonical_id": str(other_id),
+                    "other_point_index": int(other.point_index) if other is not None else None,
+                    "other_title": other.title if other is not None else None,
+                    "story_title": story.title if story is not None else None,
+                }
+            )
+        return {
+            "snapshot_id": str(snapshot.id),
+            "canonical_id": str(canonical.canonical_id),
+            "point_index": int(canonical.point_index),
+            "title": canonical.title,
+            "summary": canonical.summary,
+            "event_type": canonical.event_type,
+            "event_time_start": canonical.event_time_start,
+            "event_time_end": canonical.event_time_end,
+            "time_precision": canonical.time_precision,
+            "occurrence_label": (
+                f"{canonical.event_time_start.date().isoformat()} ～ {canonical.event_time_end.date().isoformat()}"
+            ),
+            "member_count": int(canonical.member_count or 0),
+            "identity_state": canonical.identity_state,
+            "decision_score": canonical.decision_score,
+            "reason_codes": canonical.reason_codes or [],
+            "uncertainty_flags": canonical.uncertainty_flags or [],
+            "topic": (
+                {
+                    "topic_id": str(topic.topic_id),
+                    "label": topic.label,
+                    "top_terms": topic.top_terms or [],
+                }
+                if topic is not None
+                else None
+            ),
+            "members": members,
+            "story_edges": story_edges,
+            "entities": list(entity_values.values()),
+            "entity_relations": entity_relations,
+            "evidence": evidence,
+        }
+
+
+@router.get("/playlists/{playlist_id}/events/map/topic/{topic_id}")
+def get_playlist_event_map_topic(
+    playlist_id: uuid.UUID,
+    topic_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    event_type_code: int | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise HTTPException(status_code=400, detail="invalid date range")
+    with session_scope() as session:
+        snapshot = _resolve_event_map_snapshot(session, playlist_id=playlist_id, snapshot_id=snapshot_id)
+        topic = session.get(EventMapTopic, {"snapshot_id": snapshot.id, "topic_id": topic_id})
+        if topic is None:
+            raise HTTPException(status_code=404, detail="topic not found")
+        _configure_event_map_query(session)
+        clauses: list[Any] = [
+            EventMapTopicMember.snapshot_id == snapshot.id,
+            EventMapTopicMember.topic_id == topic_id,
+        ]
+        if start_date is not None:
+            clauses.append(EventMapCanonical.event_end_day >= _event_map_day(start_date))
+        if end_date is not None:
+            clauses.append(EventMapCanonical.event_start_day <= _event_map_day(end_date))
+        if event_type_code is not None:
+            clauses.append(EventMapCanonical.event_type_code == int(event_type_code))
+        representatives = session.execute(
+            select(EventMapCanonical)
+            .join(
+                EventMapTopicMember,
+                and_(
+                    EventMapTopicMember.snapshot_id == EventMapCanonical.snapshot_id,
+                    EventMapTopicMember.canonical_id == EventMapCanonical.canonical_id,
+                ),
+            )
+            .where(*clauses)
+            .order_by(EventMapTopicMember.score.desc().nullslast(), EventMapCanonical.member_count.desc())
+            .limit(max(1, min(24, int(limit or 20))))
+        ).scalars().all()
+        return {
+            "snapshot_id": str(snapshot.id),
+            "topic_id": str(topic.topic_id),
+            "level": int(topic.level),
+            "parent_topic_id": str(topic.parent_topic_id) if topic.parent_topic_id is not None else None,
+            "label": topic.label,
+            "top_terms": topic.top_terms or [],
+            "canonical_count": int(topic.canonical_count or 0),
+            "record_count": int(topic.member_count or 0),
+            "representatives": [
+                {
+                    "canonical_id": str(item.canonical_id),
+                    "point_index": int(item.point_index),
+                    "title": item.title,
+                    "event_time_start": item.event_time_start.date().isoformat(),
+                    "event_time_end": item.event_time_end.date().isoformat(),
+                    "event_type": item.event_type,
+                    "member_count": int(item.member_count or 0),
+                }
+                for item in representatives
+            ],
+        }
+
+
+@router.get("/playlists/{playlist_id}/events/map/story/{story_id}")
+def get_playlist_event_map_story(
+    playlist_id: uuid.UUID,
+    story_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+) -> dict[str, Any]:
+    with session_scope() as session:
+        snapshot = _resolve_event_map_snapshot(session, playlist_id=playlist_id, snapshot_id=snapshot_id)
+        story = session.get(EventMapStory, {"snapshot_id": snapshot.id, "story_id": story_id})
+        if story is None:
+            raise HTTPException(status_code=404, detail="story not found")
+        edges = session.execute(
+            select(EventMapStoryEdge)
+            .where(
+                EventMapStoryEdge.snapshot_id == snapshot.id,
+                EventMapStoryEdge.story_id == story_id,
+            )
+            .order_by(EventMapStoryEdge.created_at.asc(), EventMapStoryEdge.edge_id.asc())
+        ).scalars().all()
+        return {
+            "snapshot_id": str(snapshot.id),
+            "story_id": str(story.story_id),
+            "title": story.title,
+            "summary": story.summary,
+            "story_type": story.story_type,
+            "event_time_start": story.event_time_start,
+            "event_time_end": story.event_time_end,
+            "edges": [
+                {
+                    "edge_id": str(edge.edge_id),
+                    "source_canonical_id": str(edge.source_canonical_id),
+                    "target_canonical_id": str(edge.target_canonical_id),
+                    "relation_type": edge.relation_type,
+                    "status": edge.status,
+                    "score": edge.score,
+                }
+                for edge in edges
+            ],
+        }
+
+
+@router.get("/playlists/{playlist_id}/events/map/search")
+def search_playlist_event_map(
+    playlist_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    q: str,
+    limit: int = 30,
+) -> list[dict[str, Any]]:
+    query = str(q or "").strip()
+    if len(query) < 2:
+        return []
+    capped = max(1, min(60, int(limit or 30)))
+    pattern = f"%{query}%"
+    with session_scope() as session:
+        snapshot = _resolve_event_map_snapshot(session, playlist_id=playlist_id, snapshot_id=snapshot_id)
+        results: list[dict[str, Any]] = []
+        canonicals = session.execute(
+            select(EventMapCanonical)
+            .where(
+                EventMapCanonical.snapshot_id == snapshot.id,
+                or_(
+                    EventMapCanonical.title.ilike(pattern),
+                    EventMapCanonical.summary.ilike(pattern),
+                ),
+            )
+            .order_by(EventMapCanonical.member_count.desc(), EventMapCanonical.point_index.asc())
+            .limit(min(20, capped))
+        ).scalars().all()
+        results.extend(
+            {
+                "kind": "canonical",
+                "id": str(item.canonical_id),
+                "point_index": int(item.point_index),
+                "title": item.title,
+                "label": item.title,
+            }
+            for item in canonicals
+        )
+        topic_rows = session.execute(
+            select(EventMapTopic, EventMapCanonical)
+            .join(
+                EventMapCanonical,
+                and_(
+                    EventMapCanonical.snapshot_id == EventMapTopic.snapshot_id,
+                    EventMapCanonical.canonical_id == EventMapTopic.anchor_canonical_id,
+                ),
+            )
+            .where(
+                EventMapTopic.snapshot_id == snapshot.id,
+                EventMapTopic.level == 0,
+                EventMapTopic.label.ilike(pattern),
+            )
+            .order_by(EventMapTopic.canonical_count.desc(), EventMapTopic.topic_id.asc())
+            .limit(min(10, max(0, capped - len(results))))
+        ).all()
+        results.extend(
+            {
+                "kind": "topic",
+                "id": str(topic.topic_id),
+                "canonical_id": str(anchor.canonical_id),
+                "point_index": int(anchor.point_index),
+                "title": topic.label,
+                "label": topic.label,
+            }
+            for topic, anchor in topic_rows
+        )
+        entity_count = func.count(EventMapEntityIndex.canonical_id)
+        entity_rows = session.execute(
+            select(
+                EventMapEntityIndex.entity_type,
+                EventMapEntityIndex.normalized_key,
+                func.min(EventMapEntityIndex.name),
+                func.min(EventMapEntityIndex.point_index),
+            )
+            .where(
+                EventMapEntityIndex.snapshot_id == snapshot.id,
+                or_(
+                    EventMapEntityIndex.name.ilike(pattern),
+                    EventMapEntityIndex.normalized_key.ilike(pattern),
+                ),
+            )
+            .group_by(EventMapEntityIndex.entity_type, EventMapEntityIndex.normalized_key)
+            .order_by(
+                entity_count.desc(),
+                EventMapEntityIndex.entity_type.asc(),
+                EventMapEntityIndex.normalized_key.asc(),
+            )
+            .limit(min(10, max(0, capped - len(results))))
+        ).all()
+        results.extend(
+            {
+                "kind": "entity",
+                "id": f"{entity_type}:{normalized_key}",
+                "entity_type": entity_type,
+                "normalized_key": normalized_key,
+                "name": name,
+                "label": name,
+                "point_index": int(point_index) if point_index is not None else None,
+            }
+            for entity_type, normalized_key, name, point_index in entity_rows
+        )
+        return results[:capped]
+
+
+@router.post("/playlists/{playlist_id}/events/map/rebuild")
+def rebuild_playlist_event_map(playlist_id: uuid.UUID) -> dict[str, Any]:
+    with session_scope() as session:
+        if not session.get(Playlist, playlist_id):
+            raise HTTPException(status_code=404, detail="playlist not found")
+        existing = _active_event_map_build_job(session, playlist_id)
+        job = request_event_map_rebuild(session, playlist_id, priority=1)
+        state = _event_map_state(session, playlist_id)
+        return {
+            "ok": True,
+            "created": existing is None or existing.id != job.id,
+            "playlist_id": str(playlist_id),
+            "job_id": str(job.id),
+            "requested_generation": int(state.dirty_generation),
+        }
+
+
+@router.get("/playlists/{playlist_id}/events/export")
+def export_playlist_events(
+    playlist_id: uuid.UUID,
+    level: str = "canonical",
+    snapshot_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    normalized_level = str(level or "").strip().lower()
+    if normalized_level not in {"canonical", "record"}:
+        raise HTTPException(status_code=400, detail="level must be canonical or record")
+    with session_scope() as session:
+        if not session.get(Playlist, playlist_id):
+            raise HTTPException(status_code=404, detail="playlist not found")
+        snapshot = _resolve_event_map_snapshot(
+            session,
+            playlist_id=playlist_id,
+            snapshot_id=snapshot_id,
+        )
+        if normalized_level == "canonical":
+            rows = session.execute(
+                select(EventMapCanonical)
+                .where(EventMapCanonical.snapshot_id == snapshot.id)
+                .order_by(EventMapCanonical.event_time_start.asc(), EventMapCanonical.point_index.asc())
+            ).scalars().all()
+            events = [
+                {
+                    "canonical_id": str(row.canonical_id),
+                    "event_time_start": row.event_time_start,
+                    "event_time_end": row.event_time_end,
+                    "time_precision": row.time_precision,
+                    "event_type": row.event_type,
+                    "title": row.title,
+                    "summary": row.summary,
+                    "member_count": int(row.member_count or 0),
+                }
+                for row in rows
+            ]
+        else:
+            rows = session.execute(
+                select(EventMapCanonicalMember, EventMapRecordRevision)
+                .join(
+                    EventMapRecordRevision,
+                    EventMapRecordRevision.id == EventMapCanonicalMember.record_revision_id,
+                )
+                .where(EventMapCanonicalMember.snapshot_id == snapshot.id)
+                .order_by(
+                    EventMapRecordRevision.event_time_start.asc(),
+                    EventMapRecordRevision.id.asc(),
+                )
+            ).all()
+            events = [
+                {
+                    **_event_map_record_payload(revision, member),
+                    "canonical_id": str(member.canonical_id),
+                }
+                for member, revision in rows
+            ]
+        return {
+            "snapshot_id": str(snapshot.id),
+            "time_basis": "event_time",
+            "level": normalized_level,
+            "events": events,
+        }
 
 
 @router.get("/playlists/{playlist_id}/events/{event_id}", response_model=MarketEventDetailOut)
@@ -1505,198 +2387,6 @@ def patch_playlist_event(
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
         session.flush([event])
         return _event_detail_out(session, event)
-
-
-@router.post("/playlists/{playlist_id}/regime/rebuild")
-def rebuild_playlist_event_regime(playlist_id: uuid.UUID) -> dict[str, Any]:
-    with session_scope() as session:
-        if not session.get(Playlist, playlist_id):
-            raise HTTPException(status_code=404, detail="playlist not found")
-        run = request_event_regime_rebuild(session, playlist_id=playlist_id, priority=1)
-        job = pending_event_regime_job(session, playlist_id)
-        return {
-            "ok": True,
-            "playlist_id": str(playlist_id),
-            "run_id": str(run.id),
-            "job_id": str(job.id) if job else None,
-        }
-
-
-@router.get("/playlists/{playlist_id}/regime/summary", response_model=EventRegimeSummaryOut)
-def get_playlist_event_regime_summary(playlist_id: uuid.UUID) -> EventRegimeSummaryOut:
-    with session_scope() as session:
-        if not session.get(Playlist, playlist_id):
-            raise HTTPException(status_code=404, detail="playlist not found")
-        return _event_regime_summary(session, playlist_id)
-
-
-@router.get("/playlists/{playlist_id}/regime/signals", response_model=list[EventRegimeSignalOut])
-def get_playlist_event_regime_signals(
-    playlist_id: uuid.UUID,
-    granularity: str | None = None,
-    since: date | None = None,
-    until: date | None = None,
-) -> list[EventRegimeSignalOut]:
-    with session_scope() as session:
-        if not session.get(Playlist, playlist_id):
-            raise HTTPException(status_code=404, detail="playlist not found")
-        last_ready_run_id = _playlist_last_ready_regime_run_id(session, playlist_id)
-        if not last_ready_run_id:
-            return []
-        stmt = select(EventRegimeSignal).where(EventRegimeSignal.regime_run_id == last_ready_run_id)
-        if granularity:
-            try:
-                normalized = normalize_granularity(granularity)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            stmt = stmt.where(EventRegimeSignal.granularity == normalized)
-        if since is not None:
-            stmt = stmt.where(EventRegimeSignal.period_date >= since)
-        if until is not None:
-            stmt = stmt.where(EventRegimeSignal.period_date <= until)
-        if since is not None and until is not None and since > until:
-            raise HTTPException(status_code=400, detail="invalid date range")
-        rows = (
-            session.execute(
-                stmt.order_by(
-                    EventRegimeSignal.granularity.asc(),
-                    EventRegimeSignal.period_date.asc(),
-                    EventRegimeSignal.id.asc(),
-                )
-            )
-            .scalars()
-            .all()
-        )
-        return [
-            EventRegimeSignalOut(
-                id=row.id,
-                granularity=row.granularity,
-                period_date=row.period_date,
-                rolling_window=row.rolling_window,
-                event_count=row.event_count,
-                ready_embedding_count=row.ready_embedding_count,
-                drift_score=row.drift_score,
-                drift_rolling_mean=row.drift_rolling_mean,
-                drift_rolling_std=row.drift_rolling_std,
-                drift_rolling_z=row.drift_rolling_z,
-                dispersion_mean=row.dispersion_mean,
-                dispersion_std=row.dispersion_std,
-                dispersion_p25=row.dispersion_p25,
-                dispersion_p75=row.dispersion_p75,
-                projection_id=row.projection_id,
-                projection_method=row.projection_method,
-                projection_x=row.projection_x,
-                projection_y=row.projection_y,
-                projection_z=row.projection_z,
-                projection_explained_variance_ratio=row.projection_explained_variance_ratio,
-                linked_candidate_id=row.linked_candidate_id,
-            )
-            for row in rows
-        ]
-
-
-@router.get("/playlists/{playlist_id}/regime/candidates", response_model=list[EventRegimeCandidateOut])
-def get_playlist_event_regime_candidates(playlist_id: uuid.UUID) -> list[EventRegimeCandidateOut]:
-    with session_scope() as session:
-        if not session.get(Playlist, playlist_id):
-            raise HTTPException(status_code=404, detail="playlist not found")
-        last_ready_run_id = _playlist_last_ready_regime_run_id(session, playlist_id)
-        if not last_ready_run_id:
-            return []
-        rows = (
-            session.execute(
-                select(EventRegimeCandidate)
-                .where(EventRegimeCandidate.regime_run_id == last_ready_run_id)
-                .order_by(EventRegimeCandidate.candidate_date.desc(), EventRegimeCandidate.id.asc())
-            )
-            .scalars()
-            .all()
-        )
-        return [_candidate_out(row) for row in rows]
-
-
-@router.get("/playlists/{playlist_id}/regime/candidates/{candidate_id}", response_model=EventRegimeCandidateDetailOut)
-def get_playlist_event_regime_candidate(playlist_id: uuid.UUID, candidate_id: uuid.UUID) -> EventRegimeCandidateDetailOut:
-    with session_scope() as session:
-        if not session.get(Playlist, playlist_id):
-            raise HTTPException(status_code=404, detail="playlist not found")
-        last_ready_run_id = _playlist_last_ready_regime_run_id(session, playlist_id)
-        if not last_ready_run_id:
-            raise HTTPException(status_code=404, detail="regime snapshot not found")
-        candidate = session.get(EventRegimeCandidate, candidate_id)
-        if not candidate or candidate.regime_run_id != last_ready_run_id:
-            raise HTTPException(status_code=404, detail="candidate not found")
-        return _candidate_detail_out(candidate, session=session)
-
-
-@router.patch("/playlists/{playlist_id}/regime/candidates/{candidate_id}", response_model=EventRegimeCandidateDetailOut)
-def patch_playlist_event_regime_candidate(
-    playlist_id: uuid.UUID,
-    candidate_id: uuid.UUID,
-    payload: EventRegimeCandidatePatch,
-) -> EventRegimeCandidateDetailOut:
-    with session_scope() as session:
-        if not session.get(Playlist, playlist_id):
-            raise HTTPException(status_code=404, detail="playlist not found")
-        last_ready_run_id = _playlist_last_ready_regime_run_id(session, playlist_id)
-        if not last_ready_run_id:
-            raise HTTPException(status_code=404, detail="regime snapshot not found")
-        candidate = session.get(EventRegimeCandidate, candidate_id)
-        if not candidate or candidate.regime_run_id != last_ready_run_id:
-            raise HTTPException(status_code=404, detail="candidate not found")
-        if payload.status is not None:
-            status = str(payload.status or "").strip().lower()
-            if status not in {"draft", "accepted", "rejected"}:
-                raise HTTPException(status_code=400, detail="invalid status")
-            candidate.status = status
-        if payload.event_type is not None:
-            event_type = str(payload.event_type or "").strip().lower()
-            if event_type not in {"event_regime_shift", "transition", "regime", "burst"}:
-                raise HTTPException(status_code=400, detail="invalid event_type")
-            candidate.event_type = event_type
-        for field in ["candidate_date", "effective_trade_date"]:
-            if field in payload.model_fields_set:
-                setattr(candidate, field, getattr(payload, field))
-        session.flush([candidate])
-        return _candidate_detail_out(candidate, session=session)
-
-
-@router.get("/playlists/{playlist_id}/regime/export/events")
-def export_playlist_regime_events(playlist_id: uuid.UUID) -> dict[str, Any]:
-    with session_scope() as session:
-        if not session.get(Playlist, playlist_id):
-            raise HTTPException(status_code=404, detail="playlist not found")
-        rows = (
-            session.execute(
-                select(MarketEvent)
-                .join(Video, Video.id == MarketEvent.source_video_id)
-                .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
-                .where(
-                    PlaylistMedia.playlist_id == playlist_id,
-                    MarketEvent.status == "accepted",
-                    MarketEvent.event_time_start.is_not(None),
-                )
-                .order_by(MarketEvent.event_time_start.asc(), MarketEvent.id.asc())
-            )
-            .scalars()
-            .all()
-        )
-        return {
-            "window_mode": "event_regime",
-            "events": [
-                {
-                    "event_id": str(row.id),
-                    "event_time_start": row.event_time_start.isoformat() if row.event_time_start else None,
-                    "event_time_end": row.event_time_end.isoformat() if row.event_time_end else None,
-                    "available_at": row.available_at.isoformat() if row.available_at else None,
-                    "event_type": row.event_type,
-                    "title": row.title,
-                    "confidence": row.confidence,
-                    "source_video_id": str(row.source_video_id),
-                }
-                for row in rows
-            ],
-        }
 
 
 @router.patch("/playlists/{playlist_id}", response_model=PlaylistOut)
@@ -1756,7 +2446,7 @@ def add_playlist_media(playlist_id: uuid.UUID, payload: PlaylistMediaAdd) -> dic
         existing = session.get(PlaylistMedia, {"playlist_id": playlist_id, "media_id": payload.media_id})
         if not existing:
             session.add(PlaylistMedia(playlist_id=playlist_id, media_id=payload.media_id))
-            mark_playlist_event_regime_dirty(session, playlist_id)
+            _schedule_playlist_event_map_dirty(session, playlist_id, reason="playlist_media_added")
             schedule_brief_refresh_for_media_change(
                 session,
                 playlist_id=playlist_id,
@@ -1772,7 +2462,7 @@ def remove_playlist_media(playlist_id: uuid.UUID, media_id: uuid.UUID) -> dict:
         existing = session.get(PlaylistMedia, {"playlist_id": playlist_id, "media_id": media_id})
         if existing:
             session.delete(existing)
-            mark_playlist_event_regime_dirty(session, playlist_id)
+            _schedule_playlist_event_map_dirty(session, playlist_id, reason="playlist_media_removed")
             schedule_brief_refresh_for_media_change(
                 session,
                 playlist_id=playlist_id,
@@ -1808,7 +2498,7 @@ def replace_playlist_media(playlist_id: uuid.UUID, payload: PlaylistMediaReplace
                 session.add(PlaylistMedia(playlist_id=playlist_id, media_id=mid))
 
         if changed_ids:
-            mark_playlist_event_regime_dirty(session, playlist_id)
+            _schedule_playlist_event_map_dirty(session, playlist_id, reason="playlist_media_replaced")
             schedule_brief_refresh_for_media_change(
                 session,
                 playlist_id=playlist_id,

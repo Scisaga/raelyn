@@ -44,7 +44,22 @@
                 <path d="M15 18l-6-6 6-6" />
               </svg>
             </button>
-            <div class="text-md font-semibold truncate" x-text="pageTitle"></div>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-sm font-medium text-slate-400 transition-colors hover:bg-slate-800/40 hover:text-slate-200"
+              x-show="activeView === 'playlist'"
+              @click="switchView('playlists')"
+              title="返回播放列表"
+              aria-label="返回播放列表"
+            >
+              <span aria-hidden="true">←</span>
+              <span>播放列表</span>
+            </button>
+            <div
+              class="text-md font-semibold truncate"
+              x-show="activeView !== 'playlist'"
+              x-text="pageTitle"
+            ></div>
             <div class="hidden md:flex items-center gap-2 text-xs text-slate-400 min-w-0" x-show="globalStatus" x-transition.opacity.duration.150ms>
               <div class="truncate max-w-[520px]" x-text="globalStatus"></div>
             </div>

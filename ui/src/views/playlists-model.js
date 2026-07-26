@@ -43,6 +43,7 @@ export function createPlaylistsViewMethods() {
     openPlaylistPage(playlistId, dateStr) {
       const pid = String(playlistId || "").trim();
       if (!pid) return;
+      const previousPid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       this.modals.addMedia = false;
       this.modals.createPlaylist = false;
       this.modals.mediaImport = false;
@@ -50,6 +51,10 @@ export function createPlaylistsViewMethods() {
         this._stopDocumentMediaPlayback({ clearSources: true });
       }
       if (typeof this.leaveVideoPage === "function") this.leaveVideoPage();
+      if (previousPid && previousPid !== pid) {
+        if (typeof this.playlistEventMapStopPolling === "function") this.playlistEventMapStopPolling();
+        if (typeof this.playlistEventMapReset === "function") this.playlistEventMapReset();
+      }
       this.playlistNameEditing = false;
       this.playlistNameDraft = "";
       this.playlistNameSaving = false;

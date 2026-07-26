@@ -12,20 +12,19 @@
           <div class="flex items-center gap-2 min-w-0">
             <button
               type="button"
-              class="shrink-0 rounded-sm bg-emerald-500/10 flex items-center justify-center"
-              :class="sidebarCollapsed ? 'h-8 w-8 hover:bg-emerald-500/15 cursor-pointer' : 'h-8 w-8 cursor-default'"
+              class="shrink-0 rounded-lg flex items-center justify-center overflow-hidden transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/60"
+              :class="sidebarCollapsed ? 'h-9 w-9 p-0.5 hover:bg-slate-800/70 cursor-pointer' : 'h-8 w-8 cursor-default'"
               :title="sidebarCollapsed ? (sidebarMobilePortrait ? '隐藏菜单' : '展开菜单') : ''"
               @click="sidebarCollapsed ? toggleSidebar() : null"
             >
               <img
-                src="/static/brand/logo-y.png"
-                alt="raelyn"
-                class="shrink-0 rounded-sm"
-                :class="sidebarCollapsed ? 'h-7 w-7' : 'h-8 w-8'"
+                src="/static/brand/raelyn-event-horizon.svg"
+                alt="RAELYN"
+                class="h-full w-full shrink-0 rounded-lg"
               />
             </button>
             <div class="min-w-0" x-show="!sidebarCollapsed" x-transition.opacity.duration.150ms>
-              <div class="text-sm font-semibold leading-5">RAELYN</div>
+              <div class="font-serif text-sm font-semibold leading-5">RAELYN</div>
             </div>
           </div>
           <button

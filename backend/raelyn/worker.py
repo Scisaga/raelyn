@@ -8,6 +8,11 @@ import traceback
 import uuid
 from datetime import timedelta
 
+from raelyn.worker_runtime_env import configure_worker_runtime_env
+
+# 数值库在线程池首次初始化时读取环境变量，必须早于 SQLAlchemy、handlers 等项目导入。
+configure_worker_runtime_env()
+
 from sqlalchemy import select
 
 from raelyn.config import settings
@@ -20,8 +25,8 @@ from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
 from raelyn.jobs.reschedule import JobReschedule, JobTerminalFailure
 from raelyn.jobs.worker_activity import configure_worker_activity, touch_current_worker_activity, worker_job_activity
-from raelyn.models import Job, Video, WorkerHeartbeat
-from raelyn.services.job_cancellation import JobCancelRequested, finalize_canceled_job, job_cancel_requested
+from raelyn.models import Asset, Job, Video, WorkerHeartbeat
+from raelyn.services.job_cancellation import JobCancelRequested, finalize_canceled_job
 from raelyn.services.log_timestamps import install_if_needed
 from raelyn.services.asr import inspect_asr_backend_defer
 from raelyn.services.provider_cookies import cookie_config_name, cookie_provider_label, normalize_cookie_provider
@@ -100,11 +105,24 @@ def _mark_download_video_terminal_failure(session, *, job: Job) -> None:
     except Exception:
         return
 
-    video = session.get(Video, video_id)
+    video = session.execute(
+        select(Video)
+        .where(Video.id == video_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not video:
         return
 
-    if str(getattr(video, "status", "") or "").strip() == "downloading":
+    has_video_asset = session.execute(
+        select(Asset.id)
+        .where(
+            Asset.video_id == video.id,
+            Asset.type == "video",
+        )
+        .limit(1)
+    ).scalar_one_or_none() is not None
+    video_status = str(getattr(video, "status", "") or "").strip()
+    if video_status in {"discovered", "downloading"} and not has_video_asset:
         video.status = "failed"
     if getattr(job, "error_message", None):
         video.error_message = job.error_message
@@ -157,11 +175,13 @@ def _merge_retry_into_existing_pending_job(
     pending.error_stack = None
     pending.started_at = None
     pending.finished_at = None
+    pending.execution_token = None
 
     job.status = "failed"
     job.finished_at = utcnow()
     job.lease_expires_at = None
     job.worker_id = None
+    job.execution_token = None
     job.progress_current = None
     job.progress_total = None
 
@@ -200,9 +220,35 @@ def _finalize_terminal_failure(session, *, job: Job, reason: str, stack: str | N
     job.error_stack = stack
     job.lease_expires_at = None
     job.worker_id = None
+    job.execution_token = None
     job.finished_at = utcnow()
     _mark_download_video_terminal_failure(session, job=job)
     job_log(session, job, "failed; no retry", level="error", data={"attempt": job.attempt, "terminal": True})
+
+
+def _lock_owned_running_job(
+    session,
+    *,
+    job_id: uuid.UUID,
+    worker_id: str,
+    execution_token: uuid.UUID | None,
+    lock: bool = True,
+) -> tuple[Job | None, bool]:
+    if execution_token is None:
+        return None, False
+    statement = select(Job, Job.cancel_requested_at).where(
+        Job.id == job_id,
+        Job.status == "running",
+        Job.worker_id == worker_id,
+        Job.execution_token == execution_token,
+    )
+    if lock:
+        statement = statement.with_for_update()
+    with session.no_autoflush:
+        row = session.execute(statement).one_or_none()
+    if row is None:
+        return None, False
+    return row[0], row[1] is not None
 
 
 def _persist_provider_pause_after_rollback(session, *, job: Job, err: Exception) -> None:
@@ -373,45 +419,77 @@ def run_loop() -> None:
             if not job:
                 pass
             else:
+                claimed_execution_token = job.execution_token
+                job_id = job.id
+                job_type = job.type
                 touch_worker_heartbeat(session, worker_id=worker_id, role=role, active=True, current_job_id=job.id)
                 # Commit the claim immediately so the API can observe "running" jobs
                 # while long-running handlers (download/transcode) are executing.
                 session.flush()
                 session.commit()
 
+                job, cancel_requested = _lock_owned_running_job(
+                    session,
+                    job_id=job_id,
+                    worker_id=worker_id,
+                    execution_token=claimed_execution_token,
+                    lock=False,
+                )
+                if job is None:
+                    session.rollback()
+                    print(f"[worker] discarded stale execution id={job_id} type={job_type}", flush=True)
+                    continue
                 handler = registry.get(job.type)
                 if not handler:
+                    job, _cancel_requested = _lock_owned_running_job(
+                        session,
+                        job_id=job_id,
+                        worker_id=worker_id,
+                        execution_token=claimed_execution_token,
+                    )
+                    if job is None:
+                        session.rollback()
+                        print(f"[worker] discarded stale unknown handler id={job_id} type={job_type}", flush=True)
+                        continue
                     job.status = "failed"
                     job.error_message = f"unknown job type: {job.type}"
                     job.finished_at = utcnow()
+                    job.lease_expires_at = None
+                    job.worker_id = None
+                    job.execution_token = None
                     job_log(session, job, job.error_message or "failed", level="error")
                     continue
 
-                if job.status == "canceled":
-                    job.finished_at = utcnow()
-                    job_log(session, job, "job canceled; skip")
-                    continue
-                if job_cancel_requested(job):
-                    finalize_canceled_job(session, job, message="canceled before run", reason="cancel_requested")
-                    continue
+                if cancel_requested:
+                    job, cancel_requested = _lock_owned_running_job(
+                        session,
+                        job_id=job_id,
+                        worker_id=worker_id,
+                        execution_token=claimed_execution_token,
+                    )
+                    if job is None:
+                        session.rollback()
+                        print(f"[worker] discarded stale cancellation id={job_id} type={job_type}", flush=True)
+                        continue
+                    if cancel_requested:
+                        finalize_canceled_job(session, job, message="canceled before run", reason="cancel_requested")
+                        continue
 
-                job_id = job.id
-                job_type = job.type
                 try:
                     with worker_job_activity(worker_id=worker_id, role=role, job_id=job.id):
                         job_log(session, job, "running")
                         result = handler(session, job)
-                    # If an operator canceled the job while it was running, do not overwrite status.
-                    try:
-                        session.refresh(job)
-                    except Exception:
-                        pass
-                    if job.status == "canceled":
-                        job.finished_at = job.finished_at or utcnow()
-                        job.lease_expires_at = None
-                        job_log(session, job, "canceled; result ignored", level="warn")
+                    job, cancel_requested = _lock_owned_running_job(
+                        session,
+                        job_id=job_id,
+                        worker_id=worker_id,
+                        execution_token=claimed_execution_token,
+                    )
+                    if job is None:
+                        session.rollback()
+                        print(f"[worker] discarded stale result id={job_id} type={job_type}", flush=True)
                         continue
-                    if job_cancel_requested(job):
+                    if cancel_requested:
                         finalize_canceled_job(session, job, message="canceled after handler completed", reason="cancel_requested")
                         continue
 
@@ -428,37 +506,48 @@ def run_loop() -> None:
                     job.error_stack = None
                     job.finished_at = utcnow()
                     job.lease_expires_at = None
+                    job.execution_token = None
                     job_log(session, job, "succeeded")
                 except JobCancelRequested:
+                    job, _cancel_requested = _lock_owned_running_job(
+                        session,
+                        job_id=job_id,
+                        worker_id=worker_id,
+                        execution_token=claimed_execution_token,
+                    )
+                    if job is None:
+                        session.rollback()
+                        print(f"[worker] discarded stale cancellation id={job_id} type={job_type}", flush=True)
+                        continue
                     finalize_canceled_job(session, job, message="canceled while running", reason="cancel_requested")
                 except JobTerminalFailure as e:
-                    try:
-                        session.refresh(job)
-                    except Exception:
-                        pass
-                    if job.status == "canceled":
-                        job.finished_at = job.finished_at or utcnow()
-                        job.lease_expires_at = None
-                        job.worker_id = None
-                        job_log(session, job, "canceled", level="warn")
+                    job, cancel_requested = _lock_owned_running_job(
+                        session,
+                        job_id=job_id,
+                        worker_id=worker_id,
+                        execution_token=claimed_execution_token,
+                    )
+                    if job is None:
+                        session.rollback()
+                        print(f"[worker] discarded stale terminal failure id={job_id} type={job_type}", flush=True)
                         continue
-                    if job_cancel_requested(job):
+                    if cancel_requested:
                         finalize_canceled_job(session, job, message="canceled after terminal failure", reason="cancel_requested")
                         continue
 
                     _finalize_terminal_failure(session, job=job, reason=e.reason)
                 except JobReschedule as e:
-                    # Best-effort: if an operator canceled the job while it was running, keep status=canceled.
-                    try:
-                        session.refresh(job)
-                    except Exception:
-                        pass
-                    if job.status == "canceled":
-                        job.finished_at = job.finished_at or utcnow()
-                        job.lease_expires_at = None
-                        job_log(session, job, "canceled", level="warn")
+                    job, cancel_requested = _lock_owned_running_job(
+                        session,
+                        job_id=job_id,
+                        worker_id=worker_id,
+                        execution_token=claimed_execution_token,
+                    )
+                    if job is None:
+                        session.rollback()
+                        print(f"[worker] discarded stale reschedule id={job_id} type={job_type}", flush=True)
                         continue
-                    if job_cancel_requested(job):
+                    if cancel_requested:
                         finalize_canceled_job(session, job, message="canceled while rescheduling", reason="cancel_requested")
                         continue
 
@@ -468,6 +557,7 @@ def run_loop() -> None:
                     job.error_stack = None
                     job.lease_expires_at = None
                     job.worker_id = None
+                    job.execution_token = None
                     job.progress_current = None
                     job.progress_total = None
                     job.started_at = None
@@ -475,36 +565,18 @@ def run_loop() -> None:
                     job_log(session, job, f"rescheduled: {e.reason}", level="warn", data={"delay_seconds": e.delay_seconds})
                 except Exception as e:
                     error_stack = traceback.format_exc()
-                    try:
-                        session.rollback()
-                    except Exception:
-                        pass
-                    try:
-                        job = session.get(Job, job_id)
-                    except Exception:
-                        job = None
+                    session.rollback()
+                    job, cancel_requested = _lock_owned_running_job(
+                        session,
+                        job_id=job_id,
+                        worker_id=worker_id,
+                        execution_token=claimed_execution_token,
+                    )
                     if job is None:
-                        try:
-                            print(
-                                f"[worker] job failed id={job_id} type={job_type} "
-                                f"err={str(e)}; job row unavailable after rollback",
-                                flush=True,
-                            )
-                        except Exception:
-                            pass
+                        session.rollback()
+                        print(f"[worker] discarded stale exception id={job_id} type={job_type}", flush=True)
                         continue
-                    # If canceled while running, keep status=canceled and avoid retries.
-                    try:
-                        session.refresh(job)
-                    except Exception:
-                        pass
-                    if job.status == "canceled":
-                        job.finished_at = job.finished_at or utcnow()
-                        job.lease_expires_at = None
-                        job.worker_id = None
-                        job_log(session, job, "canceled", level="warn")
-                        continue
-                    if job_cancel_requested(job):
+                    if cancel_requested:
                         finalize_canceled_job(session, job, message="canceled after handler error", reason="cancel_requested")
                         continue
 
@@ -542,6 +614,7 @@ def run_loop() -> None:
                     job.error_stack = error_stack
                     job.lease_expires_at = None
                     job.worker_id = None
+                    job.execution_token = None
                     try:
                         print(
                             f"[worker] job failed id={job.id} type={job.type} "

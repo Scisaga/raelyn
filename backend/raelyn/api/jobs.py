@@ -463,6 +463,7 @@ def retry_job(job_id: uuid.UUID) -> dict:
             pending_duplicate.finished_at = retry_at
             pending_duplicate.worker_id = None
             pending_duplicate.lease_expires_at = None
+            pending_duplicate.execution_token = None
             pending_duplicate.cancel_requested_at = retry_at
             pending_duplicate.error_message = "superseded by manual retry"
             session.add(
@@ -490,6 +491,7 @@ def retry_job(job_id: uuid.UUID) -> dict:
         job.finished_at = None
         job.lease_expires_at = None
         job.worker_id = None
+        job.execution_token = None
         job.scheduled_for = retry_at
         event_data = {"previous_status": previous_status, "previous_attempt": previous_attempt}
         if pending_duplicate:

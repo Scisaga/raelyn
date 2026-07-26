@@ -16,3 +16,6 @@ tenacity>=8.2,<10.0
 python-dateutil>=2.9
 webvtt-py>=0.5
 srt>=3.5
+numpy>=2.4,<3.0
+scikit-learn>=1.8,<2.0
+umap-learn>=0.5.12,<0.6

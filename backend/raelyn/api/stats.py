@@ -151,6 +151,11 @@ def _build_stats() -> dict:
         video_count = session.execute(select(func.count()).select_from(Video)).scalar_one()
         pending_jobs = session.execute(select(func.count()).select_from(Job).where(Job.status == "pending")).scalar_one()
         failed_jobs = session.execute(select(func.count()).select_from(Job).where(Job.status == "failed")).scalar_one()
+        database_size_bytes = None
+        if session.get_bind().dialect.name == "postgresql":
+            database_size_bytes = int(
+                session.execute(select(func.pg_database_size(func.current_database()))).scalar_one()
+            )
 
         # Recent items for the overview page.
         recent_media_rows = session.execute(select(Media).order_by(Media.created_at.desc()).limit(5)).scalars().all()
@@ -364,6 +369,7 @@ def _build_stats() -> dict:
             "video_count": video_count,
             "pending_jobs": pending_jobs,
             "failed_jobs": failed_jobs,
+            "database_size_bytes": database_size_bytes,
             "recent_media": recent_media,
             "recent_videos": recent_videos,
             "recent_playlists": playlists,

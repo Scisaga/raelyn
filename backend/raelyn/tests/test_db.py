@@ -3,7 +3,9 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from raelyn.db import _database_engine_kwargs, _execute_best_effort_ddl
+from sqlalchemy import create_engine, event, text
+
+from raelyn.db import _cancel_legacy_analysis_jobs, _database_engine_kwargs, _execute_best_effort_ddl
 from raelyn.models import MarketEvent, MarketEventEmbedding, VideoTimeEvidence
 
 
@@ -21,9 +23,16 @@ class _NestedTransaction:
 
 
 class _FakeConn:
-    def __init__(self, *, dialect_name: str = "postgresql", fail_on: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        dialect_name: str = "postgresql",
+        fail_on: str = "",
+        index_exists: bool = False,
+    ) -> None:
         self.dialect = SimpleNamespace(name=dialect_name)
         self.fail_on = fail_on
+        self.index_exists = index_exists
         self.calls: list[str] = []
         self.nested_entered = 0
         self.nested_exits: list[type[BaseException] | None] = []
@@ -31,11 +40,14 @@ class _FakeConn:
     def begin_nested(self) -> _NestedTransaction:
         return _NestedTransaction(self)
 
-    def execute(self, statement) -> None:
+    def execute(self, statement, _params=None):
         sql = str(statement)
         self.calls.append(sql)
         if self.fail_on and self.fail_on in sql:
             raise RuntimeError("lock timeout")
+        return SimpleNamespace(
+            scalar_one_or_none=lambda: 1 if self.index_exists else None,
+        )
 
 
 class DbMigrationHelperTests(unittest.TestCase):
@@ -133,7 +145,7 @@ class DbMigrationHelperTests(unittest.TestCase):
         self.assertEqual(conn.nested_entered, 1)
         self.assertEqual(conn.nested_exits, [None])
         self.assertEqual(
-            conn.calls,
+            conn.calls[-3:],
             [
                 "set local lock_timeout = '2s'",
                 "create index if not exists demo_idx on demo(id)",
@@ -149,7 +161,7 @@ class DbMigrationHelperTests(unittest.TestCase):
         self.assertEqual(conn.nested_entered, 1)
         self.assertEqual(conn.nested_exits, [RuntimeError])
         self.assertEqual(
-            conn.calls,
+            conn.calls[-2:],
             [
                 "set local lock_timeout = '2s'",
                 "create index if not exists demo_idx on demo(id)",
@@ -162,7 +174,33 @@ class DbMigrationHelperTests(unittest.TestCase):
         _execute_best_effort_ddl(conn, "create index if not exists demo_idx on demo(id)")
 
         self.assertEqual(conn.nested_entered, 0)
-        self.assertEqual(conn.calls, ["create index if not exists demo_idx on demo(id)"])
+        self.assertEqual(conn.calls[-1], "create index if not exists demo_idx on demo(id)")
+
+    def test_existing_index_skips_ddl_and_relation_lock(self) -> None:
+        conn = _FakeConn(index_exists=True)
+
+        _execute_best_effort_ddl(conn, "create index if not exists demo_idx on demo(id)")
+
+        self.assertEqual(conn.nested_entered, 0)
+        self.assertEqual(len(conn.calls), 1)
+        self.assertIn("pg_class", conn.calls[0])
+
+    def test_no_legacy_jobs_skips_empty_job_update(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        statements: list[str] = []
+
+        @event.listens_for(engine, "before_cursor_execute")
+        def _record_statement(_conn, _cursor, statement, _parameters, _context, _executemany) -> None:
+            statements.append(str(statement).strip().lower())
+
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("create table job (id text primary key, type text, status text)"))
+                statements.clear()
+                _cancel_legacy_analysis_jobs(conn)
+            self.assertFalse(any(statement.startswith("update job") for statement in statements))
+        finally:
+            engine.dispose()
 
 
 if __name__ == "__main__":

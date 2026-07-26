@@ -168,7 +168,7 @@ source ./scripts/dev/load-env.sh
 
 #### 高优先级代理规则
 
-- YouTube 的 `yt-dlp` 同步/下载请求可通过 `.env` 中的 `YTDLP_PROXY` 显式使用代理。
+- YouTube 的 `yt-dlp` 资料同步、频道头像下载和视频同步/下载请求可通过 `.env` 中的 `YTDLP_PROXY` 显式使用代理。
 - 非 `yt-dlp` 的资料/头像抓取、B 站请求、ASR、LLM、Embedding 与健康检查不使用 `YTDLP_PROXY`。
 - 应用默认不隐式读取 shell、systemd 或容器环境中的 `HTTP_PROXY` / `HTTPS_PROXY`；如果这些变量存在，也不能假设 ASR / LLM / Embedding 或 B 站请求会走代理。
 - 如果 YouTube cookies 是在代理出口下导出的，建议让 `YTDLP_PROXY` 使用同一个出口，避免 cookies 使用 IP 与导出 IP 不一致。
@@ -176,6 +176,8 @@ source ./scripts/dev/load-env.sh
 #### 可选：配置平台 Cookies（YouTube / bilibili）
 
 B 站常见 352 风控、年龄验证、会员或私有内容等登录态相关问题，可以通过 cookies 改善。近期 B 站 412 还可能由浏览器 JS 验证、数据中心出口 IP 风控，或 yt-dlp B 站提取器尚未发布的 `playinfo` 参数修复触发；如果更新 B 站 cookies 后仍然 412，优先降低 `BILIBILI_SYNC_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY`、更换更接近真实浏览器访问的网络，或等待 yt-dlp 官方发布包含修复的版本。不要在生产默认依赖中直接切到未合并的第三方 fork，除非只是在隔离环境做临时验证。
+
+B 站资料同步不再调用会返回 `-799` / 412 的旧 `/x/space/acc/info` API，而是通过项目已有的 `curl_cffi` 浏览器模拟优先读取 `/x/web-interface/card`；该端点返回名称、简介、粉丝数、视频数和有效 `/bfs/face/` 头像。端点不可用时才回退公开空间页，并且不会为了补头像继续回退到 yt-dlp。上述请求与 B 站头像下载均显式 `trust_env=false`，不会读取环境代理。头像和 yt-dlp 请求同时复用当前安装版本的 yt-dlp 默认浏览器 UA，不再固定使用 Chrome 120/122。升级 yt-dlp 或 `curl_cffi` 后需重启对应 worker 才会加载新的请求实现。
 
 YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“公开采集默认不用 cookies”。当前 YouTube 普通同步 / 下载都会使用已保存的 `YTDLP_COOKIES_YOUTUBE`；只有 provider 因 cookies / bot check / auth check 暂停时，`media.sync_videos` 才可按 `SYNC_PUBLIC_DISCOVERY_ENABLED=true` 进入 `public_discovery` 降级模式，显式无 cookies 抓公开视频 flat 列表。该模式只减少漏入库风险，下载、字幕和 metadata 补全仍等 provider 恢复后执行。完整判断与排障步骤见 [YouTube yt-dlp 同步与 Cookies 策略](youtube-ytdlp-strategy.md)。
 当前实测的下载路径在无 cookies 时会直接触发 `LOGIN_REQUIRED`，因此 YouTube 下载任务固定使用已保存的 `YTDLP_COOKIES_YOUTUBE`，并通过 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 尽量贴近浏览器请求形态。
@@ -218,8 +220,11 @@ YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“�
 - 若你手动多终端启动，并且希望兑现 `AI_WORKER_CONCURRENCY=N` 的 LLM 任务并发，需要把 `./scripts/dev/run-worker.sh ai` 至少启动 `N` 次。
 - `ai` worker 负责 `video.extract_events`、`video.extract_events_batch`、`playlist.backfill_events` 与 `playlist.backfill_events_range`，播放列表回填父任务先按月拆分范围任务，范围任务再按 source 字符数投递批量或单视频抽取；事件抽取读取 `plain` transcript 并调用 LLM。Ollama `/api/generate` 事件抽取会使用 endpoint + model 级 advisory lock，锁忙时重排任务，因此提高 `AI_WORKER_CONCURRENCY` 不会让同一个本地大模型的事件抽取并发增加。
 - `embedding` worker 负责 `event.embed`，只为 accepted 事件生成结构化事件 embedding。
-- `analysis` worker 负责兼容任务 `playlist.mark_event_regime_dirty` 与 `playlist.build_event_regime_snapshot`。即使临时提高 AI 并发，也至少保留 1 个 analysis worker 用于 dirty 合并和语义快照构建。快照按 `ANALYSIS_STREAM_BATCH_SIZE` 两遍流式读取，并在每批检查 `MemAvailable` 与 RSS；应用内 `ANALYSIS_MAX_RSS_BYTES` 默认 6 GiB。若生产环境另设 systemd / cgroup `MemoryMax`，应与它保持一致或略高。
-- 6 GiB 是进程安全上限而非预分配。32 GiB 主机先保留默认值并观察构建任务峰值 RSS 与全机 `MemAvailable`；只有流式构建仍触顶、机器同时有足够余量时再提高，且必须同步提高 cgroup 上限，避免两个门槛互相冲突。
+- `analysis` worker 负责 `playlist.mark_event_map_dirty`、`playlist.build_event_map_snapshot` 与 `playlist.prune_event_map_snapshots`。至少保留 1 个 analysis worker，才能让新增视频在 embedding ready 后按微批自动更新地图，并在构建成功后保留 current 与上一版 ready 快照、分批清理更旧快照。构建按 `ANALYSIS_STREAM_BATCH_SIZE` 流式冻结输入、生成 canonical/topic/story、执行 IncrementalPCA，并在独立子进程运行 UMAP。
+- `ANALYSIS_CPU_THREADS=2` 是每个 analysis worker 的 CPU 线程预算。Python worker 入口会在导入 NumPy / sklearn 前，将它统一设置给 `OMP_NUM_THREADS`、`OPENBLAS_NUM_THREADS` 和 `MKL_NUM_THREADS`，因此 `run-worker.sh`、`devctl.sh`、Docker 与直接执行 `python -m raelyn.worker` 的行为一致。all-types 或 `WORKER_TYPES` 显式包含 analysis 任务的 worker 也应用该预算，其他专职 worker 不受影响。配置变更不会热加载，修改后必须重启对应 worker。
+- 12 GiB 是父子进程树安全上限而非预分配。32 GiB 主机应观察 `event_map_snapshot.peak_rss_bytes` 与全机 `MemAvailable`；systemd / cgroup `MemoryMax` 应设置为相同或略高的硬上限。
+- 事件地图的场景协议、后端和静态前端必须同一版本发布：三维场景协议 v2 固定为 56 字节。二维快照不能伪装成三维数据，升级后必须完整重建一次 UMAP3 快照；新 ready 原子切换前旧快照不受影响。应用 schema 迁移会增加 z/三维主题字段，并删除旧二维 topic polygon 与 Atlas/LOD 数据链。
+- 升级先创建 `event_map_*` 表并为目标播放列表构建、验收首个 ready 快照。确认新地图后，再显式执行 `python -m raelyn.tools.migrate_data --drop-legacy-event-analysis --yes` 删除旧分析表；应用启动不会自动做该破坏性操作。
 
 手动按播放列表时间范围投递事件抽取：
 
@@ -237,7 +242,20 @@ PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.reset_event_extraction_v2
 PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.reset_event_extraction_v2 --yes
 ```
 
-默认命令只 dry-run 并输出将删除的事件、语义快照派生数据、事件管线 job 与 `video_event_extraction_run` 计数；只有显式 `--yes` 才执行删除。执行前应保持 `ai`、`embedding`、`analysis` 队列暂停，并确认没有事件抽取管线 running；该命令只清理事件管线 job，不删除 ASR、下载、字幕润色或简报任务。
+默认命令只 dry-run 并输出将删除的事件、事件地图快照对象、事件管线 job 与 `video_event_extraction_run` 计数；只有显式 `--yes` 才执行删除。执行前应保持 `ai`、`embedding`、`analysis` 队列暂停，并确认没有事件抽取管线 running；该命令只清理事件管线 job，不删除 ASR、下载、字幕润色或简报任务。
+
+视频下载与事件抽取存量修复：
+
+```bash
+PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.repair_video_event_pipeline
+PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.repair_video_event_pipeline --yes
+```
+
+该工具必须在本次终态与重试修复代码部署后运行。第一条命令默认只读 dry-run，输出待回填的下载状态数和待重新投递的事件抽取数；确认数量后才执行带 `--yes` 的第二条命令。
+
+- 下载侧只处理“最新下载 job 已终止失败、视频仍为 `discovered/downloading`、没有 `video` asset、也没有 pending/running 下载 job”的记录，将状态改为 `failed` 并带回最新错误；不会新增下载任务。
+- 事件侧只处理“最新 `video_event_extraction_run` 为 `failed`、视频仍存在、也没有 pending/running 抽取 job”的记录，投递或复用 `video.extract_events(force=false)`，避免在成功解析前删除旧事件。
+- 同一数据库状态下可重复执行；已修复下载状态会退出候选，已有 active job 和 pending dedupe 会阻止紧邻重复执行扩张队列。若重新投递的抽取任务再次终止失败，后续维护运行仍会把它重新识别为候选。
 
 手动探测并投递字幕回补：
 
@@ -276,7 +294,7 @@ PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.reset_event_extraction_v2 
 - `devctl.sh start/restart` 会按 `ASR_WORKER_CONCURRENCY` / `EMBEDDING_WORKER_CONCURRENCY` / `ANALYSIS_WORKER_CONCURRENCY` / `AI_WORKER_CONCURRENCY` 自动扩展 asr / embedding / analysis / ai worker 数，默认均为 `1`；其中 `EMBEDDING_WORKER_CONCURRENCY=0` / `ANALYSIS_WORKER_CONCURRENCY=0` 表示当前节点不启动对应 worker。事件图谱链路需要 dirty/build 正常推进时，不要把 `ANALYSIS_WORKER_CONCURRENCY` 设为 `0`。
 - `devctl.sh` 后台进程会优先以独立进程组启动；如需停止服务，使用 `./scripts/dev/devctl.sh stop`。
 - `devctl.sh` 启动的 worker 会先进入轻量 supervisor；worker 子进程崩溃后会自动拉起，默认等待 `WORKER_RESTART_DELAY_SECONDS=5` 秒，也可用旧的 `DEV_WORKER_RESTART_DELAY_SECONDS` 覆盖本地等待时间。
-- 下载类 worker 的主执行心跳超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进时，会主动退出并交给 supervisor 重启，避免进程心跳仍在线但下载槽 advisory lock 长时间不释放。
+- 同步/下载类 worker 的主执行心跳超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进时，会主动退出并交给 supervisor 重启；YouTube 全量同步按 yt-dlp 的真实分页与条目日志刷新该心跳，下载任务按下载进度刷新。
 - 只有在 `.env` 里配置了 `API_BEARER_TOKEN` 时，主 API 进程才会额外挂载 `/mcp`；否则 `/mcp` 与 `/mcp/health` 返回 `404`。
 - 主 API 关闭 Uvicorn HTTP access log；WebSocket 握手日志中的 `token` / `access_token` / `api_key` query 值会被脱敏，避免 `devctl.sh logs` 暴露访问凭证。
 

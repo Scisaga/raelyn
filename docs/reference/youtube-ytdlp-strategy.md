@@ -10,7 +10,7 @@
 
 - YouTube 普通 `media.sync_videos` 和 `video.download.youtube` 当前都应使用已保存的 `YTDLP_COOKIES_YOUTUBE`。只有在相同 yt-dlp 版本、相同出口、相同目标类型下做过最小实测，并证明无 cookies 路径稳定成功时，才能讨论局部关闭 cookies。
 - 当 provider 已因 `ytdlp_cookies_*`、`youtube_bot_check` 或 `youtube_auth_check` 暂停时，scheduler 可投递 `media.sync_videos public_discovery=true`，显式无 cookies 抓公开视频 flat 列表。该降级只用于发现公开视频，不解除下载、字幕回补或 `video.enrich_metadata.youtube` 的 provider pause 门控。
-- YouTube 的 `yt-dlp` 同步 / 下载可显式使用 `YTDLP_PROXY`；这只影响 YouTube 访问出口，不代表 ASR / LLM / Embedding / 头像抓取也走代理。
+- YouTube 的 `yt-dlp` 资料同步、频道头像下载和视频同步 / 下载可显式使用 `YTDLP_PROXY`；这只影响 YouTube yt-dlp 访问出口，不代表 ASR / LLM / Embedding 或其他头像抓取也走代理。
 - 不要从“cookies 会被轮换 / 会增加账号风险”推导出“cookies 不需要”。正确结论是：降低同步频率、降低并发、保持导出 cookies 的浏览器环境干净，并增加 PO Token Provider / impersonation，而不是盲目切到无 cookies。
 - `video.download.youtube` 默认使用 `YTDLP_COOKIES_YOUTUBE`，并通过 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 启用浏览器 impersonation；当前实测这是比单纯重启代理更接近浏览器成功路径的组合。
 - YouTube 频道 flat 列表有时只返回 `id/title/url/duration`，不返回 `timestamp/upload_date`。`media.sync_videos` 不再在同步循环里内联单视频 metadata 解析；若 flat 条目缺少发布时间，系统会投递低优先级 `video.enrich_metadata.youtube`，异步 best-effort 填充 `video.published_at/raw_info`，避免单个频道同步因逐条补 metadata 而超过执行心跳阈值。
@@ -50,9 +50,9 @@
 
 ## 代理规则
 
-YouTube 的 `yt-dlp` 同步 / 下载请求可显式使用 `YTDLP_PROXY`，同步和下载应保持同一出口。应用不会把 shell、systemd 或容器环境中的 `HTTP_PROXY` / `HTTPS_PROXY` 当成 YouTube 代理配置；需要代理时必须配置 `YTDLP_PROXY`。
+YouTube 的 `yt-dlp` 资料同步、频道头像下载和视频同步 / 下载请求可显式使用 `YTDLP_PROXY`，同步和下载应保持同一出口。应用不会把 shell、systemd 或容器环境中的 `HTTP_PROXY` / `HTTPS_PROXY` 当成 YouTube 代理配置；需要代理时必须配置 `YTDLP_PROXY`。
 
-`YTDLP_PROXY` 不适用于 ASR、LLM、Embedding、B 站请求、资料抓取、头像缓存或健康检查。那些请求默认直连，并且不应隐式继承进程环境代理。
+YouTube 频道资料同步从 yt-dlp 返回的 `thumbnails` 中优先选择 `avatar_uncropped`，没有该标识时才选择方形频道图，避免把横幅当头像。所选头像属于本次 yt-dlp 资料同步的一部分，字节下载复用同一 `YTDLP_PROXY`、Cookies 和浏览器模拟配置；非 yt-dlp 的资料 / 头像抓取、B 站请求、ASR、LLM、Embedding 和健康检查仍默认直连，并且不应隐式继承进程环境代理。
 
 ## Cookies 导出
 
@@ -79,7 +79,9 @@ provider 暂停期间，若 `SYNC_PUBLIC_DISCOVERY_ENABLED=true`，自动同步�
 
 如果 YouTube 频道同步在 yt-dlp 调用内卡住，没有及时抛出上述可识别错误，sync worker 的执行 watchdog 会先重启进程并释放锁。回收扫描会把 `media.sync_profile` / `media.sync_videos` 的执行心跳过期视为一次同步尝试失败，按 `max_attempts` 有上限地重试，且不提升 orphan 优先级；终止失败的 `media.sync_videos` 会推进该媒体的 `last_video_sync_at` 作为冷却时间，避免单个频道反复卡死时占住整个同步队列。
 
-对 YouTube flat 条目缺失发布时间的场景，`media.sync_videos` 只做发现和幂等写入，并在 flat 提取后、entry 处理循环中刷新执行活动心跳。单视频详情解析由 `video.enrich_metadata.youtube` 独立执行：每个任务只处理一个 `video_id`，受 YouTube provider pause 与 sync provider advisory lock 控制，锁繁忙时延迟 30 秒重排，yt-dlp 详情解析有 45 秒可终止子进程硬超时。该子进程只回传 compact metadata，不回传 `formats`、自动字幕、缩略图数组等完整 yt-dlp `info` 大对象，避免父进程等待子进程退出时被进程队列刷写阻塞。该补全是 best-effort，失败只影响对应补全任务，不阻塞视频发现、下载或后续同步。同一视频达到 `max_attempts` 终止失败后，自动同步不再为同一 `dedupe_key` 重复投递 metadata 补全；如需重试，应在失败任务上手动重试，或等待下载/后续真实 metadata 写入补齐发布时间。
+YouTube 媒体传输阶段若出现代理 `CONNECT ... 502`、`connection closed`、`connection reset` 或媒体 URL `HTTP 502`，下载不会只对已经失败的签名 URL 长时间盲重试。每轮解析内仍由 yt-dlp 对同一 URL 执行 `retries=2` 的短重试；本轮失败后重新创建 yt-dlp 实例，从原视频页再次解析并下载，最多执行两轮解析（首次解析加一次重新解析）。每轮使用独立临时产物，不复用上一轮 `.part` 文件；两轮保持相同的 cookies、`YTDLP_PROXY`、impersonation 和 format 选择策略，不通过切换认证态、代理或格式掩盖传输失败。重新解析会刷新签名媒体 URL，但 YouTube 仍可能返回相同的 CDN 节点，因此该策略不承诺一定换服务器；两轮均失败后才把错误交给外层 job 重试。
+
+对 YouTube flat 条目缺失发布时间的场景，`media.sync_videos` 只做发现和幂等写入；flat 提取期间以 yt-dlp 的真实分页 / 条目日志刷新执行活动心跳，提取完成后和 entry 处理循环中继续刷新。万级频道的全量分页因此不会仅因总耗时超过 120 秒被误判卡死；如果 yt-dlp 长时间不再产生分页或条目活动，现有 watchdog 仍会回收任务。单视频详情解析由 `video.enrich_metadata.youtube` 独立执行：每个任务只处理一个 `video_id`，受 YouTube provider pause 与 sync provider advisory lock 控制，锁繁忙时延迟 30 秒重排，yt-dlp 详情解析有 45 秒可终止子进程硬超时。该子进程只回传 compact metadata，不回传 `formats`、自动字幕、缩略图数组等完整 yt-dlp `info` 大对象，避免父进程等待子进程退出时被进程队列刷写阻塞。该补全是 best-effort，失败只影响对应补全任务，不阻塞视频发现、下载或后续同步。同一视频达到 `max_attempts` 终止失败后，自动同步不再为同一 `dedupe_key` 重复投递 metadata 补全；如需重试，应在失败任务上手动重试，或等待下载/后续真实 metadata 写入补齐发布时间。
 
 bgutil PO Token Provider 的健康状态与 metadata 补全子进程回传路径是两类问题：`/ping` 正常、日志能生成 PO Token，只能证明 PO Token Provider 当前可用；若同一视频直接 `ytdlp_extract_info` 能在 45 秒内返回，而 `video.enrich_metadata.youtube` 超时，应优先排查子进程结果回传、payload 体积和硬超时路径，而不是直接重启 bgutil 或更改 cookies / 代理。
 
@@ -133,7 +135,7 @@ yt-dlp 官方 README 把 `curl_cffi` 列为推荐的浏览器 impersonation 支�
 
 - `YTDLP_YOUTUBE_IMPERSONATE=chrome`
 - 空值表示不启用 impersonation。
-- 该设置只注入 YouTube 的 `yt-dlp` 同步 / 下载请求，不改变 B 站、ASR、LLM、Embedding、资料抓取或头像缓存请求。
+- 该设置只注入 YouTube 的 `yt-dlp` 资料同步、频道头像下载和视频同步 / 下载请求，不改变 B 站、ASR、LLM、Embedding 或非 yt-dlp 资料 / 头像抓取请求。
 
 ## 本项目当前状态
 

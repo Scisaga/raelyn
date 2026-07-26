@@ -112,6 +112,7 @@ def dedupe_pending_brief_jobs(*, yes: bool = False) -> dict[str, int]:
             j.finished_at = now
             j.lease_expires_at = None
             j.worker_id = None
+            j.execution_token = None
             session.add(JobEvent(job_id=j.id, level="info", message="canceled (dedupe brief pending)"))
             n += 1
         session.flush()
@@ -147,4 +148,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

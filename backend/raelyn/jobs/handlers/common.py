@@ -14,12 +14,13 @@ from raelyn.config import settings
 from raelyn.jobs.log import job_log
 from raelyn.models import AppConfig, Asset, Job, Media
 from raelyn.services.assets import replace_standalone_asset
+from raelyn.services.browser_identity import BROWSER_USER_AGENT
 from raelyn.services.provider_cookies import cookie_config_name, cookie_provider_label, normalize_cookie_provider
 from raelyn.services.http_client import httpx_client
 from raelyn.services.provider_pause import ProviderPauseRequestError, job_provider, set_provider_paused
 from raelyn.services.system_pause import set_paused
 from raelyn.services.workdir import job_workdir
-from raelyn.services.ytdlp import YtdlpCookiesInvalidError
+from raelyn.services.ytdlp import YtdlpCookiesInvalidError, ytdlp_fetch_bytes
 
 
 def _pause_all_jobs_for_cookies(session: Session, *, job: Job, err: YtdlpCookiesInvalidError) -> None:
@@ -197,26 +198,31 @@ def _cache_media_avatar(session: Session, *, job: Job, media: Media, avatar_url:
         return False
 
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": BROWSER_USER_AGENT,
         "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
     }
     timeout = httpx.Timeout(15.0)
     max_bytes = 10 * 1024 * 1024
 
     try:
-        with httpx_client(timeout=timeout, follow_redirects=True, headers=headers) as client:
-            response = client.get(url)
-            if response.status_code < 200 or response.status_code >= 300:
-                raise RuntimeError(f"avatar http {response.status_code}")
-            data = response.content or b""
-            if not data:
-                raise RuntimeError("empty avatar")
-            if len(data) > max_bytes:
-                raise RuntimeError("avatar too large")
-            content_type = (response.headers.get("content-type") or "").split(";", 1)[0].strip().lower() or None
+        if media.provider == "youtube":
+            data, content_type = ytdlp_fetch_bytes(
+                url,
+                provider="youtube",
+                max_bytes=max_bytes,
+                socket_timeout=15,
+            )
+        else:
+            with httpx_client(timeout=timeout, follow_redirects=True, headers=headers) as client:
+                response = client.get(url)
+                if response.status_code < 200 or response.status_code >= 300:
+                    raise RuntimeError(f"avatar http {response.status_code}")
+                data = response.content or b""
+                if not data:
+                    raise RuntimeError("empty avatar")
+                if len(data) > max_bytes:
+                    raise RuntimeError("avatar too large")
+                content_type = (response.headers.get("content-type") or "").split(";", 1)[0].strip().lower() or None
 
         ext = _guess_image_ext(content_type=content_type, url=url)
         with job_workdir(job.id) as wd:

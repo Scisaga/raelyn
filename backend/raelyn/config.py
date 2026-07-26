@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     database_pool_size: int = Field(default=2, validation_alias=AliasChoices("DATABASE_POOL_SIZE"))
     database_max_overflow: int = Field(default=2, validation_alias=AliasChoices("DATABASE_MAX_OVERFLOW"))
     database_pool_timeout_seconds: int = Field(default=30, validation_alias=AliasChoices("DATABASE_POOL_TIMEOUT_SECONDS"))
+    event_map_entity_query_timeout_seconds: int = Field(
+        default=10,
+        validation_alias=AliasChoices("EVENT_MAP_ENTITY_QUERY_TIMEOUT_SECONDS"),
+    )
+    event_map_ready_snapshot_retention: int = Field(
+        default=2,
+        validation_alias=AliasChoices("EVENT_MAP_READY_SNAPSHOT_RETENTION"),
+    )
 
     s3_endpoint: str = "http://127.0.0.1:9000"
     s3_access_key: str = "minioadmin"
@@ -155,7 +163,7 @@ class Settings(BaseSettings):
     analysis_worker_concurrency: int = 1
     ai_worker_concurrency: int = Field(default=1, validation_alias=AliasChoices("AI_WORKER_CONCURRENCY"))
     analysis_min_available_memory_bytes: int = 1024 * 1024 * 1024
-    analysis_max_rss_bytes: int = 6 * 1024 * 1024 * 1024
+    analysis_max_rss_bytes: int = 12 * 1024 * 1024 * 1024
     analysis_stream_batch_size: int = 2000
 
     # --- Volcengine managed inference defaults (used when inference_mode=volcengine) ---

@@ -179,6 +179,10 @@
                       <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.db.ok)" x-text="serviceText(services.db)"></span>
                     </div>
                     <div class="mt-2 text-xs text-slate-400 truncate" x-show="services.db.url" x-text="services.db.url"></div>
+                    <div class="mt-1 text-xs text-slate-400 truncate">
+                      <span class="text-slate-300">占用:</span>
+                      <span x-text="stats.databaseSizeBytes===null ? '-' : formatBytes(stats.databaseSizeBytes)"></span>
+                    </div>
                     <div class="mt-2 text-xs text-slate-400 truncate" x-show="services.db.error" x-text="services.db.error"></div>
                   </div>
 

@@ -15,6 +15,7 @@ from raelyn.jobs.enqueue import enqueue_in, enqueue_job
 from raelyn.jobs.log import job_log
 from raelyn.jobs.progress import set_job_progress
 from raelyn.jobs.registry import registry
+from raelyn.jobs.worker_activity import touch_current_worker_activity
 from raelyn.models import Job, Video
 from raelyn.models import Media
 from raelyn.models import Asset
@@ -22,7 +23,7 @@ from raelyn.services.assets import ensure_asset
 from raelyn.services.pg_lock import advisory_lock_any
 from raelyn.services.provider_pause import ProviderPauseRequestError
 from raelyn.services.video_meta import parse_published_at
-from raelyn.services.event_analysis import schedule_playlists_event_regime_dirty_for_video
+from raelyn.services.event_analysis import schedule_playlists_event_map_dirty_for_video
 from raelyn.services.workdir import job_workdir
 from raelyn.services.ytdlp import (
     _BILIBILI_CHINESE_SUBTITLE_LANGS,
@@ -183,6 +184,8 @@ def _job_progress_from_ytdlp_hook(data: dict[str, Any]) -> tuple[int, int] | Non
 @registry.register("video.download")
 def video_download(session: Session, job: Job) -> dict | None:
     video_id = uuid.UUID(job.params["video_id"])
+    claimed_worker_id = str(job.worker_id or "").strip()
+    claimed_execution_token = job.execution_token
     video = session.get(Video, video_id)
     if not video:
         return {"skipped": "video not found"}
@@ -217,12 +220,15 @@ def video_download(session: Session, job: Job) -> dict | None:
         with job_workdir(job.id) as wd:
             info: dict[str, Any] | None = None
             subtitle_download_failed = False
-            set_job_progress(
+            if claimed_execution_token is None or not set_job_progress(
                 job_id=job.id,
+                worker_id=claimed_worker_id,
+                execution_token=claimed_execution_token,
                 current=0,
                 total=_JOB_PROGRESS_TOTAL,
                 lease_expires_at=_download_lease_expires_at(),
-            )
+            ):
+                raise RuntimeError("download job ownership changed before download started")
             last_progress_at = 0.0
 
             def _hook(data: dict[str, Any]) -> None:
@@ -236,12 +242,15 @@ def video_download(session: Session, job: Job) -> dict | None:
                     return
                 last_progress_at = now
                 current, total = progress
-                set_job_progress(
+                if not set_job_progress(
                     job_id=job.id,
+                    worker_id=claimed_worker_id,
+                    execution_token=claimed_execution_token,
                     current=current,
                     total=total,
                     lease_expires_at=_download_lease_expires_at(),
-                )
+                ):
+                    raise RuntimeError("download job ownership changed during download")
 
             try:
                 download_target = _video_download_target(video)
@@ -251,6 +260,7 @@ def video_download(session: Session, job: Job) -> dict | None:
                     out_dir=wd,
                     use_provider_cookies=use_provider_cookies,
                     progress_hook=_hook,
+                    activity_hook=touch_current_worker_activity,
                 )
             except YtdlpCookiesInvalidError as e:
                 _pause_all_jobs_for_cookies(session, job=job, err=e)
@@ -288,6 +298,7 @@ def video_download(session: Session, job: Job) -> dict | None:
                     write_subtitles=False,
                     write_auto_subtitles=False,
                     progress_hook=_hook,
+                    activity_hook=touch_current_worker_activity,
                 )
                 candidates = [path for path in wd.glob("*") if path.is_file()]
                 video_file = _pick_downloaded_video_file(candidates)
@@ -319,12 +330,13 @@ def video_download(session: Session, job: Job) -> dict | None:
                     published_at = parse_published_at(video.raw_info)
                     if published_at and video.published_at != published_at:
                         video.published_at = published_at
-                        schedule_playlists_event_regime_dirty_for_video(
+                        schedule_playlists_event_map_dirty_for_video(
                             session,
                             video_id=video.id,
                             reason="video_published_at_changed",
                             source_job_id=job.id,
                             priority=job.priority,
+                            require_event_map_input=True,
                         )
                 if not video.duration_sec and raw_info.get("duration"):
                     try:

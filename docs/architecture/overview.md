@@ -40,9 +40,9 @@
 
 ### MarketEvent / EventGraph
 
-- `market_event` 保存从视频 transcript 抽取出的结构化市场原子事件。
-- `market_event_entity`、`market_event_evidence`、`market_event_relation` 以关系表形式承载第一版知识图谱。
-- `market_event_embedding` 与兼容表 `event_regime_*` 承载事件 embedding、播放列表级语义信号和变化点；产品概念统一称“事件图谱 / 语义快照”，不解释为市场 Regime。
+- `market_event` 保存从视频 transcript 抽取出的结构化事件记录；`market_event_entity/evidence/relation` 保留记录级实体和证据。
+- `market_event_embedding` 提供记录级语义向量。
+- `event_map_*` 把记录保守归并为 canonical 真实事件，并在不可变快照中保存两级 topic、story、anchor 与固定三维语义坐标。产品名称为“事件语义星域”，不包含 Regime、语义漂移或变化点分析。
 
 ### Job / WorkerHeartbeat / AppConfig
 
@@ -64,7 +64,7 @@
 - 支持按 `WORKER_ROLE` 或 `WORKER_TYPES` 拆分角色，例如 `download_youtube`、`download_bilibili`、`audio`、`process`、`asr`、`sync`、`embedding`、`analysis`、`ai`。
 - `download_youtube` / `download_bilibili` 是 provider 专属下载执行面；其 worker 进程数默认与 `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 强绑定，用来兑现真实下载并发语义。
 - `asr` 负责 `video.asr_transcribe`；其 worker 进程数默认与 `ASR_WORKER_CONCURRENCY` 绑定，每个进程同一时间执行一个远端 ASR 请求。对 qwen3-asr-openai 这类会在 `/health` 暴露后端 replica 与队列状态的服务，worker 会在领取 ASR 任务前做容量门控，后端已满时不从 DB claim 新 ASR 任务，避免继续把请求打进 502/503。
-- `ai` 负责 `video.extract_events`、`playlist.backfill_events`、`playlist.backfill_events_range`、转写润色与简报生成；其 worker 进程数可通过 `AI_WORKER_CONCURRENCY` 扩展。`embedding` 负责 `event.embed`；`analysis` 负责兼容任务 `playlist.mark_event_regime_dirty` 与 `playlist.build_event_regime_snapshot`。三类执行面可通过对应 worker 并发或角色暂停分开治理，避免 LLM 抽取、事件向量化、dirty 合并与语义快照聚合互相堵塞。
+- `ai` 负责 `video.extract_events`、`playlist.backfill_events`、`playlist.backfill_events_range`、转写润色与简报生成；`embedding` 负责 `event.embed`；`analysis` 负责 `playlist.mark_event_map_dirty`、`playlist.build_event_map_snapshot` 与 `playlist.prune_event_map_snapshots`。三类执行面可独立暂停和扩容。
 - provider 下载 handler 内仍保留 advisory lock 作为最终并发上限保护；它是内部实现，不是对外配置语义。
 - 负责任务领取、心跳、孤儿任务回收、失败退避与实际处理逻辑执行。
 
