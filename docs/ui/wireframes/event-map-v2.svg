@@ -1,0 +1,337 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">Raelyn V2 事件语义星域低保真线框</title>
+  <desc id="desc">包含观测域上下文、星图工具栏、搜索筛选抽屉、三维事件画布、事件详情与事件时间轴的桌面端低保真布局。</desc>
+  <defs>
+    <style>
+      text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif; }
+      .bg { fill: #020617; }
+      .surface { fill: #0b1221; }
+      .panel { fill: #0f172a; stroke: #334155; stroke-width: 1; }
+      .panel-opaque { fill: #08111f; stroke: #334155; stroke-width: 1; }
+      .panel-soft { fill: #0b1324; stroke: #1e293b; stroke-width: 1; }
+      .divider { stroke: #1e293b; stroke-width: 1; }
+      .grid { stroke: #243247; stroke-width: 1; fill: none; opacity: 0.62; }
+      .title { fill: #f1f5f9; font-size: 18px; font-weight: 650; }
+      .heading { fill: #e2e8f0; font-size: 14px; font-weight: 650; }
+      .body { fill: #cbd5e1; font-size: 12px; }
+      .small { fill: #94a3b8; font-size: 11px; }
+      .tiny { fill: #64748b; font-size: 10px; }
+      .mono { fill: #94a3b8; font-size: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .active { fill: #064e3b; stroke: #10b981; stroke-width: 1; }
+      .active-text { fill: #a7f3d0; font-size: 12px; font-weight: 650; }
+      .button { fill: #111c2f; stroke: #475569; stroke-width: 1; }
+      .button-active { fill: #0c4a6e; stroke: #38bdf8; stroke-width: 1; }
+      .pill { fill: #0b1324; stroke: #334155; stroke-width: 1; }
+      .pill-green { fill: #052e2b; stroke: #10b981; stroke-width: 1; }
+      .callout { fill: #e2e8f0; stroke: #020617; stroke-width: 3; }
+      .callout-text { fill: #0f172a; font-size: 11px; font-weight: 800; text-anchor: middle; dominant-baseline: central; }
+    </style>
+    <radialGradient id="spaceGlow">
+      <stop offset="0" stop-color="#1e3a5f" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#020617" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="fadeRight" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#020617" stop-opacity="0"/>
+      <stop offset="1" stop-color="#020617" stop-opacity="0.8"/>
+    </linearGradient>
+  </defs>
+
+  <rect class="bg" width="1440" height="900"/>
+
+  <!-- Sidebar -->
+  <g aria-label="侧边栏">
+    <rect class="surface" x="0" y="0" width="208" height="900"/>
+    <line class="divider" x1="207.5" y1="0" x2="207.5" y2="900"/>
+    <rect x="16" y="16" width="32" height="32" rx="8" fill="#0f2335" stroke="#475569"/>
+    <text x="32" y="38" text-anchor="middle" fill="#6ee7b7" font-size="18" font-weight="750">R</text>
+    <text class="heading" x="58" y="30">RAELYN</text>
+    <text class="tiny" x="58" y="44">私人语义观测站</text>
+
+    <text class="tiny" x="16" y="76">当前观测域</text>
+    <rect class="panel" x="12" y="84" width="184" height="70" rx="8"/>
+    <circle cx="31" cy="105" r="7" fill="#10b981"/>
+    <text class="body" x="46" y="109">你需要关注的财经资讯</text>
+    <text class="tiny" x="24" y="132">快照就绪 · 7 分钟前更新</text>
+    <path d="M178 111 l6 6 l6 -6" stroke="#94a3b8" stroke-width="1.5" fill="none"/>
+
+    <text class="tiny" x="16" y="183">观测工作</text>
+    <circle cx="29" cy="210" r="5" fill="none" stroke="#64748b"/>
+    <text class="body" x="44" y="214">今日观察</text>
+
+    <rect class="active" x="12" y="232" width="184" height="36" rx="6"/>
+    <circle cx="29" cy="250" r="5" fill="#6ee7b7"/>
+    <text class="active-text" x="44" y="254">星图</text>
+
+    <rect x="24" y="282" width="10" height="10" fill="none" stroke="#64748b"/>
+    <text class="body" x="44" y="292">事件流</text>
+    <path d="M24 319 h11 M24 324 h11 M24 329 h11" stroke="#64748b"/>
+    <text class="body" x="44" y="327">故事线</text>
+    <path d="M25 350 h10 v10 h-10 z M28 353 h4" stroke="#64748b" fill="none"/>
+    <text class="body" x="44" y="358">简报</text>
+
+    <text class="tiny" x="16" y="398">资料库</text>
+    <path d="M24 415 h12 v12 h-12 z M27 412 h6" stroke="#64748b" fill="none"/>
+    <text class="body" x="44" y="425">信源</text>
+    <path d="M24 449 h12 v10 h-12 z M27 446 h6" stroke="#64748b" fill="none"/>
+    <text class="body" x="44" y="458">来源记录</text>
+
+    <line class="divider" x1="12" y1="760" x2="196" y2="760"/>
+    <circle cx="29" cy="790" r="6" fill="none" stroke="#64748b"/>
+    <text class="body" x="44" y="794">运行中心</text>
+    <path d="M24 818 l5 -5 l5 5 l-5 5 z" stroke="#64748b" fill="none"/>
+    <text class="body" x="44" y="822">智能体接入</text>
+    <circle cx="29" cy="851" r="6" fill="none" stroke="#64748b"/>
+    <circle cx="29" cy="851" r="2" fill="#64748b"/>
+    <text class="body" x="44" y="855">设置</text>
+  </g>
+
+  <!-- Global header -->
+  <g aria-label="顶部栏">
+    <rect class="surface" x="208" y="0" width="1232" height="64"/>
+    <line class="divider" x1="208" y1="63.5" x2="1440" y2="63.5"/>
+    <text class="title" x="232" y="30">星图</text>
+    <text class="small" x="232" y="48">你需要关注的财经资讯 · 最近 ready 快照</text>
+    <rect class="panel-soft" x="916" y="16" width="320" height="34" rx="7"/>
+    <circle cx="935" cy="33" r="6" fill="none" stroke="#64748b"/>
+    <line x1="939" y1="37" x2="944" y2="42" stroke="#64748b"/>
+    <text class="small" x="954" y="37">搜索当前星域</text>
+    <rect class="pill" x="1182" y="23" width="41" height="20" rx="5"/>
+    <text class="mono" x="1194" y="37">/</text>
+    <circle cx="1270" cy="33" r="5" fill="#34d399"/>
+    <text class="small" x="1282" y="37">快照就绪</text>
+    <rect class="button" x="1372" y="17" width="44" height="34" rx="7"/>
+    <circle cx="1394" cy="34" r="8" fill="none" stroke="#94a3b8"/>
+    <circle cx="1394" cy="34" r="2" fill="#94a3b8"/>
+  </g>
+
+  <!-- Map toolbar -->
+  <g aria-label="星图工具栏">
+    <rect class="surface" x="208" y="64" width="1232" height="58"/>
+    <line class="divider" x1="208" y1="121.5" x2="1440" y2="121.5"/>
+    <text class="heading" x="232" y="99">事件语义星域</text>
+    <rect class="pill-green" x="345" y="80" width="95" height="26" rx="13"/>
+    <text x="361" y="97" fill="#a7f3d0" font-size="10">12 月观察窗</text>
+    <text class="mono" x="455" y="98">截至 2026-07-27</text>
+
+    <rect class="button" x="770" y="77" width="96" height="32" rx="6"/>
+    <text class="small" x="791" y="97">搜索与筛选</text>
+    <rect class="button-active" x="876" y="77" width="50" height="32" rx="6"/>
+    <text x="893" y="98" fill="#bae6fd" font-size="11">3D</text>
+    <rect class="button" x="932" y="77" width="58" height="32" rx="6"/>
+    <text class="small" x="947" y="97">俯视</text>
+    <rect class="button" x="1000" y="77" width="58" height="32" rx="6"/>
+    <text class="small" x="1015" y="97">复位</text>
+    <rect class="button" x="1068" y="77" width="58" height="32" rx="6"/>
+    <text class="small" x="1083" y="97">全屏</text>
+    <rect class="button" x="1136" y="77" width="84" height="32" rx="6"/>
+    <text class="small" x="1152" y="97">数据质量</text>
+    <text class="tiny" x="1236" y="96">覆盖 86% · 未入图 60 · 失败 2</text>
+
+    <circle class="callout" cx="1424" cy="64" r="12"/>
+    <text class="callout-text" x="1424" y="64">1</text>
+  </g>
+
+  <!-- Main map canvas -->
+  <g aria-label="星图画布">
+    <rect x="208" y="122" width="1232" height="708" fill="#00040a"/>
+    <circle cx="600" cy="430" r="310" fill="url(#spaceGlow)"/>
+    <path class="grid" d="M245 340 C410 260 740 260 1036 340 M238 445 C445 350 770 375 1048 470 M245 560 C465 470 800 500 1046 610 M350 148 C440 300 410 590 325 795 M610 138 C540 320 565 610 700 810 M880 148 C770 310 815 600 1010 790"/>
+
+    <!-- Search drawer -->
+    <g aria-label="搜索筛选抽屉">
+      <rect class="panel-opaque" x="224" y="142" width="268" height="558" rx="8"/>
+      <text class="heading" x="244" y="170">搜索与筛选</text>
+      <text class="tiny" x="432" y="170">关闭</text>
+      <rect class="panel-soft" x="244" y="185" width="228" height="34" rx="6"/>
+      <text class="small" x="258" y="206">事件、主题或实体</text>
+      <text class="tiny" x="244" y="242">搜索结果</text>
+      <rect x="244" y="254" width="228" height="58" rx="6" fill="#0c4a6e" stroke="#38bdf8"/>
+      <text x="258" y="276" fill="#bae6fd" font-size="11">宏观政策与利率</text>
+      <text class="tiny" x="258" y="296">一级星域 · 1,942 个事件</text>
+      <rect class="panel-soft" x="244" y="321" width="228" height="58" rx="6"/>
+      <text class="body" x="258" y="343">美联储维持利率不变</text>
+      <text class="tiny" x="258" y="363">真实事件 · 2026-07-27</text>
+
+      <line class="divider" x1="244" y1="398" x2="472" y2="398"/>
+      <text class="tiny" x="244" y="422">事件语义族</text>
+      <rect class="pill" x="244" y="435" width="94" height="26" rx="13"/>
+      <circle cx="257" cy="448" r="4" fill="#60a5fa"/>
+      <text class="tiny" x="267" y="452">宏观与政策</text>
+      <rect class="pill" x="346" y="435" width="112" height="26" rx="13"/>
+      <circle cx="359" cy="448" r="4" fill="#f59e0b"/>
+      <text class="tiny" x="369" y="452">产业与供给链</text>
+      <rect class="pill" x="244" y="469" width="94" height="26" rx="13"/>
+      <circle cx="257" cy="482" r="4" fill="#c084fc"/>
+      <text class="tiny" x="267" y="486">地缘与监管</text>
+
+      <text class="tiny" x="244" y="526">当前窗口实体</text>
+      <rect class="panel-soft" x="244" y="538" width="228" height="34" rx="6"/>
+      <text class="small" x="258" y="559">筛选实体</text>
+      <text class="body" x="244" y="600">Federal Reserve</text>
+      <text class="mono" x="432" y="600">184</text>
+      <line class="divider" x1="244" y1="612" x2="472" y2="612"/>
+      <text class="body" x="244" y="638">Semiconductor</text>
+      <text class="mono" x="432" y="638">127</text>
+      <line class="divider" x1="244" y1="650" x2="472" y2="650"/>
+      <text x="244" y="678" fill="#a7f3d0" font-size="10">地图语法与六种对象 →</text>
+
+      <circle class="callout" cx="490" cy="142" r="12"/>
+      <text class="callout-text" x="490" y="142">3</text>
+    </g>
+
+    <!-- Semantic points -->
+    <g opacity="0.98">
+      <circle cx="570" cy="302" r="3" fill="#60a5fa"/>
+      <circle cx="591" cy="325" r="5" fill="#38bdf8"/>
+      <circle cx="614" cy="286" r="4" fill="#60a5fa"/>
+      <circle cx="638" cy="318" r="3" fill="#38bdf8"/>
+      <circle cx="665" cy="294" r="5" fill="#60a5fa"/>
+      <circle cx="680" cy="338" r="4" fill="#38bdf8"/>
+      <circle cx="700" cy="309" r="3" fill="#60a5fa"/>
+
+      <circle cx="752" cy="398" r="4" fill="#f59e0b"/>
+      <circle cx="778" cy="370" r="3" fill="#fbbf24"/>
+      <circle cx="803" cy="414" r="5" fill="#f59e0b"/>
+      <circle cx="830" cy="382" r="4" fill="#fbbf24"/>
+      <circle cx="856" cy="426" r="3" fill="#f59e0b"/>
+
+      <circle cx="642" cy="520" r="4" fill="#c084fc"/>
+      <circle cx="670" cy="486" r="3" fill="#a78bfa"/>
+      <circle cx="697" cy="532" r="5" fill="#c084fc"/>
+      <circle cx="725" cy="501" r="3" fill="#a78bfa"/>
+      <circle cx="747" cy="548" r="4" fill="#c084fc"/>
+
+      <circle cx="894" cy="291" r="4" fill="#34d399"/>
+      <circle cx="920" cy="316" r="3" fill="#10b981"/>
+      <circle cx="946" cy="278" r="5" fill="#34d399"/>
+      <circle cx="971" cy="326" r="3" fill="#10b981"/>
+
+      <circle cx="576" cy="430" r="4" fill="#fb7185"/>
+      <circle cx="603" cy="459" r="3" fill="#f43f5e"/>
+      <circle cx="625" cy="419" r="5" fill="#fb7185"/>
+
+      <path d="M690 399 C725 372 754 370 803 414" stroke="#a78bfa" stroke-width="1.5" fill="none"/>
+      <circle cx="690" cy="399" r="8" fill="#f8fafc" stroke="#fbbf24" stroke-width="3"/>
+      <circle cx="690" cy="399" r="13" fill="none" stroke="#fde68a" stroke-opacity="0.5"/>
+    </g>
+
+    <!-- Topic labels -->
+    <rect x="548" y="244" width="132" height="26" rx="5" fill="#020617" stroke="#38bdf8"/>
+    <text x="563" y="261" fill="#bae6fd" font-size="10">宏观政策与利率</text>
+    <rect x="776" y="336" width="124" height="26" rx="5" fill="#020617" stroke="#f59e0b"/>
+    <text x="791" y="353" fill="#fde68a" font-size="10">产业与供给链</text>
+    <rect x="651" y="568" width="112" height="26" rx="5" fill="#020617" stroke="#c084fc"/>
+    <text x="666" y="585" fill="#e9d5ff" font-size="10">地缘与监管</text>
+    <rect x="717" y="380" width="198" height="30" rx="5" fill="#020617" stroke="#fbbf24"/>
+    <text x="730" y="400" fill="#fef3c7" font-size="10">美联储维持利率不变并调整措辞</text>
+
+    <rect x="515" y="148" width="148" height="26" rx="5" fill="#020617" stroke="#334155"/>
+    <text class="tiny" x="528" y="165">一级星域 · 2,840 个视野事件</text>
+
+    <circle class="callout" cx="1044" cy="142" r="12"/>
+    <text class="callout-text" x="1044" y="142">2</text>
+
+    <!-- Legend -->
+    <rect x="520" y="752" width="502" height="42" rx="7" fill="#020617" stroke="#334155"/>
+    <circle cx="540" cy="773" r="4" fill="#60a5fa"/>
+    <text class="tiny" x="550" y="777">语义族</text>
+    <circle cx="607" cy="773" r="5" fill="#f8fafc" stroke="#fbbf24" stroke-width="2"/>
+    <text class="tiny" x="620" y="777">选中</text>
+    <circle cx="674" cy="773" r="5" fill="#34d399"/>
+    <text class="tiny" x="687" y="777">实体命中</text>
+    <line x1="765" y1="773" x2="788" y2="773" stroke="#a78bfa" stroke-width="2"/>
+    <text class="tiny" x="798" y="777">有证据故事关系</text>
+    <text class="tiny" x="919" y="777">距离只表示语义邻近</text>
+
+    <circle class="callout" cx="1020" cy="752" r="12"/>
+    <text class="callout-text" x="1020" y="752">6</text>
+  </g>
+
+  <!-- Right event inspector -->
+  <g aria-label="事件详情">
+    <rect class="panel-opaque" x="1060" y="122" width="380" height="708"/>
+    <line class="divider" x1="1060" y1="122" x2="1060" y2="830"/>
+    <rect x="1082" y="145" width="68" height="24" rx="12" fill="#422006" stroke="#f59e0b"/>
+    <text x="1097" y="161" fill="#fde68a" font-size="10">真实事件</text>
+    <text x="1370" y="161" fill="#64748b" font-size="11">关闭</text>
+    <text class="mono" x="1082" y="191">发生于 2026-07-27 · day</text>
+    <text x="1082" y="219" fill="#f1f5f9" font-size="16" font-weight="650">美联储维持利率不变</text>
+    <text x="1082" y="241" fill="#f1f5f9" font-size="16" font-weight="650">并调整政策措辞</text>
+    <text class="small" x="1082" y="269">所属主题 · 宏观政策与利率</text>
+    <rect class="button-active" x="1082" y="284" width="64" height="30" rx="6"/>
+    <text x="1098" y="303" fill="#bae6fd" font-size="10">概览</text>
+    <rect class="button" x="1154" y="284" width="64" height="30" rx="6"/>
+    <text class="tiny" x="1170" y="303">证据 3</text>
+    <rect class="button" x="1226" y="284" width="64" height="30" rx="6"/>
+    <text class="tiny" x="1242" y="303">来源 3</text>
+    <rect class="button" x="1298" y="284" width="64" height="30" rx="6"/>
+    <text class="tiny" x="1314" y="303">关系 2</text>
+    <rect class="button" x="1370" y="284" width="54" height="30" rx="6"/>
+    <text class="tiny" x="1383" y="303">实体</text>
+
+    <line class="divider" x1="1060" y1="328" x2="1440" y2="328"/>
+    <text class="heading" x="1082" y="357">发生了什么</text>
+    <text class="body" x="1082" y="381">政策利率保持不变，声明对通胀和就业</text>
+    <text class="body" x="1082" y="402">风险的表述发生调整，市场重新定价。</text>
+
+    <text class="heading" x="1082" y="440">为什么值得关注</text>
+    <rect class="pill" x="1082" y="454" width="86" height="26" rx="13"/>
+    <text class="tiny" x="1098" y="471">方向 · 中性</text>
+    <rect class="pill" x="1176" y="454" width="86" height="26" rx="13"/>
+    <text class="tiny" x="1192" y="471">幅度 · 中等</text>
+    <rect class="pill" x="1270" y="454" width="108" height="26" rx="13"/>
+    <text class="tiny" x="1286" y="471">3 条来源记录</text>
+    <text class="small" x="1082" y="506">实体：Federal Reserve · USD · Treasury</text>
+
+    <line class="divider" x1="1082" y1="525" x2="1418" y2="525"/>
+    <text class="heading" x="1082" y="554">证据与来源</text>
+    <rect class="panel-soft" x="1082" y="568" width="336" height="76" rx="6"/>
+    <text class="tiny" x="1096" y="589">Bloomberg Television · transcript 12:43</text>
+    <text class="small" x="1096" y="612">“The committee decided to maintain the target…”</text>
+    <text x="1096" y="632" fill="#a7f3d0" font-size="10">打开来源并定位转写 →</text>
+
+    <line class="divider" x1="1082" y1="665" x2="1418" y2="665"/>
+    <text class="heading" x="1082" y="694">关联故事</text>
+    <path d="M1088 716 C1122 694 1155 735 1188 713" stroke="#a78bfa" stroke-width="1.5" fill="none"/>
+    <text class="small" x="1202" y="718">利率路径的重新定价</text>
+    <text class="tiny" x="1202" y="738">response · 2 个相邻事件</text>
+
+    <rect class="button-active" x="1082" y="774" width="72" height="32" rx="6"/>
+    <text x="1098" y="794" fill="#bae6fd" font-size="10">定位</text>
+    <rect class="button" x="1164" y="774" width="100" height="32" rx="6"/>
+    <text class="small" x="1182" y="794">打开来源</text>
+    <text class="tiny" x="1280" y="794">技术 ID 收入更多信息</text>
+
+    <circle class="callout" cx="1060" cy="122" r="12"/>
+    <text class="callout-text" x="1060" y="122">4</text>
+  </g>
+
+  <!-- Timeline -->
+  <g aria-label="事件时间轴">
+    <rect class="surface" x="208" y="830" width="1232" height="70"/>
+    <line class="divider" x1="208" y1="830" x2="1440" y2="830"/>
+    <text class="tiny" x="232" y="851">事件发生时间</text>
+    <text x="320" y="851" fill="#a7f3d0" font-size="10">窗口 2025-08 ～ 2026-07</text>
+    <rect class="button" x="1136" y="840" width="30" height="24" rx="5"/>
+    <text class="tiny" x="1147" y="856">◀</text>
+    <rect class="button-active" x="1174" y="840" width="30" height="24" rx="5"/>
+    <text x="1185" y="856" fill="#bae6fd" font-size="10">▶</text>
+    <rect class="button" x="1212" y="840" width="30" height="24" rx="5"/>
+    <text class="tiny" x="1223" y="856">▶</text>
+    <rect class="pill-green" x="1260" y="840" width="62" height="24" rx="12"/>
+    <text x="1277" y="856" fill="#a7f3d0" font-size="10">12 月</text>
+    <rect class="pill" x="1330" y="840" width="76" height="24" rx="12"/>
+    <text class="tiny" x="1347" y="856">正常范围</text>
+
+    <g transform="translate(232,867)">
+      <rect x="0" y="0" width="1174" height="22" rx="5" fill="#0b1324" stroke="#1e293b"/>
+      <path d="M10 18 v-5 M30 18 v-9 M50 18 v-12 M70 18 v-6 M90 18 v-15 M110 18 v-10 M130 18 v-4 M150 18 v-14 M170 18 v-8 M190 18 v-16 M210 18 v-11 M230 18 v-7 M250 18 v-13 M270 18 v-5 M290 18 v-17 M310 18 v-10 M330 18 v-14 M350 18 v-6 M370 18 v-12 M390 18 v-8 M410 18 v-16 M430 18 v-9 M450 18 v-13 M470 18 v-5 M490 18 v-15 M510 18 v-10 M530 18 v-7 M550 18 v-14 M570 18 v-6 M590 18 v-17 M610 18 v-11 M630 18 v-8 M650 18 v-13 M670 18 v-5 M690 18 v-15 M710 18 v-10 M730 18 v-7 M750 18 v-14 M770 18 v-6 M790 18 v-16 M810 18 v-11 M830 18 v-8 M850 18 v-13 M870 18 v-5 M890 18 v-15 M910 18 v-9 M930 18 v-7 M950 18 v-14 M970 18 v-6 M990 18 v-16 M1010 18 v-10 M1030 18 v-8 M1050 18 v-13 M1070 18 v-5 M1090 18 v-15 M1110 18 v-9 M1130 18 v-12 M1150 18 v-7" stroke="#38bdf8" stroke-width="5"/>
+      <rect x="432" y="1" width="650" height="20" rx="4" fill="#10b981" fill-opacity="0.12" stroke="#10b981" stroke-width="1.5"/>
+      <rect x="426" y="5" width="7" height="12" rx="3" fill="#34d399"/>
+      <rect x="1081" y="5" width="7" height="12" rx="3" fill="#34d399"/>
+    </g>
+
+    <circle class="callout" cx="1424" cy="830" r="12"/>
+    <text class="callout-text" x="1424" y="830">5</text>
+  </g>
+</svg>

@@ -14,10 +14,12 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn.api.config_api import ConfigUpsert
+from raelyn.api.config_api import _sanitize_config_value_for_response
 from raelyn.api.config_api import _validate_brief_generation_policy_value
 from raelyn.api.config_api import _validate_inference_mode_value
 from raelyn.api.config_api import _validate_llm_transcript_polish_prompt_value
 from raelyn.api.config_api import _validate_volcengine_inference_config_value
+from raelyn.api.config_api import get_config
 from raelyn.api.config_api import put_config
 from raelyn.models import AppConfig
 from raelyn.services.provider_cookies import looks_like_netscape_cookie_file
@@ -55,12 +57,45 @@ class _FakeConfigSession:
         return _FakeResult(self.media_ids)
 
 
+class _FakeReadConfigSession(_FakeConfigSession):
+    def execute(self, _stmt):
+        return _FakeResult(list(self.items.values()))
+
+
 @contextmanager
 def _session_scope(session):
     yield session
 
 
 class ConfigApiValidationTests(unittest.TestCase):
+    def test_config_response_never_returns_youtube_cookies(self) -> None:
+        value = {"text": ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tsecret-value"}
+        self.assertEqual(
+            _sanitize_config_value_for_response("ytdlp_cookies_youtube", value),
+            {"configured": True},
+        )
+
+    def test_config_response_reports_empty_bilibili_cookies(self) -> None:
+        self.assertEqual(
+            _sanitize_config_value_for_response("ytdlp_cookies_bilibili", {"text": ""}),
+            {"configured": False},
+        )
+
+    def test_get_config_does_not_return_cookie_contents(self) -> None:
+        session = _FakeReadConfigSession(
+            items=[
+                AppConfig(
+                    key="ytdlp_cookies_youtube",
+                    value={"text": ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tsecret-value"},
+                )
+            ]
+        )
+        with patch("raelyn.api.config_api.session_scope", lambda: _session_scope(session)):
+            result = get_config()
+
+        self.assertEqual(result, {"data": {"ytdlp_cookies_youtube": {"configured": True}}})
+        self.assertNotIn("secret-value", str(result))
+
     def test_llm_transcript_polish_prompt_accepts_string(self) -> None:
         _validate_llm_transcript_polish_prompt_value({"text": "hello"})
 

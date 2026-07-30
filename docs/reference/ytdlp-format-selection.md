@@ -9,6 +9,7 @@
 对本项目来说，当前默认策略是：
 
 - YouTube 下载优先使用 combined MP4 / HLS，再回退 DASH video-only。
+- 每次 YouTube 格式下载完成后，必须用 FFprobe 分别读到至少一个视频 packet 和一个音频 packet，才允许登记为视频资产。
 - 不要把 `HTTP Error 403: Forbidden` 直接归因于 cookies 失效。必须先确认 403 发生在网页解析、player API、PO Token 生成，还是实际媒体 URL 下载阶段。
 - 如果 403 只发生在 video-only GVS URL，而 audio-only 或 HLS 可下载，应优先调整格式 selector，不要更换 cookies 或切无 cookies。
 - 自定义 `YTDLP_FORMAT` / `ytdlp_format.text` 时，避免把 `bestvideo+bestaudio` 放在 YouTube 的第一选择，除非当前出口和目标视频已实测通过。
@@ -87,8 +88,13 @@ best[ext=mp4][height<=720]/best[height<=720]/bestvideo[ext=mp4][height<=720]+bes
 
 - `Requested format is not available`
 - YouTube 媒体 URL 下载阶段的 `HTTP Error 403: Forbidden`
+- 下载文件只有容器 / 轨道元数据，FFprobe 无法读到真实视频或音频 packet
 
 注意：这里的 403 回退只改变 format selector，不改变认证态，不改 cookies，不写 `_download_without_cookies`。
+
+媒体 packet 校验用于识别一种特殊的上游坏产物：HTTP `Content-Length` 与实际下载字节数完全一致，yt-dlp 因而报告下载完成，但 MP4 只包含 `moov` 和空 `mdat`。这种情况不会再进入视频资产；当前格式的临时产物会被清理，然后继续尝试 DASH 和后续 selector。所有 selector 都无有效 packet 时，下载任务以明确的媒体校验错误失败。
+
+音频提取完成后会再次检查输出 M4A 是否包含真实音频 packet；ASR 请求前也会检查存量音频资产。确定性的空音频直接终止当前任务，不再把空容器提交给 ASR，也不重复消耗 ASR 推理重试。
 
 ## 排障步骤
 

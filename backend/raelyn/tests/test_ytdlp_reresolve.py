@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import threading
 import unittest
@@ -13,6 +14,7 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn.config import settings
+from raelyn.services.ffmpeg import ffmpeg_bin
 from raelyn.services.ytdlp import _is_youtube_media_transport_error, ytdlp_download
 
 
@@ -41,7 +43,7 @@ class _RotatingMediaHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/good.mp4":
-            body = b"local-mp4-payload"
+            body: bytes = getattr(self.server, "media_payload")
             self.send_response(200)
             self.send_header("Content-Type", "video/mp4")
             self.send_header("Content-Length", str(len(body)))
@@ -56,6 +58,39 @@ class _RotatingMediaHandler(BaseHTTPRequestHandler):
 
 
 class YtdlpReresolveTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        with TemporaryDirectory(prefix="raelyn-reresolve-media-") as tmp:
+            media_path = Path(tmp) / "valid.mp4"
+            completed = subprocess.run(
+                [
+                    ffmpeg_bin(),
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=black:s=32x32:r=10:d=0.2",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=0.2",
+                    "-shortest",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    str(media_path),
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if completed.returncode != 0:
+                raise unittest.SkipTest("需要项目 ffmpeg 生成真实 502 重解析测试视频")
+            cls.media_payload = media_path.read_bytes()
+
     def test_classifies_only_download_transport_errors(self) -> None:
         self.assertTrue(
             _is_youtube_media_transport_error(
@@ -99,6 +134,7 @@ class YtdlpReresolveTests(unittest.TestCase):
     def test_reresolves_original_page_after_media_502(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), _RotatingMediaHandler)
         server.request_counts = Counter()  # type: ignore[attr-defined]
+        server.media_payload = self.media_payload  # type: ignore[attr-defined]
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
 
@@ -132,7 +168,7 @@ class YtdlpReresolveTests(unittest.TestCase):
             self.assertEqual(counts["/bad.mp4"], 3)
             self.assertEqual(counts["/good.mp4"], 1)
             self.assertEqual(len(media_files), 1)
-            self.assertEqual(media_payloads, [b"local-mp4-payload"])
+            self.assertEqual(media_payloads, [self.media_payload])
             self.assertEqual(attempt_dirs, [])
             self.assertGreater(len(activities), 0)
             self.assertEqual(returned_media_path.parent, out_dir)

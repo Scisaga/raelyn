@@ -172,6 +172,27 @@ class VideoActionsTests(unittest.TestCase):
         self.assertEqual(result["priority"], 5)
         self.assertEqual(enqueue_job.call_args.kwargs["priority"], 5)
 
+    def test_schedule_video_download_force_is_explicit_in_job_params(self) -> None:
+        video = Video(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_video_id="abc123",
+            media_id=uuid.uuid4(),
+            url="https://example.com/watch?v=abc123",
+            status="ready",
+        )
+        session = Mock()
+        session.get.return_value = video
+        job_id = uuid.uuid4()
+
+        with patch("raelyn.services.video_actions.ensure_media_not_deleting"):
+            with patch("raelyn.services.video_actions._find_active_download_job", return_value=None):
+                with patch("raelyn.services.video_actions.enqueue_job", return_value=job_id) as enqueue_job:
+                    result = schedule_video_download(session, video.id, force=True)
+
+        self.assertEqual(enqueue_job.call_args.kwargs["params"], {"video_id": str(video.id), "force": True})
+        self.assertEqual(result["force"], True)
+
     def test_schedule_video_download_reuses_pending_job_without_demoting_priority(self) -> None:
         video = Video(
             id=uuid.uuid4(),

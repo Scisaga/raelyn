@@ -37,6 +37,21 @@ copyFileSync(
   resolve(uiDir, "assets/brand/raelyn-favicon.svg"),
   resolve(brandDir, "raelyn-favicon.svg")
 );
+copyFileSync(
+  resolve(uiDir, "assets/brand/raelyn-glyph.svg"),
+  resolve(brandDir, "raelyn-glyph.svg")
+);
+for (const outputPath of [
+  resolve(root, "logo.png"),
+  resolve(brandDir, "logo.png"),
+  resolve(brandDir, "logo-y.png"),
+]) {
+  copyFileSync(resolve(uiDir, "assets/brand/raelyn-event-horizon.png"), outputPath);
+}
+copyFileSync(
+  resolve(uiDir, "assets/brand/raelyn-glyph.png"),
+  resolve(brandDir, "logo-r.png")
+);
 
 await buildAppBundle({ uiDir, root, minify: false });
 buildIndexHtml({ uiDir, root, assetVersion: "dev" });

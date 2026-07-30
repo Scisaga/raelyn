@@ -20,11 +20,14 @@ const pwaDir = resolve(root, "static/pwa");
 const timelineVendorDir = resolve(vendorDir, "timelinejs");
 const brandSourceSvg = resolve(uiDir, "assets/brand/raelyn-event-horizon.svg");
 const faviconSourceSvg = resolve(uiDir, "assets/brand/raelyn-favicon.svg");
-// 项目内置 ffmpeg 不含 SVG 解码器，构建期从同图形的主 PNG 派生各栅格尺寸。
+const glyphSourceSvg = resolve(uiDir, "assets/brand/raelyn-glyph.svg");
+// 项目内置 ffmpeg 不含 librsvg；常规构建从已直接矢量栅格化的高清 PNG 母版派生固定尺寸。
 const brandSourcePng = resolve(uiDir, "assets/brand/raelyn-event-horizon.png");
 const faviconSourcePng = resolve(uiDir, "assets/brand/raelyn-favicon.png");
+const glyphSourcePng = resolve(uiDir, "assets/brand/raelyn-glyph.png");
 const brandOutputSvg = resolve(brandDir, "raelyn-event-horizon.svg");
 const faviconOutputSvg = resolve(brandDir, "raelyn-favicon.svg");
+const glyphOutputSvg = resolve(brandDir, "raelyn-glyph.svg");
 
 mkdirSync(cssDir, { recursive: true });
 mkdirSync(vendorDir, { recursive: true });
@@ -53,6 +56,7 @@ copyFileSync(
 );
 copyFileSync(brandSourceSvg, brandOutputSvg);
 copyFileSync(faviconSourceSvg, faviconOutputSvg);
+copyFileSync(glyphSourceSvg, glyphOutputSvg);
 
 function resolveFfmpegBinary() {
   const candidates = [
@@ -96,6 +100,14 @@ function renderBrandPng(ffmpegBin, sourcePath, outputPath, size) {
 
 function buildBrandAssets() {
   const ffmpegBin = resolveFfmpegBinary();
+  for (const outputPath of [
+    resolve(root, "logo.png"),
+    resolve(brandDir, "logo.png"),
+    resolve(brandDir, "logo-y.png"),
+  ]) {
+    copyFileSync(brandSourcePng, outputPath);
+  }
+  copyFileSync(glyphSourcePng, resolve(brandDir, "logo-r.png"));
   renderBrandPng(ffmpegBin, faviconSourcePng, resolve(brandDir, "favicon-32.png"), 32);
   renderBrandPng(ffmpegBin, brandSourcePng, resolve(pwaDir, "icon-192.png"), 192);
   renderBrandPng(ffmpegBin, brandSourcePng, resolve(pwaDir, "icon-512.png"), 512);
@@ -106,6 +118,7 @@ function buildBrandAssets() {
   copyFileSync(resolve(uiDir, "pwa/sw.js"), resolve(root, "static/sw.js"));
   console.log("[ui] built:", brandOutputSvg);
   console.log("[ui] built:", faviconOutputSvg);
+  console.log("[ui] built:", glyphOutputSvg);
   console.log("[ui] built:", resolve(root, "static/manifest.webmanifest"));
   console.log("[ui] built:", resolve(root, "static/sw.js"));
 }
@@ -121,6 +134,8 @@ const assetVersion = createHash("sha256")
   .update(readFileSync(brandSourcePng))
   .update(readFileSync(faviconSourceSvg))
   .update(readFileSync(faviconSourcePng))
+  .update(readFileSync(glyphSourceSvg))
+  .update(readFileSync(glyphSourcePng))
   .digest("hex")
   .slice(0, 12);
 buildIndexHtml({ uiDir, root, assetVersion });

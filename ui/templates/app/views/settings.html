@@ -85,6 +85,9 @@
                           <div class="text-xs text-slate-400 mt-1">
                             仅用于 YouTube 的 yt-dlp 登录态（Netscape cookies.txt 格式）。
                           </div>
+                          <div class="text-[11px] mt-1" :class="ytdlpCookiesYoutubeConfigured ? 'text-emerald-300' : 'text-slate-500'">
+                            <span x-text="ytdlpCookiesYoutubeConfigured ? '已配置（内容不会回显）' : '未配置'"></span>
+                          </div>
                         </div>
                         <div class="shrink-0 flex items-center gap-2">
                           <button
@@ -95,25 +98,19 @@
                             重新加载
                           </button>
                           <button
-                            class="px-3 py-1.5 rounded-md border border-rose-900/60 bg-rose-950/20 text-xs text-rose-200 hover:bg-rose-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
-                            @click="clearYtdlpCookiesYoutube()"
+                            class="px-3 py-1.5 rounded-md border text-xs disabled:opacity-60 disabled:cursor-not-allowed"
+                            :class="String(ytdlpCookiesYoutubeText || '').trim() ? 'border-emerald-700/60 bg-emerald-950/20 text-emerald-200 hover:bg-emerald-900/30' : 'border-rose-900/60 bg-rose-950/20 text-rose-200 hover:bg-rose-900/30'"
+                            @click="String(ytdlpCookiesYoutubeText || '').trim() ? saveYtdlpCookiesYoutube() : clearYtdlpCookiesYoutube()"
                             :disabled="ytdlpCookiesYoutubeSaving"
                           >
-                            清空并保存
-                          </button>
-                          <button
-                            class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
-                            @click="saveYtdlpCookiesYoutube()"
-                            :disabled="ytdlpCookiesYoutubeSaving"
-                          >
-                            保存
+                            <span x-text="String(ytdlpCookiesYoutubeText || '').trim() ? '保存' : '清空'"></span>
                           </button>
                         </div>
                       </div>
                       <div class="flex-1 min-h-0 pt-3 flex flex-col gap-3">
                         <textarea
                           class="w-full flex-1 min-h-0 rounded-lg border px-3 py-2 text-xs font-mono focus:outline-none whitespace-pre resize-none raelyn-multiline-input"
-                          placeholder="# Netscape HTTP Cookie File\n# 粘贴 YouTube cookies.txt …"
+                          :placeholder="ytdlpCookiesYoutubeConfigured ? '已保存现有 Cookies；如需替换，请粘贴新的 cookies.txt' : '# Netscape HTTP Cookie File\n# 粘贴 YouTube cookies.txt …'"
                           spellcheck="false"
                           x-model="ytdlpCookiesYoutubeText"
                         ></textarea>
@@ -132,6 +129,9 @@
                           <div class="text-xs text-slate-400 mt-1">
                             仅用于 B站 的 yt-dlp / profile fetch 登录态（Netscape cookies.txt 格式）。
                           </div>
+                          <div class="text-[11px] mt-1" :class="ytdlpCookiesBilibiliConfigured ? 'text-emerald-300' : 'text-slate-500'">
+                            <span x-text="ytdlpCookiesBilibiliConfigured ? '已配置（内容不会回显）' : '未配置'"></span>
+                          </div>
                         </div>
                         <div class="shrink-0 flex items-center gap-2">
                           <button
@@ -142,25 +142,19 @@
                             重新加载
                           </button>
                           <button
-                            class="px-3 py-1.5 rounded-md border border-rose-900/60 bg-rose-950/20 text-xs text-rose-200 hover:bg-rose-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
-                            @click="clearYtdlpCookiesBilibili()"
+                            class="px-3 py-1.5 rounded-md border text-xs disabled:opacity-60 disabled:cursor-not-allowed"
+                            :class="String(ytdlpCookiesBilibiliText || '').trim() ? 'border-emerald-700/60 bg-emerald-950/20 text-emerald-200 hover:bg-emerald-900/30' : 'border-rose-900/60 bg-rose-950/20 text-rose-200 hover:bg-rose-900/30'"
+                            @click="String(ytdlpCookiesBilibiliText || '').trim() ? saveYtdlpCookiesBilibili() : clearYtdlpCookiesBilibili()"
                             :disabled="ytdlpCookiesBilibiliSaving"
                           >
-                            清空并保存
-                          </button>
-                          <button
-                            class="px-3 py-1.5 rounded-md border border-emerald-700/60 bg-emerald-950/20 text-xs text-emerald-200 hover:bg-emerald-900/30 disabled:opacity-60 disabled:cursor-not-allowed"
-                            @click="saveYtdlpCookiesBilibili()"
-                            :disabled="ytdlpCookiesBilibiliSaving"
-                          >
-                            保存
+                            <span x-text="String(ytdlpCookiesBilibiliText || '').trim() ? '保存' : '清空'"></span>
                           </button>
                         </div>
                       </div>
                       <div class="flex-1 min-h-0 pt-3 flex flex-col gap-3">
                         <textarea
                           class="w-full flex-1 min-h-0 rounded-lg border px-3 py-2 text-xs font-mono focus:outline-none whitespace-pre resize-none raelyn-multiline-input"
-                          placeholder="# Netscape HTTP Cookie File\n# 粘贴 bilibili cookies.txt …"
+                          :placeholder="ytdlpCookiesBilibiliConfigured ? '已保存现有 Cookies；如需替换，请粘贴新的 cookies.txt' : '# Netscape HTTP Cookie File\n# 粘贴 bilibili cookies.txt …'"
                           spellcheck="false"
                           x-model="ytdlpCookiesBilibiliText"
                         ></textarea>

@@ -17,10 +17,14 @@
   - 非空时 `/api/*` 需要 `Authorization: Bearer <token>` 或 `raelyn_api_token` cookie。
   - `/api/ws/*` 需要 query `token=<token>`。
   - 非空时主 API 进程也会额外挂载 `/mcp`，MCP HTTP 复用同一个 Bearer Token。
+  - Docker Compose 部署要求显式设置非空随机值，不提供可公开复用的默认 token。
 
 ### 数据与对象存储
 
 - `DATABASE_URL`
+- `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD`
+  - Docker Compose 用这三项初始化 PostgreSQL，并据此构造 app 容器内的 `DATABASE_URL`。
+  - `POSTGRES_PASSWORD` 必须通过环境变量提供，且应使用可直接放入 URL 的 URI 安全字符串。
 - `DATABASE_POOL_SIZE`
   - 每个 API / worker / scheduler 进程保留在 SQLAlchemy 连接池中的常驻 DB 连接数，默认 `2`。
 - `DATABASE_MAX_OVERFLOW`
@@ -34,6 +38,7 @@
 - `S3_ENDPOINT`
 - `S3_ACCESS_KEY`
 - `S3_SECRET_KEY`
+  - Docker Compose 使用这两项初始化 MinIO root 凭据并传给 app，不提供弱默认凭据。
 - `S3_REGION`
 - `S3_BUCKET`
   - 应与 `asset.s3_bucket` 中的实际 bucket 保持一致；`/api/stats` 会在检测到配置 bucket 与唯一实际 bucket 不一致时回退统计实际 bucket，并返回 mismatch 标记。
@@ -276,10 +281,10 @@ Embedding 健康检查固定探测 `${EMBEDDING_URL}/health`；实际向量请�
 - `MCP_BASE_PATH`
 - `MCP_ALLOWED_HOSTS`
   - 逗号分隔的 Host 白名单，用于 MCP SDK 的 DNS rebinding 防护。
-  - 反向代理公网访问时，需要把外部 Host 加进去，例如 `scisaga.cc:234`。
+  - 反向代理公网访问时，需要把外部 Host 加进去，例如 `raelyn.example.com:234`。
 - `MCP_ALLOWED_ORIGINS`
   - 逗号分隔的 Origin 白名单。
-  - 反向代理公网访问时，通常与 `MCP_ALLOWED_HOSTS` 对应，例如 `https://scisaga.cc:234`。
+  - 反向代理公网访问时，通常与 `MCP_ALLOWED_HOSTS` 对应，例如 `https://raelyn.example.com:234`。
 
 ## 运行时配置（`app_config`）
 
@@ -297,6 +302,7 @@ Embedding 健康检查固定探测 `${EMBEDDING_URL}/health`；实际向量请�
 说明：
 
 - 通过 `/api/config/{key}` 写入。
+- `GET /api/config` 只返回 `{ "configured": true|false }`，不会回显 Cookie 内容。
 - 服务运行时会把内容写到 `tmp/ytdlp_cookies_*.txt` 供 yt-dlp / profile fetch 使用。
 - 更新后若系统是因为 Cookies 失效被自动暂停，会尝试自动恢复。
 - YouTube cookies / bot check / PO Token 的运行策略见 [YouTube yt-dlp 同步与 Cookies 策略](youtube-ytdlp-strategy.md)。

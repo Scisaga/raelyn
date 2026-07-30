@@ -3,6 +3,7 @@
 ## 产品与范围
 
 - [项目愿景](vision.md)
+- [V2 信息架构](product/information-architecture-v2.md)
 
 ## 协作约定
 
@@ -27,6 +28,7 @@
 - [REST API 设计](api/rest.md)
 - [UI 设计总览](ui/overview.md)
 - [UI 主题配色](ui/theme.md)
+- [V2 首页与星图低保真线框](ui/wireframes-v2.md)
 
 ## 交付与运行
 

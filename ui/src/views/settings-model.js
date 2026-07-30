@@ -189,11 +189,11 @@ export function createSettingsViewMethods({ ytdlpFormatPreset1080, ytdlpFormatPr
         const payload = await this.api(`/config`);
         const data = (payload && payload.data) || {};
         const ytCfg = data && data.ytdlp_cookies_youtube ? data.ytdlp_cookies_youtube : null;
-        const ytText = ytCfg && typeof ytCfg === "object" ? ytCfg.text : "";
-        this.ytdlpCookiesYoutubeText = typeof ytText === "string" ? ytText : "";
+        this.ytdlpCookiesYoutubeConfigured = !!(ytCfg && typeof ytCfg === "object" && ytCfg.configured);
+        this.ytdlpCookiesYoutubeText = "";
         const biliCfg = data && data.ytdlp_cookies_bilibili ? data.ytdlp_cookies_bilibili : null;
-        const biliText = biliCfg && typeof biliCfg === "object" ? biliCfg.text : "";
-        this.ytdlpCookiesBilibiliText = typeof biliText === "string" ? biliText : "";
+        this.ytdlpCookiesBilibiliConfigured = !!(biliCfg && typeof biliCfg === "object" && biliCfg.configured);
+        this.ytdlpCookiesBilibiliText = "";
         this.ytdlpCookiesLoaded = true;
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
@@ -202,17 +202,24 @@ export function createSettingsViewMethods({ ytdlpFormatPreset1080, ytdlpFormatPr
       }
     },
 
-    async saveYtdlpCookiesYoutube() {
+    async saveYtdlpCookiesYoutube({ clear = false } = {}) {
+      const text = clear ? "" : String(this.ytdlpCookiesYoutubeText || "");
+      if (!clear && !text.trim()) {
+        this.ytdlpCookiesYoutubeError = "请先粘贴新的 YouTube cookies.txt。";
+        return;
+      }
       try {
         this.ytdlpCookiesYoutubeSaving = true;
         this.ytdlpCookiesYoutubeError = "";
         await this.api(`/config/ytdlp_cookies_youtube`, {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ value: { text: String(this.ytdlpCookiesYoutubeText || "") } }),
+          body: JSON.stringify({ value: { text } }),
         });
+        this.ytdlpCookiesYoutubeConfigured = !clear;
+        this.ytdlpCookiesYoutubeText = "";
         this.ytdlpCookiesLoaded = true;
-        this.globalStatus = "已保存 YouTube Cookies";
+        this.globalStatus = clear ? "已清空 YouTube Cookies" : "已保存 YouTube Cookies";
         await this.loadSystemStatus({ silent: true });
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
@@ -225,20 +232,27 @@ export function createSettingsViewMethods({ ytdlpFormatPreset1080, ytdlpFormatPr
 
     async clearYtdlpCookiesYoutube() {
       this.ytdlpCookiesYoutubeText = "";
-      await this.saveYtdlpCookiesYoutube();
+      await this.saveYtdlpCookiesYoutube({ clear: true });
     },
 
-    async saveYtdlpCookiesBilibili() {
+    async saveYtdlpCookiesBilibili({ clear = false } = {}) {
+      const text = clear ? "" : String(this.ytdlpCookiesBilibiliText || "");
+      if (!clear && !text.trim()) {
+        this.ytdlpCookiesBilibiliError = "请先粘贴新的 B站 cookies.txt。";
+        return;
+      }
       try {
         this.ytdlpCookiesBilibiliSaving = true;
         this.ytdlpCookiesBilibiliError = "";
         await this.api(`/config/ytdlp_cookies_bilibili`, {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ value: { text: String(this.ytdlpCookiesBilibiliText || "") } }),
+          body: JSON.stringify({ value: { text } }),
         });
+        this.ytdlpCookiesBilibiliConfigured = !clear;
+        this.ytdlpCookiesBilibiliText = "";
         this.ytdlpCookiesLoaded = true;
-        this.globalStatus = "已保存 B站 Cookies";
+        this.globalStatus = clear ? "已清空 B站 Cookies" : "已保存 B站 Cookies";
         await this.loadSystemStatus({ silent: true });
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
@@ -251,7 +265,7 @@ export function createSettingsViewMethods({ ytdlpFormatPreset1080, ytdlpFormatPr
 
     async clearYtdlpCookiesBilibili() {
       this.ytdlpCookiesBilibiliText = "";
-      await this.saveYtdlpCookiesBilibili();
+      await this.saveYtdlpCookiesBilibili({ clear: true });
     },
 
     async loadYtdlpSubtitles({ force = false } = {}) {

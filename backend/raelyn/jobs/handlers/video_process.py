@@ -23,7 +23,7 @@ from raelyn.services.asr import (
     inspect_asr_backend_defer,
     resolve_asr_timeout_seconds,
 )
-from raelyn.services.ffmpeg import extract_audio_to_m4a
+from raelyn.services.ffmpeg import MediaPacketValidationError, extract_audio_to_m4a, require_media_packets
 from raelyn.services.event_analysis import schedule_video_event_extraction
 from raelyn.services.inference import LOCAL_PROVIDER, get_effective_asr_config
 from raelyn.services.llm import llm_enabled
@@ -146,6 +146,7 @@ def _schedule_auto_video_event_extraction(
 @registry.register("video.extract_audio")
 def video_extract_audio(session: Session, job: Job) -> dict | None:
     video_id = uuid.UUID(job.params["video_id"])
+    force = bool(job.params.get("force"))
     video = session.get(Video, video_id)
     if not video:
         return {"skipped": "video not found"}
@@ -160,7 +161,10 @@ def video_extract_audio(session: Session, job: Job) -> dict | None:
         local_video = wd / f"input.{video_asset.format}"
         s3_download_file(bucket=video_asset.s3_bucket, key=video_asset.s3_key, local_path=local_video)
         audio_out = wd / "audio.m4a"
-        extract_audio_to_m4a(input_path=local_video, output_path=audio_out)
+        try:
+            extract_audio_to_m4a(input_path=local_video, output_path=audio_out)
+        except MediaPacketValidationError as exc:
+            raise JobTerminalFailure(str(exc)) from exc
 
         ensure_asset(
             session,
@@ -172,6 +176,7 @@ def video_extract_audio(session: Session, job: Job) -> dict | None:
             variant="raw",
             local_path=audio_out,
             s3_key=f"{video.provider}/{video.media_id}/{video.provider_video_id}/audio/raw.m4a",
+            replace=force,
         )
 
     if asr_enabled():
@@ -181,11 +186,11 @@ def video_extract_audio(session: Session, job: Job) -> dict | None:
                 Asset.type.in_(["subtitle", "transcript"]),
             ).limit(1)
         ).scalar_one_or_none()
-        if not has_transcript_source:
+        if force or not has_transcript_source:
             enqueue_job(
                 session,
                 type_="video.asr_transcribe",
-                params={"video_id": str(video.id)},
+                params={"video_id": str(video.id), "force": force},
                 priority=job.priority,
                 parent_job_id=str(job.id),
             )
@@ -316,6 +321,10 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
         local_audio = wd / f"audio.{audio_asset.format}"
         s3_download_file(bucket=audio_asset.s3_bucket, key=audio_asset.s3_key, local_path=local_audio)
         audio_size_bytes = local_audio.stat().st_size
+        try:
+            require_media_packets(input_path=local_audio, stream_types=("audio",))
+        except MediaPacketValidationError as exc:
+            raise JobTerminalFailure(f"ASR 输入音频无有效数据包：{exc}") from exc
         lease_expires_at = job.lease_expires_at
         if asr_config.provider == LOCAL_PROVIDER:
             requested_lease_expires_at = utcnow() + timedelta(

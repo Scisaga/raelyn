@@ -39,6 +39,11 @@ from raelyn.timeutil import utcnow
 
 router = APIRouter(tags=["config"])
 
+COOKIE_CONFIG_KEYS = {
+    cookie_config_key("youtube"),
+    cookie_config_key("bilibili"),
+}
+
 
 class ConfigUpsert(BaseModel):
     value: dict
@@ -128,11 +133,18 @@ def _validate_volcengine_inference_config_value(value: dict) -> None:
             raise HTTPException(status_code=400, detail=f"volcengine_inference_config.{key} must be > 0.")
 
 
+def _sanitize_config_value_for_response(key: str, value: object) -> object:
+    if key in COOKIE_CONFIG_KEYS:
+        text = value.get("text") if isinstance(value, dict) else ""
+        return {"configured": isinstance(text, str) and bool(text.strip())}
+    return sanitize_config_value(key, value)
+
+
 @router.get("/config")
 def get_config() -> dict:
     with session_scope() as session:
         items = session.execute(select(AppConfig)).scalars().all()
-        return {"data": {i.key: sanitize_config_value(i.key, i.value) for i in items}}
+        return {"data": {i.key: _sanitize_config_value_for_response(i.key, i.value) for i in items}}
 
 
 @router.get("/config/defaults")
@@ -153,12 +165,8 @@ def get_inference_config() -> dict:
 def put_config(key: str, payload: ConfigUpsert) -> dict:
     with session_scope() as session:
         value = payload.value
-        cookie_keys = {
-            cookie_config_key("youtube"),
-            cookie_config_key("bilibili"),
-        }
         cookie_text_present = False
-        if key in cookie_keys:
+        if key in COOKIE_CONFIG_KEYS:
             try:
                 text = value.get("text") if isinstance(value, dict) else ""
             except Exception:
@@ -190,7 +198,7 @@ def put_config(key: str, payload: ConfigUpsert) -> dict:
             session.add(AppConfig(key=key, value=value))
 
         # 只有保存了有效非空 cookies，才恢复 provider 并补投一次同步追赶。
-        if key in cookie_keys and cookie_text_present:
+        if key in COOKIE_CONFIG_KEYS and cookie_text_present:
             p = get_pause(session)
             reason = str(p.get("reason") or "")
             if p.get("paused") and reason.startswith("ytdlp_cookies_"):

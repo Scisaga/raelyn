@@ -41,7 +41,8 @@
 - `video.enrich_metadata.youtube` 归属 `sync` worker role，复用 YouTube provider pause 与 sync provider advisory lock；拿不到锁时延迟 30 秒重排。单次只处理一个 `video_id`，单视频 yt-dlp 详情解析有 45 秒硬超时，超时只影响该补全任务。同一视频达到 `max_attempts` 终止失败后，后续自动同步不会再为同一 `dedupe_key` 重复投递补全任务。
 - YouTube metadata 补全只在缺失时写入 `published_at`、`thumbnail_url`、`duration_sec`，不会覆盖已有标题；若 `published_at` 从空变为有值，会触发播放列表事件时间轴 dirty 标记。
 - 正常视频下载链路的字幕下载是否开启由运行时配置 `ytdlp_subtitles` 决定；显式字幕回补任务不依赖该开关，因为任务本身就是人工发起的 subtitle-only 抓取。
-- `video.download.*` 只会把 yt-dlp 产出的可播放视频容器登记为 `video` asset；`.ytdl` 断点状态、`.info.json`、缩略图、字幕和纯音频片段不会进入 `video.extract_audio` 链路。
+- `video.download.*` 只会把 yt-dlp 产出且经 FFprobe 确认同时包含视频、音频 packet 的可播放容器登记为 `video` asset；YouTube 某次格式产物无有效 packet 时会清理该次临时产物并进入下一个格式 selector。`.ytdl` 断点状态、`.info.json`、缩略图、字幕和纯音频片段不会进入 `video.extract_audio` 链路。
+- `video.extract_audio` 会校验 FFmpeg 输出 M4A 至少包含一个音频 packet；`video.asr_transcribe` 在调用外部 ASR 前对音频资产执行相同校验。空容器属于确定性坏输入，任务直接终止且不会请求 ASR。普通链路在已有字幕 / transcript 时跳过 ASR，`force=true` 的存量修复链路会强制重新投放 ASR。
 - 字幕回补复用平台 cookies、YouTube `YTDLP_PROXY`、PO Token/EJS 与 provider 下载并发门控；默认只请求明确语言码。YouTube 以 `zh-Hant`、`zh-Hans`、`zh-CN`、`zh-TW`、`zh-HK`、`zh`、`en` 为主；B 站会额外请求 yt-dlp 暴露的 `ai-zh` / `ai-en`。
 - YouTube 会员视频默认不会下载；只有配置 `ytdlp_members_only.enabled=true` 时才会尝试。
 - Cookies 来自 `app_config`，运行时会写入 `tmp/` 下的 provider 专属 `cookies.txt` 文件。

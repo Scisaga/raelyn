@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import subprocess
 import sys
+import tempfile
 import unittest
 import uuid
 from contextlib import ExitStack
@@ -19,6 +21,7 @@ from raelyn.jobs.handlers.video_process import video_asr_transcribe
 from raelyn.jobs.reschedule import JobReschedule, JobTerminalFailure
 from raelyn.models import Asset, Job, Video
 from raelyn.services.asr import AsrBackendDefer
+from raelyn.services.ffmpeg import ffmpeg_bin
 from raelyn.services.inference import EffectiveAsrConfig
 
 
@@ -85,6 +88,33 @@ def _local_asr_config() -> EffectiveAsrConfig:
 
 
 class VideoAsrTranscribeErrorTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        with tempfile.TemporaryDirectory(prefix="raelyn-asr-test-audio-") as tmp_dir:
+            output_path = Path(tmp_dir) / "valid.m4a"
+            completed = subprocess.run(
+                [
+                    ffmpeg_bin(),
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=0.1",
+                    "-c:a",
+                    "aac",
+                    str(output_path),
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if completed.returncode != 0:
+                raise unittest.SkipTest("需要项目 ffmpeg 生成真实 ASR 测试音频")
+            cls.valid_audio_bytes = output_path.read_bytes()
+
+    def _write_valid_audio(self, *, bucket: str, key: str, local_path: Path) -> None:
+        local_path.write_bytes(self.valid_audio_bytes)
+
     def _job_context(self) -> tuple[_FakeSession, Job]:
         video_id = uuid.uuid4()
         video = Video(
@@ -122,16 +152,15 @@ class VideoAsrTranscribeErrorTests(unittest.TestCase):
     ) -> tuple[dict, Mock, Mock, Mock]:
         session, job = self._job_context()
 
-        def write_audio(*, bucket: str, key: str, local_path: Path) -> None:
-            local_path.write_bytes(b"audio")
-
         with ExitStack() as stack:
             stack.enter_context(patch.object(video_process.settings, "asr_language", configured_language))
             stack.enter_context(patch("raelyn.jobs.handlers.video_process.inspect_asr_backend_defer", return_value=None))
             stack.enter_context(
                 patch("raelyn.jobs.handlers.video_process.get_effective_asr_config", return_value=_local_asr_config())
             )
-            stack.enter_context(patch("raelyn.jobs.handlers.video_process.s3_download_file", side_effect=write_audio))
+            stack.enter_context(
+                patch("raelyn.jobs.handlers.video_process.s3_download_file", side_effect=self._write_valid_audio)
+            )
             asr_transcribe = stack.enter_context(
                 patch("raelyn.jobs.handlers.video_process.asr_transcribe", return_value=asr_payload)
             )
@@ -216,12 +245,12 @@ class VideoAsrTranscribeErrorTests(unittest.TestCase):
     def test_terminal_asr_http_status_does_not_retry(self) -> None:
         session, job = self._job_context()
 
-        def write_audio(*, bucket: str, key: str, local_path: Path) -> None:
-            local_path.write_bytes(b"audio")
-
         with patch("raelyn.jobs.handlers.video_process.inspect_asr_backend_defer", return_value=None):
             with patch("raelyn.jobs.handlers.video_process.get_effective_asr_config", return_value=_local_asr_config()):
-                with patch("raelyn.jobs.handlers.video_process.s3_download_file", side_effect=write_audio):
+                with patch(
+                    "raelyn.jobs.handlers.video_process.s3_download_file",
+                    side_effect=self._write_valid_audio,
+                ):
                     with patch(
                         "raelyn.jobs.handlers.video_process.asr_transcribe",
                         side_effect=_http_status_error(400, "empty file"),
@@ -235,12 +264,12 @@ class VideoAsrTranscribeErrorTests(unittest.TestCase):
     def test_transient_asr_http_status_reschedules_with_longer_backoff(self) -> None:
         session, job = self._job_context()
 
-        def write_audio(*, bucket: str, key: str, local_path: Path) -> None:
-            local_path.write_bytes(b"audio")
-
         with patch("raelyn.jobs.handlers.video_process.inspect_asr_backend_defer", return_value=None):
             with patch("raelyn.jobs.handlers.video_process.get_effective_asr_config", return_value=_local_asr_config()):
-                with patch("raelyn.jobs.handlers.video_process.s3_download_file", side_effect=write_audio):
+                with patch(
+                    "raelyn.jobs.handlers.video_process.s3_download_file",
+                    side_effect=self._write_valid_audio,
+                ):
                     with patch(
                         "raelyn.jobs.handlers.video_process.asr_transcribe",
                         side_effect=_http_status_error(503, "busy"),
@@ -253,9 +282,6 @@ class VideoAsrTranscribeErrorTests(unittest.TestCase):
         self.assertEqual(job.params["asr_transient_defers"], 1)
 
     def test_local_asr_read_timeout_retries_first_two_attempts_and_stops_third(self) -> None:
-        def write_audio(*, bucket: str, key: str, local_path: Path) -> None:
-            local_path.write_bytes(b"audio")
-
         for previous_attempt, expected_exception in (
             (0, httpx.ReadTimeout),
             (1, httpx.ReadTimeout),
@@ -275,7 +301,10 @@ class VideoAsrTranscribeErrorTests(unittest.TestCase):
                         )
                     )
                     stack.enter_context(
-                        patch("raelyn.jobs.handlers.video_process.s3_download_file", side_effect=write_audio)
+                        patch(
+                            "raelyn.jobs.handlers.video_process.s3_download_file",
+                            side_effect=self._write_valid_audio,
+                        )
                     )
                     stack.enter_context(
                         patch("raelyn.jobs.handlers.video_process.asr_transcribe", side_effect=_read_timeout_error())
@@ -297,9 +326,6 @@ class VideoAsrTranscribeErrorTests(unittest.TestCase):
         now = datetime(2026, 7, 20, 0, 0, 0, tzinfo=timezone.utc)
         job.lease_expires_at = now + timedelta(hours=1)
 
-        def write_audio(*, bucket: str, key: str, local_path: Path) -> None:
-            local_path.write_bytes(b"audio")
-
         with ExitStack() as stack:
             stack.enter_context(patch("raelyn.jobs.handlers.video_process.inspect_asr_backend_defer", return_value=None))
             stack.enter_context(
@@ -309,7 +335,9 @@ class VideoAsrTranscribeErrorTests(unittest.TestCase):
             set_lease = stack.enter_context(
                 patch("raelyn.jobs.handlers.video_process.set_job_lease_deadline", return_value=True)
             )
-            stack.enter_context(patch("raelyn.jobs.handlers.video_process.s3_download_file", side_effect=write_audio))
+            stack.enter_context(
+                patch("raelyn.jobs.handlers.video_process.s3_download_file", side_effect=self._write_valid_audio)
+            )
             stack.enter_context(
                 patch("raelyn.jobs.handlers.video_process.asr_transcribe", side_effect=_read_timeout_error())
             )

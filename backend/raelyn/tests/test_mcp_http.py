@@ -192,15 +192,15 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
         with ExitStack() as stack:
             app = self._load_app(
                 stack,
-                mcp_allowed_hosts="scisaga.cc:234",
-                mcp_allowed_origins="https://scisaga.cc:234",
+                mcp_allowed_hosts="raelyn.example.com:234",
+                mcp_allowed_origins="https://raelyn.example.com:234",
             )
             transport = ASGITransport(app=app)
 
             async with app.router.lifespan_context(app):
                 async with AsyncClient(
                     transport=transport,
-                    base_url="https://scisaga.cc:234",
+                    base_url="https://raelyn.example.com:234",
                     headers={"Authorization": "Bearer apitoken"},
                 ) as client:
                     response = await client.post(

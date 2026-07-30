@@ -443,7 +443,7 @@ def _resolve_target(args: argparse.Namespace) -> GitlabTarget:
 
 def _build_common_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Unified GitLab issue CLI for the current repo project.")
-    parser.add_argument("--base-url", help="GitLab base url, e.g. https://scisaga.cc:233")
+    parser.add_argument("--base-url", help="GitLab base url, e.g. https://gitlab.example.com")
     parser.add_argument("--project", help="GitLab project path, e.g. rewind/raelyn")
     return parser
 

@@ -6,11 +6,12 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
+COPY LICENSE THIRD_PARTY_NOTICES.md /app/
 COPY bin /app/bin
 COPY scripts /app/scripts
 
-COPY backend/requirements.txt /app/backend/requirements.txt
-RUN python -m pip install --no-cache-dir -r /app/backend/requirements.txt
+COPY backend/requirements.txt backend/requirements.lock.txt /app/backend/
+RUN python -m pip install --no-cache-dir -r /app/backend/requirements.lock.txt
 
 # Dev builds are expected to run on Linux/WSL and provide project-local external binaries under ./bin.
 # Fail fast (and ensure the binaries are actually runnable in this image).

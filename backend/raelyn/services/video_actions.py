@@ -47,6 +47,7 @@ def schedule_video_download(
     video_id: uuid.UUID,
     *,
     priority: int | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     video = session.get(Video, video_id)
     if not video:
@@ -93,9 +94,13 @@ def schedule_video_download(
             "job_type": str(active.type or job_type),
             "priority": int(active.priority or 0),
             "reused": True,
+            "force": bool((active.params or {}).get("force")),
         }
 
-    job_id = enqueue_job(session, type_=job_type, params={"video_id": str(video.id)}, priority=desired_priority)
+    params: dict[str, Any] = {"video_id": str(video.id)}
+    if force:
+        params["force"] = True
+    job_id = enqueue_job(session, type_=job_type, params=params, priority=desired_priority)
     return {
         "ok": True,
         "status": "accepted",
@@ -105,6 +110,7 @@ def schedule_video_download(
         "job_type": job_type,
         "priority": desired_priority,
         "reused": False,
+        "force": force,
     }
 
 

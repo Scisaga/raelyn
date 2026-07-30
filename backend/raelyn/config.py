@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     mcp_allowed_hosts: str = ""
     mcp_allowed_origins: str = ""
 
-    database_url: str = "postgresql+psycopg://raelyn:raelyn@127.0.0.1:5432/raelyn"
+    database_url: str = "postgresql+psycopg://raelyn@127.0.0.1:5432/raelyn"
     database_pool_size: int = Field(default=2, validation_alias=AliasChoices("DATABASE_POOL_SIZE"))
     database_max_overflow: int = Field(default=2, validation_alias=AliasChoices("DATABASE_MAX_OVERFLOW"))
     database_pool_timeout_seconds: int = Field(default=30, validation_alias=AliasChoices("DATABASE_POOL_TIMEOUT_SECONDS"))
@@ -32,8 +32,8 @@ class Settings(BaseSettings):
     )
 
     s3_endpoint: str = "http://127.0.0.1:9000"
-    s3_access_key: str = "minioadmin"
-    s3_secret_key: str = "minioadmin"
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
     s3_region: str = "us-east-1"
     s3_bucket: str = "raelyn"
     s3_use_ssl: bool = False
@@ -154,7 +154,7 @@ class Settings(BaseSettings):
     auto_extract_new_video_events: bool = Field(default=True, validation_alias=AliasChoices("AUTO_EXTRACT_NEW_VIDEO_EVENTS"))
 
     # --- Event embeddings (OpenAI-compatible embedding servers) ---
-    embedding_url: str = "http://10.6.0.10:12302"
+    embedding_url: str = ""
     embedding_endpoint: str = "/v1/embeddings"
     embedding_model: str = "Qwen/Qwen3-Embedding-8B"
     embedding_dim: int = 1024

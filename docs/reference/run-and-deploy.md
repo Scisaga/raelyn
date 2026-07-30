@@ -13,7 +13,7 @@
 
 ## 推荐：Docker 一键启动（含 Postgres + MinIO）
 
-说明：本项目的 `Dockerfile` 会直接 `COPY` 开发环境已下载的 `./bin/*` 外部工具二进制，避免在镜像构建时重新下载。`yt-dlp` 本身通过 `backend/requirements.txt` 安装到 Python 环境中；这里需要你先准备的是 `ffmpeg` / `ffprobe` / `node`：
+说明：本项目的 `Dockerfile` 会直接 `COPY` 开发环境已下载的 `./bin/*` 外部工具二进制，避免在镜像构建时重新下载。`yt-dlp` 本身通过 `backend/requirements.lock.txt` 安装到 Python 环境中；这里需要你先准备的是 `ffmpeg` / `ffprobe` / `node`：
 
 ```bash
 ./scripts/dev/download-ffmpeg.sh
@@ -23,6 +23,11 @@
 启动：
 
 ```bash
+cp .env.example .env
+# 至少填写 API_BEARER_TOKEN、POSTGRES_PASSWORD、S3_ACCESS_KEY、S3_SECRET_KEY。
+# 四项都应使用彼此独立的随机值；不要直接使用公开示例值。
+${EDITOR:-nano} .env
+
 docker compose up --build
 ```
 
@@ -54,7 +59,7 @@ Docker 单容器入口会直接守护 worker 子进程：某个 worker 崩溃退
 
 说明：
 
-- `bootstrap-python.sh` 负责创建或修复 `.venv`，并安装 `backend/requirements.txt`
+- `bootstrap-python.sh` 负责创建或修复 `.venv`，并安装 `backend/requirements.lock.txt`
 - `bootstrap-ubuntu.sh` 只负责补齐 Python 启动所需的系统包；它不会替你安装项目运行所需的 `ffmpeg`
 
 ### 工具准备（开发必需）
@@ -91,7 +96,7 @@ Docker 单容器入口会直接守护 worker 子进程：某个 worker 崩溃退
 
 #### `yt-dlp` / `yt-dlp-ejs`（必需，Python 包）
 
-项目通过 `backend/requirements.txt` 使用 `yt-dlp[default]`，会自动安装 `yt-dlp` 与 `yt-dlp-ejs`（用于 YouTube 的 EJS/JS challenge）。
+项目通过 `backend/requirements.txt` 声明顶层依赖，并通过 `backend/requirements.lock.txt` 安装锁定版本；其中 `yt-dlp[default]` 会安装 `yt-dlp` 与 `yt-dlp-ejs`（用于 YouTube 的 EJS/JS challenge）。
 默认配置还会向 yt-dlp Python API 传入 `YTDLP_REMOTE_COMPONENTS=ejs:github`，对应 CLI 里的 `--remote-components ejs:github`。
 EJS 只解决 YouTube JS / n challenge；若 cookies 很快再次触发“确认你不是聊天机器人”，还需要启用 PO Token Provider。
 
@@ -257,6 +262,15 @@ PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.repair_video_event_pipelin
 - 事件侧只处理“最新 `video_event_extraction_run` 为 `failed`、视频仍存在、也没有 pending/running 抽取 job”的记录，投递或复用 `video.extract_events(force=false)`，避免在成功解析前删除旧事件。
 - 同一数据库状态下可重复执行；已修复下载状态会退出候选，已有 active job 和 pending dedupe 会阻止紧邻重复执行扩张队列。若重新投递的抽取任务再次终止失败，后续维护运行仍会把它重新识别为候选。
 
+YouTube 257 字节空音频存量修复：
+
+```bash
+PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.repair_empty_audio_assets
+PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.repair_empty_audio_assets --limit 100 --yes
+```
+
+默认命令只读，统计 `provider=youtube` 且 `type=audio / format=m4a / source=ffmpeg / variant=raw / size_bytes=257` 的本次事故资产，并排除已有 pending/running 下载、音频提取或 ASR 任务的视频。只有显式传入 `--yes` 才投递强制下载；强制链路会在新视频通过音视频 packet 校验后替换原视频资产，随后替换音频资产并强制重新投放 ASR，即使本次下载同时获得了字幕。修复下载默认优先级为 `20`，高于常规下载的 `10`，可通过 `--priority` 调整。建议先小批量 `--limit 100 --yes`，确认下载、音频提取和 ASR 成功率后再扩大批次。
+
 手动探测并投递字幕回补：
 
 ```bash
@@ -357,7 +371,7 @@ WSL 提示：如果你的 `npm` 指向 Windows 安装路径（如 `/mnt/c/Progra
 cp .env.migrate.example .env.migrate
 ```
 
-按需修改 `.env.migrate` 里的 `DATABASE_URL` / `S3_*` 为目标环境。
+填写 `.env.migrate` 里的 `DATABASE_URL`、`S3_ACCESS_KEY` 和 `S3_SECRET_KEY`，并按需调整其余 `S3_*` 目标环境配置；示例文件不提供默认密码。
 
 2. Dry-run（不写入）：
 

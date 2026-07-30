@@ -184,6 +184,7 @@ def _job_progress_from_ytdlp_hook(data: dict[str, Any]) -> tuple[int, int] | Non
 @registry.register("video.download")
 def video_download(session: Session, job: Job) -> dict | None:
     video_id = uuid.UUID(job.params["video_id"])
+    force = bool(job.params.get("force"))
     claimed_worker_id = str(job.worker_id or "").strip()
     claimed_execution_token = job.execution_token
     video = session.get(Video, video_id)
@@ -365,6 +366,7 @@ def video_download(session: Session, job: Job) -> dict | None:
                 variant="raw",
                 local_path=video_file,
                 s3_key=f"{video.provider}/{video.media_id}/{video.provider_video_id}/video/raw.{ext}",
+                replace=force,
             )
 
             thumb_candidates = [path for path in candidates if path.suffix.lower() in {".webp", ".jpg", ".jpeg", ".png"}]
@@ -393,7 +395,7 @@ def video_download(session: Session, job: Job) -> dict | None:
         enqueue_job(
             session,
             type_="video.extract_audio",
-            params={"video_id": str(video.id)},
+            params={"video_id": str(video.id), "force": force},
             priority=job.priority,
             parent_job_id=str(job.id),
         )

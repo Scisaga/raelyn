@@ -45,7 +45,7 @@ fi
 
 echo "[bootstrap] pip: $("$VENV_PY" -m pip --version)"
 echo "[bootstrap] installing python deps (venv)"
-"$VENV_PY" -m pip install -r backend/requirements.txt
+"$VENV_PY" -m pip install -r backend/requirements.lock.txt
 
 mkdir -p tmp static/css static/vendor
 echo "[bootstrap] done"

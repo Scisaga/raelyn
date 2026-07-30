@@ -19,6 +19,7 @@ from raelyn.db import session_scope
 from raelyn.jobs.reschedule import JobReschedule
 from raelyn.models import AppConfig
 from raelyn.services.browser_identity import BROWSER_USER_AGENT
+from raelyn.services.ffmpeg import MediaPacketValidationError, require_media_packets
 from raelyn.services.provider_cookies import (
     cookie_config_name,
     cookie_provider_for_target,
@@ -86,6 +87,7 @@ _BILIBILI_ENGLISH_SUBTITLE_LANGS = ["ai-en", *_ENGLISH_SUBTITLE_LANGS]
 _BILIBILI_DEFAULT_SUBTITLE_LANGS = [*_BILIBILI_CHINESE_SUBTITLE_LANGS, *_BILIBILI_ENGLISH_SUBTITLE_LANGS]
 _YOUTUBE_MEDIA_URL_RETRIES = 2
 _YOUTUBE_MEDIA_URL_RESOLVE_ATTEMPTS = 2
+_YTDLP_VIDEO_FILE_SUFFIXES = {".mp4", ".m4v", ".mov", ".mkv", ".webm", ".flv", ".avi", ".ts"}
 
 
 class _YtdlpCaptureLogger:
@@ -873,6 +875,27 @@ def _promote_ytdlp_attempt_files(attempt_dir: Path, out_dir: Path) -> None:
         shutil.move(str(source), str(out_dir / source.name))
 
 
+def _validate_ytdlp_attempt_media(attempt_dir: Path, *, attempt_label: str) -> None:
+    video_files = [
+        path
+        for path in attempt_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in _YTDLP_VIDEO_FILE_SUFFIXES
+    ]
+    mp4s = [path for path in video_files if path.suffix.lower() == ".mp4"]
+    candidates = mp4s or video_files
+    if not candidates:
+        raise MediaPacketValidationError(f"yt-dlp 格式尝试 {attempt_label} 未产出视频文件")
+
+    video_file = max(candidates, key=lambda item: item.stat().st_size)
+    try:
+        require_media_packets(input_path=video_file, stream_types=("video", "audio"))
+    except MediaPacketValidationError as exc:
+        raise MediaPacketValidationError(
+            f"yt-dlp 格式尝试 {attempt_label} 产出无效媒体文件 "
+            f"{video_file.name}（{video_file.stat().st_size} bytes）：{exc}"
+        ) from exc
+
+
 def ytdlp_download(
     *,
     url: str,
@@ -963,7 +986,7 @@ def ytdlp_download(
     # Retry strategy:
     # - YouTube prefers combined/HLS MP4 first. On 2026-05-18, several Bloomberg videos returned
     #   HTTP 403 for 360p+ DASH video-only GVS URLs while HLS format 96 downloaded successfully.
-    # - If a selector is unavailable, or a YouTube selector hits media-url 403, retry with the next selector.
+    # - If a selector is unavailable、命中媒体 URL 403，或产物没有真实音视频包，则尝试下一个 selector。
     format_attempts = _download_format_attempts(cookie_provider=cookie_provider, configured_format=user_format)
 
     last_error: Exception | None = None
@@ -997,10 +1020,12 @@ def ytdlp_download(
                     if cookie_invalid_line:
                         _raise_if_cookie_invalid_messages([cookie_invalid_line], provider=cookie_provider)
                         _raise_if_provider_pause_messages([cookie_invalid_line])
+                    if cookie_provider == "youtube":
+                        _validate_ytdlp_attempt_media(attempt_dir, attempt_label=attempt_label)
                     _promote_ytdlp_attempt_files(attempt_dir, out_dir)
                     _rewrite_ytdlp_attempt_paths(info, attempt_dir=attempt_dir, out_dir=out_dir)
                     return info
-                except (DownloadError, ExtractorError) as e:
+                except (DownloadError, ExtractorError, MediaPacketValidationError) as e:
                     last_attempt_error = e
                     last_attempt_warnings = captured_warnings[warning_start:]
                     last_attempt_errors = captured_errors[error_start:]
@@ -1047,7 +1072,7 @@ def ytdlp_download(
 
         try:
             return _extract_download(opts, attempt_label=label)
-        except (DownloadError, ExtractorError) as e:
+        except (DownloadError, ExtractorError, MediaPacketValidationError) as e:
             last_error = e
             joined = "\n".join(
                 [cookie_invalid_line or "", *last_attempt_warnings[-12:], *last_attempt_errors[-12:], str(e)]
@@ -1073,12 +1098,19 @@ def ytdlp_download(
                 # Add a small buffer so we don't retry too early around the start time.
                 raise JobReschedule(delay_seconds=delay + 120, reason="upcoming livestream") from e
 
-            retryable_format_failure = _is_requested_format_unavailable(e) or (
-                cookie_provider == "youtube" and _is_http_403_forbidden_error(e)
+            retryable_format_failure = (
+                isinstance(e, MediaPacketValidationError)
+                or _is_requested_format_unavailable(e)
+                or (cookie_provider == "youtube" and _is_http_403_forbidden_error(e))
             )
             if retryable_format_failure and idx < len(format_attempts):
                 next_label, next_fmt, _next_merge = format_attempts[idx]
-                reason = "HTTP 403" if _is_http_403_forbidden_error(e) else "requested format not available"
+                if isinstance(e, MediaPacketValidationError):
+                    reason = str(e)
+                elif _is_http_403_forbidden_error(e):
+                    reason = "HTTP 403"
+                else:
+                    reason = "requested format not available"
                 print(
                     f"[ytdlp] {reason} for {label}: {fmt!r}; retrying with {next_label}: {next_fmt!r}",
                     flush=True,
@@ -1098,7 +1130,7 @@ def ytdlp_download(
                 print("[ytdlp] ffmpeg crash detected; retrying with progressive mp4 (<=720p) to avoid merge", flush=True)
                 try:
                     return _extract_download(prog_opts, attempt_label="progressive_mp4_720")
-                except (DownloadError, ExtractorError) as e2:
+                except (DownloadError, ExtractorError, MediaPacketValidationError) as e2:
                     last_error = e2
                     joined2 = "\n".join(
                         [cookie_invalid_line or "", *last_attempt_warnings[-12:], *last_attempt_errors[-12:], str(e2)]

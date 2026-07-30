@@ -494,6 +494,8 @@
 ### `GET /api/config`
 
 - 返回全部 `app_config` 键值。
+- `ytdlp_cookies_youtube` 与 `ytdlp_cookies_bilibili` 只返回 `{ "configured": true|false }`，绝不回显 Cookie 内容。
+- 火山推理配置中的密钥字段继续只返回掩码。
 
 ### `GET /api/config/defaults`
 
