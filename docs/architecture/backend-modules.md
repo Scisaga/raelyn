@@ -47,6 +47,7 @@
 - YouTube 会员视频默认不会下载；只有配置 `ytdlp_members_only.enabled=true` 时才会尝试。
 - Cookies 来自 `app_config`，运行时会写入 `tmp/` 下的 provider 专属 `cookies.txt` 文件。
 - 新视频 transcript 生成后，若 `AUTO_EXTRACT_NEW_VIDEO_EVENTS=true` 且 LLM 已配置，会自动投递 `video.extract_events`；历史事件回填通过播放列表事件面板显式触发 `playlist.backfill_events`。
+- 事件抽取响应无法解析为 JSON 时，同一次任务尝试只追加一次 LLM 语法修复调用；修复提示只允许改动 JSON 标点与转义，不允许重写事件内容。修复结果仍需通过原有 `videos[] / video_id / events[]` 协议校验，修复调用的 token 与 `call_count` 会合并计入该次抽取 usage。
 
 ## 资产访问与分发
 

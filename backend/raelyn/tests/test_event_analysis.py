@@ -223,6 +223,81 @@ class EventAnalysisTests(unittest.TestCase):
         self.assertEqual(events_by_video, {"v1": []})
         self.assertEqual(warnings, [])
 
+    def test_event_extraction_repairs_malformed_json_with_one_follow_up_call(self) -> None:
+        malformed = '{"videos":[{"video_id":"v1" "events":[]}]}'
+        repaired = '{"videos":[{"video_id":"v1","events":[]}]}'
+        repair_usage = {
+            "input_tokens": 120,
+            "output_tokens": 30,
+            "total_tokens": 150,
+            "call_count": 1,
+        }
+        session = Mock()
+
+        with patch(
+            "raelyn.services.event_analysis._generate_event_extraction_llm",
+            return_value={"text": repaired, "usage": repair_usage},
+        ) as generate:
+            rows, warnings, usage = (
+                event_analysis._parse_event_extraction_batch_response_with_json_repair(
+                    session,
+                    response_text=malformed,
+                    expected_video_ids=["v1"],
+                )
+            )
+
+        self.assertEqual(rows, {"v1": []})
+        self.assertIn("repaired by follow-up LLM call", warnings[0])
+        self.assertEqual(usage, repair_usage)
+        generate.assert_called_once()
+        repair_prompt = generate.call_args.kwargs["prompt"]
+        self.assertIn("只修复 JSON 语法", repair_prompt)
+        self.assertIn(malformed, repair_prompt)
+        self.assertIn("Expecting ',' delimiter", repair_prompt)
+
+    def test_event_extraction_does_not_repair_valid_json(self) -> None:
+        response = '{"videos":[{"video_id":"v1","events":[]}]}'
+        session = Mock()
+
+        with patch("raelyn.services.event_analysis._generate_event_extraction_llm") as generate:
+            rows, warnings, usage = (
+                event_analysis._parse_event_extraction_batch_response_with_json_repair(
+                    session,
+                    response_text=response,
+                    expected_video_ids=["v1"],
+                )
+            )
+
+        self.assertEqual(rows, {"v1": []})
+        self.assertEqual(warnings, [])
+        self.assertIsNone(usage)
+        generate.assert_not_called()
+
+    def test_event_extraction_reports_failed_json_repair_usage(self) -> None:
+        malformed = '{"videos":[{"video_id":"v1" "events":[]}]}'
+        repair_usage = {
+            "input_tokens": 80,
+            "output_tokens": 20,
+            "total_tokens": 100,
+            "call_count": 1,
+        }
+        session = Mock()
+
+        with patch(
+            "raelyn.services.event_analysis._generate_event_extraction_llm",
+            return_value={"text": malformed, "usage": repair_usage},
+        ):
+            with self.assertRaises(event_analysis._EventExtractionResponseError) as raised:
+                event_analysis._parse_event_extraction_batch_response_with_json_repair(
+                    session,
+                    response_text=malformed,
+                    expected_video_ids=["v1"],
+                )
+
+        self.assertIn("JSON repair failed", str(raised.exception))
+        self.assertEqual(raised.exception.usage, repair_usage)
+        self.assertEqual(raised.exception.affected_video_ids, ("v1",))
+
     def test_parse_event_response_rejects_invalid_envelopes(self) -> None:
         for raw in ("not-json", "[]", "{}"):
             with self.subTest(raw=raw):
@@ -665,8 +740,9 @@ class EventAnalysisTests(unittest.TestCase):
 
         self.assertEqual(existing_run.status, "failed")
         self.assertEqual(existing_run.event_count, 0)
-        self.assertEqual(existing_run.usage_json["total_tokens"], 13)
-        self.assertIn("json parse failed", existing_run.error_message or "")
+        self.assertEqual(existing_run.usage_json["total_tokens"], 26)
+        self.assertEqual(existing_run.usage_json["call_count"], 2)
+        self.assertIn("JSON repair failed", existing_run.error_message or "")
         delete_events.assert_not_called()
         self.assertGreaterEqual(session.commit.call_count, 2)
 

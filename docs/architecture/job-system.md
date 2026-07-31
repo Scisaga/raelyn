@@ -69,6 +69,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - `video.download.youtube` 将媒体传输恢复分为两层：代理 `CONNECT ... 502`、`connection closed`、`connection reset` 或媒体 URL `HTTP 502` 在单轮解析内只对同一 URL 执行 `retries=2`，随后从原视频页重新解析，最多两轮。每轮使用独立临时产物，并保持 cookies、代理、impersonation 与 format 选择策略不变；重新解析可能刷新签名 URL，但不保证更换 CDN。两轮均失败后才抛给外层 `attempt/max_attempts` 退避。
 - YouTube 单次格式下载即使 HTTP 层报告完成，也必须经 FFprobe 读到真实视频和音频 packet；无 packet 的临时容器按格式失败处理并进入下一个 selector。音频提取输出和 ASR 输入无音频 packet 时属于确定性坏输入，分别在资产写入和 ASR 请求前以 `JobTerminalFailure` 收口，避免重复请求同一个坏资产。
 - 事件抽取把“响应顶层结构不满足协议”视为可重试错误，包括 JSON 无法解析、顶层不是对象、缺少 `videos[]`、缺少预期 `video_id` 或对应项缺少 `events[]`。服务会先把当前 `video_event_extraction_run` 持久化为 `failed`，再把异常抛给 worker 进入既有 `attempt/max_attempts` 退避；结构错误不会删除该视频已有事件。
+- 对纯 JSON 语法错误，每个抽取批次在当前任务尝试内最多额外调用一次 LLM 修复语法；修复成功后仍执行完整协议校验，修复失败才进入既有 worker 重试。缺少 `videos[]`、缺少预期 `video_id` 等已能解析但违反协议的响应不会触发修复调用，避免模型借“修复”重新生成业务内容。
 - `events: []` 是合法的零事件结果，会写入 `succeeded` run；空 `plain` transcript 继续按 `skipped` 成功收口，不强制失败或重试。单条事件字段不合法仍只丢弃该条并记录 warning，不能把内容质量问题扩大成整个响应的结构失败。
 
 ## Worker 角色暂停（Claim Gate）

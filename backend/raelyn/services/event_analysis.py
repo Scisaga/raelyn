@@ -83,6 +83,7 @@ class _EventExtractionResponseError(ValueError):
         *,
         parsed_by_video: dict[str, list[dict[str, Any]]] | None = None,
         affected_video_ids: Sequence[str] = (),
+        usage: dict[str, Any] | None = None,
     ) -> None:
         normalized_warnings = tuple(str(item).strip() for item in warnings if str(item).strip())
         self.warnings = normalized_warnings or ("event extraction response has invalid structure",)
@@ -91,7 +92,12 @@ class _EventExtractionResponseError(ValueError):
             for video_id, events in (parsed_by_video or {}).items()
         }
         self.affected_video_ids = tuple(dict.fromkeys(str(item) for item in affected_video_ids if str(item)))
+        self.usage = dict(usage or {})
         super().__init__("; ".join(self.warnings[:3]))
+
+
+class _EventExtractionJsonParseError(_EventExtractionResponseError):
+    """LLM 事件抽取响应不是合法 JSON。"""
 
 
 @dataclass(frozen=True)
@@ -393,6 +399,14 @@ def _generate_event_extraction_llm(session: Session, *, prompt: str) -> dict[str
         return llm_generate(**kwargs)
 
 
+def _merge_event_extraction_usage(total: dict[str, int], part: dict[str, Any] | None) -> None:
+    for key in ("input_tokens", "output_tokens", "total_tokens", "call_count"):
+        try:
+            total[key] += int((part or {}).get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+
+
 def event_extraction_spec(session: Session | None = None) -> EventExtractionSpec:
     prompt_text = DEFAULT_EVENT_EXTRACTION_PROMPT
     if session is not None:
@@ -435,7 +449,7 @@ def parse_event_extraction_response(text: str) -> tuple[list[dict[str, Any]], li
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise _EventExtractionResponseError([f"event extraction json parse failed: {exc}"]) from exc
+        raise _EventExtractionJsonParseError([f"event extraction json parse failed: {exc}"]) from exc
     if not isinstance(payload, dict):
         raise _EventExtractionResponseError(["event extraction payload is not a json object"])
     raw_events = payload.get("events")
@@ -474,7 +488,7 @@ def parse_event_extraction_batch_response(
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise _EventExtractionResponseError(
+        raise _EventExtractionJsonParseError(
             [f"event extraction json parse failed: {exc}"],
             affected_video_ids=expected,
         ) from exc
@@ -545,6 +559,87 @@ def parse_event_extraction_batch_response(
             affected_video_ids=[alias for alias in expected if alias in structurally_invalid_videos],
         )
     return rows, warnings
+
+
+def _render_event_extraction_json_repair_prompt(
+    *,
+    malformed_text: str,
+    parse_error: _EventExtractionJsonParseError,
+    expected_video_ids: Sequence[str],
+) -> str:
+    expected = json.dumps(
+        [str(item) for item in expected_video_ids if str(item)],
+        ensure_ascii=False,
+    )
+    return f"""
+你是 JSON 语法修复器。下面是另一个模型生成的事件抽取 JSON，解析器无法读取。
+
+只修复 JSON 语法，不重新执行事件抽取：
+- 只添加、删除或替换使 JSON 合法所必需的逗号、冒号、引号、反斜杠和括号。
+- 不新增、删除、合并、拆分或改写任何业务字段、数组元素和字段值。
+- 保持原有 video_id；预期输入别名为 {expected}。
+- 不补充原文中不存在的事件或业务内容。
+- 只输出修复后的单个 JSON 对象，不要 Markdown，不要解释。
+
+解析错误：
+{parse_error}
+
+待修复 JSON：
+<malformed_json>
+{_strip_llm_wrappers(malformed_text)}
+</malformed_json>
+""".strip()
+
+
+def _parse_event_extraction_batch_response_with_json_repair(
+    session: Session,
+    *,
+    response_text: str,
+    expected_video_ids: list[str],
+) -> tuple[dict[str, list[dict[str, Any]]], list[str], dict[str, Any] | None]:
+    initial_parse_error: _EventExtractionJsonParseError | None = None
+    try:
+        rows, warnings = parse_event_extraction_batch_response(
+            response_text,
+            expected_video_ids=expected_video_ids,
+        )
+        return rows, warnings, None
+    except _EventExtractionJsonParseError as exc:
+        if not _strip_llm_wrappers(response_text):
+            raise
+        initial_parse_error = exc
+
+    assert initial_parse_error is not None
+    repair_result = _generate_event_extraction_llm(
+        session,
+        prompt=_render_event_extraction_json_repair_prompt(
+            malformed_text=response_text,
+            parse_error=initial_parse_error,
+            expected_video_ids=expected_video_ids,
+        ),
+    )
+    repair_usage = dict(repair_result.get("usage") or {})
+    try:
+        rows, warnings = parse_event_extraction_batch_response(
+            str(repair_result.get("text") or ""),
+            expected_video_ids=expected_video_ids,
+        )
+    except _EventExtractionResponseError as repair_error:
+        raise _EventExtractionResponseError(
+            [
+                "event extraction JSON repair failed after initial parse error "
+                f"({initial_parse_error}): {repair_error}"
+            ],
+            parsed_by_video=repair_error.parsed_by_video,
+            affected_video_ids=repair_error.affected_video_ids or expected_video_ids,
+            usage=repair_usage,
+        ) from repair_error
+
+    return (
+        rows,
+        ["event extraction JSON syntax repaired by follow-up LLM call", *warnings],
+        repair_usage,
+    )
 
 
 def _chunk_text(text: str, max_chars: int) -> list[str]:
@@ -1604,20 +1699,20 @@ def extract_video_events_batch(
             compact=_effective_llm_is_ollama_generate(session),
         )
         result = _generate_event_extraction_llm(session, prompt=prompt)
-        for key, value in (result.get("usage") or {}).items():
-            if key in usage:
-                try:
-                    usage[key] += int(value or 0)
-                except Exception:
-                    pass
+        _merge_event_extraction_usage(usage, result.get("usage"))
         expected_aliases = [prepared_video.alias for prepared_video in batch_videos]
         response_structure_error: _EventExtractionResponseError | None = None
         try:
-            parsed_by_alias, parse_warnings = parse_event_extraction_batch_response(
-                str(result.get("text") or ""),
-                expected_video_ids=expected_aliases,
+            parsed_by_alias, parse_warnings, repair_usage = (
+                _parse_event_extraction_batch_response_with_json_repair(
+                    session,
+                    response_text=str(result.get("text") or ""),
+                    expected_video_ids=expected_aliases,
+                )
             )
+            _merge_event_extraction_usage(usage, repair_usage)
         except _EventExtractionResponseError as exc:
+            _merge_event_extraction_usage(usage, exc.usage)
             response_structure_error = exc
             parsed_by_alias = exc.parsed_by_video
             parse_warnings = list(exc.warnings)
