@@ -737,6 +737,34 @@ class WorkerHeartbeatTests(unittest.TestCase):
         touch_for_job.assert_called_once_with(job_id=job_id)
 
 
+class WorkerMediaSyncFailureStateTests(unittest.TestCase):
+    def test_terminal_failure_updates_media_sync_cooldown(self) -> None:
+        now = datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
+        media = Media(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_media_id="@channel",
+            url="https://www.youtube.com/@channel/videos",
+            last_video_sync_at=now - timedelta(days=1),
+        )
+        job = Job(
+            id=uuid.uuid4(),
+            type="media.sync_videos",
+            status="failed",
+            params={"media_id": str(media.id)},
+            error_message="proxy unavailable",
+        )
+        session = Mock()
+        session.execute.return_value = _scalar_one_or_none(media)
+
+        worker._mark_media_sync_terminal_failure_cooldown(session, job=job, now=now)
+
+        self.assertEqual(media.last_video_sync_at, now)
+        media_query = session.execute.call_args.args[0].compile(dialect=postgresql.dialect())
+        self.assertIn("FOR UPDATE", str(media_query))
+        self.assertIn(media.id, media_query.params.values())
+
+
 class WorkerDownloadFailureStateTests(unittest.TestCase):
     @staticmethod
     def _terminal_failure_session(video: Video, *, asset_id: uuid.UUID | None = None) -> Mock:

@@ -25,7 +25,7 @@ from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
 from raelyn.jobs.reschedule import JobReschedule, JobTerminalFailure
 from raelyn.jobs.worker_activity import configure_worker_activity, touch_current_worker_activity, worker_job_activity
-from raelyn.models import Asset, Job, Video, WorkerHeartbeat
+from raelyn.models import Asset, Job, Media, Video, WorkerHeartbeat
 from raelyn.services.job_cancellation import JobCancelRequested, finalize_canceled_job
 from raelyn.services.log_timestamps import install_if_needed
 from raelyn.services.asr import inspect_asr_backend_defer
@@ -93,6 +93,25 @@ _DOWNLOAD_JOB_TYPES = {"video.download", "video.download.youtube", "video.downlo
 _EXECUTION_WATCHDOG_JOB_TYPES = _SYNC_JOB_TYPES | _DOWNLOAD_JOB_TYPES
 _ASR_JOB_TYPE = "video.asr_transcribe"
 _ASR_CLAIM_DEFER_SLEEP_SECONDS = 5.0
+
+
+def _mark_media_sync_terminal_failure_cooldown(session, *, job: Job, now) -> None:
+    if str(getattr(job, "type", "") or "").strip() != "media.sync_videos":
+        return
+
+    try:
+        raw_media_id = (job.params or {}).get("media_id")
+        media_id = uuid.UUID(str(raw_media_id))
+    except (AttributeError, TypeError, ValueError):
+        return
+
+    media = session.execute(
+        select(Media)
+        .where(Media.id == media_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if media:
+        media.last_video_sync_at = now
 
 
 def _mark_download_video_terminal_failure(session, *, job: Job) -> None:
@@ -644,6 +663,11 @@ def run_loop() -> None:
                     else:
                         job.status = "failed"
                         job.finished_at = utcnow()
+                        _mark_media_sync_terminal_failure_cooldown(
+                            session,
+                            job=job,
+                            now=job.finished_at,
+                        )
                         _mark_download_video_terminal_failure(session, job=job)
                         job_log(session, job, "failed; no more retries", level="error", data={"attempt": job.attempt})
 

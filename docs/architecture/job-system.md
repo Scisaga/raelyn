@@ -58,7 +58,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
   - `status=running AND lease_expires_at < now()` 视为失联，转回 `pending` 或标记为 `failed`
   - 对下载等 provider-facing 任务，如果进程心跳新鲜但执行心跳超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进，也视为主执行循环卡死并转回 `pending`
   - 对 `media.sync_profile` / `media.sync_videos`，若进程心跳仍新鲜但执行心跳过期，按一次同步尝试失败处理：增加 `attempt`、按既有退避重试，且不使用 orphan priority bump；达到 `max_attempts` 后标记 `failed`
-  - `media.sync_videos` 因执行心跳过期达到终止失败时，会推进对应媒体的 `last_video_sync_at` 作为冷却时间，避免同一媒体立即被 scheduler 重新投递并堵塞同步队列
+  - `media.sync_videos` 无论因普通异常还是执行心跳过期达到终止失败，都会推进对应媒体的 `last_video_sync_at` 作为冷却时间，避免同一媒体立即被 scheduler 重新投递并堵塞同步队列
   - 回收动作应记录原因，便于后续排障
 - requeue / reschedule 必须清空旧 `execution_token`，下次 claim 再生成新 UUID；`succeeded / failed / canceled` 等终态收尾也必须清空 token。
 - Worker 在 handler 返回或抛错后的收尾阶段仍需用领取时捕获的 token 锁定并核对 owner。若 job 已被回收或重领，只退出本次执行，不得覆盖新执行的 job 状态、结果或错误。
