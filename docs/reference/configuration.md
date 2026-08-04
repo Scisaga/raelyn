@@ -116,6 +116,8 @@
   - public discovery 单次抓取的 flat 列表上限，默认 `200`。
 - `SYNC_COOKIE_RECOVERY_MAX_ENTRIES`
   - 保存有效非空平台 cookies 并清除 provider pause 后，自动为该 provider 受监控媒体补投 catch-up 同步的 `max_entries`，默认 `200`。
+  - 恢复任务不会同时变为可领取：系统按媒体稳定顺序把它们均匀排在一个 `SYNC_INTERVAL_MINUTES` 周期内，避免新 cookies 保存后立刻形成全量扫描波峰。
+  - 若同一媒体已有 pending 同步（包括 public discovery），同一任务会原地转换为认证恢复任务并按恢复窗口重新排期，不会额外保留一条立即执行的扫描。
 - `AUTO_DOWNLOAD_NEW_VIDEOS`
 - `AUTO_GENERATE_BRIEFS`
   - 是否在 transcript 就绪、媒体变更或媒体删除后自动投递 `brief.generate_period`，默认 `false`。

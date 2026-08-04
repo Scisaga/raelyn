@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from fastapi import APIRouter
 from fastapi import HTTPException
 from pydantic import BaseModel
@@ -8,7 +10,7 @@ from sqlalchemy import select
 from raelyn.config import settings
 from raelyn.db import session_scope
 from raelyn.jobs.enqueue import enqueue_job
-from raelyn.models import AppConfig, Media
+from raelyn.models import AppConfig, Job, JobEvent, Media
 from raelyn.services.inference import INFERENCE_MODE_CONFIG_KEY
 from raelyn.services.inference import INFERENCE_MODES
 from raelyn.services.inference import VOLCENGINE_INFERENCE_CONFIG_KEY
@@ -62,6 +64,64 @@ def _positive_int(value: object, *, default: int) -> int:
     return max(1, n)
 
 
+def _cookie_recovery_scheduled_for(*, index: int, total: int, now):
+    spread_seconds = _positive_int(settings.sync_interval_minutes, default=60) * 60
+    offset_seconds = max(0, int(index)) * spread_seconds // max(1, int(total))
+    return now + timedelta(seconds=offset_seconds)
+
+
+def _schedule_cookie_recovery_sync(
+    session,
+    *,
+    provider: str,
+    media_id,
+    max_entries: int,
+    scheduled_for,
+) -> None:
+    params = {
+        "media_id": str(media_id),
+        "force": True,
+        "max_entries": max_entries,
+        "download_priority": 8,
+        "cookie_recovery": True,
+    }
+    dedupe_key = f"media.sync_videos:{media_id}"
+    pending = session.execute(
+        select(Job)
+        .where(Job.dedupe_key == dedupe_key, Job.status == "pending")
+        .with_for_update()
+        .limit(1)
+    ).scalar_one_or_none()
+    if pending:
+        pending.params = params
+        pending.priority = max(int(pending.priority or 0), 5)
+        pending.scheduled_for = scheduled_for
+        job_id = pending.id
+        event_message = "pending sync converted to cookie recovery"
+    else:
+        job_id = enqueue_job(
+            session,
+            type_="media.sync_videos",
+            params=params,
+            priority=5,
+            scheduled_for=scheduled_for,
+        )
+        event_message = "cookie recovery scheduled"
+
+    session.add(
+        JobEvent(
+            job_id=job_id,
+            level="info",
+            message=event_message,
+            data={
+                "provider": provider,
+                "max_entries": max_entries,
+                "scheduled_for": scheduled_for.isoformat(),
+            },
+        )
+    )
+
+
 def _enqueue_cookie_recovery_syncs(session, *, provider: str) -> int:
     media_ids = session.execute(
         select(Media.id)
@@ -69,17 +129,15 @@ def _enqueue_cookie_recovery_syncs(session, *, provider: str) -> int:
         .order_by(Media.name.asc().nulls_last(), Media.id.asc())
     ).scalars().all()
     max_entries = _positive_int(settings.sync_cookie_recovery_max_entries, default=200)
-    for media_id in media_ids:
-        enqueue_job(
+    now = utcnow()
+    total = len(media_ids)
+    for index, media_id in enumerate(media_ids):
+        _schedule_cookie_recovery_sync(
             session,
-            type_="media.sync_videos",
-            params={
-                "media_id": str(media_id),
-                "force": True,
-                "max_entries": max_entries,
-                "download_priority": 8,
-            },
-            priority=5,
+            provider=provider,
+            media_id=media_id,
+            max_entries=max_entries,
+            scheduled_for=_cookie_recovery_scheduled_for(index=index, total=total, now=now),
         )
     return len(media_ids)
 

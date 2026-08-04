@@ -714,6 +714,7 @@ def ytdlp_extract_info(
     max_entries: int | None = None,
     socket_timeout: int | None = None,
     use_provider_cookies: bool = True,
+    youtube_metadata_only: bool = False,
     activity_hook: Callable[[], object] | None = None,
 ) -> dict[str, Any]:
     logger = _YtdlpCaptureLogger(activity_hook=activity_hook)
@@ -754,6 +755,15 @@ def ytdlp_extract_info(
         provider=cookie_provider,
         use_provider_cookies=bool(use_provider_cookies),
     )
+    if cookie_provider == "youtube" and youtube_metadata_only:
+        # metadata 补全只需要标题、发布时间等页面字段，不需要解析可下载格式。
+        # 跳过 player config / JS challenge，避免把详情补全阻塞在媒体签名解析上。
+        extractor_args = dict(opts.get("extractor_args") or {})
+        youtube_args = dict(extractor_args.get("youtube") or {})
+        youtube_args["player_client"] = ["web_safari"]
+        youtube_args["player_skip"] = ["configs", "js"]
+        extractor_args["youtube"] = youtube_args
+        opts["extractor_args"] = extractor_args
     using_cookies = bool(opts.get("cookiefile"))
     lim = None
     if max_entries is not None:

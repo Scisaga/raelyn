@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import multiprocessing
 import uuid
-from queue import Empty
 from typing import Any
 
 from sqlalchemy import String, cast, exists, select
@@ -308,17 +307,48 @@ def _compact_youtube_metadata_info(info: dict[str, Any] | None) -> dict[str, Any
     return payload
 
 
-def _ytdlp_extract_info_child(queue, *, url: str) -> None:
+def _ytdlp_extract_info_child(connection, *, url: str) -> None:
     try:
-        info = ytdlp_extract_info(url, provider="youtube", flat=False, max_entries=1)
+        info = ytdlp_extract_info(
+            url,
+            provider="youtube",
+            flat=False,
+            max_entries=1,
+            youtube_metadata_only=True,
+        )
     except YtdlpCookiesInvalidError as e:
-        queue.put(("cookies_invalid", {"provider": e.provider, "reason": e.reason, "message": str(e)}))
+        result = ("cookies_invalid", {"provider": e.provider, "reason": e.reason, "message": str(e)})
     except ProviderPauseRequestError as e:
-        queue.put(("provider_pause", {"provider": e.provider, "reason": e.reason, "message": str(e)}))
+        result = ("provider_pause", {"provider": e.provider, "reason": e.reason, "message": str(e)})
     except BaseException as e:
-        queue.put(("error", {"type": type(e).__name__, "message": str(e)}))
+        result = ("error", {"type": type(e).__name__, "message": str(e)})
     else:
-        queue.put(("ok", _compact_youtube_metadata_info(info)))
+        result = ("ok", _compact_youtube_metadata_info(info))
+    try:
+        connection.send(result)
+    finally:
+        connection.close()
+
+
+def _receive_youtube_metadata_child_result(process, connection, *, timeout_seconds: int):
+    if not connection.poll(max(1, int(timeout_seconds))):
+        if process.is_alive():
+            process.terminate()
+        process.join(5)
+        raise TimeoutError(f"youtube metadata enrich timed out after {timeout_seconds}s")
+
+    try:
+        result = connection.recv()
+    except EOFError as e:
+        process.join(5)
+        raise RuntimeError(f"youtube metadata enrich child exited without result; exitcode={process.exitcode}") from e
+
+    process.join(5)
+    if process.is_alive():
+        process.terminate()
+        process.join(5)
+        raise RuntimeError("youtube metadata enrich child did not exit after returning result")
+    return result
 
 
 def _extract_youtube_video_metadata_with_timeout(
@@ -326,22 +356,21 @@ def _extract_youtube_video_metadata_with_timeout(
     url: str,
 ) -> dict[str, Any]:
     ctx = multiprocessing.get_context("spawn")
-    queue = ctx.Queue(maxsize=1)
-    process = ctx.Process(target=_ytdlp_extract_info_child, kwargs={"queue": queue, "url": url})
+    parent_connection, child_connection = ctx.Pipe(duplex=False)
+    process = ctx.Process(target=_ytdlp_extract_info_child, kwargs={"connection": child_connection, "url": url})
     process.start()
-    process.join(_YOUTUBE_METADATA_ENRICH_TIMEOUT_SECONDS)
-    if process.is_alive():
-        process.terminate()
-        process.join(5)
-        raise TimeoutError(f"youtube metadata enrich timed out after {_YOUTUBE_METADATA_ENRICH_TIMEOUT_SECONDS}s")
-
+    child_connection.close()
     try:
-        status, payload = queue.get_nowait()
-    except Empty as e:
-        raise RuntimeError(f"youtube metadata enrich child exited without result; exitcode={process.exitcode}") from e
+        status, payload = _receive_youtube_metadata_child_result(
+            process,
+            parent_connection,
+            timeout_seconds=_YOUTUBE_METADATA_ENRICH_TIMEOUT_SECONDS,
+        )
     finally:
-        queue.close()
-        queue.join_thread()
+        parent_connection.close()
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
 
     if status == "ok":
         if isinstance(payload, dict):

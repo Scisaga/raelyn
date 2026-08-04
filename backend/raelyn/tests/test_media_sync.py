@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import multiprocessing
 import sys
 import unittest
 import uuid
@@ -18,6 +19,7 @@ from raelyn.jobs.handlers.media_sync import (
     _compact_raw_info,
     _compact_youtube_metadata_info,
     _insert_discovered_video_if_new,
+    _receive_youtube_metadata_child_result,
     _youtube_profile_avatar_url,
     _youtube_metadata_enrichment_terminal_failed,
     _ytdlp_extract_info_child,
@@ -32,6 +34,13 @@ from raelyn.services.video_meta import parse_published_at
 
 def _scalar_one_or_none(value):
     return Mock(scalar_one_or_none=Mock(return_value=value))
+
+
+def _send_large_metadata_payload(connection) -> None:
+    try:
+        connection.send(("ok", {"description": "x" * (1024 * 1024)}))
+    finally:
+        connection.close()
 
 
 def _fake_insert_collector(added_videos: list[Video]):
@@ -624,13 +633,17 @@ class YoutubeMetadataEnrichTests(unittest.TestCase):
         self.assertIn("job.attempt >= job.max_attempts", compiled)
 
     def test_youtube_metadata_child_returns_compact_payload(self) -> None:
-        class Queue:
+        class Connection:
             item = None
+            closed = False
 
-            def put(self, item) -> None:
+            def send(self, item) -> None:
                 self.item = item
 
-        queue = Queue()
+            def close(self) -> None:
+                self.closed = True
+
+        connection = Connection()
         full_info = {
             "id": "vH7rDhyn1W8",
             "title": "remote title",
@@ -644,11 +657,19 @@ class YoutubeMetadataEnrichTests(unittest.TestCase):
             "thumbnails": [{"url": "https://img.example/thumb-large.jpg"}],
         }
 
-        with patch("raelyn.jobs.handlers.media_sync.ytdlp_extract_info", return_value=full_info):
-            _ytdlp_extract_info_child(queue, url="https://www.youtube.com/watch?v=vH7rDhyn1W8")
+        with patch("raelyn.jobs.handlers.media_sync.ytdlp_extract_info", return_value=full_info) as extract_info:
+            _ytdlp_extract_info_child(connection, url="https://www.youtube.com/watch?v=vH7rDhyn1W8")
 
-        self.assertIsNotNone(queue.item)
-        status, payload = queue.item
+        extract_info.assert_called_once_with(
+            "https://www.youtube.com/watch?v=vH7rDhyn1W8",
+            provider="youtube",
+            flat=False,
+            max_entries=1,
+            youtube_metadata_only=True,
+        )
+        self.assertIsNotNone(connection.item)
+        self.assertTrue(connection.closed)
+        status, payload = connection.item
         self.assertEqual(status, "ok")
         self.assertEqual(payload, _compact_youtube_metadata_info(full_info))
         self.assertEqual(payload["thumbnail"], "https://img.example/thumb.jpg")
@@ -656,6 +677,24 @@ class YoutubeMetadataEnrichTests(unittest.TestCase):
         self.assertNotIn("formats", payload)
         self.assertNotIn("automatic_captions", payload)
         self.assertNotIn("thumbnails", payload)
+
+    def test_youtube_metadata_parent_drains_large_payload_before_join(self) -> None:
+        ctx = multiprocessing.get_context("spawn")
+        parent_connection, child_connection = ctx.Pipe(duplex=False)
+        process = ctx.Process(target=_send_large_metadata_payload, args=(child_connection,))
+        process.start()
+        child_connection.close()
+        try:
+            status, payload = _receive_youtube_metadata_child_result(process, parent_connection, timeout_seconds=5)
+        finally:
+            parent_connection.close()
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+
+        self.assertEqual(status, "ok")
+        self.assertEqual(len(payload["description"]), 1024 * 1024)
+        self.assertFalse(process.is_alive())
 
     def test_youtube_metadata_enrich_updates_missing_published_at(self) -> None:
         video = Video(

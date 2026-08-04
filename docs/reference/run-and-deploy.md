@@ -187,7 +187,7 @@ B 站资料同步不再调用会返回 `-799` / 412 的旧 `/x/space/acc/info` A
 YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“公开采集默认不用 cookies”。当前 YouTube 普通同步 / 下载都会使用已保存的 `YTDLP_COOKIES_YOUTUBE`；只有 provider 因 cookies / bot check / auth check 暂停时，`media.sync_videos` 才可按 `SYNC_PUBLIC_DISCOVERY_ENABLED=true` 进入 `public_discovery` 降级模式，显式无 cookies 抓公开视频 flat 列表。该模式只减少漏入库风险，下载、字幕和 metadata 补全仍等 provider 恢复后执行。完整判断与排障步骤见 [YouTube yt-dlp 同步与 Cookies 策略](youtube-ytdlp-strategy.md)。
 当前实测的下载路径在无 cookies 时会直接触发 `LOGIN_REQUIRED`，因此 YouTube 下载任务固定使用已保存的 `YTDLP_COOKIES_YOUTUBE`，并通过 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 尽量贴近浏览器请求形态。
 如果错误只是 `Sign in to confirm you're not a bot` 或频道 / 播放列表鉴权检查失败，系统会暂停 YouTube provider，但不再直接归类为 `YTDLP_COOKIES_YOUTUBE` 失效；只有 yt-dlp 明确报 cookies no longer valid 或 cookies 格式错误时，才提示更新 cookies。
-保存有效非空 YouTube / B 站 cookies 后，系统会清除对应 provider pause，并为该 provider 的受监控媒体补投一次 `max_entries=SYNC_COOKIE_RECOVERY_MAX_ENTRIES` 的同步追赶任务，默认 `200`。
+保存有效非空 YouTube / B 站 cookies 后，系统会清除对应 provider pause，并为该 provider 的受监控媒体补投一次 `max_entries=SYNC_COOKIE_RECOVERY_MAX_ENTRIES` 的同步追赶任务，默认 `200`。这些恢复任务会均匀分布在一个 `SYNC_INTERVAL_MINUTES` 周期内；已有 pending 同步（包括 public discovery）会原地转换为认证恢复并重新排期，避免 Cookie 更新后集中扫描全部媒体。
 若失败信息是 `ERROR: unable to download video data: HTTP Error 403: Forbidden`，先检查格式选择器是否优先选中了 YouTube DASH video-only。2026-05-18 实测中，Bloomberg 样本的 360p+ DASH video-only URL 返回 403，但 HLS / combined MP4 format `96` 可下载；默认配置已改为优先 combined MP4/HLS。
 格式选择与验证步骤见 [yt-dlp 视频 / 音频格式选择策略](ytdlp-format-selection.md)。
 

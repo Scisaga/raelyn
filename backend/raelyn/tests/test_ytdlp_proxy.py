@@ -262,6 +262,54 @@ class YtdlpProxyTests(unittest.TestCase):
         self.assertNotIn("cookiefile", captured)
         ensure_cookie_file.assert_not_called()
 
+    def test_youtube_metadata_only_skips_player_format_work(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeYoutubeDL:
+            def __init__(self, opts):
+                captured.update(opts)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def extract_info(self, _url, *, download):
+                assert download is False
+                return {"id": "metadata-only", "timestamp": 1780401635}
+
+        original_bgutil = settings.ytdlp_pot_bgutil_base_url
+        try:
+            settings.ytdlp_pot_bgutil_base_url = "http://127.0.0.1:4416"
+            with (
+                patch("raelyn.services.ytdlp.load_provider_cookie_text", return_value=""),
+                patch("raelyn.services.ytdlp._load_ytdlp_youtube_lang", return_value="en-US"),
+                patch("raelyn.services.ytdlp.YoutubeDL", FakeYoutubeDL),
+            ):
+                result = ytdlp_extract_info(
+                    "https://www.youtube.com/watch?v=metadata-only",
+                    provider="youtube",
+                    flat=False,
+                    max_entries=1,
+                    youtube_metadata_only=True,
+                )
+        finally:
+            settings.ytdlp_pot_bgutil_base_url = original_bgutil
+
+        self.assertEqual(result["timestamp"], 1780401635)
+        self.assertEqual(
+            captured["extractor_args"],
+            {
+                "youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:4416"]},
+                "youtube": {
+                    "lang": ["en-US"],
+                    "player_client": ["web_safari"],
+                    "player_skip": ["configs", "js"],
+                },
+            },
+        )
+
     def test_extract_info_reports_bot_check_with_actual_cookie_mode(self) -> None:
         class FakeYoutubeDL:
             def __init__(self, _opts):

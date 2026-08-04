@@ -53,6 +53,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - `media.sync_videos` 在 yt-dlp flat 列表提取期间复用 yt-dlp 的真实分页 / 条目日志刷新执行活动心跳，并在提取完成后和逐条处理循环中继续刷新；这使万级频道全量枚举不会因单次提取超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 被误判卡死，同时真实无日志、无进展的阻塞仍会由 watchdog 回收。YouTube 缺失发布时间的单视频详情解析已拆到 `video.enrich_metadata.youtube`，避免同步任务在批量补 metadata 时长期不推进 `active_at`。
 - `video.enrich_metadata.youtube` 是低优先级单视频补全任务，自身通过可终止子进程给 yt-dlp 详情解析设置 45 秒硬超时；子进程只向父进程回传 compact metadata，避免完整 yt-dlp `info` 大对象在进程队列中阻塞；超时只使该补全任务失败或重试，不扩大 `media.sync_videos` 的执行窗口。同一视频达到 `max_attempts` 终止失败后，后续自动同步不会再为同一 `dedupe_key` 反复投递补全任务，避免 best-effort 补全绕过任务重试上限。
 - provider-facing worker（同步 / 下载）会在本进程内启动执行 watchdog；当 `current_job_id` 指向同步或下载任务且 `active_at` 超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进时，worker 主动退出，让 supervisor 重启并释放 PostgreSQL session 级 advisory lock。
+- 保存新的平台 cookies 并恢复 provider 时，catch-up `media.sync_videos` 不会集中变为可领取；配置 API 会把它们均匀排在一个正常同步周期内，并将同媒体已有的 pending 同步（包括 public discovery）原地转换为认证恢复任务。恢复调度仍落在 `job.scheduled_for` 单一事实源中，不依赖 API 进程内计时器。
 - YouTube 频道/播放列表的 `youtube_auth_check` 可能由一次瞬时网页下载失败触发。worker 在当前任务仍有剩余 attempt 时只按既有退避重试，不持久化 provider pause；仅最终尝试仍返回同一错误时才暂停 YouTube。明确 cookies 无效、`youtube_bot_check` 与其他 provider 风控仍立即暂停，避免重复请求扩大风控。
 - `scheduler` 或 `worker` 启动时可执行回收扫描：
   - `status=running AND lease_expires_at < now()` 视为失联，转回 `pending` 或标记为 `failed`
