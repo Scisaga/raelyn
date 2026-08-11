@@ -138,7 +138,7 @@ class Settings(BaseSettings):
     event_extraction_chunk_max_chars: int = Field(default=12000, validation_alias=AliasChoices("EVENT_EXTRACTION_CHUNK_MAX_CHARS"))
     event_extraction_ollama_stream: bool = Field(default=True, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_STREAM"))
     event_extraction_ollama_num_ctx: int = Field(default=8192, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_NUM_CTX"))
-    event_extraction_ollama_num_predict: int = Field(default=2500, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_NUM_PREDICT"))
+    event_extraction_ollama_num_predict: int = Field(default=4000, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_NUM_PREDICT"))
     event_extraction_ollama_idle_timeout_seconds: int = Field(
         default=120,
         validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_IDLE_TIMEOUT_SECONDS"),
@@ -156,7 +156,7 @@ class Settings(BaseSettings):
     # --- Event embeddings (OpenAI-compatible embedding servers) ---
     embedding_url: str = ""
     embedding_endpoint: str = "/v1/embeddings"
-    embedding_model: str = "Qwen/Qwen3-Embedding-8B"
+    embedding_model: str = "Qwen/Qwen3-Embedding-4B"
     embedding_dim: int = 1024
     embedding_timeout_seconds: int = 120
     embedding_worker_concurrency: int = 1

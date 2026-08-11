@@ -155,7 +155,9 @@ class ClaimNextJobProviderPauseTests(unittest.TestCase):
         with patch("raelyn.jobs.claim.is_paused", return_value=False):
             with patch("raelyn.jobs.claim.job_provider", return_value="youtube"):
                 with patch("raelyn.jobs.claim.is_provider_paused", return_value=False):
-                    claimed = claim_next_job(session, worker_id="worker-1", lease_seconds=60)
+                    with patch("raelyn.jobs.claim.youtube_download_circuit_blocks_claims", return_value=False):
+                        with patch("raelyn.jobs.claim.allow_youtube_download_circuit_claim", return_value=True):
+                            claimed = claim_next_job(session, worker_id="worker-1", lease_seconds=60)
 
         self.assertIs(claimed, newer_job)
         self.assertEqual(newer_job.status, "running")

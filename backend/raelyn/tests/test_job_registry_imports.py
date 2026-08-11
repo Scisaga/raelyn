@@ -31,6 +31,7 @@ class JobRegistryImportTests(unittest.TestCase):
             "video.extract_events",
             "video.polish_transcript",
             "event.embed",
+            "event.backfill_embeddings",
             "playlist.backfill_events",
             "playlist.backfill_events_range",
             "playlist.mark_event_map_dirty",

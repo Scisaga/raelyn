@@ -224,7 +224,7 @@ YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“�
 - 若你手动多终端启动，并且希望兑现 `ASR_WORKER_CONCURRENCY=N` 的 ASR 请求并发，需要把 `./scripts/dev/run-worker.sh asr` 至少启动 `N` 次。
 - 若你手动多终端启动，并且希望兑现 `AI_WORKER_CONCURRENCY=N` 的 LLM 任务并发，需要把 `./scripts/dev/run-worker.sh ai` 至少启动 `N` 次。
 - `ai` worker 负责 `video.extract_events`、`video.extract_events_batch`、`playlist.backfill_events` 与 `playlist.backfill_events_range`，播放列表回填父任务先按月拆分范围任务，范围任务再按 source 字符数投递批量或单视频抽取；事件抽取读取 `plain` transcript 并调用 LLM。Ollama `/api/generate` 事件抽取会使用 endpoint + model 级 advisory lock，锁忙时重排任务，因此提高 `AI_WORKER_CONCURRENCY` 不会让同一个本地大模型的事件抽取并发增加。
-- `embedding` worker 负责 `event.embed`，只为 accepted 事件生成结构化事件 embedding。
+- `embedding` worker 负责 `event.embed` 与可恢复的 `event.backfill_embeddings`；前者为单条 accepted 事件生成结构化 embedding，后者以 64 条为一批原位迁移存量向量，并在每批提交后持久化进度、吞吐、ETA 与 lease。
 - `analysis` worker 负责 `playlist.mark_event_map_dirty`、`playlist.build_event_map_snapshot` 与 `playlist.prune_event_map_snapshots`。至少保留 1 个 analysis worker，才能让新增视频在 embedding ready 后按微批自动更新地图，并在构建成功后保留 current 与上一版 ready 快照、分批清理更旧快照。构建按 `ANALYSIS_STREAM_BATCH_SIZE` 流式冻结输入、生成 canonical/topic/story、执行 IncrementalPCA，并在独立子进程运行 UMAP。
 - `ANALYSIS_CPU_THREADS=2` 是每个 analysis worker 的 CPU 线程预算。Python worker 入口会在导入 NumPy / sklearn 前，将它统一设置给 `OMP_NUM_THREADS`、`OPENBLAS_NUM_THREADS` 和 `MKL_NUM_THREADS`，因此 `run-worker.sh`、`devctl.sh`、Docker 与直接执行 `python -m raelyn.worker` 的行为一致。all-types 或 `WORKER_TYPES` 显式包含 analysis 任务的 worker 也应用该预算，其他专职 worker 不受影响。配置变更不会热加载，修改后必须重启对应 worker。
 - 12 GiB 是父子进程树安全上限而非预分配。32 GiB 主机应观察 `event_map_snapshot.peak_rss_bytes` 与全机 `MemAvailable`；systemd / cgroup `MemoryMax` 应设置为相同或略高的硬上限。
@@ -239,6 +239,17 @@ YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“�
 
 默认按内容时间轴抽取最近 365 天。可用 `--since YYYY-MM-DD --until YYYY-MM-DD` 指定本地日期闭区间，用 `--dry-run` 先查看命中视频数。
 脚本会向数据库 `job` 表投递 `video.extract_events` 任务；播放列表页面的历史回填仍会使用 `video.extract_events_batch` 管理短视频任务，但每次 LLM 请求只包含 1 个视频。脚本默认按 `--progress-every` 的批大小分批提交，避免长时间运行时已投递任务不可见。
+
+事件 embedding 模型全量原位迁移：
+
+```bash
+./scripts/enqueue-event-embedding-backfill.py
+./scripts/enqueue-event-embedding-backfill.py --yes
+```
+
+默认命令只读统计 accepted 事件、目标模型 ready 数、旧模型行数和受影响播放列表；只有显式 `--yes` 才投递 `event.backfill_embeddings`。当前迁移固定从 `Qwen/Qwen3-Embedding-8B` 到 `Qwen/Qwen3-Embedding-4B`，维度 `1024`、批大小 `64`。同一源模型、目标模型和维度只允许一个 pending/running Job。每批 HTTP 请求期间不持有数据库事务，写入前重新校验 `worker_id + execution_token` 所有权；已完成批次原位提交，重试或进程重启时只扫描剩余事件。
+
+迁移前应暂停 `analysis`，让 current 旧快照继续服务；向量全部 ready 后，任务会清理残留 8B 行、为所有受影响播放列表各投递一次 dirty 重建，并仅在暂停原因为 `embedding_model_migration` 时自动恢复 `analysis`。新 ready 快照会原子替换 current，既有 prune 任务继续只保留 current 与上一版 ready。
 
 事件 v2 清库重抽维护命令：
 

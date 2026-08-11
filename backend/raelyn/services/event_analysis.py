@@ -100,6 +100,10 @@ class _EventExtractionJsonParseError(_EventExtractionResponseError):
     """LLM 事件抽取响应不是合法 JSON。"""
 
 
+class _EventExtractionOutputTruncatedError(_EventExtractionResponseError):
+    """LLM 事件抽取响应在生成上限处被截断。"""
+
+
 @dataclass(frozen=True)
 class _EventExtractionVideoSnapshot:
     id: uuid.UUID
@@ -340,12 +344,44 @@ def _event_extraction_llm_options(session: Session) -> dict[str, Any]:
         return options
 
     num_ctx = _positive_int(settings.event_extraction_ollama_num_ctx, 8192)
-    num_predict = _positive_int(settings.event_extraction_ollama_num_predict, 2500)
+    num_predict = _positive_int(settings.event_extraction_ollama_num_predict, 4000)
     if num_ctx > 0:
         options["num_ctx"] = num_ctx
     if num_predict > 0:
         options["num_predict"] = num_predict
     return options
+
+
+def _event_extraction_output_truncation_error(
+    session: Session,
+    *,
+    result: dict[str, Any],
+    phase: str,
+    parse_error: _EventExtractionResponseError,
+    expected_video_ids: Sequence[str],
+    include_usage: bool,
+) -> _EventExtractionOutputTruncatedError | None:
+    usage = dict(result.get("usage") or {})
+    meta = dict(result.get("meta") or {})
+    done_reason = str(meta.get("done_reason") or "").strip().lower()
+    output_tokens = _positive_int(usage.get("output_tokens"), 0)
+    num_predict = _positive_int(_event_extraction_llm_options(session).get("num_predict"), 0)
+    if done_reason != "length" and not (num_predict > 0 and output_tokens >= num_predict):
+        return None
+
+    details = [f"output_tokens={output_tokens}"]
+    if num_predict > 0:
+        details.append(f"num_predict={num_predict}")
+    if done_reason:
+        details.append(f"done_reason={done_reason}")
+    return _EventExtractionOutputTruncatedError(
+        [
+            f"event extraction {phase} output truncated before valid JSON "
+            f"({', '.join(details)}): {parse_error}"
+        ],
+        affected_video_ids=expected_video_ids,
+        usage=usage if include_usage else None,
+    )
 
 
 def _session_supports_pg_advisory_lock(session: Session) -> bool:
@@ -596,6 +632,8 @@ def _parse_event_extraction_batch_response_with_json_repair(
     *,
     response_text: str,
     expected_video_ids: list[str],
+    response_usage: dict[str, Any] | None = None,
+    response_meta: dict[str, Any] | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], list[str], dict[str, Any] | None]:
     initial_parse_error: _EventExtractionJsonParseError | None = None
     try:
@@ -607,6 +645,16 @@ def _parse_event_extraction_batch_response_with_json_repair(
     except _EventExtractionJsonParseError as exc:
         if not _strip_llm_wrappers(response_text):
             raise
+        truncation_error = _event_extraction_output_truncation_error(
+            session,
+            result={"usage": response_usage or {}, "meta": response_meta or {}},
+            phase="initial",
+            parse_error=exc,
+            expected_video_ids=expected_video_ids,
+            include_usage=False,
+        )
+        if truncation_error is not None:
+            raise truncation_error from exc
         initial_parse_error = exc
 
     assert initial_parse_error is not None
@@ -625,6 +673,16 @@ def _parse_event_extraction_batch_response_with_json_repair(
             expected_video_ids=expected_video_ids,
         )
     except _EventExtractionResponseError as repair_error:
+        truncation_error = _event_extraction_output_truncation_error(
+            session,
+            result=repair_result,
+            phase="JSON repair",
+            parse_error=repair_error,
+            expected_video_ids=expected_video_ids,
+            include_usage=True,
+        )
+        if truncation_error is not None:
+            raise truncation_error from repair_error
         raise _EventExtractionResponseError(
             [
                 "event extraction JSON repair failed after initial parse error "
@@ -1708,6 +1766,8 @@ def extract_video_events_batch(
                     session,
                     response_text=str(result.get("text") or ""),
                     expected_video_ids=expected_aliases,
+                    response_usage=dict(result.get("usage") or {}),
+                    response_meta=dict(result.get("meta") or {}),
                 )
             )
             _merge_event_extraction_usage(usage, repair_usage)
@@ -1758,6 +1818,8 @@ def extract_video_events_batch(
                         error_message=str(response_structure_error),
                     )
                 session.commit()
+                if isinstance(response_structure_error, _EventExtractionOutputTruncatedError):
+                    raise JobTerminalFailure(str(response_structure_error)) from response_structure_error
                 raise response_structure_error
 
         for prepared_video in batch_videos:
@@ -2342,14 +2404,10 @@ def backfill_playlist_events_range(
     }
 
 
-def _event_embedding_text(session: Session, event: MarketEvent) -> str:
-    entities = (
-        session.execute(
-            select(MarketEventEntity).where(MarketEventEntity.event_id == event.id).order_by(MarketEventEntity.entity_type.asc(), MarketEventEntity.name.asc())
-        )
-        .scalars()
-        .all()
-    )
+def _event_embedding_text_from_entities(
+    event: MarketEvent,
+    entities: Sequence[MarketEventEntity],
+) -> str:
     entity_text = "；".join(
         f"{entity.entity_type}:{entity.name}:{entity.role or ''}" for entity in entities[:40]
     )
@@ -2364,6 +2422,39 @@ def _event_embedding_text(session: Session, event: MarketEvent) -> str:
         "entities": entity_text,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def event_embedding_texts(
+    session: Session,
+    events: Sequence[MarketEvent],
+) -> dict[uuid.UUID, str]:
+    event_ids = [event.id for event in events]
+    if not event_ids:
+        return {}
+    entities = (
+        session.execute(
+            select(MarketEventEntity)
+            .where(MarketEventEntity.event_id.in_(event_ids))
+            .order_by(
+                MarketEventEntity.event_id.asc(),
+                MarketEventEntity.entity_type.asc(),
+                MarketEventEntity.name.asc(),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    entities_by_event: dict[uuid.UUID, list[MarketEventEntity]] = defaultdict(list)
+    for entity in entities:
+        entities_by_event[entity.event_id].append(entity)
+    return {
+        event.id: _event_embedding_text_from_entities(event, entities_by_event[event.id])
+        for event in events
+    }
+
+
+def _event_embedding_text(session: Session, event: MarketEvent) -> str:
+    return event_embedding_texts(session, [event])[event.id]
 
 
 def embed_event(session: Session, *, event_id: uuid.UUID) -> dict[str, Any]:

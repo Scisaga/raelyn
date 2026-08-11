@@ -149,7 +149,7 @@
   - 本地 ASR `ReadTimeout` 最多执行 3 次；第三次仍超时则终止并保留人工重试。火山 ASR 继续使用原有 provider 超时行为。
 - `EMBEDDING_WORKER_CONCURRENCY`
   - `devctl.sh` / Docker 单容器入口启动 `embedding` worker 的进程数，默认 `1`。
-  - 可设为 `0`，表示当前节点不启动 `embedding` worker；事件 embedding 任务会保留在 `pending`，直到有 embedding worker 可领取。
+  - 可设为 `0`，表示当前节点不启动 `embedding` worker；`event.embed` 与 `event.backfill_embeddings` 会保留在 `pending`，直到有 embedding worker 可领取。
 - `ANALYSIS_WORKER_CONCURRENCY`
   - `devctl.sh` / Docker 单容器入口启动 `analysis` worker 的进程数，默认 `1`。
   - 可设为 `0`，表示当前节点不启动 `analysis` worker；`playlist.mark_event_map_dirty`、`playlist.build_event_map_snapshot` 与 `playlist.prune_event_map_snapshots` 会保留在 `pending`。
@@ -179,7 +179,7 @@
 - `EVENT_EXTRACTION_OLLAMA_NUM_CTX`
   - Ollama 事件抽取请求的 `options.num_ctx`，默认 `8192`。
 - `EVENT_EXTRACTION_OLLAMA_NUM_PREDICT`
-  - Ollama 事件抽取请求的 `options.num_predict`，默认 `2500`，用于限制 JSON 生成不会无限延长。
+  - Ollama 事件抽取请求的 `options.num_predict`，默认 `4000`，用于限制 JSON 生成不会无限延长。当无法解析的响应以 `done_reason=length` 结束，或输出 token 数达到该上限时，任务会明确记录为输出截断；不再使用相同上限调用 JSON 修复，也不重复执行确定性相同的 job attempt。
 - `EVENT_EXTRACTION_OLLAMA_IDLE_TIMEOUT_SECONDS`
   - Ollama 事件抽取流式读取时的无输出读超时，默认 `120`。超过该时间没有任何流式输出会失败并进入任务重试/重排链路。
 - `EVENT_EXTRACTION_OLLAMA_BUSY_DEFER_SECONDS`
@@ -237,7 +237,9 @@
 - `EMBEDDING_URL`
 - `EMBEDDING_ENDPOINT`
 - `EMBEDDING_MODEL`
+  - 事件 embedding 默认模型为 `Qwen/Qwen3-Embedding-4B`。模型改变后，旧模型向量不能继续与新模型向量混用，应通过可恢复的全量回填任务重算。
 - `EMBEDDING_DIM`
+  - 默认 `1024`；事件向量、地图快照与登录门面匿名样本的迁移必须保持该维度一致。
 - `EMBEDDING_TIMEOUT_SECONDS`
 - `EMBEDDING_WORKER_CONCURRENCY`
 - `ANALYSIS_CPU_THREADS`

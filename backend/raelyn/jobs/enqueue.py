@@ -161,9 +161,34 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
             event_id = uuid.UUID(str(params2.get("event_id")))
         except Exception:
             return None, params2
-        model = str(settings.embedding_model or "").strip() or "Qwen/Qwen3-Embedding-8B"
+        model = str(settings.embedding_model or "").strip() or "Qwen/Qwen3-Embedding-4B"
         dim = max(1, int(settings.embedding_dim or 1024))
         return f"event_embedding:{event_id}:{model}:{dim}", params2
+
+    if type_ == "event.backfill_embeddings":
+        if not isinstance(params, dict):
+            return None, params
+        params2 = dict(params)
+        source_model = str(params2.get("source_model") or "").strip() or "Qwen/Qwen3-Embedding-8B"
+        target_model = (
+            str(params2.get("target_model") or "").strip()
+            or str(settings.embedding_model or "").strip()
+            or "Qwen/Qwen3-Embedding-4B"
+        )
+        embedding_dim = max(1, int(params2.get("embedding_dim") or settings.embedding_dim or 1024))
+        batch_size = max(1, min(64, int(params2.get("batch_size") or 64)))
+        params2.update(
+            {
+                "source_model": source_model,
+                "target_model": target_model,
+                "embedding_dim": embedding_dim,
+                "batch_size": batch_size,
+            }
+        )
+        return (
+            f"event_embedding_backfill:{source_model}:{target_model}:{embedding_dim}",
+            params2,
+        )
 
     if type_ == "playlist.build_event_map_snapshot":
         if not isinstance(params, dict):
@@ -173,7 +198,7 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
             playlist_id = uuid.UUID(str(params2.get("playlist_id")))
         except Exception:
             return None, params2
-        model = str(settings.embedding_model or "").strip() or "Qwen/Qwen3-Embedding-8B"
+        model = str(settings.embedding_model or "").strip() or "Qwen/Qwen3-Embedding-4B"
         dim = max(1, int(settings.embedding_dim or 1024))
         params2["playlist_id"] = str(playlist_id)
         params2["embedding_model"] = model
@@ -309,6 +334,15 @@ def _pending_job_for_dedupe(
     return session.execute(statement).scalar_one_or_none()
 
 
+def _active_job_for_dedupe(session: Session, dedupe_key: str) -> Job | None:
+    return session.execute(
+        select(Job)
+        .where(Job.dedupe_key == dedupe_key, Job.status.in_(("pending", "running")))
+        .order_by(Job.created_at.asc(), Job.id.asc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
 def _merge_pending_dirty_job(existing: Job, params: dict[str, Any], priority: int) -> None:
     current = dict(existing.params or {})
     reasons: list[str] = []
@@ -346,7 +380,12 @@ def enqueue_job(
     if dedupe_key:
         _lock_pending_dedupe_key(session, dedupe_key)
         lock_existing = type_ == "playlist.mark_event_map_dirty"
-        existing = _pending_job_for_dedupe(session, dedupe_key, lock=lock_existing)
+        active_dedupe = type_ == "event.backfill_embeddings"
+        existing = (
+            _active_job_for_dedupe(session, dedupe_key)
+            if active_dedupe
+            else _pending_job_for_dedupe(session, dedupe_key, lock=lock_existing)
+        )
         if existing:
             if lock_existing:
                 _merge_pending_dirty_job(existing, params2, priority)
@@ -360,7 +399,11 @@ def enqueue_job(
                 session.expunge(job)
             except Exception:
                 pass
-            existing = _pending_job_for_dedupe(session, dedupe_key, lock=lock_existing)
+            existing = (
+                _active_job_for_dedupe(session, dedupe_key)
+                if active_dedupe
+                else _pending_job_for_dedupe(session, dedupe_key, lock=lock_existing)
+            )
             if existing:
                 if lock_existing:
                     _merge_pending_dirty_job(existing, params2, priority)

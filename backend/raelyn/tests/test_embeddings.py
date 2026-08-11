@@ -68,6 +68,24 @@ class EmbeddingClientTests(unittest.TestCase):
         self.assertEqual(vectors, [[1.0, 2.0], [3.0, 4.0]])
         self.assertEqual(calls[0]["json"]["input"], ["第一条", "第二条"])
 
+    def test_embed_texts_rejects_extra_response_rows(self) -> None:
+        calls: list[dict] = []
+        response = _FakeResponse(
+            200,
+            {
+                "data": [
+                    {"index": 0, "embedding": [1, 2]},
+                    {"index": 0, "embedding": [3, 4]},
+                ]
+            },
+        )
+
+        with patch.object(embeddings.settings, "embedding_url", "http://embedding.test"):
+            with patch.object(embeddings.settings, "embedding_dim", 2):
+                with patch.object(embeddings.httpx, "Client", lambda **_kwargs: _FakeClient(response, calls)):
+                    with self.assertRaisesRegex(EmbeddingError, "row count"):
+                        embeddings.embed_texts(["第一条"])
+
     def test_check_embedding_health_uses_health_endpoint_and_ignores_environment_proxy(self) -> None:
         calls: list[dict] = []
         client_kwargs: list[dict] = []

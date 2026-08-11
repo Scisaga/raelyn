@@ -42,7 +42,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 ## 租约 / 心跳与回收
 
 - Worker 执行长任务时周期性刷新 `lease_expires_at`。进度和 lease 更新都必须按 `(job_id, status=running, worker_id, execution_token)` 做 CAS；受影响行数为 0 表示本次执行已经失去所有权，handler 必须退出。
-- 长任务若在业务函数内部有明显批处理检查点，可以通过同一条 token-aware CAS 同步更新进度和 `lease_expires_at`，使 DB 中的任务事实源持续反映真实运行状态；例如事件地图快照会在 embedding 批读取、离散度计算、事件检测和写库阶段更新进度。
+- 长任务若在业务函数内部有明显批处理检查点，可以通过同一条 token-aware CAS 同步更新进度和 `lease_expires_at`，使 DB 中的任务事实源持续反映真实运行状态；例如事件地图快照会在 embedding 批读取、离散度计算、事件检测和写库阶段更新进度，`event.backfill_embeddings` 则在每个 64 条向量批次的原子提交中同步 checkpoint。
 - 下载任务的 yt-dlp 进度回调会同步刷新 `lease_expires_at`，避免大文件或慢速下载超过初始 1 小时租约后被误回收成 `pending`，但原 worker 仍继续占用 provider 下载锁。
 - YouTube 下载的 yt-dlp logger 产生活动日志时会刷新 `worker_heartbeat.active_at`，覆盖连接建立、同一 URL 短重试和重新解析等尚未产生字节进度回调的阶段；真正长时间无日志、无进度的阻塞仍由执行 watchdog 回收。
 - 本地 `video.asr_transcribe` 在音频下载完成、发起单次 ASR 请求前，按 `4x realtime + 120s` 计算 timeout，并将 lease 一次性延长到请求窗口后 300 秒；更新带 `status=running + worker_id + execution_token` 所有权条件，避免旧执行覆盖新 owner。超时前两次走 worker 退避，第三次终止，防止确定性慢样本连续占用 5 次推理资源。
@@ -67,10 +67,13 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 ## 业务终态与可重试失败
 
 - 下载 handler 的 `downloading` 属于当前事务内的中间状态，异常回滚后不能作为终止失败判据。下载 job 耗尽重试时，worker 会重新锁定对应 `Video` 行并查询是否已有 `Asset.type=video`：仅当视频仍为 `discovered/downloading` 且没有视频资产时改为 `failed`；已有视频资产或已进入其它可用状态时保留原状态，只记录最新错误。该收尾只发生在终止失败，不影响中间退避重试。
-- `video.download.youtube` 将媒体传输恢复分为两层：代理 `CONNECT ... 502`、`connection closed`、`connection reset` 或媒体 URL `HTTP 502` 在单轮解析内只对同一 URL 执行 `retries=2`，随后从原视频页重新解析，最多两轮。每轮使用独立临时产物，并保持 cookies、代理、impersonation 与 format 选择策略不变；重新解析可能刷新签名 URL，但不保证更换 CDN。两轮均失败后才抛给外层 `attempt/max_attempts` 退避。
+- `video.download.youtube` 将下载恢复分为三层。单次执行内，代理 `CONNECT ... 502`、`connection closed`、`connection reset`、媒体 URL `HTTP 502` 或解析结果 `formats` 为空时，同一媒体 URL 只执行 `retries=1`（首次请求加一次短重试）；原 selector 最多从视频页解析两轮，媒体传输仍失败时只让一个既有 fallback selector 再解析一轮。每轮使用独立临时产物，并保持 cookies、代理与 impersonation 不变。
+- 单次恢复耗尽后抛出带原因码的 `YtdlpTransientDownloadError`。worker 将这类任务扩展为最多 4 次执行，前三次失败分别按 2 分钟、10 分钟、30 分钟加确定性 `±20%` jitter 写回 `job.scheduled_for`，等待期间释放 worker 与 provider 下载锁；其它下载错误仍保持最多 2 次、10 秒起步的通用退避。重复 pending job 合并时继承较大的 `attempt/max_attempts`，不能借 dedupe 合并重置自动重试预算；手动重试仍显式把 attempt 清零。
+- 多视频同时出现上述瞬时错误时，worker 把观测写入 `app_config.youtube_download_circuit`。10 分钟内至少 2 个不同 job 累计 4 次失败后打开下载熔断，暂停领取新的 `video.download.youtube`；冷却 5 分钟后只放行一个 half-open 探测，探测失败依次把冷却提升到 15、30 分钟，真实下载成功后关闭熔断。该状态独立于 cookies / bot check 的 provider pause，不改变认证会话或代理配置。
 - YouTube 单次格式下载即使 HTTP 层报告完成，也必须经 FFprobe 读到真实视频和音频 packet；无 packet 的临时容器按格式失败处理并进入下一个 selector。音频提取输出和 ASR 输入无音频 packet 时属于确定性坏输入，分别在资产写入和 ASR 请求前以 `JobTerminalFailure` 收口，避免重复请求同一个坏资产。
 - 事件抽取把“响应顶层结构不满足协议”视为可重试错误，包括 JSON 无法解析、顶层不是对象、缺少 `videos[]`、缺少预期 `video_id` 或对应项缺少 `events[]`。服务会先把当前 `video_event_extraction_run` 持久化为 `failed`，再把异常抛给 worker 进入既有 `attempt/max_attempts` 退避；结构错误不会删除该视频已有事件。
 - 对纯 JSON 语法错误，每个抽取批次在当前任务尝试内最多额外调用一次 LLM 修复语法；修复成功后仍执行完整协议校验，修复失败才进入既有 worker 重试。缺少 `videos[]`、缺少预期 `video_id` 等已能解析但违反协议的响应不会触发修复调用，避免模型借“修复”重新生成业务内容。
+- 事件抽取响应在 JSON 解析失败时会检查 LLM 结束原因与输出 token 数；`done_reason=length` 或输出达到 `num_predict` 表示内容已被截断，不属于可保真修复的 JSON 语法错误。该情况会持久化 failed run 并将当前 job 收口为终止失败，避免相同生成上限下重复修复和重试。
 - `events: []` 是合法的零事件结果，会写入 `succeeded` run；空 `plain` transcript 继续按 `skipped` 成功收口，不强制失败或重试。单条事件字段不合法仍只丢弃该条并记录 warning，不能把内容质量问题扩大成整个响应的结构失败。
 
 ## Worker 角色暂停（Claim Gate）
@@ -89,9 +92,11 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - Job 层可设置 `dedupe_key`
   - 例如 `media.sync_videos:{media_id}`
   - 例如 `video.enrich_metadata.youtube:{video_id}`
+  - 事件模型迁移使用 `event_embedding_backfill:{source_model}:{target_model}:{dimension}`；该类型在事务级 advisory lock 内同时查询 pending/running，避免长任务运行时被重复投递。
   - PostgreSQL 下，创建 pending dedupe job 时先按 `dedupe_key` 获取事务级 advisory lock，再查询已有 `pending`，最后才插入新 job；`job(dedupe_key) where status='pending'` 唯一索引只作为兜底约束，不作为常规并发控制机制。
   - 同一事务需要投递多个 dedupe job 时，调用方必须按稳定 key 顺序投递，避免多个 worker 对同一批 key 反向等待。
   - 手动重试失败任务时，若同一 `dedupe_key` 已有 pending 任务，重试接口会取消那个 pending 任务并复用当前任务，避免提交时撞 pending dedupe 唯一约束
+  - 自动重试合并到同一 `dedupe_key` 的 pending 任务时，会同步继承已经消耗的 `attempt` 和当前 `max_attempts`，避免通过重复投递绕过有界重试
 
 事件地图快照额外使用执行级 staging 所有权：
 
@@ -100,6 +105,8 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - checkpoint、ready finalize 和失败收尾都必须校验领取时捕获的 worker/token。失权执行不得写 snapshot，也不得更新 `event_map_state.last_error` 或 current snapshot 指针。
 - ready 切换后由独立的 `playlist.prune_event_map_snapshots` analysis job 做保留清理；它按播放列表去重、每次只删除一个旧快照并再次投递自己，current、上一版 ready 与所有运行中 staging 始终受保护。清理不进入 API 请求线程，也不扩大 ready 原子切换事务。
 - 应用启动迁移会先查询目录并跳过已经存在的索引和已经生效的表级分析参数；没有旧分析任务时也不会执行空 `UPDATE job`。这样启动进程不会在持有 job 表锁时等待事件地图大表 DDL 锁，避免与正在清理/构建的 analysis worker 形成锁顺序死锁。
+
+事件 embedding 全量迁移同样使用执行级所有权：每批先在无写事务状态调用 embedding 服务，再以 `status=running + worker_id + execution_token` 锁回 Job，复核事件仍为 accepted 且文本 checksum 未变化后，单事务更新向量行与 Job checkpoint。失权、取消或批次写入异常都不会提交当前批；此前批次已经独立提交，重试从“不存在目标模型 ready 向量”的事件继续扫描。迁移完成前不逐事件投递地图 dirty，完成后才按播放列表各投递一次全量地图重建信号。
 
 ## 并发与外部依赖门控（Guardrails）
 

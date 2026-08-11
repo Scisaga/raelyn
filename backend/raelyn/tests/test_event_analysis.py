@@ -163,7 +163,7 @@ class EventAnalysisTests(unittest.TestCase):
         self.assertEqual(llm_generate.call_args.kwargs["idle_timeout_seconds"], 120)
         self.assertEqual(
             llm_generate.call_args.kwargs["options"],
-            {"temperature": 0, "num_ctx": 8192, "num_predict": 2500},
+            {"temperature": 0, "num_ctx": 8192, "num_predict": 4000},
         )
 
     def test_parse_event_response_strips_think_and_drops_bad_events(self) -> None:
@@ -254,6 +254,22 @@ class EventAnalysisTests(unittest.TestCase):
         self.assertIn("只修复 JSON 语法", repair_prompt)
         self.assertIn(malformed, repair_prompt)
         self.assertIn("Expecting ',' delimiter", repair_prompt)
+
+    def test_event_extraction_does_not_repair_truncated_json(self) -> None:
+        malformed = '{"videos":[{"video_id":"v1","events":['
+
+        with self.assertRaises(event_analysis._EventExtractionOutputTruncatedError) as raised:
+            event_analysis._parse_event_extraction_batch_response_with_json_repair(
+                object(),  # type: ignore[arg-type] - 截断分支不访问 session。
+                response_text=malformed,
+                expected_video_ids=["v1"],
+                response_usage={"output_tokens": 4000, "call_count": 1},
+                response_meta={"done_reason": "length"},
+            )
+
+        self.assertIn("output truncated", str(raised.exception))
+        self.assertIn("num_predict=4000", str(raised.exception))
+        self.assertEqual(raised.exception.affected_video_ids, ("v1",))
 
     def test_event_extraction_does_not_repair_valid_json(self) -> None:
         response = '{"videos":[{"video_id":"v1","events":[]}]}'

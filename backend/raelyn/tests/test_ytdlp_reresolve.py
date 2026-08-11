@@ -15,7 +15,12 @@ if str(_BACKEND_DIR) not in sys.path:
 
 from raelyn.config import settings
 from raelyn.services.ffmpeg import ffmpeg_bin
-from raelyn.services.ytdlp import _is_youtube_media_transport_error, ytdlp_download
+from raelyn.services.ytdlp import (
+    YtdlpTransientDownloadError,
+    _is_youtube_media_transport_error,
+    _is_youtube_original_url_reresolve_error,
+    ytdlp_download,
+)
 
 
 class _RotatingMediaHandler(BaseHTTPRequestHandler):
@@ -25,8 +30,13 @@ class _RotatingMediaHandler(BaseHTTPRequestHandler):
         counts: Counter[str] = getattr(self.server, "request_counts")
         counts[self.path] += 1
 
-        if self.path == "/video":
-            media_path = "/bad.mp4" if counts["/bad.mp4"] == 0 else "/good.mp4"
+        if self.path in {"/video", "/always-bad-video", "/fallback-video"}:
+            if self.path == "/always-bad-video":
+                media_path = "/bad.mp4"
+            elif self.path == "/fallback-video":
+                media_path = "/bad.mp4" if counts[self.path] <= 2 else "/good.mp4"
+            else:
+                media_path = "/bad.mp4" if counts["/bad.mp4"] == 0 else "/good.mp4"
             body = (
                 "<html><head><title>重新解析测试</title></head>"
                 f"<body><video src=\"{media_path}\"></video></body></html>"
@@ -130,6 +140,11 @@ class YtdlpReresolveTests(unittest.TestCase):
                 "ERROR: [youtube] Unable to download webpage: HTTP Error 502: Bad Gateway"
             )
         )
+        self.assertTrue(
+            _is_youtube_original_url_reresolve_error(
+                "ERROR: [youtube] xICvY586XZ8: No video formats found; please report this issue"
+            )
+        )
 
     def test_reresolves_original_page_after_media_502(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), _RotatingMediaHandler)
@@ -165,7 +180,7 @@ class YtdlpReresolveTests(unittest.TestCase):
             counts: Counter[str] = server.request_counts  # type: ignore[attr-defined]
             self.assertTrue(info.get("id"))
             self.assertGreaterEqual(counts["/video"], 2)
-            self.assertEqual(counts["/bad.mp4"], 3)
+            self.assertEqual(counts["/bad.mp4"], 2)
             self.assertEqual(counts["/good.mp4"], 1)
             self.assertEqual(len(media_files), 1)
             self.assertEqual(media_payloads, [self.media_payload])
@@ -173,6 +188,75 @@ class YtdlpReresolveTests(unittest.TestCase):
             self.assertGreater(len(activities), 0)
             self.assertEqual(returned_media_path.parent, out_dir)
             self.assertTrue(returned_media_path_exists)
+        finally:
+            settings.ytdlp_proxy = original_proxy
+            settings.ytdlp_youtube_impersonate = original_impersonate
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_reports_exhausted_original_page_reresolve_after_media_502(self) -> None:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _RotatingMediaHandler)
+        server.request_counts = Counter()  # type: ignore[attr-defined]
+        server.media_payload = self.media_payload  # type: ignore[attr-defined]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        original_proxy = settings.ytdlp_proxy
+        original_impersonate = settings.ytdlp_youtube_impersonate
+        try:
+            settings.ytdlp_proxy = ""
+            settings.ytdlp_youtube_impersonate = ""
+            with TemporaryDirectory() as tmp:
+                port = server.server_address[1]
+                with self.assertRaises(YtdlpTransientDownloadError) as raised:
+                    ytdlp_download(
+                        url=f"http://127.0.0.1:{port}/always-bad-video",
+                        provider="youtube",
+                        out_dir=Path(tmp),
+                        use_provider_cookies=False,
+                        write_subtitles=False,
+                        write_auto_subtitles=False,
+                    )
+
+            counts: Counter[str] = server.request_counts  # type: ignore[attr-defined]
+            self.assertEqual(raised.exception.reason, "youtube_media_transport")
+            self.assertIn("已尝试原 selector 和一个 fallback selector", str(raised.exception))
+            self.assertIn("原 selector 从视频页解析 2 轮、fallback selector 解析 1 轮", str(raised.exception))
+            self.assertEqual(counts["/always-bad-video"], 3)
+        finally:
+            settings.ytdlp_proxy = original_proxy
+            settings.ytdlp_youtube_impersonate = original_impersonate
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_tries_one_fallback_selector_after_reresolve_exhausted(self) -> None:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _RotatingMediaHandler)
+        server.request_counts = Counter()  # type: ignore[attr-defined]
+        server.media_payload = self.media_payload  # type: ignore[attr-defined]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        original_proxy = settings.ytdlp_proxy
+        original_impersonate = settings.ytdlp_youtube_impersonate
+        try:
+            settings.ytdlp_proxy = ""
+            settings.ytdlp_youtube_impersonate = ""
+            with TemporaryDirectory() as tmp:
+                port = server.server_address[1]
+                info = ytdlp_download(
+                    url=f"http://127.0.0.1:{port}/fallback-video",
+                    provider="youtube",
+                    out_dir=Path(tmp),
+                    use_provider_cookies=False,
+                    write_subtitles=False,
+                    write_auto_subtitles=False,
+                )
+
+            counts: Counter[str] = server.request_counts  # type: ignore[attr-defined]
+            self.assertTrue(info.get("id"))
+            self.assertEqual(counts["/fallback-video"], 3)
         finally:
             settings.ytdlp_proxy = original_proxy
             settings.ytdlp_youtube_impersonate = original_impersonate

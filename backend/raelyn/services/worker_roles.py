@@ -30,7 +30,7 @@ WORKER_ROLE_TYPES: dict[str, list[str]] = {
     "process": ["video.normalize_subtitle"],
     "asr": ["video.asr_transcribe"],
     "sync": ["media.sync_profile", "media.sync_videos", "media.delete", "video.enrich_metadata.youtube"],
-    "embedding": ["event.embed"],
+    "embedding": ["event.embed", "event.backfill_embeddings"],
     "analysis": list(ANALYSIS_JOB_TYPES),
     "ai": [
         "video.extract_events",

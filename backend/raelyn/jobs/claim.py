@@ -14,6 +14,10 @@ from raelyn.services.provider_pause import is_provider_paused, is_public_discove
 from raelyn.services.system_pause import is_paused
 from raelyn.services.worker_role_pause import is_worker_role_paused
 from raelyn.services.worker_roles import job_type_worker_role, worker_role_for_job
+from raelyn.services.youtube_download_circuit import (
+    allow_youtube_download_circuit_claim,
+    youtube_download_circuit_blocks_claims,
+)
 from raelyn.timeutil import utcnow
 
 
@@ -45,6 +49,7 @@ _DIRECT_PROVIDER_JOB_TYPES = {
     "video.backfill_subtitles.bilibili": "bilibili",
     "video.enrich_metadata.youtube": "youtube",
 }
+_YOUTUBE_DOWNLOAD_JOB_TYPE = "video.download.youtube"
 
 
 def _finalize_requeued_event_map_execution(
@@ -429,13 +434,14 @@ def claim_next_job(
     type_in: list[str] | None = None,
     skip_type_in: set[str] | None = None,
 ) -> Job | None:
+    now = utcnow()
     if is_paused(session):
         return None
     if _all_claim_types_worker_role_paused(session, type_in):
         return None
     if _all_claim_types_provider_paused(session, type_in):
         return None
-    now = utcnow()
+    youtube_download_circuit_blocked: bool | None = None
     rank = case(*[(Job.type == t, r) for t, r in _JOB_TYPE_RANK.items()], else_=10)
     base_stmt = select(Job).where(Job.status == "pending", Job.scheduled_for <= now)
     if type_in:
@@ -470,6 +476,14 @@ def claim_next_job(
             role = worker_role_for_job(session, candidate)
             if role and is_worker_role_paused(session, role):
                 continue
+            if candidate.type == _YOUTUBE_DOWNLOAD_JOB_TYPE:
+                if youtube_download_circuit_blocked is None:
+                    youtube_download_circuit_blocked = youtube_download_circuit_blocks_claims(session, now=now)
+                if youtube_download_circuit_blocked:
+                    continue
+                if not allow_youtube_download_circuit_claim(session, job_id=candidate.id, now=now):
+                    youtube_download_circuit_blocked = True
+                    continue
             job = candidate
             break
         if job is not None:

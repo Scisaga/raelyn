@@ -22,6 +22,7 @@ from raelyn.services.event_analysis import (
     _parse_event_backfill_range_date,
 )
 from raelyn.services.event_map_retention import prune_event_map_snapshots
+from raelyn.services.event_embedding_backfill import backfill_event_embeddings
 from raelyn.timeutil import utcnow
 
 
@@ -172,6 +173,11 @@ def playlist_backfill_events_range(session: Session, job: Job) -> dict | None:
 def event_embed(session: Session, job: Job) -> dict | None:
     event_id = uuid.UUID(str(job.params["event_id"]))
     return embed_event(session, event_id=event_id)
+
+
+@registry.register("event.backfill_embeddings")
+def event_backfill_embeddings(session: Session, job: Job) -> dict | None:
+    return backfill_event_embeddings(session, job=job)
 
 
 @registry.register("playlist.mark_event_map_dirty")

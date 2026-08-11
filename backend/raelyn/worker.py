@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import socket
 import threading
@@ -38,7 +39,15 @@ from raelyn.services.provider_pause import (
 )
 from raelyn.services.s3 import s3_ensure_bucket
 from raelyn.services.worker_roles import is_known_worker_role, normalize_worker_role, worker_role_types
-from raelyn.services.ytdlp import YTDLP_RETRY_WITHOUT_COOKIES_PARAM, YtdlpCookiesInvalidError
+from raelyn.services.ytdlp import (
+    YTDLP_RETRY_WITHOUT_COOKIES_PARAM,
+    YtdlpCookiesInvalidError,
+    YtdlpTransientDownloadError,
+)
+from raelyn.services.youtube_download_circuit import (
+    record_youtube_download_success,
+    record_youtube_download_transient_failure,
+)
 from raelyn.timeutil import utcnow
 
 
@@ -93,6 +102,36 @@ _DOWNLOAD_JOB_TYPES = {"video.download", "video.download.youtube", "video.downlo
 _EXECUTION_WATCHDOG_JOB_TYPES = _SYNC_JOB_TYPES | _DOWNLOAD_JOB_TYPES
 _ASR_JOB_TYPE = "video.asr_transcribe"
 _ASR_CLAIM_DEFER_SLEEP_SECONDS = 5.0
+_YOUTUBE_TRANSIENT_DOWNLOAD_MAX_ATTEMPTS = 4
+_YOUTUBE_TRANSIENT_DOWNLOAD_BACKOFF_SECONDS = (120, 600, 1800)
+
+
+def _youtube_transient_download_backoff_seconds(*, job_id: uuid.UUID, attempt: int) -> int:
+    index = min(
+        max(0, int(attempt or 1) - 1),
+        len(_YOUTUBE_TRANSIENT_DOWNLOAD_BACKOFF_SECONDS) - 1,
+    )
+    base = _YOUTUBE_TRANSIENT_DOWNLOAD_BACKOFF_SECONDS[index]
+    digest = hashlib.sha256(f"{job_id}:{attempt}".encode("utf-8")).digest()
+    jitter_ratio = (int.from_bytes(digest[:2], byteorder="big") / 65535.0) * 0.4 - 0.2
+    return max(1, round(base * (1 + jitter_ratio)))
+
+
+def _job_retry_policy(job: Job, err: Exception, *, next_attempt: int) -> tuple[int, int | None, str | None]:
+    if job.type == "video.download.youtube" and isinstance(err, YtdlpTransientDownloadError):
+        max_attempts = _YOUTUBE_TRANSIENT_DOWNLOAD_MAX_ATTEMPTS
+        if next_attempt >= max_attempts:
+            return max_attempts, None, err.reason
+        return (
+            max_attempts,
+            _youtube_transient_download_backoff_seconds(job_id=job.id, attempt=next_attempt),
+            err.reason,
+        )
+
+    max_attempts = _effective_max_attempts(job.type, job.max_attempts)
+    if next_attempt >= max_attempts:
+        return max_attempts, None, None
+    return max_attempts, min(600, 10 * (2 ** (next_attempt - 1))), None
 
 
 def _mark_media_sync_terminal_failure_cooldown(session, *, job: Job, now) -> None:
@@ -171,6 +210,7 @@ def _merge_retry_into_existing_pending_job(
     job: Job,
     retry_at,
     attempt: int,
+    max_attempts: int,
     backoff_seconds: int,
 ) -> bool:
     dedupe_key = str(getattr(job, "dedupe_key", "") or "").strip()
@@ -195,6 +235,8 @@ def _merge_retry_into_existing_pending_job(
     pending.started_at = None
     pending.finished_at = None
     pending.execution_token = None
+    pending.attempt = max(int(pending.attempt or 0), int(attempt or 0))
+    pending.max_attempts = max(int(pending.max_attempts or 0), int(max_attempts or 0))
 
     job.status = "failed"
     job.finished_at = utcnow()
@@ -212,6 +254,7 @@ def _merge_retry_into_existing_pending_job(
         data={
             "source_job_id": str(job.id),
             "attempt": attempt,
+            "max_attempts": max_attempts,
             "scheduled_for": pending.scheduled_for.isoformat() if pending.scheduled_for else None,
             "previous_scheduled_for": previous_scheduled_for.isoformat() if previous_scheduled_for else None,
             "backoff_seconds": backoff_seconds,
@@ -224,6 +267,7 @@ def _merge_retry_into_existing_pending_job(
         level="warn",
         data={
             "attempt": attempt,
+            "max_attempts": max_attempts,
             "pending_job_id": str(pending.id),
             "scheduled_for": pending.scheduled_for.isoformat() if pending.scheduled_for else None,
             "backoff_seconds": backoff_seconds,
@@ -512,6 +556,18 @@ def run_loop() -> None:
                         finalize_canceled_job(session, job, message="canceled after handler completed", reason="cancel_requested")
                         continue
 
+                    youtube_download_succeeded = (
+                        job.type == "video.download.youtube"
+                        and isinstance(result, dict)
+                        and not result.get("skipped")
+                    )
+                    if youtube_download_succeeded and record_youtube_download_success(session):
+                        job_log(
+                            session,
+                            job,
+                            "YouTube download circuit closed after a successful download",
+                            data={"circuit_state": "closed"},
+                        )
                     job.result = result
                     if (
                         isinstance(job.progress_current, int)
@@ -600,7 +656,29 @@ def run_loop() -> None:
                         continue
 
                     next_attempt = int(job.attempt or 0) + 1
-                    effective_max_attempts = _effective_max_attempts(job.type, job.max_attempts)
+                    effective_max_attempts, backoff, retry_reason = _job_retry_policy(
+                        job,
+                        e,
+                        next_attempt=next_attempt,
+                    )
+                    circuit_state = None
+                    if retry_reason:
+                        circuit_state = record_youtube_download_transient_failure(
+                            session,
+                            job_id=job.id,
+                            reason=retry_reason,
+                        )
+                        job_log(
+                            session,
+                            job,
+                            "YouTube transient download failure recorded",
+                            level="warn",
+                            data={
+                                "retry_reason": retry_reason,
+                                "circuit_state": circuit_state.get("state"),
+                                "circuit_retry_at": circuit_state.get("retry_at"),
+                            },
+                        )
                     provider_pause_deferred = should_defer_provider_pause_for_retry(
                         e,
                         next_attempt=next_attempt,
@@ -643,8 +721,7 @@ def run_loop() -> None:
                     except Exception:
                         pass
 
-                    if job.attempt < job.max_attempts:
-                        backoff = min(600, 10 * (2 ** (job.attempt - 1)))
+                    if backoff is not None:
                         retry_at = utcnow() + timedelta(seconds=backoff)
                         _update_download_retry_params(job)
                         if _merge_retry_into_existing_pending_job(
@@ -652,6 +729,7 @@ def run_loop() -> None:
                             job=job,
                             retry_at=retry_at,
                             attempt=job.attempt,
+                            max_attempts=job.max_attempts,
                             backoff_seconds=backoff,
                         ):
                             continue
@@ -659,7 +737,21 @@ def run_loop() -> None:
                         job.scheduled_for = retry_at
                         job.started_at = None
                         job.finished_at = None
-                        job_log(session, job, f"failed; retry in {backoff}s", level="warn", data={"attempt": job.attempt})
+                        job_log(
+                            session,
+                            job,
+                            f"failed; retry in {backoff}s",
+                            level="warn",
+                            data={
+                                "attempt": job.attempt,
+                                "max_attempts": job.max_attempts,
+                                "retry_reason": retry_reason,
+                                "scheduled_for": retry_at.isoformat(),
+                                "backoff_seconds": backoff,
+                                "circuit_state": circuit_state.get("state") if circuit_state else None,
+                                "circuit_retry_at": circuit_state.get("retry_at") if circuit_state else None,
+                            },
+                        )
                     else:
                         job.status = "failed"
                         job.finished_at = utcnow()

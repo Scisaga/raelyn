@@ -20,7 +20,11 @@ from raelyn.jobs import progress
 from raelyn.models import AppConfig, Job, Media, Video, WorkerHeartbeat
 from raelyn import worker
 from raelyn.services.asr import AsrBackendDefer
-from raelyn.services.ytdlp import YTDLP_RETRY_WITHOUT_COOKIES_PARAM, YtdlpCookiesInvalidError
+from raelyn.services.ytdlp import (
+    YTDLP_RETRY_WITHOUT_COOKIES_PARAM,
+    YtdlpCookiesInvalidError,
+    YtdlpTransientDownloadError,
+)
 
 
 def _scalar_one_or_none(value):
@@ -152,6 +156,7 @@ class WorkerRetryMergeTests(unittest.TestCase):
                     job=current_job,
                     retry_at=retry_at,
                     attempt=1,
+                    max_attempts=5,
                     backoff_seconds=10,
                 )
 
@@ -161,6 +166,8 @@ class WorkerRetryMergeTests(unittest.TestCase):
         self.assertIsNone(pending_job.error_message)
         self.assertIsNone(pending_job.error_stack)
         self.assertIsNone(pending_job.execution_token)
+        self.assertEqual(pending_job.attempt, 1)
+        self.assertEqual(pending_job.max_attempts, 5)
 
         self.assertEqual(current_job.status, "failed")
         self.assertEqual(current_job.finished_at, now)
@@ -190,12 +197,45 @@ class WorkerRetryMergeTests(unittest.TestCase):
                 job=current_job,
                 retry_at=datetime(2026, 3, 20, 0, 22, 11, tzinfo=timezone.utc),
                 attempt=1,
+                max_attempts=5,
                 backoff_seconds=10,
             )
 
         self.assertFalse(merged)
         self.assertEqual(current_job.status, "running")
         self.assertEqual(job_log.call_count, 0)
+
+    def test_youtube_transient_download_uses_spaced_bounded_retry_policy(self) -> None:
+        job = Job(
+            id=uuid.UUID("00000000-0000-0000-0000-000000000123"),
+            type="video.download.youtube",
+            status="running",
+            max_attempts=2,
+        )
+        error = YtdlpTransientDownloadError("youtube_media_transport", "proxy CONNECT 502")
+
+        expected_ranges = ((96, 144), (480, 720), (1440, 2160))
+        for attempt, expected_range in enumerate(expected_ranges, start=1):
+            max_attempts, backoff, reason = worker._job_retry_policy(job, error, next_attempt=attempt)
+            self.assertEqual(max_attempts, 4)
+            self.assertIsNotNone(backoff)
+            self.assertGreaterEqual(backoff or 0, expected_range[0])
+            self.assertLessEqual(backoff or 0, expected_range[1])
+            self.assertEqual(reason, "youtube_media_transport")
+
+        max_attempts, backoff, reason = worker._job_retry_policy(job, error, next_attempt=4)
+        self.assertEqual(max_attempts, 4)
+        self.assertIsNone(backoff)
+        self.assertEqual(reason, "youtube_media_transport")
+
+    def test_generic_download_failure_keeps_existing_retry_policy(self) -> None:
+        job = Job(id=uuid.uuid4(), type="video.download.youtube", status="running", max_attempts=5)
+
+        max_attempts, backoff, reason = worker._job_retry_policy(job, RuntimeError("boom"), next_attempt=1)
+
+        self.assertEqual(max_attempts, 2)
+        self.assertEqual(backoff, 10)
+        self.assertIsNone(reason)
 
     def test_finalize_terminal_failure_does_not_schedule_retry(self) -> None:
         job = Job(

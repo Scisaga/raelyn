@@ -43,6 +43,12 @@ class YtdlpCookiesInvalidError(RuntimeError):
         super().__init__(str(message or "").strip() or "yt-dlp cookies invalid")
 
 
+class YtdlpTransientDownloadError(RuntimeError):
+    def __init__(self, reason: str, message: str) -> None:
+        self.reason = str(reason or "").strip() or "youtube_transient_download"
+        super().__init__(str(message or "").strip() or "YouTube transient download failure")
+
+
 YTDLP_RETRY_WITHOUT_COOKIES_PARAM = "_download_without_cookies"
 
 _GENERIC_MP4_FORMAT = (
@@ -85,7 +91,7 @@ _DEFAULT_SUBTITLE_LANGS = [*_CHINESE_SUBTITLE_LANGS, *_ENGLISH_SUBTITLE_LANGS]
 _BILIBILI_CHINESE_SUBTITLE_LANGS = ["ai-zh", *_CHINESE_SUBTITLE_LANGS]
 _BILIBILI_ENGLISH_SUBTITLE_LANGS = ["ai-en", *_ENGLISH_SUBTITLE_LANGS]
 _BILIBILI_DEFAULT_SUBTITLE_LANGS = [*_BILIBILI_CHINESE_SUBTITLE_LANGS, *_BILIBILI_ENGLISH_SUBTITLE_LANGS]
-_YOUTUBE_MEDIA_URL_RETRIES = 2
+_YOUTUBE_MEDIA_URL_RETRIES = 1
 _YOUTUBE_MEDIA_URL_RESOLVE_ATTEMPTS = 2
 _YTDLP_VIDEO_FILE_SUFFIXES = {".mp4", ".m4v", ".mov", ".mkv", ".webm", ".flv", ".avi", ".ts"}
 
@@ -597,6 +603,10 @@ def _is_youtube_media_transport_error(message: str) -> bool:
     return False
 
 
+def _is_youtube_original_url_reresolve_error(message: str) -> bool:
+    return _is_youtube_media_transport_error(message) or _is_youtube_no_video_formats_messages([message])
+
+
 def _rewrite_ytdlp_attempt_paths(value: Any, *, attempt_dir: Path, out_dir: Path) -> Any:
     attempt_text = str(attempt_dir)
     attempt_prefix = f"{attempt_text}{os.sep}"
@@ -1003,10 +1013,20 @@ def ytdlp_download(
     last_attempt_warnings: list[str] = []
     last_attempt_errors: list[str] = []
     tried_progressive_mp4 = False
+    tried_transport_fallback = False
 
-    def _extract_download(opts: dict[str, Any], *, attempt_label: str) -> dict[str, Any]:
+    def _extract_download(
+        opts: dict[str, Any],
+        *,
+        attempt_label: str,
+        allow_original_url_reresolve: bool = True,
+    ) -> dict[str, Any]:
         nonlocal cookie_invalid_line, last_attempt_warnings, last_attempt_errors
-        resolve_attempts = _YOUTUBE_MEDIA_URL_RESOLVE_ATTEMPTS if cookie_provider == "youtube" else 1
+        resolve_attempts = (
+            _YOUTUBE_MEDIA_URL_RESOLVE_ATTEMPTS
+            if cookie_provider == "youtube" and allow_original_url_reresolve
+            else 1
+        )
         last_attempt_error: Exception | None = None
 
         for resolve_attempt in range(1, resolve_attempts + 1):
@@ -1052,10 +1072,11 @@ def ytdlp_download(
                     if (
                         cookie_provider == "youtube"
                         and resolve_attempt < resolve_attempts
-                        and _is_youtube_media_transport_error(joined)
+                        and _is_youtube_original_url_reresolve_error(joined)
                     ):
+                        reason = "formats 为空" if _is_youtube_no_video_formats_messages([joined]) else "媒体传输失败"
                         print(
-                            f"[ytdlp] media transport failed for {attempt_label}; "
+                            f"[ytdlp] {reason}（{attempt_label}）；"
                             f"re-resolving original video URL ({resolve_attempt + 1}/{resolve_attempts})",
                             flush=True,
                         )
@@ -1099,7 +1120,12 @@ def ytdlp_download(
             if _is_youtube_js_challenge_failed_messages(last_attempt_warnings + last_attempt_errors + [str(e)]):
                 raise RuntimeError(_youtube_js_challenge_hint()) from e
             if cookie_provider == "youtube" and _is_youtube_no_video_formats_messages([joined]):
-                raise RuntimeError(_youtube_no_video_formats_hint()) from e
+                raise YtdlpTransientDownloadError(
+                    "youtube_no_video_formats",
+                    f"{_youtube_no_video_formats_hint()}\n"
+                    f"下载阶段已从原视频页重新解析 {_YOUTUBE_MEDIA_URL_RESOLVE_ATTEMPTS} 轮，"
+                    "每轮返回的 formats 仍为空。",
+                ) from e
             if _is_bilibili_risk_control_error(e) or _is_bilibili_precondition_failed_error(e):
                 raise RuntimeError(_bilibili_risk_control_hint()) from e
 
@@ -1108,10 +1134,12 @@ def ytdlp_download(
                 # Add a small buffer so we don't retry too early around the start time.
                 raise JobReschedule(delay_seconds=delay + 120, reason="upcoming livestream") from e
 
+            transport_failure = cookie_provider == "youtube" and _is_youtube_media_transport_error(joined)
             retryable_format_failure = (
                 isinstance(e, MediaPacketValidationError)
                 or _is_requested_format_unavailable(e)
                 or (cookie_provider == "youtube" and _is_http_403_forbidden_error(e))
+                or (transport_failure and not tried_transport_fallback)
             )
             if retryable_format_failure and idx < len(format_attempts):
                 next_label, next_fmt, _next_merge = format_attempts[idx]
@@ -1119,13 +1147,61 @@ def ytdlp_download(
                     reason = str(e)
                 elif _is_http_403_forbidden_error(e):
                     reason = "HTTP 403"
+                elif transport_failure:
+                    tried_transport_fallback = True
+                    reason = (
+                        f"媒体连接在从原视频页重新解析 {_YOUTUBE_MEDIA_URL_RESOLVE_ATTEMPTS} 轮后仍失败"
+                    )
                 else:
                     reason = "requested format not available"
                 print(
                     f"[ytdlp] {reason} for {label}: {fmt!r}; retrying with {next_label}: {next_fmt!r}",
                     flush=True,
                 )
-                continue
+                if not transport_failure:
+                    continue
+                try:
+                    fallback_opts = dict(base_opts)
+                    _apply_common_ytdlp_opts(
+                        fallback_opts,
+                        url=url,
+                        provider=cookie_provider,
+                        use_provider_cookies=effective_use_provider_cookies,
+                    )
+                    fallback_opts["format"] = next_fmt
+                    if _next_merge:
+                        fallback_opts["merge_output_format"] = _next_merge
+                    else:
+                        fallback_opts.pop("merge_output_format", None)
+                    return _extract_download(
+                        fallback_opts,
+                        attempt_label=next_label,
+                        allow_original_url_reresolve=False,
+                    )
+                except (DownloadError, ExtractorError, MediaPacketValidationError) as fallback_error:
+                    last_error = fallback_error
+                    joined = "\n".join(
+                        [
+                            cookie_invalid_line or "",
+                            *last_attempt_warnings[-12:],
+                            *last_attempt_errors[-12:],
+                            str(fallback_error),
+                        ]
+                    ).strip()
+                    _raise_if_cookie_invalid_messages([joined], provider=cookie_provider)
+                    _raise_if_youtube_bot_check_messages(
+                        [joined],
+                        provider=cookie_provider,
+                        using_cookies=effective_use_provider_cookies,
+                    )
+                    _raise_if_provider_pause_messages([joined])
+                    e = fallback_error
+                    if _is_youtube_no_video_formats_messages([joined]):
+                        raise YtdlpTransientDownloadError(
+                            "youtube_no_video_formats",
+                            f"{_youtube_no_video_formats_hint()}\n"
+                            "fallback selector 从原视频页解析 1 轮后，formats 仍为空。",
+                        ) from fallback_error
             if (not tried_progressive_mp4) and is_ffmpeg_segfault(joined):
                 tried_progressive_mp4 = True
                 prog_opts = dict(base_opts)
@@ -1173,6 +1249,22 @@ def ytdlp_download(
                     continue
                 out.append(ln)
             detail = "\n".join(out).strip() or (tail_err or last)
+            if cookie_provider == "youtube" and (
+                tried_transport_fallback or _is_youtube_media_transport_error(joined)
+            ):
+                if tried_transport_fallback:
+                    recovery_summary = (
+                        "YouTube 媒体下载已尝试原 selector 和一个 fallback selector，"
+                        f"原 selector 从视频页解析 {_YOUTUBE_MEDIA_URL_RESOLVE_ATTEMPTS} 轮、"
+                        "fallback selector 解析 1 轮后仍连接失败。"
+                    )
+                else:
+                    recovery_summary = (
+                        f"YouTube 媒体下载已从原视频页重新解析 {_YOUTUBE_MEDIA_URL_RESOLVE_ATTEMPTS} 轮，"
+                        "每轮连接仍失败。"
+                    )
+                detail = f"{recovery_summary}\n{detail}"
+                raise YtdlpTransientDownloadError("youtube_media_transport", detail) from e
             raise RuntimeError(detail) from e
 
     if last_error:

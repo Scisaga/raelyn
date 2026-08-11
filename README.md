@@ -14,7 +14,7 @@ Raelyn 是一个面向单用户、自托管场景的语义观测系统。它将�
 
 ![Raelyn 事件语义星域](docs/assets/readme/raelyn-semantic-starfield.gif)
 
-<p align="center"><sub>真实 WebGL 星域录制：6 秒快速回放 12 个月观察窗，0.3 秒进入真实事件，展示详情 1 秒，再保持详情内容旋转观察 1 秒。星点代表保守归并后的 canonical 真实事件；三维坐标表达语义邻近，不表达时间、地理位置、因果关系或影响强度。<br><a href="docs/assets/readme/raelyn-semantic-starfield.mp4">查看 1920×1200 高清 MP4</a></sub></p>
+<p align="center"><sub>真实 WebGL 星域录制：前 6 秒快速回放 12 个月观察窗，0.3 秒推进星域，0.5 秒展开真实事件详情，再保持详情内容旋转观察 1.2 秒。星点代表保守归并后的 canonical 真实事件；三维坐标表达语义邻近，不表达时间、地理位置、因果关系或影响强度。<br><a href="docs/assets/readme/raelyn-semantic-starfield.mp4">查看 1920×1200 高清 MP4</a></sub></p>
 
 > **V2 状态**
 >

@@ -29,7 +29,7 @@ class EmbeddingSpec:
 
 def embedding_spec() -> EmbeddingSpec:
     return EmbeddingSpec(
-        model=str(settings.embedding_model or "").strip() or "Qwen/Qwen3-Embedding-8B",
+        model=str(settings.embedding_model or "").strip() or "Qwen/Qwen3-Embedding-4B",
         dim=max(1, int(settings.embedding_dim or 1024)),
     )
 
@@ -163,6 +163,10 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     rows = body.get("data")
     if not isinstance(rows, list) or not rows:
         raise EmbeddingError("embedding response missing data")
+    if len(rows) != len(texts):
+        raise EmbeddingError(
+            f"embedding response row count {len(rows)} does not match request count {len(texts)}"
+        )
 
     vectors: list[list[float] | None] = [None] * len(texts)
     for row in rows:

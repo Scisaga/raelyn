@@ -16,6 +16,23 @@ from raelyn.models import Job
 
 
 class EnqueueDedupeTests(unittest.TestCase):
+    def test_event_embedding_backfill_uses_migration_dedupe_key_and_fixed_batch(self) -> None:
+        dedupe_key, params = _normalize_dedupe_key_and_params(
+            "event.backfill_embeddings",
+            {
+                "source_model": "Qwen/Qwen3-Embedding-8B",
+                "target_model": "Qwen/Qwen3-Embedding-4B",
+                "embedding_dim": 1024,
+                "batch_size": 128,
+            },
+        )
+
+        self.assertEqual(
+            dedupe_key,
+            "event_embedding_backfill:Qwen/Qwen3-Embedding-8B:Qwen/Qwen3-Embedding-4B:1024",
+        )
+        self.assertEqual(params["batch_size"], 64)
+
     def test_media_sync_videos_dedupe_key_uses_media_id(self) -> None:
         media_id = uuid.uuid4()
 
