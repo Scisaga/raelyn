@@ -343,10 +343,7 @@ def _event_extraction_llm_options(session: Session) -> dict[str, Any]:
     if not _effective_llm_is_ollama_generate(session):
         return options
 
-    num_ctx = _positive_int(settings.event_extraction_ollama_num_ctx, 8192)
     num_predict = _positive_int(settings.event_extraction_ollama_num_predict, 4000)
-    if num_ctx > 0:
-        options["num_ctx"] = num_ctx
     if num_predict > 0:
         options["num_predict"] = num_predict
     return options

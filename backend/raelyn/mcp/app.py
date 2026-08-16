@@ -15,7 +15,11 @@ from raelyn.mcp.tools import register_tools
 def create_mcp_server() -> FastMCP:
     mcp = FastMCP(
         name="raelyn",
-        instructions="Read media, video, transcript, playlist, brief, and job data from the local raelyn instance.",
+        instructions=(
+            "Read Raelyn observation domains, semantic field changes, stable canonical and story history, "
+            "structured briefs, evidence, sources, transcripts, and jobs. Semantic objects use the same "
+            "stable identities and time bases as the Web and REST interfaces."
+        ),
         streamable_http_path="/",
         json_response=True,
         stateless_http=True,

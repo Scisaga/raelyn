@@ -1,6 +1,6 @@
 # 架构总览
 
-`raelyn` 当前是一个由 `FastAPI API（含挂载式 MCP） + 静态 SPA + Worker + Scheduler` 组成的单用户媒体采集系统。它支持 YouTube / B 站媒体管理、视频同步与下载、字幕 / 转写处理、播放列表聚合，以及按天 / 周 / 月生成 Markdown 简报。
+`raelyn` 当前是一个由 `FastAPI API（含挂载式 MCP） + 静态 SPA + Worker + Scheduler` 组成的单用户语义观测系统。它以 YouTube / B 站信源、来源记录和转写为感知底座，把结构化事件组织成可回放、可追踪故事、可回到证据的事件语义星域。
 
 ## 当前约束与决策
 
@@ -34,15 +34,17 @@
 
 ### Playlist / Brief
 
-- `playlist` 用于聚合媒体，并保存简报粒度、独立提示词、头像、背景图。
-- 当前简报主表是 `brief`，支持 `day / week / month` 三种粒度。
+- `playlist` 是当前内部名称，对外产品语义为“观测域”；它聚合信源，并保存简报粒度、独立提示词、头像和背景图。
+- `brief` 支持 `day / week / month` 三种粒度，并通过 `brief_reference` 固化生成快照、语义对象与证据引用。
 - `daily_brief` 仍保留用于兼容历史数据读取。
 
 ### MarketEvent / EventGraph
 
 - `market_event` 保存从视频 transcript 抽取出的结构化事件记录；`market_event_entity/evidence/relation` 保留记录级实体和证据。
 - `market_event_embedding` 提供记录级语义向量。
-- `event_map_*` 把记录保守归并为 canonical 真实事件，并在不可变快照中保存两级 topic、story、anchor 与固定三维语义坐标。产品名称为“事件语义星域”，不包含 Regime、语义漂移或变化点分析。
+- `event_map_*` 把记录保守归并为 canonical 真实事件，并在不可变快照中保存两级 topic、story、anchor 与固定三维语义坐标。
+- `domain_observation_cursor`、长期 canonical/story 修订、变化集和阅读状态组成 V2 连续观察层；快照裁剪不删除这些长期语义历史。
+- 星域主场景从类型化关系列流式编码为固定宽度二进制，不通过全量 JSONB 渲染。冷热存储边界见 [V2 观察与存储架构](v2-observation.md)。
 
 ### Job / WorkerHeartbeat / AppConfig
 
@@ -83,7 +85,7 @@
 ### 静态 UI / PWA
 
 - SPA 构建产物位于 `static/`，源码与模板位于 `ui/`。
-- 主要页面为：概览、媒体、视频、播放列表列表、播放列表详情、任务、MCP Server 指南、设置。
+- 主要认知页面为：星域、故事、简报、资料库；系统页面为：运行中心、智能接入和设置。旧媒体、视频、播放列表与任务路由继续保留兼容，不再占据一级认知导航。
 - 启动时会先探测 API 鉴权与资产分发策略，再进入应用主界面。
 
 ## 当前关键数据流

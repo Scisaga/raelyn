@@ -1,5 +1,5 @@
           <!-- Media -->
-          <div x-show="activeView==='media'" x-transition.opacity class="h-full">
+          <div x-show="activeView==='media' || (activeView==='library' && libraryTab==='sources')" x-transition.opacity class="h-full" :class="activeView==='library' ? 'pt-12' : ''">
             <div class="bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
               <div class="shrink-0 px-4 py-3 flex items-center justify-between gap-2 sm:gap-3">
 	                <div class="hidden sm:block text-xs text-slate-400" x-text="mediaList.length ? ('已加载 ' + mediaList.length + ' 条') : ''"></div>
@@ -8,6 +8,7 @@
                     type="button"
                     class="inline-flex items-center justify-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 sm:px-3 py-2 text-sm font-medium text-amber-100 hover:bg-amber-500/20 shrink-0 disabled:cursor-not-allowed disabled:opacity-60"
                     @click="syncAllMediaHistory()"
+                    x-show="!(activeView==='library' && libraryScope==='domain')"
                     :disabled="syncAllMediaSubmitting"
                     :title="syncAllMediaSubmitting ? '正在投递全部历史同步任务' : '同步全部媒体的历史视频'"
                     aria-label="同步全部媒体的历史视频"
@@ -31,6 +32,14 @@
                     <span class="hidden sm:inline" x-text="syncAllMediaSubmitting ? '同步中…' : '同步全部历史'"></span>
                   </button>
                   <button
+                    x-show="activeView==='library' && libraryScope==='domain'"
+                    class="inline-flex items-center justify-center gap-2 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 sm:px-3 py-2 text-sm font-medium text-cyan-100 hover:bg-cyan-500/20 shrink-0"
+                    @click="openDomainSourcePicker()"
+                    title="从全部资料加入已有信源"
+                  >
+                    <span class="hidden sm:inline">从全部资料加入</span><span class="sm:hidden">资料</span>
+                  </button>
+                  <button
                     class="inline-flex items-center justify-center gap-2 rounded-md bg-emerald-500 px-2.5 sm:px-3 py-2 text-sm font-medium text-slate-950 hover:bg-emerald-400 shrink-0"
                     @click="openAddMedia()"
                     title="添加媒体"
@@ -50,15 +59,15 @@
                       <path d="M12 5v14" />
                       <path d="M5 12h14" />
                     </svg>
-                    <span class="hidden sm:inline">添加媒体</span>
+                    <span class="hidden sm:inline" x-text="activeView==='library' && libraryScope==='domain' ? '通过 URL 加入' : '添加媒体'"></span>
                   </button>
                   <input
                     class="flex-1 min-w-0 sm:flex-none sm:w-64 rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
                     placeholder="搜索名称/描述"
                     x-model="mediaQuery"
-                    @input.debounce.400ms="loadMedia()"
+                    @input.debounce.400ms="activeView==='library' ? loadLibrary() : loadMedia()"
                   />
-                  <div class="inline-flex overflow-hidden rounded-md border border-slate-700 bg-slate-950/20 shrink-0">
+                  <div class="inline-flex overflow-hidden rounded-md border border-slate-700 bg-slate-950/20 shrink-0" x-show="!(activeView==='library' && libraryScope==='domain')">
                     <button
                       type="button"
                       class="px-2.5 py-2 text-slate-200 hover:bg-slate-800/60"
@@ -164,7 +173,7 @@
 	                    </div>
 	                    <div class="flex flex-wrap items-center gap-2 justify-end">
                       <div class="flex items-center gap-2 mr-1">
-                        <span class="text-xs text-slate-400">监控</span>
+                        <span class="text-xs text-slate-400">全局监控</span>
                         <label
                           class="relative inline-flex items-center select-none"
                           :class="m.deleting ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'"
@@ -217,19 +226,27 @@
                         </button>
                         <button
                           type="button"
-                          class="inline-flex items-center justify-center px-2.5 py-1.5 text-sm text-slate-200 hover:bg-slate-800/60 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:ring-inset disabled:cursor-not-allowed disabled:opacity-60"
+                          class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-amber-200 hover:bg-amber-500/10 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:ring-inset disabled:cursor-not-allowed disabled:opacity-60"
+                          x-show="activeView==='library' && libraryScope==='domain'"
+                          @click.stop="removeSourceFromCurrentDomain(m)"
+                          :disabled="!!m.deleting"
+                          title="只解除当前观测域关联；保留全局信源、来源记录和资产"
+                          aria-label="从当前观测域移除"
+                        >
+                          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"></path><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"></path><path d="m4 4 16 16"></path></svg>
+                          <span>移出当前域</span>
+                        </button>
+                        <button
+                          type="button"
+                          class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-rose-300 hover:bg-rose-500/10 focus:outline-none focus:ring-2 focus:ring-rose-500/30 focus:ring-inset disabled:cursor-not-allowed disabled:opacity-60"
+                          x-show="!(activeView==='library' && libraryScope==='domain')"
                           @click.stop="deleteMedia(m.id)"
                           :disabled="!!m.deleting"
-                          :title="m.deleting ? '删除任务执行中' : '删除'"
-                          :aria-label="m.deleting ? '删除中' : '删除'"
+                          :title="m.deleting ? '删除任务执行中' : '全局删除信源及其资料（危险操作）'"
+                          aria-label="全局删除信源"
                         >
-                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                            <polyline points="3 6 5 6 21 6"></polyline>
-                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
-                            <path d="M10 11v6"></path>
-                            <path d="M14 11v6"></path>
-                            <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
-                          </svg>
+                          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>
+                          <span>全局删除</span>
                         </button>
                       </div>
 	                    </div>

@@ -1,0 +1,24 @@
+          <div x-show="activeView==='domains'" x-transition.opacity class="h-full overflow-auto bg-[#030711] raelyn-scrollbar">
+            <div class="mx-auto max-w-7xl px-5 py-8 lg:px-8">
+              <div class="flex flex-wrap items-end justify-between gap-4">
+                <div><div class="text-[10px] uppercase tracking-[0.2em] text-cyan-400">Semantic observatories</div><h1 class="mt-2 text-2xl font-semibold text-slate-100">选择一个持续演化的观测域</h1><p class="mt-2 max-w-2xl text-sm leading-6 text-slate-500">每张缩略星域都来自该观测域当前 ready 快照的真实类型化坐标采样；不同观测域保持各自语义空间，不拼成虚假的全局地图。</p></div>
+                <button type="button" class="rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 text-xs text-slate-300 hover:border-cyan-500/35 hover:text-cyan-100" @click="switchView('playlists')">管理观测域与信源</button>
+              </div>
+              <div class="mt-7 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <template x-for="domain in domains" :key="domain.id">
+                  <button type="button" class="group overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/55 text-left transition hover:-translate-y-0.5 hover:border-cyan-500/30 hover:shadow-[0_18px_50px_rgba(8,145,178,.08)]" @click="openDomain(domain.id)">
+                    <div class="relative h-44 overflow-hidden bg-[radial-gradient(circle_at_50%_40%,rgba(14,116,144,.12),transparent_60%)]">
+                      <svg class="absolute inset-0 h-full w-full" viewBox="0 0 100 44" preserveAspectRatio="none" aria-hidden="true">
+                        <path d="M0 11H100M0 22H100M0 33H100M25 0V44M50 0V44M75 0V44" stroke="rgba(30,64,175,.16)" stroke-width=".2" />
+                        <template x-for="(point,index) in domain.preview_points || []" :key="index"><circle :cx="point.x" :cy="point.y" :r="index%11===0 ? .62 : .34" :fill="domainPreviewColor(point.event_type_code)" :opacity="index%7===0 ? .95 : .68" /></template>
+                      </svg>
+                      <div class="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-slate-950 to-transparent"></div>
+                      <div class="absolute bottom-3 left-4 right-4 flex items-end justify-between gap-3"><div class="min-w-0"><div class="truncate text-base font-semibold text-slate-100" x-text="domain.name"></div><div class="mt-1 truncate text-[10px] text-slate-500" x-text="domainFreshnessLabel(domain)"></div></div><span class="rounded-full border border-violet-500/20 bg-violet-500/10 px-2 py-1 font-mono text-[10px] text-violet-200" x-text="formatInteger(domain.snapshot?.event_count || 0)+' 星点'"></span></div>
+                    </div>
+                    <div class="grid grid-cols-3 divide-x divide-slate-800 border-t border-slate-800 px-2 py-3 text-center"><div><div class="font-mono text-xs text-cyan-200" x-text="formatInteger(domain.unobserved_change_count || 0)"></div><div class="mt-1 text-[9px] text-slate-600">待观察变化</div></div><div><div class="font-mono text-xs text-violet-200" x-text="formatInteger(domain.snapshot?.story_count || 0)"></div><div class="mt-1 text-[9px] text-slate-600">故事</div></div><div><div class="font-mono text-xs text-slate-300" x-text="formatInteger(domain.media_count || 0)"></div><div class="mt-1 text-[9px] text-slate-600">信源</div></div></div>
+                  </button>
+                </template>
+              </div>
+              <div class="mt-16 text-center text-sm text-slate-600" x-show="!domainsLoading && !domains.length">还没有观测域。请先创建观测域并添加信源。</div>
+            </div>
+          </div>

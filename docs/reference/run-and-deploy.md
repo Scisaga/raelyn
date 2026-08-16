@@ -314,6 +314,7 @@ PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.repair_empty_audio_assets 
 
 - `devctl.sh start/restart` 会先执行一次 UI 构建（等价于 `./scripts/dev/build-ui.sh`）。如需跳过可设置 `SKIP_UI_BUILD=1`。
 - `devctl.sh restart-api` 只重启 API 进程并保留 worker / scheduler 运行；它同样会先执行一次 UI 构建，适合只更新 Web/API 代码后的快速重启。
+- 首次启用 V2 时，API 会从仍保留的 ready 星图快照幂等回填长期历史。schema 事务会在回填前独立提交，避免长回填持续占用业务表 DDL 锁；已有历史的后续重启只做快速存在性检查。
 - `devctl.sh start/restart/restart-api` 会等待 API 本机轻量 readiness 最多 120 秒；该检查只确认 API 已完成启动并可响应，不把 ASR / Embedding / LLM 等完整依赖健康检查作为启动门槛。完整健康状态仍通过 `GET /api/health` 查看。
 - `devctl.sh start/restart` 会按 `YOUTUBE_DOWNLOAD_CONCURRENCY` / `BILIBILI_DOWNLOAD_CONCURRENCY` 自动扩展对应 provider 的下载 worker 数。
 - `devctl.sh start/restart` 会按 `ASR_WORKER_CONCURRENCY` / `EMBEDDING_WORKER_CONCURRENCY` / `ANALYSIS_WORKER_CONCURRENCY` / `AI_WORKER_CONCURRENCY` 自动扩展 asr / embedding / analysis / ai worker 数，默认均为 `1`；其中 `EMBEDDING_WORKER_CONCURRENCY=0` / `ANALYSIS_WORKER_CONCURRENCY=0` 表示当前节点不启动对应 worker。事件图谱链路需要 dirty/build 正常推进时，不要把 `ANALYSIS_WORKER_CONCURRENCY` 设为 `0`。

@@ -133,11 +133,15 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_headers_json: str = ""
     llm_timeout_seconds: int = 600
+    # 所有 Ollama /api/generate 请求统一使用同一上下文，避免同模型因 num_ctx 变化反复重载。
+    llm_ollama_num_ctx: int = Field(
+        default=32768,
+        validation_alias=AliasChoices("LLM_OLLAMA_NUM_CTX", "EVENT_EXTRACTION_OLLAMA_NUM_CTX"),
+    )
 
     # --- Event extraction / event graph semantic analysis ---
     event_extraction_chunk_max_chars: int = Field(default=12000, validation_alias=AliasChoices("EVENT_EXTRACTION_CHUNK_MAX_CHARS"))
     event_extraction_ollama_stream: bool = Field(default=True, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_STREAM"))
-    event_extraction_ollama_num_ctx: int = Field(default=8192, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_NUM_CTX"))
     event_extraction_ollama_num_predict: int = Field(default=4000, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_NUM_PREDICT"))
     event_extraction_ollama_idle_timeout_seconds: int = Field(
         default=120,

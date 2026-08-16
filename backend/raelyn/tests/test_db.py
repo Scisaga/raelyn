@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, event, text
 
+import raelyn.db as db_module
 from raelyn.db import _cancel_legacy_analysis_jobs, _database_engine_kwargs, _execute_best_effort_ddl
-from raelyn.models import MarketEvent, MarketEventEmbedding, VideoTimeEvidence
+from raelyn.models import Base, MarketEvent, MarketEventEmbedding, VideoTimeEvidence
 
 
 class _NestedTransaction:
@@ -199,6 +201,33 @@ class DbMigrationHelperTests(unittest.TestCase):
                 statements.clear()
                 _cancel_legacy_analysis_jobs(conn)
             self.assertFalse(any(statement.startswith("update job") for statement in statements))
+        finally:
+            engine.dispose()
+
+    def test_init_db_commits_schema_transaction_before_history_backfill(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        backfill_started_inside_schema_transaction: list[bool] = []
+
+        def _record_backfill(session) -> int:
+            bind = session.get_bind()
+            backfill_started_inside_schema_transaction.append(bool(bind.in_transaction()))
+            return 0
+
+        try:
+            with (
+                patch.object(db_module, "engine", engine),
+                patch.object(Base.metadata, "create_all") as create_all,
+                patch.object(db_module, "_migrate_schema") as migrate_schema,
+                patch(
+                    "raelyn.services.event_map_snapshot.bootstrap_v2_event_map_history",
+                    side_effect=_record_backfill,
+                ),
+            ):
+                db_module.init_db()
+
+            create_all.assert_called_once()
+            migrate_schema.assert_called_once()
+            self.assertEqual(backfill_started_inside_schema_transaction, [False])
         finally:
             engine.dispose()
 

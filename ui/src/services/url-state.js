@@ -3,21 +3,56 @@ import { todayIsoLocal } from "../shared/playlist-periods.js";
 export function createUrlStateMethods({ settingsTabs }) {
   return {
     _viewPath(key) {
-      if (!key || key === "overview") return "/";
+      if (!key || key === "field") return "/";
+      if (key === "playlist") {
+        const domainId = String(this.selectedPlaylistId || this.playlistPageId || "").trim();
+        return domainId ? `/domains/${encodeURIComponent(domainId)}/playlist` : "/playlist";
+      }
       return `/${encodeURIComponent(key)}`;
     },
 
     _parseViewFromLocation() {
       const path = (window.location.pathname || "/").replace(/\/+$/, "") || "/";
-      if (path === "/" || path === "") return "overview";
+      if (path === "/" || path === "") return "field";
+      if (/^\/domains\/[^/]+\/playlist$/.test(path)) return "playlist";
       const key = decodeURIComponent(path.slice(1));
       if (key === "install") return "settings";
       const exists = this.navItems.some((item) => item.key === key);
-      return exists ? key : "overview";
+      return exists ? key : "field";
     },
 
     _applyQueryFromLocation(viewKey) {
       const searchParams = new URLSearchParams(window.location.search || "");
+      if (["field", "domains", "stories", "briefs", "playlist", "library", "operations"].includes(viewKey)) {
+        const domainPathMatch = (window.location.pathname || "").match(/^\/domains\/([^/]+)\/playlist\/?$/);
+        const domainId = (domainPathMatch ? decodeURIComponent(domainPathMatch[1]) : "") || searchParams.get("domain_id") || this.selectedPlaylistId;
+        if (domainId) {
+          this.selectedPlaylistId = domainId;
+          this.playlistPageId = domainId;
+        }
+      }
+      if (viewKey === "field") {
+        const mode = searchParams.get("mode") || this.fieldMode || "now";
+        this.fieldMode = ["now", "replay", "story", "verify"].includes(mode) ? mode : "now";
+        this.fieldRequestedCanonicalId = searchParams.get("canonical_id") || "";
+        this.fieldRequestedTopicId = searchParams.get("topic_id") || "";
+        this.fieldRequestedEvidenceId = searchParams.get("evidence_id") || "";
+        this.fieldRequestedSnapshotId = searchParams.get("snapshot_id") || "";
+        const entityKey = searchParams.get("entity_key") || "";
+        this.fieldRequestedEntity = entityKey ? {
+          normalized_key: entityKey,
+          entity_type: searchParams.get("entity_type") || "unknown",
+          name: searchParams.get("entity_name") || entityKey,
+        } : null;
+        this.storySelectedId = searchParams.get("story_id") || this.storySelectedId || "";
+      }
+      if (viewKey === "stories") this.storySelectedId = searchParams.get("story_id") || this.storySelectedId || "";
+      if (viewKey === "briefs") this.briefV2SelectedId = searchParams.get("brief_id") || this.briefV2SelectedId || "";
+      if (viewKey === "library") {
+        const tab = searchParams.get("tab") || this.libraryTab || "sources";
+        this.libraryTab = ["sources", "records"].includes(tab) ? tab : "sources";
+        this.libraryScope = searchParams.get("scope") === "global" ? "global" : "domain";
+      }
       if (viewKey === "media") {
         this.mediaQuery = searchParams.get("q") || "";
       }
@@ -42,7 +77,7 @@ export function createUrlStateMethods({ settingsTabs }) {
       if (viewKey === "video") {
         this.playerPageVideoId = searchParams.get("video_id") || "";
       }
-      if (viewKey === "jobs") {
+      if (viewKey === "jobs" || viewKey === "operations") {
         this.jobsTab = searchParams.get("tab") || this.jobsTab || "active";
         this.jobsTypeFilter = searchParams.get("type") || this.jobsTypeFilter || "";
         const fromIso = searchParams.get("from") || "";
@@ -59,8 +94,8 @@ export function createUrlStateMethods({ settingsTabs }) {
         this.selectedPlaylistId = playlistId || this.selectedPlaylistId;
         this.playlistSelectedDate = searchParams.get("date") || this.playlistSelectedDate || "";
         if (!this.playlistSelectedDate) this.playlistSelectedDate = todayIsoLocal();
-        const subview = (searchParams.get("subview") || this.playlistSubview || "main").trim();
-        this.playlistSubview = ["main", "analysis", "settings"].includes(subview) ? subview : "main";
+        this.playlistRequestedVideoId = searchParams.get("video_id") || "";
+        this.playlistRequestedPosition = Number(searchParams.get("t") || 0) || 0;
       }
       if (viewKey === "settings") {
         const legacyInstallPath = ((window.location.pathname || "").replace(/\/+$/, "") || "/") === "/install";
@@ -77,6 +112,32 @@ export function createUrlStateMethods({ settingsTabs }) {
 
     _buildSearchForView(viewKey) {
       const searchParams = new URLSearchParams();
+      if (["field", "domains", "stories", "briefs", "library", "operations"].includes(viewKey) && this.selectedPlaylistId) {
+        searchParams.set("domain_id", String(this.selectedPlaylistId));
+      }
+      if (viewKey === "field") {
+        searchParams.set("mode", this.fieldMode || "now");
+        if (this.playlistEventMapSelectedKind === "canonical" && this.playlistEventMapSelectedId) searchParams.set("canonical_id", String(this.playlistEventMapSelectedId));
+        else if (this.fieldRequestedCanonicalId) searchParams.set("canonical_id", String(this.fieldRequestedCanonicalId));
+        if (this.playlistEventMapSelectedKind === "topic" && this.playlistEventMapSelectedId) searchParams.set("topic_id", String(this.playlistEventMapSelectedId));
+        else if (this.fieldRequestedTopicId) searchParams.set("topic_id", String(this.fieldRequestedTopicId));
+        if (this.playlistEventMapSelectedKind === "evidence" && this.playlistEventMapSelectedId) searchParams.set("evidence_id", String(this.playlistEventMapSelectedId));
+        else if (this.fieldRequestedEvidenceId) searchParams.set("evidence_id", String(this.fieldRequestedEvidenceId));
+        const entity = this.playlistEventMapEntityFilter || this.fieldRequestedEntity;
+        if (entity?.normalized_key) {
+          searchParams.set("entity_key", String(entity.normalized_key));
+          searchParams.set("entity_type", String(entity.entity_type || "unknown"));
+          if (entity.name) searchParams.set("entity_name", String(entity.name));
+        }
+        if (this.storySelectedId && this.fieldMode === "story") searchParams.set("story_id", String(this.storySelectedId));
+        if (this.fieldRequestedSnapshotId) searchParams.set("snapshot_id", String(this.fieldRequestedSnapshotId));
+      }
+      if (viewKey === "stories" && this.storySelectedId) searchParams.set("story_id", String(this.storySelectedId));
+      if (viewKey === "briefs" && this.briefV2SelectedId) searchParams.set("brief_id", String(this.briefV2SelectedId));
+      if (viewKey === "library") {
+        searchParams.set("tab", this.libraryTab || "sources");
+        searchParams.set("scope", this.libraryScope || "domain");
+      }
       if (viewKey === "media" && this.mediaQuery) searchParams.set("q", this.mediaQuery);
       if (viewKey === "videos" && this.videoStatus) searchParams.set("status", this.videoStatus);
       if (viewKey === "videos" && Array.isArray(this.videoMediaIds) && this.videoMediaIds.length) {
@@ -86,7 +147,7 @@ export function createUrlStateMethods({ settingsTabs }) {
       if (viewKey === "videos" && this.videoFrom) searchParams.set("from", new Date(this.videoFrom).toISOString());
       if (viewKey === "videos" && this.videoTo) searchParams.set("to", new Date(this.videoTo).toISOString());
       if (viewKey === "video" && this.playerPageVideoId) searchParams.set("video_id", String(this.playerPageVideoId));
-      if (viewKey === "jobs") {
+      if (viewKey === "jobs" || viewKey === "operations") {
         searchParams.set("tab", this.jobsTab || "active");
         if (this.jobsTypeFilter) searchParams.set("type", this.jobsTypeFilter);
         if (this.jobsTab !== "active") {
@@ -98,10 +159,12 @@ export function createUrlStateMethods({ settingsTabs }) {
       }
       if (viewKey === "playlists" && this.selectedPlaylistId) searchParams.set("playlist_id", this.selectedPlaylistId);
       if (viewKey === "playlist") {
-        const playlistId = this.playlistPageId || this.selectedPlaylistId;
-        if (playlistId) searchParams.set("playlist_id", String(playlistId));
         if (this.playlistSelectedDate) searchParams.set("date", String(this.playlistSelectedDate));
-        searchParams.set("subview", this.playlistSubview || "main");
+        if (this.playlistCurrentVideo?.id) searchParams.set("video_id", String(this.playlistCurrentVideo.id));
+        const position = this.playbackPendingSeekSec !== null
+          ? Number(this.playbackPendingSeekSec || 0)
+          : Number(this.playlistMediaCurrentTimeSec || 0);
+        if (Number.isFinite(position) && position > 0) searchParams.set("t", String(Math.floor(position)));
       }
       if (viewKey === "settings") {
         searchParams.set("tab", this.settingsTab || "cookies");
@@ -126,16 +189,23 @@ export function createUrlStateMethods({ settingsTabs }) {
 
     switchView(key, { push = true, stateExtras = null, refresh = true } = {}) {
       const item = this.navItems.find((nav) => nav.key === key);
-      if (this.activeView === "media" && key !== "media") this._teardownMediaIo();
-      if (this.activeView === "videos" && key !== "videos") this._teardownVideoIo();
+      if (key === "operations" && this.activeView !== "operations" && !this.operationsReturnUrl) {
+        this.operationsReturnUrl = `${window.location.pathname || "/"}${window.location.search || ""}`;
+      }
+      if ((this.activeView === "media" || (this.activeView === "library" && this.libraryTab === "sources")) && key !== "media" && key !== "library") this._teardownMediaIo();
+      if ((this.activeView === "videos" || (this.activeView === "library" && this.libraryTab === "records")) && key !== "videos" && key !== "library") this._teardownVideoIo();
       if (this.activeView === "video" && key !== "video" && typeof this.leaveVideoPage === "function") this.leaveVideoPage();
-      if (this.activeView === "playlist" && key !== "playlist" && typeof this.leavePlaylistPage === "function") {
-        this.leavePlaylistPage();
+      if (this.activeView === "playlist" && key !== "playlist" && typeof this.leavePlaybackPage === "function") {
+        this.leavePlaybackPage();
+      }
+      if (this.activeView === "field" && key !== "field" && typeof this.leaveField === "function") {
+        this.saveFieldCursor({ immediate: true });
+        this.leaveField();
       }
       if (this.activeView !== key && typeof this._stopDocumentMediaPlayback === "function") {
         this._stopDocumentMediaPlayback({ clearSources: true });
       }
-      if (key === "videos") this._ensureVideoRange();
+      if (key === "videos" || (key === "library" && this.libraryTab === "records")) this._ensureVideoRange();
       this.activeView = key;
       this.pageTitle = item ? item.label : key;
       this._syncUrl({ push, stateExtras });
@@ -157,17 +227,23 @@ export function createUrlStateMethods({ settingsTabs }) {
 
     async refreshActive() {
       try {
-        if (this.activeView !== "jobs") {
+        if (!["jobs", "operations"].includes(this.activeView)) {
           this._disconnectJobsWs();
           this._destroyJobsDoneChart();
         }
+        if (this.activeView === "field") return await this.loadField();
+        if (this.activeView === "domains") return await this.loadDomainDirectory();
+        if (this.activeView === "stories") return await this.loadStories();
+        if (this.activeView === "briefs") return await this.loadBriefsV2();
+        if (this.activeView === "library") return await this.loadLibrary();
+        if (this.activeView === "operations") return await this.loadOperations();
         if (this.activeView === "overview") return await this.loadStats();
         if (this.activeView === "media") return await this.loadMedia();
         if (this.activeView === "videos") return await this.loadVideos();
         if (this.activeView === "video") return await this.loadVideoPage();
         if (this.activeView === "jobs") return await this.loadJobs();
         if (this.activeView === "playlists") return await this.loadPlaylists();
-        if (this.activeView === "playlist") return await this.loadPlaylistPage();
+        if (this.activeView === "playlist") return await this.loadPlaybackPage();
         if (this.activeView === "settings") return await this.loadSettings();
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;

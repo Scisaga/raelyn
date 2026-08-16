@@ -14,6 +14,7 @@ from raelyn.api.auth import OptionalBearerTokenAuthMiddleware
 from raelyn.api.assets import router as assets_router
 from raelyn.api.briefs import router as briefs_router
 from raelyn.api.config_api import router as config_router
+from raelyn.api.domains import router as domains_router
 from raelyn.api.health import router as health_router
 from raelyn.api.jobs import router as jobs_router
 from raelyn.api.media import router as media_router
@@ -127,6 +128,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs_router, prefix="/api")
     app.include_router(playlists_router, prefix="/api")
     app.include_router(briefs_router, prefix="/api")
+    app.include_router(domains_router, prefix="/api")
     app.include_router(config_router, prefix="/api")
     app.include_router(stats_router, prefix="/api")
     app.include_router(system_router, prefix="/api")

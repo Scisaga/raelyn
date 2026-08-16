@@ -283,7 +283,7 @@ class EventMapSnapshotTests(unittest.TestCase):
             )
             self.assertEqual(
                 set(rows),
-                {"identity", "canonical", "member", "lineage", "topic", "topic_member", "story", "story_member", "story_edge", "anchor", "entity"},
+                {"identity", "canonical", "member", "lineage", "topic", "topic_member", "story_identity", "story", "story_member", "story_edge", "anchor", "entity"},
             )
             for buffer in rows.values():
                 buffer.discard()

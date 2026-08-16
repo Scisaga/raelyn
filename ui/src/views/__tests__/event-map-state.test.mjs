@@ -397,7 +397,7 @@ test("切换 snapshot 清理点索引、选择和搜索，但保留可重解析�
 });
 
 test("代码与模板只保留单窗口时间状态", () => {
-  const files = ["../event-map.js", "../event-map-model.js", "../../../templates/app/views/playlist.html", "../../app/modules/playlists.js"];
+  const files = ["../event-map.js", "../event-map-model.js", "../../../templates/app/views/field-v2.html", "../../app/modules/playlists.js"];
   const content = files.map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
   assert.match(content, /playlistEventMapWindowStart/);
   assert.match(content, /playlistEventMapWindowEnd/);
@@ -408,7 +408,7 @@ test("三维事件星图不再保留 Atlas、全期参照或实体卫星链", ()
   const files = [
     "../event-map.js",
     "../event-map-model.js",
-    "../../../templates/app/views/playlist.html",
+    "../../../templates/app/views/field-v2.html",
     "../../../scripts/js-bundle.mjs",
   ];
   const content = files.map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");

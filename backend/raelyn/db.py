@@ -280,7 +280,10 @@ def _create_event_analysis_indexes(conn) -> None:
         "create index if not exists event_map_canonical_identity_retired_snapshot_idx on event_map_canonical_identity(retired_snapshot_id)",
         "create index if not exists event_map_canonical_time_idx on event_map_canonical(snapshot_id, event_start_day, event_end_day)",
         "create index if not exists event_map_canonical_type_idx on event_map_canonical(snapshot_id, event_type_code, point_index)",
+        "create index if not exists event_map_canonical_review_idx on event_map_canonical(snapshot_id, has_uncertainty, event_start_day)",
         "create index if not exists event_map_canonical_member_canonical_idx on event_map_canonical_member(snapshot_id, canonical_id)",
+        "create index if not exists event_map_canonical_history_member_record_idx on event_map_canonical_history_member(playlist_id, record_revision_id, canonical_id)",
+        "create index if not exists event_map_canonical_history_member_object_idx on event_map_canonical_history_member(playlist_id, canonical_id, snapshot_id)",
         "create index if not exists event_map_entity_index_key_idx on event_map_entity_index(snapshot_id, entity_type, normalized_key, point_index)",
         "create index if not exists event_map_topic_level_idx on event_map_topic(snapshot_id, level)",
         "create index if not exists event_map_topic_anchor_idx on event_map_topic(snapshot_id, anchor_canonical_id)",
@@ -290,6 +293,8 @@ def _create_event_analysis_indexes(conn) -> None:
         "create index if not exists event_map_story_edge_source_idx on event_map_story_edge(snapshot_id, source_canonical_id)",
         "create index if not exists event_map_story_edge_target_idx on event_map_story_edge(snapshot_id, target_canonical_id)",
         "create index if not exists event_map_story_edge_story_idx on event_map_story_edge(snapshot_id, story_id)",
+        "create index if not exists event_map_story_history_evidence_record_idx on event_map_story_history_evidence(playlist_id, record_revision_id, story_identity_id)",
+        "create index if not exists event_map_story_history_evidence_story_idx on event_map_story_history_evidence(playlist_id, story_identity_id, snapshot_id)",
     ]
     if conn.dialect.name == "postgresql":
         for table_name in ("event_map_canonical", "event_map_entity_index"):
@@ -425,6 +430,79 @@ def _migrate_schema(conn) -> None:
                 "alter table event_map_snapshot drop column lod_node_count",
             )
 
+    if "event_map_story" in tables:
+        cols = {c.get("name") for c in insp.get_columns("event_map_story")}
+        if "story_identity_id" not in cols:
+            conn.execute(
+                text(
+                    "alter table event_map_story add column story_identity_id "
+                    f"{_uuid_column_sql(conn.dialect.name)}"
+                )
+            )
+        if "event_map_story_identity" in tables:
+            # 旧快照的 story_id 只在快照内稳定；迁移时将它作为第一代稳定身份，
+            # 后续构建再通过保守成员重叠匹配延续。
+            if conn.dialect.name == "postgresql":
+                conn.execute(
+                    text(
+                        """
+insert into event_map_story_identity (id, playlist_id, status, created_snapshot_id, created_at, updated_at)
+select s.story_id, p.playlist_id, 'active', s.snapshot_id, s.created_at, s.created_at
+from event_map_story s
+join event_map_snapshot p on p.id = s.snapshot_id
+on conflict (id) do nothing
+"""
+                    )
+                )
+            else:
+                conn.execute(
+                    text(
+                        """
+insert or ignore into event_map_story_identity (id, playlist_id, status, created_snapshot_id, created_at, updated_at)
+select s.story_id, p.playlist_id, 'active', s.snapshot_id, s.created_at, s.created_at
+from event_map_story s
+join event_map_snapshot p on p.id = s.snapshot_id
+"""
+                    )
+                )
+            conn.execute(
+                text(
+                    "update event_map_story set story_identity_id = story_id "
+                    "where story_identity_id is null"
+                )
+            )
+            _execute_best_effort_ddl(
+                conn,
+                "create unique index if not exists event_map_story_snapshot_identity_ux "
+                "on event_map_story(snapshot_id, story_identity_id)",
+            )
+            _execute_best_effort_ddl(
+                conn,
+                "create index if not exists event_map_story_identity_idx "
+                "on event_map_story(story_identity_id, snapshot_id)",
+            )
+
+    if "event_map_canonical" in tables:
+        cols = {c.get("name") for c in insp.get_columns("event_map_canonical")}
+        if "has_uncertainty" not in cols:
+            # 原位补齐热查询列；不重建快照，不取消任务，也不删除历史对象。
+            conn.execute(text("alter table event_map_canonical add column has_uncertainty boolean"))
+            json_length = (
+                "jsonb_array_length(uncertainty_flags)"
+                if conn.dialect.name == "postgresql"
+                else "json_array_length(uncertainty_flags)"
+            )
+            conn.execute(
+                text(
+                    "update event_map_canonical "
+                    f"set has_uncertainty = coalesce({json_length}, 0) > 0 "
+                    "where has_uncertainty is null"
+                )
+            )
+            if conn.dialect.name == "postgresql":
+                conn.execute(text("alter table event_map_canonical alter column has_uncertainty set default false"))
+                conn.execute(text("alter table event_map_canonical alter column has_uncertainty set not null"))
+
     for table_name in ("event_map_lod_member", "event_map_lod_node"):
         suffix = " cascade" if conn.dialect.name == "postgresql" else ""
         _execute_best_effort_ddl(conn, f"drop table if exists {table_name}{suffix}")
@@ -470,6 +548,19 @@ def _migrate_schema(conn) -> None:
                 conn.execute(text("alter table playlist add column brief_granularity varchar not null default 'day'"))
         if "brief_prompt" not in cols:
             conn.execute(text("alter table playlist add column brief_prompt text"))
+
+    if "brief" in tables:
+        cols = {c.get("name") for c in insp.get_columns("brief")}
+        if "snapshot_id" not in cols:
+            conn.execute(
+                text(
+                    "alter table brief add column snapshot_id "
+                    f"{_uuid_column_sql(conn.dialect.name)}"
+                )
+            )
+        if "generation_basis" not in cols:
+            column_type = "jsonb" if conn.dialect.name == "postgresql" else "json"
+            conn.execute(text(f"alter table brief add column generation_basis {column_type}"))
 
     # Migrate legacy daily_brief -> brief (day granularity).
     if "daily_brief" in tables and "brief" in tables:
@@ -574,12 +665,7 @@ where job.type = 'video.download'
         )
         _create_job_query_indexes(conn)
 
-        try:
-            _cancel_legacy_analysis_jobs(conn)
-        except Exception:
-            pass
-        _drop_legacy_analysis_tables(conn)
-        tables = set(inspect(conn).get_table_names())
+        # 自动迁移不得取消或删除仍在队列中的历史任务；遗留链路只允许单独审计后人工治理。
     # Worker heartbeats: add optional metadata columns (role) for UI observability.
     if "worker_heartbeat" in tables:
         cols = {c.get("name") for c in insp.get_columns("worker_heartbeat")}
@@ -688,15 +774,37 @@ def init_db() -> None:
     from raelyn.models import Base  # local import to avoid import cycles at module load
 
     dialect = engine.dialect.name
-    with engine.begin() as conn:
+    with engine.connect() as conn:
         if dialect == "postgresql":
             conn.execute(text("select pg_advisory_lock(hashtext(:k))").bindparams(k=_CREATE_ALL_LOCK_KEY))
+            # Advisory lock 是 session 级锁；先提交获取锁产生的隐式事务，
+            # 后续才能显式划分 schema 与历史回填事务。
+            conn.commit()
         try:
-            Base.metadata.create_all(bind=conn)
-            _migrate_schema(conn)
+            # DDL 必须先独立提交。历史回填可能持续数分钟，如果把两者放进同一事务，
+            # PostgreSQL 会一直持有 ALTER/CREATE 的关系锁并阻塞运行中的 worker 写入。
+            with conn.begin():
+                Base.metadata.create_all(bind=conn)
+                _migrate_schema(conn)
+
+            # V2 历史回填只读取仍保留的 ready 快照并写入新增表；不暂停、取消或删除任何任务与媒体数据。
+            from raelyn.services.event_map_snapshot import bootstrap_v2_event_map_history
+
+            history_session = Session(bind=conn, autoflush=False, expire_on_commit=False)
+            try:
+                bootstrap_v2_event_map_history(history_session)
+                history_session.commit()
+            except Exception:
+                history_session.rollback()
+                raise
+            finally:
+                history_session.close()
         finally:
             if dialect == "postgresql":
+                if conn.in_transaction():
+                    conn.rollback()
                 conn.execute(text("select pg_advisory_unlock(hashtext(:k))").bindparams(k=_CREATE_ALL_LOCK_KEY))
+                conn.commit()
 
 
 @contextmanager

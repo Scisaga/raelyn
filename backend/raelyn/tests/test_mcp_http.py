@@ -176,6 +176,7 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("get_playlist_summary", tool_names)
         self.assertIn("get_playlist_latest_brief", tool_names)
         self.assertIn("list_latest_briefs", tool_names)
+        self.assertIn("get_domain_topic", tool_names)
         self.assertNotIn("get_playlist_context", tool_names)
         self.assertEqual(set(get_brief_tool.inputSchema["properties"]), {"brief_id", "include_body"})
         self.assertEqual(

@@ -317,16 +317,18 @@
 
 ### `DELETE /api/playlists/{playlist_id}`
 
-- 删除播放列表。
+- 旧兼容删除入口；与观测域安全删除复用同一底层删除服务。
+- 若观测域仍有 `pending / running / cancel_requested` 任务则返回 `409`，不会自动取消任务。
+- V2 UI 使用 `DELETE /api/domains/{domain_id}`，要求显式提交完整域名确认。
 
 ### `POST /api/playlists/{playlist_id}/media`
 
 - body：`{ "media_id": "..." }`
-- 向播放列表追加一个媒体。
+- 旧兼容关联入口；向播放列表追加一个媒体。V2 UI 使用观测域信源接口。
 
 ### `DELETE /api/playlists/{playlist_id}/media/{media_id}`
 
-- 移除播放列表内的媒体。
+- 旧兼容解除关联入口；只移除播放列表内的媒体关联，不删除全局媒体、来源记录或资产。V2 UI 使用观测域信源接口。
 - 该变更会触发受影响周期的摘要刷新；若某周期已无视频，则对应摘要状态会变为 `empty`。
 
 ### `PUT /api/playlists/{playlist_id}/media`
@@ -348,7 +350,7 @@
 
 ### `GET /api/playlists/{playlist_id}/videos_by_date`
 
-- query：`date=YYYY-MM-DD`、`time_basis=content|platform`（默认 `content`）
+- query：`date=YYYY-MM-DD`、`time_basis=content|platform`（默认 `content`）、`limit`（最大 500）
 - 返回指定本地日期的可播放视频列表；默认按内容时间轴归属，缺少内容时间证据时回退到平台发布时间，且仅包含已落视频资产的视频。
 
 ### `GET /api/playlists/{playlist_id}/video_counts_by_period`
@@ -360,11 +362,12 @@
 
 - query：`granularity`、`date`、`limit`、`time_basis=content|platform`（默认 `content`）
 - 返回某个周期内的可播放视频列表；默认按内容时间轴归属，且仅包含已落视频资产的视频。
+- V2 播放列表固定传入 `granularity=day&time_basis=content&limit=500`，不受简报日 / 周 / 月粒度影响；达到上限时由界面显示截断提示。
 
 ### `POST /api/playlists/{playlist_id}/events/extract`
 
 - 手动创建 `playlist.backfill_events` 父任务；父任务按播放列表内容时间轴拆分月份范围并投递 `playlist.backfill_events_range` 子任务，范围任务运行时再查询该月内已有 `plain` transcript 的视频并投递 `video.extract_events_batch` 或 `video.extract_events` 子任务。批量抽取任务执行时每次 LLM 请求只包含 1 个视频，避免多个视频共用一个大 JSON 生成导致本地模型长时间无返回。
-- 事件抽取在 Ollama `/api/generate` 模式下使用 JSON 输出约束、低温度采样、流式读取、`num_ctx/num_predict` 上限和 per-model advisory lock，降低标题、实体和证据之间的结构化抽取漂移，并避免同一 Ollama 大模型被多个事件抽取请求同时压满。v2 协议要求 LLM 只返回 `evidence_source_ids`，后端用 source map 写入可验证证据。
+- 事件抽取在 Ollama `/api/generate` 模式下使用 JSON 输出约束、低温度采样、流式读取、全局统一的 `LLM_OLLAMA_NUM_CTX`、事件专用 `num_predict` 上限和 per-model advisory lock，降低标题、实体和证据之间的结构化抽取漂移，并避免同一 Ollama 大模型被多个事件抽取请求同时压满。v2 协议要求 LLM 只返回 `evidence_source_ids`，后端用 source map 写入可验证证据。
 - 月份范围任务的优先级低于它投递的视频事件抽取任务；同一批回填中，一旦 `video.extract_events_batch` 或 `video.extract_events` 入队，worker 会优先消费事件抽取，再继续领取后续月份范围任务。
 - body：`{ "force": false }`；`force=false` 只补齐缺失当前 transcript / prompt / model 口径事件的视频，`force=true` 会先取消当前播放列表相关的活跃事件抽取、事件 embedding 与事件地图构建任务，再重新抽取同一 prompt / model 口径下的视频事件。
 - `force=true` 的任务清理只取消 `pending/running` 任务并保留历史记录；地图 state 保持 dirty，现有 ready 快照不因重抽被提前切走。
@@ -400,7 +403,7 @@
 
 ### `GET /api/playlists/{playlist_id}/events/map/manifest`
 
-- 唯一可省略 `snapshot_id` 的地图接口；解析 `event_map_state.current_snapshot_id`。
+- query 可选 `snapshot_id`；省略时解析 `event_map_state.current_snapshot_id`，显式指定时读取仍可用且属于该播放列表的历史 ready 快照，并以 `is_current=false` 标记。无效的显式快照返回 `409`，不会静默回退到 current。
 - query 可选 `compact=true`，供构建状态轮询使用；该模式跳过覆盖统计与两级主题数据，完成后客户端应重新请求完整 manifest。
 - 返回构建/dirty generation、当前 ready snapshot、`dimension=3`、场景协议版本、canonical/record/topic/story/entity 数量、三维固定坐标边界、类别映射、两级主题中心/半径/父子索引、主题代表事件的 `anchor_canonical_id/anchor_point_index/anchor_title`、按事件覆盖区间计算的月度 canonical/record 分布、时间边界和峰值 RSS。
 - 完整 manifest 的 `semantic_families[]` 给出稳定语义族的 `code/label/color`；每个 `type_categories[]` 项通过 `semantic_family/semantic_family_label/semantic_color` 归入其中一个语义族。该映射同时适用于既有 ready 快照，无需仅为颜色重建投影。
@@ -413,6 +416,7 @@
 - query：必填 `snapshot_id`，且该快照必须属于播放列表并为 ready。
 - 返回不可变 `application/octet-stream`，按 `point_index` 递增；协议 v2 每条 56 字节，小端布局 `<I16sfffiiBBBBIII>`。
 - 字段依次是 point index、canonical UUID、float32 x/y/z、事件起止 epoch-day、类型/精度/flags/保留位、member 数、一级星域索引、二级主题索引。
+- 场景流只读取类型化数值列和物化的 `has_uncertainty` 布尔位，不逐点读取 canonical 修订 JSONB。
 - 全局节点是一件 canonical 真实事件，不是一条原始记录；不传输原始 embedding。响应可按 snapshot 长期缓存。
 
 ### `GET /api/playlists/{playlist_id}/events/map/entities`
@@ -458,6 +462,112 @@
 - query：`level=canonical|record`，可选 `snapshot_id`；省略时使用 current ready。
 - canonical 口径用于消费去重后的真实事件；record 口径保留每条来源记录与所属 canonical。
 - 返回 `time_basis=event_time`，不把 `available_at` 导出为发生时间。
+
+## V2 连续观察
+
+### `GET /api/domains`
+
+- 返回观测域目录、current ready 快照、信源数、未读变化数、最后观察位置，以及从类型化坐标列确定性抽样的 `preview_points`；目录缩略星域不解析 canonical JSONB。
+
+### `POST /api/domains/{domain_id}/sources`
+
+- body 只能提供 `{ "media_id": "..." }` 或 `{ "url": "..." }` 之一，同时提供或同时缺少返回 `422`。
+- `media_id` 用于把全部资料中的已有信源加入当前观测域；重复加入是幂等操作。
+- `url` 在同一数据库事务中完成 URL 规范化查重、必要时创建全局信源以及加入当前观测域；任一步失败都会整体回滚。
+- 返回 `source`、`created` 和 `attached`，分别说明信源、是否新建全局信源、是否新建域关联。
+
+### `DELETE /api/domains/{domain_id}/sources/{media_id}`
+
+- 只解除 `PlaylistMedia` 域关联；重复解除保持幂等。
+- 不删除全局 `Media`、`Video`、`Asset` 或该信源与其他观测域的关系。
+
+### `GET /api/domains/{domain_id}/deletion-impact`
+
+- 返回信源关联、简报、星域快照、变化、故事、观察状态和活跃任务计数。
+- `retained_shared_data` 明确说明全局信源、来源记录和资产不会随观测域删除。
+
+### `DELETE /api/domains/{domain_id}`
+
+- body：`{ "confirm_name": "完整域名" }`。
+- 名称不完全匹配返回 `400`；存在 `pending / running / cancel_requested` 的域任务或其后代任务时返回 `409` 并列出活跃任务，不自动取消任务。
+- 删除域内关联和派生观测数据，但保留共享的 `Media`、`Video` 与 `Asset`。
+
+### `GET /api/domains/{domain_id}/observation`
+
+- 返回当前快照、观察游标和四类独立覆盖率：信源处理、事件抽取、星域准入、证据验证。
+- 每类覆盖率都包含分子、分母和原因计数，不用单一百分比掩盖口径。
+
+### `GET|PUT /api/domains/{domain_id}/observation/cursor`
+
+- 保存或读取快照、系统认知时间、事件时间窗、`now|replay|story|verify` 模式、相机、筛选和最后选择对象。
+- `last_page` 支持 `field|stories|briefs|playlist|library|operations`；`playlist` 表示来源播放工作台。
+- 相同状态重复提交为幂等更新，不创建新的游标记录。
+
+### `GET /api/domains/{domain_id}/changes`
+
+- query 可选 `after_snapshot_id`、`object_type`、`change_type`、`cursor`、`limit`。
+- 按 `(observed_at desc, id desc)` 稳定分页；每项同时声明事件发生时间和系统认知时间口径。
+- 每项返回 `before_revision` / `after_revision`；retire 变化的 Web 深链接固定到对象最后仍存在的 `from_snapshot_id`，其余变化固定到 `to_snapshot_id`。
+- 新增且带 evidence revision 的显式 `corrects` 故事关系会额外生成 `story_correction_added`；普通标题、摘要或成员变化不会被推断为纠正。
+
+### `GET /api/domains/{domain_id}/observation/feed`
+
+- 分开返回 `newly_occurred`、`newly_mapped`、`story_updates`、`needs_review`，并在 `definitions` 中返回每组口径。
+
+### `GET /api/domains/{domain_id}/canonicals`
+
+- query 可选 `event_time_start`、`event_time_end`、`event_type`、`limit`、`offset`。
+- 返回 current ready 快照的线性真实事件列表，供 3D 星域的无障碍/低性能替代视图使用；查询只读类型化热列。
+
+### `GET /api/domains/{domain_id}/canonicals/{canonical_id}/history`
+
+- 返回稳定 canonical 身份、跨快照修订、merge/split 谱系和变化记录。
+
+### `GET /api/domains/{domain_id}/topics/{topic_id}`
+
+- query 可选 `limit`、`snapshot_id`；省略快照时读取 current ready，显式指定时固定到该历史 ready 快照。
+- 返回所选快照中的主题层级、父主题、关键词、成员计数和类型化代表 canonical，并附与 Web 星域共享的深链接。
+
+### `GET /api/domains/{domain_id}/stories`
+
+- 返回 current ready 快照中的稳定故事目录、关注状态和未读状态。
+
+### `GET /api/domains/{domain_id}/stories/{story_identity_id}`
+
+- query 可选 `snapshot_id`；省略时读取 current ready，显式指定时航迹固定到该历史 ready 快照且不回退。
+- 返回跨快照故事修订、逐版本成员/关系/证据差异、变化、阅读状态，以及所选快照可直接绘制的完整 `current_trajectory.nodes/edges`。
+
+### `PATCH /api/domains/{domain_id}/stories/{story_identity_id}/read-state`
+
+- body 可包含 `followed`、`snapshot_id`、`position`、`mark_read`，保存关注与阅读位置。
+
+### `GET /api/briefs/{brief_id}/structured`
+
+- 返回简报生成快照、生成口径、正文地址和按正文锚点排序的结构化引用。
+
+### `GET /api/domains/{domain_id}/objects/{object_type}/{object_id}/brief-references`
+
+- query 对 topic 可选 `snapshot_id`；反查引用某个 canonical、story、evidence 或 source 的简报位置，topic 按所选快照的成员 canonical 聚合解释该主题的简报段落。
+
+### `GET /api/domains/{domain_id}/evidence/{revision_id}`
+
+- 返回来源记录、证据文本、校验信息、字符区间和播放定位。
+- 只有来源提供精确分段时间时才返回播放秒数；否则保留字符区间，不做比例估算。
+- transcript 证据返回冻结的 `transcript_asset_id`、当前 plain transcript asset、`source_version_status=current|superseded|unavailable|unknown` 与片段 `source_sha256`；旧转写版本不会被当前版本静默替换。
+
+### `GET /api/domains/{domain_id}/source-records/{video_id}/semantic-references`
+
+- 通过正规化历史成员与故事证据索引反查 canonical、故事关系与简报，不扫描长期修订 JSONB。
+
+### `GET /api/library/sources` / `GET /api/library/source-records`
+
+- query：`scope=domain|global`；域内口径要求 `domain_id`。两者分别对应全局/域内信源管理和来源记录浏览。
+- `GET /api/library/sources` 另支持 `q`、`limit`、`offset`；传入 `domain_id` 时，每项返回 `in_current_domain`，可用于从全部资料搜索并加入尚未关联的信源。
+
+### `GET /api/search/semantic`
+
+- query：`q`，可选 `domain_id`、`limit`。
+- 按观测域、主题、真实事件、故事、实体、简报、信源和来源记录分组返回，并附可恢复上下文的 Web 深链接。
 
 ### `POST /api/briefs/generate`
 

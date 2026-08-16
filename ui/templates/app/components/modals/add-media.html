@@ -1,16 +1,15 @@
       <!-- Add media modal -->
       <div x-show="modals.addMedia" class="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" x-transition>
         <div class="w-full max-w-lg rounded-xl border border-slate-800 bg-slate-900 shadow-lg p-4">
-          <div class="text-sm font-semibold">添加媒体</div>
+          <div class="text-sm font-semibold" x-text="activeView==='library' && libraryScope==='domain' ? '通过 URL 加入当前观测域' : '添加媒体'"></div>
           <div class="mt-3 space-y-3">
             <input
               class="w-full rounded-md border border-slate-700 bg-slate-950/30 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500/30"
               placeholder="YouTube/B站 URL"
               x-model="addMediaUrl"
             />
-            <div class="text-xs text-slate-400">
-              添加后默认不启用监控；如需自动同步，请在媒体列表中手动开启监控。
-            </div>
+            <div class="text-xs text-slate-400" x-show="!(activeView==='library' && libraryScope==='domain')">添加后默认不启用全局监控；如需自动同步，请在媒体列表中手动开启。</div>
+            <div class="text-xs text-slate-400" x-show="activeView==='library' && libraryScope==='domain'">系统会先按平台身份查重；不存在时新建全局信源，并在同一事务内加入当前观测域。默认不启用全局监控。</div>
             <div class="text-xs text-rose-200" x-show="addMediaError" x-text="addMediaError"></div>
             <div class="flex items-center justify-end gap-2">
               <button

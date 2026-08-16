@@ -56,7 +56,7 @@ export function createVideosViewMethods() {
     },
 
     _setupVideoIo() {
-      if (this.activeView !== "videos") return;
+      if (this.activeView !== "videos" && !(this.activeView === "library" && this.libraryTab === "records")) return;
       this.$nextTick(() => {
         const el = this.$refs && this.$refs.videoInfiniteSentinel;
         if (!el) return;
@@ -74,7 +74,7 @@ export function createVideosViewMethods() {
     },
 
     async loadMoreVideos() {
-      if (this.activeView !== "videos" || this.videoLoadingList || this.videoLoadingMore || !this.videoHasMore) return;
+      if ((this.activeView !== "videos" && !(this.activeView === "library" && this.libraryTab === "records")) || this.videoLoadingList || this.videoLoadingMore || !this.videoHasMore) return;
 
       try {
         this.videoLoadingMore = true;

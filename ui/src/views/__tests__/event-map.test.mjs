@@ -78,7 +78,7 @@ test("直接点击主题标签保留镜头，已选主题跨语义层级保留�
 test("选中主题保留成员语义颜色、加细金边并弱化其余事件", async () => {
   const controllerSource = await readFile(new URL("../event-map.js", import.meta.url), "utf8");
   const modelSource = await readFile(new URL("../event-map-model.js", import.meta.url), "utf8");
-  const template = await readFile(new URL("../../../templates/app/views/playlist.html", import.meta.url), "utf8");
+  const template = await readFile(new URL("../../../templates/app/views/field-v2.html", import.meta.url), "utf8");
   assert.match(controllerSource, /attribute float aTopicFocus;/);
   assert.match(controllerSource, /float focusRing = vTopicFocus/);
   assert.match(controllerSource, /attribute float aPickable;/);
@@ -244,16 +244,15 @@ test("三维控制器公开相机、显式聚焦、选择与资源销毁入口",
 });
 
 test("事件语义星域状态与控制合并在同一工具栏", async () => {
-  const template = await readFile(new URL("../../../templates/app/views/playlist.html", import.meta.url), "utf8");
-  const section = template.slice(template.indexOf("<!-- Playlist Event Map (subview) -->"));
+  const template = await readFile(new URL("../../../templates/app/views/field-v2.html", import.meta.url), "utf8");
+  const section = template.slice(template.indexOf("<!-- V2 事件语义星域：独立于来源播放与旧设置。 -->"));
   assert.match(section, /<header class="shrink-0 border-b border-slate-800 bg-slate-950\/45">[\s\S]*?截至[\s\S]*?<\/header>/);
   assert.match(section, /事件语义星域/);
   assert.match(section, /三维语义星域 · 时间只改变当前窗口星云/);
   assert.match(section, /点选星点保持镜头 · 点击标签展开主题/);
   assert.match(section, /代表事件/);
   assert.match(section, /playlistEventMapFocusSelectedCanonical/);
-  assert.match(template, /title="事件语义星域"/);
-  assert.match(template, /<circle cx="12" cy="12" r="2\.4"><\/circle>/);
+  assert.match(template, /x-show="activeView==='field'"/);
   assert.doesNotMatch(template, /<path d="M3 3v18h18"><\/path>/);
   assert.doesNotMatch(section, /<div class="text-sm font-semibold text-slate-100">三维事件星图<\/div>/);
 });

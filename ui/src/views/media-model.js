@@ -46,7 +46,7 @@ export function createMediaViewMethods() {
     },
 
     _setupMediaIo() {
-      if (this.activeView !== "media") return;
+      if (this.activeView !== "media" && !(this.activeView === "library" && this.libraryTab === "sources")) return;
       this.$nextTick(() => {
         const el = this.$refs && this.$refs.mediaInfiniteSentinel;
         if (!el) return;
@@ -64,7 +64,7 @@ export function createMediaViewMethods() {
     },
 
     async loadMoreMedia() {
-      if (this.activeView !== "media" || this.mediaLoadingList || this.mediaLoadingMore || !this.mediaHasMore) return;
+      if ((this.activeView !== "media" && !(this.activeView === "library" && this.libraryTab === "sources")) || this.mediaLoadingList || this.mediaLoadingMore || !this.mediaHasMore) return;
 
       try {
         this.mediaLoadingMore = true;
@@ -398,17 +398,19 @@ export function createMediaViewMethods() {
       try {
         this.addMediaSubmitting = true;
         this.addMediaError = "";
-        await this.api(`/media`, {
+        const attachToDomain = this.activeView === "library" && this.libraryScope === "domain" && this.selectedPlaylistId;
+        await this.api(attachToDomain ? `/domains/${encodeURIComponent(this.selectedPlaylistId)}/sources` : `/media`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ url }),
         });
         this.modals.addMedia = false;
-        if (this.activeView !== "media") this.switchView("media");
-        await this.loadMedia();
+        if (!attachToDomain && this.activeView !== "media") this.switchView("media");
+        if (attachToDomain) await this.loadLibrary();
+        else await this.loadMedia();
         await this.loadMediaIndex({ lightweight: true });
-        this.globalStatus = "已添加媒体，默认未启用监控";
-        this.toastSuccess("已添加媒体，默认未启用监控");
+        this.globalStatus = attachToDomain ? "已新建或复用信源并加入当前观测域" : "已添加媒体，默认未启用监控";
+        this.toastSuccess(this.globalStatus);
       } catch (e) {
         const message = e && e.message ? e.message : String(e);
         this.addMediaError = message;

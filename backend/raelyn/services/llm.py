@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from raelyn.config import settings
 from raelyn.services.inference import get_effective_llm_config
 
 
@@ -150,6 +151,14 @@ def _timeout(*, total_timeout_seconds: int, idle_timeout_seconds: int | None = N
     return httpx.Timeout(total_timeout_seconds, read=int(idle_timeout_seconds))
 
 
+def _ollama_options(options: dict[str, Any] | None) -> dict[str, Any]:
+    merged = dict(options or {})
+    num_ctx = _as_int(settings.llm_ollama_num_ctx)
+    if num_ctx > 0:
+        merged["num_ctx"] = num_ctx
+    return merged
+
+
 def _decode_stream_line(line: str | bytes) -> dict[str, Any]:
     text = line.decode("utf-8", errors="replace") if isinstance(line, bytes) else str(line)
     text = text.strip()
@@ -247,8 +256,8 @@ def llm_generate(
             payload["think"] = think
         if response_format == "json":
             payload["format"] = "json"
-        if options is not None:
-            payload["options"] = options
+        if ollama_options := _ollama_options(options):
+            payload["options"] = ollama_options
     elif mode == "openai_chat":
         if not model:
             raise RuntimeError("LLM_MODEL is required for /chat/completions endpoints")

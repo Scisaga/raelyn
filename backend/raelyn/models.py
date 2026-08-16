@@ -513,6 +513,140 @@ class EventMapCanonicalIdentity(Base):
     )
 
 
+class DomainObservationCursor(Base):
+    """单用户在一个观测域中的持久观察位置。"""
+
+    __tablename__ = "domain_observation_cursor"
+
+    playlist_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playlist.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    snapshot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    observed_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    event_time_start: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    event_time_end: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    view_mode: Mapped[str] = mapped_column(String, nullable=False, default="now")
+    last_page: Mapped[str] = mapped_column(String, nullable=False, default="field")
+    camera_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    filter_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    selected_object_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    selected_object_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    last_change_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class EventMapChange(Base):
+    """独立于快照保留周期的、可重复读取的语义对象变化。"""
+
+    __tablename__ = "event_map_change"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    playlist_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playlist.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    from_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    to_snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    object_type: Mapped[str] = mapped_column(String, nullable=False)
+    object_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    change_type: Mapped[str] = mapped_column(String, nullable=False)
+    occurred_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    observed_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+    before_revision: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    after_revision: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    evidence_revision_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "to_snapshot_id",
+            "object_type",
+            "object_id",
+            "change_type",
+            name="event_map_change_snapshot_object_type_ux",
+        ),
+        Index("event_map_change_feed_idx", "playlist_id", "observed_at", "id"),
+        Index("event_map_change_object_idx", "playlist_id", "object_type", "object_id", "observed_at"),
+    )
+
+
+class EventMapCanonicalHistoryRevision(Base):
+    """可长期保留的 canonical 修订，用于快照被裁剪后的历史解释。"""
+
+    __tablename__ = "event_map_canonical_history_revision"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    playlist_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playlist.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    canonical_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_canonical_identity.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    revision: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    occurred_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    observed_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "canonical_id", name="event_map_canonical_history_snapshot_ux"),
+        Index("event_map_canonical_history_object_idx", "playlist_id", "canonical_id", "observed_at"),
+    )
+
+
+class EventMapCanonicalHistoryMember(Base):
+    """长期 canonical 修订与来源修订的正规化关系，避免反查时扫描 JSONB。"""
+
+    __tablename__ = "event_map_canonical_history_member"
+
+    history_revision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_canonical_history_revision.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    record_revision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_record_revision.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    playlist_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playlist.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    canonical_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_canonical_identity.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    is_evidence: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "event_map_canonical_history_member_record_idx",
+            "playlist_id",
+            "record_revision_id",
+            "canonical_id",
+        ),
+        Index(
+            "event_map_canonical_history_member_object_idx",
+            "playlist_id",
+            "canonical_id",
+            "snapshot_id",
+        ),
+    )
+
+
 class EventMapCanonical(Base):
     __tablename__ = "event_map_canonical"
 
@@ -554,10 +688,12 @@ class EventMapCanonical(Base):
     y: Mapped[float] = mapped_column(Float(precision=24), nullable=False)
     z: Mapped[float] = mapped_column(Float(precision=24), nullable=False)
     uncertainty_flags: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    has_uncertainty: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("snapshot_id", "point_index", name="event_map_canonical_point_index_ux"),
+        Index("event_map_canonical_review_idx", "snapshot_id", "has_uncertainty", "event_start_day"),
     )
 
 
@@ -719,6 +855,32 @@ class EventMapTopicMember(Base):
             "level",
             "canonical_id",
         ),
+        Index(
+            "event_map_topic_member_topic_idx",
+            "snapshot_id",
+            "topic_id",
+            "level",
+        ),
+    )
+
+
+class EventMapStoryIdentity(Base):
+    __tablename__ = "event_map_story_identity"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    playlist_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playlist.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    created_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    retired_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("event_map_story_identity_playlist_idx", "playlist_id", "status", "created_at"),
     )
 
 
@@ -731,6 +893,11 @@ class EventMapStory(Base):
         primary_key=True,
     )
     story_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    story_identity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_story_identity.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     title: Mapped[str] = mapped_column(String, nullable=False)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     story_type: Mapped[str] = mapped_column(String, nullable=False, default="sequence")
@@ -738,6 +905,11 @@ class EventMapStory(Base):
     event_time_end: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
     canonical_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "story_identity_id", name="event_map_story_snapshot_identity_ux"),
+        Index("event_map_story_identity_idx", "story_identity_id", "snapshot_id"),
+    )
 
 
 class EventMapStoryMember(Base):
@@ -808,6 +980,106 @@ class EventMapStoryEdge(Base):
     )
 
 
+class EventMapStoryHistoryRevision(Base):
+    """故事稳定身份的长期修订档案，不受大快照裁剪影响。"""
+
+    __tablename__ = "event_map_story_history_revision"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    playlist_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playlist.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    story_identity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_story_identity.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    story_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    story_type: Mapped[str] = mapped_column(String, nullable=False, default="sequence")
+    event_time_start: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    event_time_end: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    member_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    edges: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    evidence_revision_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    method_version: Mapped[str] = mapped_column(String, nullable=False)
+    observed_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "story_identity_id", name="event_map_story_history_snapshot_ux"),
+        Index("event_map_story_history_object_idx", "playlist_id", "story_identity_id", "observed_at"),
+    )
+
+
+class EventMapStoryHistoryEvidence(Base):
+    """长期故事边到来源修订的正规化关系，支持来源记录反查故事。"""
+
+    __tablename__ = "event_map_story_history_evidence"
+
+    history_revision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_story_history_revision.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    edge_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    record_revision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_record_revision.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    playlist_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("playlist.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    story_identity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_story_identity.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_canonical_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    target_canonical_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    relation_type: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "event_map_story_history_evidence_record_idx",
+            "playlist_id",
+            "record_revision_id",
+            "story_identity_id",
+        ),
+        Index(
+            "event_map_story_history_evidence_story_idx",
+            "playlist_id",
+            "story_identity_id",
+            "snapshot_id",
+        ),
+    )
+
+
+class StoryReadState(Base):
+    __tablename__ = "story_read_state"
+
+    story_identity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_story_identity.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    followed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_read_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    last_read_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class EventMapProjectionAnchor(Base):
     __tablename__ = "event_map_projection_anchor"
 
@@ -858,6 +1130,8 @@ class Brief(Base):
     playlist_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("playlist.id", ondelete="CASCADE"), nullable=False)
     granularity: Mapped[str] = mapped_column(String, nullable=False, default="day")
     period_start: Mapped[Any] = mapped_column(Date, nullable=False)
+    snapshot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    generation_basis: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     markdown_asset_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("asset.id"), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -865,6 +1139,39 @@ class Brief(Base):
     updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
     __table_args__ = (UniqueConstraint("playlist_id", "granularity", "period_start", name="brief_ux"),)
+
+
+class BriefReference(Base):
+    __tablename__ = "brief_reference"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    brief_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("brief.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    anchor: Mapped[str] = mapped_column(String, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    object_type: Mapped[str] = mapped_column(String, nullable=False)
+    object_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    snapshot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    event_time_start: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    event_time_end: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    evidence_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_map_record_revision.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    label: Mapped[str | None] = mapped_column(String, nullable=True)
+    context: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("brief_id", "anchor", name="brief_reference_anchor_ux"),
+        UniqueConstraint("brief_id", "position", name="brief_reference_position_ux"),
+        Index("brief_reference_object_idx", "object_type", "object_id", "brief_id"),
+        Index("brief_reference_evidence_idx", "evidence_revision_id", "brief_id"),
+    )
 
 
 class Job(Base):

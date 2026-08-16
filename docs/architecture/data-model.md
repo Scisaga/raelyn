@@ -105,11 +105,12 @@
 - `brief_granularity`：`day | week | month`
 - `brief_prompt`：播放列表级提示词
 
-### `brief` / `daily_brief`
+### `brief` / `brief_reference` / `daily_brief`
 
 当前职责：
 
 - `brief` 是当前主表，保存按 `day / week / month` 聚合后的简报记录。
+- `brief_reference` 保存正文锚点到 canonical、story 或 evidence 的结构化引用，使简报与星域对象可以双向导航。
 - `daily_brief` 保留用于读取历史日级简报记录。
 
 关键字段：
@@ -119,6 +120,7 @@
 - `period_start` 或 `brief_date`
 - `status`
 - `markdown_asset_id`
+- `snapshot_id` / `generation_basis`：简报生成时采用的星域快照与口径。
 - `error_message`
 
 约束：
@@ -212,11 +214,15 @@
 
 - `event_map_state`：播放列表唯一 current ready 指针、`dirty_generation`、`built_generation` 与活跃任务；
 - `event_map_snapshot`：输入指纹、embedding/算法版本、布局连续性、边界、对象计数、跳过原因、RSS/临时磁盘峰值和状态；其中 `entity_count` 是快照内不同 `(entity_type, normalized_key)` 的数量，`job_id + execution_token` 标识本次 claim 的 staging snapshot；
-- `event_map_record_revision`：冻结事件记录标题、摘要、发生时间、类型、实体、来源和证据；
+- `event_map_record_revision`：冻结事件记录标题、摘要、发生时间、类型、实体、来源和证据；新快照的 transcript 证据同时冻结 `transcript_asset_id` 与片段 `source_sha256`，用于识别转写版本变化；
 - `event_map_canonical_identity` / `event_map_canonical` / `event_map_canonical_member` / `event_map_canonical_lineage`：稳定真实事件身份、快照节点、成员归属与 merge/split 延续；
+- `event_map_canonical.has_uncertainty`：供场景协议和待审核列表直接读取的热查询布尔列；完整原因仍保存在 `uncertainty_flags`；
+- `event_map_canonical_history_revision` / `event_map_canonical_history_member`：不依赖大快照保留期的 canonical 修订正文，以及来源修订到 canonical 的类型化反向索引；
 - `event_map_entity_index`：快照原生的实体—canonical 倒排索引；每行保存实体类型、规范键、展示名、固定 `point_index` 和该 canonical 内的底层记录数，实体筛选不再扫描可变的 `market_event_entity` 或 revision JSON；
 - `event_map_topic` / `event_map_topic_member`：确定性的一级星域与二级主题团；保存三维中心、包围半径和每层唯一归属，不保存二维 polygon；
-- `event_map_story` / `event_map_story_member` / `event_map_story_edge`：有证据的事件序列和有向关系；
+- `event_map_story_identity` / `event_map_story` / `event_map_story_member` / `event_map_story_edge`：稳定故事身份、快照版本、有证据的事件序列和有向关系；
+- `event_map_story_history_revision` / `event_map_story_history_evidence` / `story_read_state`：跨快照故事修订、故事边到来源修订的反向索引、关注状态与最后阅读位置；
+- `domain_observation_cursor` / `event_map_change`：观察窗口和按系统认知时间分页的对象变化集；
 - `event_map_projection_anchor`：三维布局继承所需的 canonical anchor、x/y/z 与 float32 centroid。
 
 关键约束：
@@ -229,9 +235,12 @@
 - canonical 与 projection anchor 的 x/y/z 全部非空；快照 bounds 同时保存三轴范围；
 - 同一 canonical 的同一规范实体只保留一行；`(snapshot_id, point_index, entity_type, normalized_key)` 唯一，并为 `(snapshot_id, entity_type, normalized_key, point_index)` 建立查询索引；
 - 每个 canonical 在一级星域和二级主题团各有且仅有一个成员归属；
+- 主题下钻与主题—简报反查使用 `(snapshot_id, topic_id, level)` 复合索引，不扫描整个快照成员集；
 - story edge 禁止 self-edge，`(snapshot, source, target, relation_type)` 唯一；
 - occurrence interval 只来自 `event_time_start/end`；`available_at` 不进入地图表；
 - 原始 embedding 不通过地图 API 传输。
+
+星域主场景只查询上述类型化热列并流式编码固定宽度二进制；长期修订 JSONB 不进入全量显示路径。完整冷热分层见 [V2 观察与存储架构](v2-observation.md)。
 
 旧 `event_regime_*` 与 `event_graph_projection_point` 不属于现行模型，仅可能在显式旧链删除迁移中被识别。
 

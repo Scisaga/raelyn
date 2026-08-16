@@ -168,8 +168,13 @@ export function createPlaylistEventMapMethods() {
       const lifecycleGeneration = Number(this._playlistEventMapLifecycleGeneration || 0);
       if (!silent) this.playlistEventMapStatusLoading = true;
       try {
+        const params = new URLSearchParams();
+        if (compact) params.set("compact", "true");
+        if (this.activeView === "field" && this.fieldRequestedSnapshotId) {
+          params.set("snapshot_id", String(this.fieldRequestedSnapshotId));
+        }
         const manifest = await this.api(
-          `/playlists/${encodeURIComponent(pid)}/events/map/manifest${compact ? "?compact=true" : ""}`,
+          `/playlists/${encodeURIComponent(pid)}/events/map/manifest${params.size ? `?${params}` : ""}`,
           { signal, cache: "no-store" }
         );
         const currentPid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
@@ -251,6 +256,7 @@ export function createPlaylistEventMapMethods() {
     playlistEventMapHandleViewportSummary(summary) {
       const value = summary && typeof summary === "object" ? summary : {}; const level = String(value.sceneLevel || value.level || "overview");
       this.playlistEventMapViewportSummary = { sceneLevel: EVENT_MAP_LEVELS[level] ? level : "overview", viewportCanonicalCount: Math.max(0, Number(value.viewportCanonicalCount ?? value.visibleCount ?? 0)), renderedTopicLabelCount: Math.max(0, Number(value.renderedTopicLabelCount || 0)), ready: true };
+      if (this.activeView === "field" && typeof this.saveFieldCursor === "function") this.saveFieldCursor();
     },
 
     playlistEventMapScheduleEntities({ delay = 300 } = {}) {
@@ -283,9 +289,9 @@ export function createPlaylistEventMapMethods() {
       }
     },
 
-    async playlistEventMapApplyEntityFilter(entity, { resume = false } = {}) {
+    async playlistEventMapApplyEntityFilter(entity, { resume = false, focus = !resume } = {}) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim(); const snapshotId = String(this.playlistEventMapSnapshotId || ""); const normalizedKey = String(entity?.normalized_key || "").trim(); if (!pid || !snapshotId || !normalizedKey || this.playlistEventMapPlaying) return;
-      if (!resume) this.playlistEventMapStopPlayback(); this.playlistEventMapEntityFilter = entity;
+      if (!resume) this.playlistEventMapStopPlayback(); this.playlistEventMapEntityFilter = entity; this.fieldRequestedEntity = entity; if (this.activeView === "field") this._syncUrl({ push: false });
       const params = new URLSearchParams({ snapshot_id: snapshotId, normalized_key: normalizedKey }); if (entity?.entity_type) params.set("entity_type", String(entity.entity_type)); if (this.playlistEventMapWindowStart) params.set("start_date", this.playlistEventMapWindowStart); if (this.playlistEventMapWindowEnd) params.set("end_date", this.playlistEventMapWindowEnd);
       const token = Number(this._playlistEventMapEntityIndexToken || 0) + 1; this._playlistEventMapEntityIndexToken = token;
       this._abortCtrl("_playlistEventMapEntityIndexAbortCtrl"); const requestController = new AbortController(); this._playlistEventMapEntityIndexAbortCtrl = requestController;
@@ -295,12 +301,12 @@ export function createPlaylistEventMapMethods() {
           { signal: requestController.signal, cache: "no-store" }
         );
         if (requestController.signal.aborted || Number(this._playlistEventMapEntityIndexToken || 0) !== token || String(this.playlistEventMapSnapshotId || "") !== snapshotId) return;
-        this.playlistEventMapEntityIndices = new Set(parseEventMapIndices(buffer)); this.playlistEventMapUpdateLayers(); this.playlistEventMapFitIndices(this.playlistEventMapEntityIndices);
+        this.playlistEventMapEntityIndices = new Set(parseEventMapIndices(buffer)); this.playlistEventMapUpdateLayers(); if (focus) this.playlistEventMapFitIndices(this.playlistEventMapEntityIndices);
       }
       catch (error) { if (!abortError(error) && Number(this._playlistEventMapEntityIndexToken || 0) === token) this.playlistEventMapError = error?.message || String(error); }
       finally { if (this._playlistEventMapEntityIndexAbortCtrl === requestController) this._playlistEventMapEntityIndexAbortCtrl = null; }
     },
-    playlistEventMapClearEntityFilter() { this._playlistEventMapEntityIndexToken = Number(this._playlistEventMapEntityIndexToken || 0) + 1; this._abortCtrl("_playlistEventMapEntityIndexAbortCtrl"); this.playlistEventMapEntityFilter = null; this.playlistEventMapEntityIndices = new Set(); this.playlistEventMapUpdateLayers(); },
+    playlistEventMapClearEntityFilter() { this._playlistEventMapEntityIndexToken = Number(this._playlistEventMapEntityIndexToken || 0) + 1; this._abortCtrl("_playlistEventMapEntityIndexAbortCtrl"); this.playlistEventMapEntityFilter = null; this.fieldRequestedEntity = null; this.playlistEventMapEntityIndices = new Set(); this.playlistEventMapUpdateLayers(); if (this.activeView === "field") this._syncUrl({ push: false }); },
     playlistEventMapFitIndices(indices) {
       const scene = this.playlistEventMapScene; if (!scene || !indices) return; let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity; let minZ = Infinity; let maxZ = -Infinity;
       const controller = this.playlistEventMapController();
@@ -311,7 +317,8 @@ export function createPlaylistEventMapMethods() {
     async playlistEventMapSelectCanonical(index, canonicalId) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim(); const snapshotId = String(this.playlistEventMapSnapshotId || "").trim(); const pointIndex = Number(index); const id = String(canonicalId || "").trim();
       const controller = this.playlistEventMapController(); if (!pid || !snapshotId || !id || !Number.isInteger(pointIndex) || !controller?.isActiveIndex(pointIndex)) return;
-      this.playlistEventMapStopPlayback(); const token = Number(this._playlistEventMapDetailToken || 0) + 1; this._playlistEventMapDetailToken = token; this.playlistEventMapSelectedIndex = pointIndex; this.playlistEventMapSelectedKind = "canonical"; this.playlistEventMapSelectedId = id; this.playlistEventMapSelectedDetail = null; this.playlistEventMapDetailLoading = true; this.playlistEventMapDetailTab = "overview"; controller.setSelection(pointIndex, null); this.playlistEventMapUpdateLayers();
+      this.fieldSelectedChange = null; this.playlistEventMapStopPlayback(); const token = Number(this._playlistEventMapDetailToken || 0) + 1; this._playlistEventMapDetailToken = token; this.playlistEventMapSelectedIndex = pointIndex; this.playlistEventMapSelectedKind = "canonical"; this.playlistEventMapSelectedId = id; this.fieldRequestedCanonicalId = id; this.fieldRequestedTopicId = ""; this.fieldRequestedEvidenceId = ""; this.fieldEvidenceDetail = null; this.playlistEventMapSelectedDetail = null; this.playlistEventMapDetailLoading = true; this.playlistEventMapDetailTab = "overview"; controller.setSelection(pointIndex, null); this.playlistEventMapUpdateLayers();
+      if (this.activeView === "field") this._syncUrl({ push: false });
       this._abortCtrl("_playlistEventMapDetailAbortCtrl"); const requestController = new AbortController(); this._playlistEventMapDetailAbortCtrl = requestController;
       try {
         const detail = await this.api(
@@ -319,7 +326,12 @@ export function createPlaylistEventMapMethods() {
           { signal: requestController.signal, cache: "no-store" }
         );
         if (requestController.signal.aborted || Number(this._playlistEventMapDetailToken || 0) !== token || String(this.playlistEventMapSnapshotId || "") !== snapshotId) return;
-        this.playlistEventMapSelectedDetail = detail || null; this.playlistEventMapApplyDetailOverlay();
+        const references = await this.api(
+          `/domains/${encodeURIComponent(pid)}/objects/canonical/${encodeURIComponent(id)}/brief-references`,
+          { signal: requestController.signal, cache: "no-store" }
+        );
+        if (requestController.signal.aborted || Number(this._playlistEventMapDetailToken || 0) !== token || String(this.playlistEventMapSnapshotId || "") !== snapshotId) return;
+        this.playlistEventMapSelectedDetail = detail ? { ...detail, brief_references: references?.items || [] } : null; this.playlistEventMapApplyDetailOverlay();
       }
       catch (error) { if (!abortError(error) && Number(this._playlistEventMapDetailToken || 0) === token) this.playlistEventMapError = error?.message || String(error); }
       finally {
@@ -329,10 +341,11 @@ export function createPlaylistEventMapMethods() {
     },
     playlistEventMapClearSelection({ update = true } = {}) {
       this._playlistEventMapDetailToken = Number(this._playlistEventMapDetailToken || 0) + 1; this._abortCtrl("_playlistEventMapDetailAbortCtrl"); if (this.playlistEventMapSelectedKind === "topic") this.playlistEventMapTopicFocus = null;
-      this.playlistEventMapSelectedIndex = null; this.playlistEventMapSelectedKind = ""; this.playlistEventMapSelectedId = ""; this.playlistEventMapSelectedDetail = null; this.playlistEventMapDetailLoading = false; this.playlistEventMapDetailTab = "overview"; this.playlistEventMapController()?.setSelection(null, null); if (update) this.playlistEventMapUpdateLayers();
+      this.playlistEventMapSelectedIndex = null; this.playlistEventMapSelectedKind = ""; this.playlistEventMapSelectedId = ""; this.fieldRequestedCanonicalId = ""; this.fieldSelectedChange = null; this.playlistEventMapSelectedDetail = null; this.playlistEventMapDetailLoading = false; this.playlistEventMapDetailTab = "overview"; this.playlistEventMapController()?.setSelection(null, null); if (update) this.playlistEventMapUpdateLayers();
+      if (this.activeView === "field") this._syncUrl({ push: false });
     },
-    playlistEventMapDetailTabs() { const detail = this.playlistEventMapSelectedDetail || {}; return [{ key: "overview", label: "概览", count: null }, { key: "records", label: "记录", count: Array.isArray(detail.members) ? detail.members.length : 0 }, { key: "entities", label: "实体", count: Array.isArray(detail.entities) ? detail.entities.length : 0 }, { key: "story", label: "故事", count: Array.isArray(detail.story_edges) ? detail.story_edges.length : 0 }, { key: "evidence", label: "证据", count: Array.isArray(detail.evidence) ? detail.evidence.length : 0 }]; },
-    playlistEventMapSetDetailTab(tab) { this.playlistEventMapDetailTab = new Set(["overview", "records", "entities", "story", "evidence"]).has(String(tab)) ? String(tab) : "overview"; this.playlistEventMapApplyDetailOverlay(); },
+    playlistEventMapDetailTabs() { const detail = this.playlistEventMapSelectedDetail || {}; return [{ key: "overview", label: "概览", count: null }, { key: "records", label: "记录", count: Array.isArray(detail.members) ? detail.members.length : 0 }, { key: "entities", label: "实体", count: Array.isArray(detail.entities) ? detail.entities.length : 0 }, { key: "story", label: "故事", count: Array.isArray(detail.story_edges) ? detail.story_edges.length : 0 }, { key: "evidence", label: "证据", count: Array.isArray(detail.evidence) ? detail.evidence.length : 0 }, { key: "briefs", label: "简报", count: Array.isArray(detail.brief_references) ? detail.brief_references.length : 0 }]; },
+    playlistEventMapSetDetailTab(tab) { this.playlistEventMapDetailTab = new Set(["overview", "records", "entities", "story", "evidence", "briefs"]).has(String(tab)) ? String(tab) : "overview"; this.playlistEventMapApplyDetailOverlay(); },
     playlistEventMapApplyDetailOverlay() { if (this.playlistEventMapSelectedKind !== "canonical" || !this.playlistEventMapSelectedDetail) return; const detail = this.playlistEventMapDetailTab === "story" ? this.playlistEventMapSelectedDetail : { ...this.playlistEventMapSelectedDetail, story_edges: [] }; this.playlistEventMapController()?.setSelectionDetail(detail); },
     playlistEventMapTopicByIndex(index) {
       const topicIndex = Number(index);
@@ -366,7 +379,7 @@ export function createPlaylistEventMapMethods() {
     },
     async playlistEventMapLoadTopicDetail(topic = this.playlistEventMapSelectedDetail) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim(); const snapshotId = String(this.playlistEventMapSnapshotId || "").trim(); const topicId = String(topic?.topic_id || "").trim();
-      if (!pid || !snapshotId || !topicId || Number(topic?.level || 0) !== 1) return null;
+      if (!pid || !snapshotId || !topicId) return null;
       const token = Number(this._playlistEventMapTopicDetailToken || 0) + 1; this._playlistEventMapTopicDetailToken = token; this.playlistEventMapTopicDetailLoading = true;
       const params = new URLSearchParams({ snapshot_id: snapshotId, limit: "20" });
       if (this.playlistEventMapWindowStart) params.set("start_date", this.playlistEventMapWindowStart);
@@ -374,12 +387,18 @@ export function createPlaylistEventMapMethods() {
       if (this.playlistEventMapTypeFilter) params.set("event_type_code", String(this.playlistEventMapTypeFilter));
       this._abortCtrl("_playlistEventMapTopicDetailAbortCtrl"); const requestController = new AbortController(); this._playlistEventMapTopicDetailAbortCtrl = requestController;
       try {
-        const detail = await this.api(
-          `/playlists/${encodeURIComponent(pid)}/events/map/topic/${encodeURIComponent(topicId)}?${params}`,
-          { signal: requestController.signal, cache: "no-store" }
-        );
+        const [detail, briefReferences] = await Promise.all([
+          this.api(
+            `/playlists/${encodeURIComponent(pid)}/events/map/topic/${encodeURIComponent(topicId)}?${params}`,
+            { signal: requestController.signal, cache: "no-store" }
+          ),
+          this.api(
+            `/domains/${encodeURIComponent(pid)}/objects/topic/${encodeURIComponent(topicId)}/brief-references?snapshot_id=${encodeURIComponent(snapshotId)}`,
+            { signal: requestController.signal, cache: "no-store" }
+          ),
+        ]);
         if (requestController.signal.aborted || Number(this._playlistEventMapTopicDetailToken || 0) !== token || String(this.playlistEventMapSnapshotId || "") !== snapshotId || this.playlistEventMapSelectedKind !== "topic" || String(this.playlistEventMapSelectedId || "") !== topicId) return null;
-        this.playlistEventMapTopicDetail = detail || null;
+        this.playlistEventMapTopicDetail = detail ? { ...detail, brief_references: briefReferences?.items || [] } : null;
         return this.playlistEventMapTopicDetail;
       } catch (error) {
         if (!abortError(error) && Number(this._playlistEventMapTopicDetailToken || 0) === token) this.playlistEventMapError = error?.message || String(error);
@@ -398,7 +417,7 @@ export function createPlaylistEventMapMethods() {
       this.playlistEventMapController()?.focusPoint(Number(this.playlistEventMapSelectedIndex));
     },
     playlistEventMapRefreshTopicDetail() {
-      if (this.playlistEventMapSelectedKind !== "topic" || Number(this.playlistEventMapSelectedDetail?.level || 0) !== 1) return;
+      if (this.playlistEventMapSelectedKind !== "topic") return;
       void this.playlistEventMapLoadTopicDetail(this.playlistEventMapSelectedDetail);
     },
 
@@ -430,9 +449,10 @@ export function createPlaylistEventMapMethods() {
     playlistEventMapSelectTopic(item, { focus = false } = {}) {
       const controller = this.playlistEventMapController(); const topics = Array.isArray(this.playlistEventMapManifest?.topics) ? this.playlistEventMapManifest.topics : []; const id = String(item?.id || item?.topic_id || ""); const index = Number.isInteger(Number(item?.topic_index)) ? Number(item.topic_index) : Number(topics.find((topic) => String(topic.topic_id || "") === id)?.topic_index); if (!Number.isInteger(index) || index < 0 || !controller?.hasActiveTopic(index)) return;
       if (!focus && this.playlistEventMapSelectedKind === "topic" && Number(this.playlistEventMapTopicFocus?.topic_index) === index) { this.playlistEventMapClearTopicFocus(); return; }
-      const topic = { ...(topics.find((entry, fallback) => Number(entry?.topic_index ?? fallback) === index) || {}), ...item, topic_index: index }; this.playlistEventMapStopPlayback(); this.playlistEventMapTopicFocus = topic; this.playlistEventMapSelectedIndex = null; this.playlistEventMapSelectedKind = "topic"; this.playlistEventMapSelectedId = String(topic.topic_id || id); this.playlistEventMapSelectedDetail = topic; this.playlistEventMapTopicDetail = null; this.playlistEventMapTopicDetailLoading = Number(topic.level || 0) === 1; this.playlistEventMapDetailLoading = false; controller.setSelection(null, null); this.playlistEventMapUpdateLayers(); if (focus) controller.focusTopic(index); if (Number(topic.level || 0) === 1) void this.playlistEventMapLoadTopicDetail(topic);
+      const topic = { ...(topics.find((entry, fallback) => Number(entry?.topic_index ?? fallback) === index) || {}), ...item, topic_index: index }; this.fieldSelectedChange = null; this.playlistEventMapStopPlayback(); this.playlistEventMapTopicFocus = topic; this.playlistEventMapSelectedIndex = null; this.playlistEventMapSelectedKind = "topic"; this.playlistEventMapSelectedId = String(topic.topic_id || id); this.fieldRequestedCanonicalId = ""; this.fieldRequestedTopicId = this.playlistEventMapSelectedId; this.fieldRequestedEvidenceId = ""; this.fieldEvidenceDetail = null; this.playlistEventMapSelectedDetail = topic; this.playlistEventMapTopicDetail = null; this.playlistEventMapTopicDetailLoading = true; this.playlistEventMapDetailLoading = false; controller.setSelection(null, null); this.playlistEventMapUpdateLayers(); if (focus) controller.focusTopic(index); void this.playlistEventMapLoadTopicDetail(topic);
+      if (this.activeView === "field") this._syncUrl({ push: false });
     },
-    playlistEventMapClearTopicFocus({ update = true } = {}) { const wasSelected = this.playlistEventMapSelectedKind === "topic"; this._playlistEventMapTopicDetailToken = Number(this._playlistEventMapTopicDetailToken || 0) + 1; this._abortCtrl("_playlistEventMapTopicDetailAbortCtrl"); this.playlistEventMapTopicFocus = null; this.playlistEventMapTopicDetail = null; this.playlistEventMapTopicDetailLoading = false; this.playlistEventMapController()?.clearTopicFocus(); if (wasSelected) { this.playlistEventMapSelectedKind = ""; this.playlistEventMapSelectedId = ""; this.playlistEventMapSelectedDetail = null; } if (update) this.playlistEventMapUpdateLayers(); },
+    playlistEventMapClearTopicFocus({ update = true } = {}) { const wasSelected = this.playlistEventMapSelectedKind === "topic"; this._playlistEventMapTopicDetailToken = Number(this._playlistEventMapTopicDetailToken || 0) + 1; this._abortCtrl("_playlistEventMapTopicDetailAbortCtrl"); this.playlistEventMapTopicFocus = null; this.playlistEventMapTopicDetail = null; this.playlistEventMapTopicDetailLoading = false; this.fieldRequestedTopicId = ""; this.playlistEventMapController()?.clearTopicFocus(); if (wasSelected) { this.playlistEventMapSelectedKind = ""; this.playlistEventMapSelectedId = ""; this.playlistEventMapSelectedDetail = null; } if (update) this.playlistEventMapUpdateLayers(); if (this.activeView === "field") this._syncUrl({ push: false }); },
 
     playlistEventMapFullBounds() { const manifest = this.playlistEventMapManifest || {}; const bounds = manifest.time_bounds || {}; const months = this.playlistEventMapTimelineMonths || []; const start = String(bounds.start || (months[0] && `${months[0].month}-01`) || "").slice(0, 10); const end = String(bounds.end || (months.at(-1) && monthEnd(months.at(-1).month)) || "").slice(0, 10); return start && end && start <= end ? { start, end } : { start: "", end: "" }; },
     playlistEventMapNormalBounds() { const full = this.playlistEventMapFullBounds(); if (!full.start || !full.end) return full; const contentStart = String(this.playlistDetail?.earliest_date || "").slice(0, 10); const today = String(typeof this._todayIsoLocal === "function" ? this._todayIsoLocal() : localToday()).slice(0, 10); return contentStart && today && contentStart <= today ? { start: contentStart, end: today } : full; },
@@ -480,7 +500,7 @@ export function createPlaylistEventMapMethods() {
       if (!this.playlistEventMapCanPlay()) return;
       const range = this.playlistEventMapWindowIndices(); if (range.end >= range.max) this.playlistEventMapSetWindowEndIndex(range.length - 1, { update: true, pause: false }); if (this.playlistEventMapSelectedKind === "canonical") this.playlistEventMapClearSelection({ update: false }); this.playlistEventMapPlaying = true; this.playlistEventMapUpdateLayers(); this.playlistEventMapPlayTimer = setInterval(() => { if (!this.playlistEventMapShiftWindow(1, { playback: true })) this.playlistEventMapStopPlayback(); }, MAP_PLAY_INTERVAL_MS);
     },
-    playlistEventMapCanPlay() { const range = this.playlistEventMapWindowIndices(); return Boolean(this.playlistEventMapScene && range.max >= range.length && range.length > 0); },
+    playlistEventMapCanPlay() { const range = this.playlistEventMapWindowIndices(); const reduced = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches; return Boolean(!reduced && this.playlistEventMapScene && range.max >= range.length && range.length > 0); },
     playlistEventMapPlaybackLabel() { const range = this.playlistEventMapWindowIndices(); return range.end >= range.max && !this.playlistEventMapPlaying ? "从头播放" : this.playlistEventMapPlaying ? "暂停播放" : "播放下一月"; },
 
     playlistEventMapTypeOptions() { return Array.isArray(this.playlistEventMapManifest?.type_categories) ? this.playlistEventMapManifest.type_categories : []; },
@@ -525,7 +545,9 @@ export function createPlaylistEventMapMethods() {
         }
         const shouldResume = this.playlistSubview === "analysis" ||
           (this.playlistSubview === "settings" && this.playlistEventMapPollIsActive());
-        if (this.activeView === "playlist" && shouldResume) this.playlistEventMapSchedulePoll({ immediate: true });
+        const canResume = this.activeView === "playlist" ||
+          (this.activeView === "field" && !this.fieldRequestedSnapshotId);
+        if (canResume && shouldResume) this.playlistEventMapSchedulePoll({ immediate: true });
       };
       document.addEventListener("visibilitychange", this._playlistEventMapVisibilityHandler);
     },
@@ -533,8 +555,13 @@ export function createPlaylistEventMapMethods() {
       this.playlistEventMapPausePolling();
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       const subview = String(this.playlistSubview || "");
-      const shouldPoll = this.activeView === "playlist" && Boolean(pid) &&
-        (subview === "analysis" || (subview === "settings" && this.playlistEventMapPollIsActive()));
+      const isField = this.activeView === "field";
+      const isPlaylist = this.activeView === "playlist";
+      const historicalPinned = isField && Boolean(this.fieldRequestedSnapshotId);
+      const shouldPoll = !historicalPinned && Boolean(pid) && (
+        (isField && subview === "analysis")
+        || (isPlaylist && (subview === "analysis" || (subview === "settings" && this.playlistEventMapPollIsActive())))
+      );
       if (!shouldPoll) {
         this.playlistEventMapStopPolling();
         return;
@@ -544,9 +571,10 @@ export function createPlaylistEventMapMethods() {
       const generation = Number(this._playlistEventMapPollGeneration || 0);
       const stillCurrent = () => (
         Number(this._playlistEventMapPollGeneration || 0) === generation &&
-        this.activeView === "playlist" &&
+        ["field", "playlist"].includes(this.activeView) &&
         String(this.playlistPageId || this.selectedPlaylistId || "").trim() === pid &&
         String(this.playlistSubview || "") === subview &&
+        !(this.activeView === "field" && this.fieldRequestedSnapshotId) &&
         !documentIsHidden()
       );
       const poll = async () => {

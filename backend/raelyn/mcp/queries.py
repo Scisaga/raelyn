@@ -17,6 +17,18 @@ from raelyn.services.s3 import s3_get_bytes
 from raelyn.services.transcripts import pick_transcript_asset, read_text_asset, transcript_polish_method
 from raelyn.services.video_time import normalize_time_basis, resolve_video_timeline, timeline_time_expr
 from raelyn.services.video_meta import parse_published_at
+from raelyn.services.v2_observation import (
+    canonical_history,
+    domain_directory,
+    domain_observation,
+    evidence_context,
+    list_changes as list_semantic_changes,
+    semantic_search,
+    story_directory,
+    story_history,
+    structured_brief,
+    topic_detail,
+)
 
 from .chunking import DEFAULT_TRANSCRIPT_CHUNK_SIZE, build_chunk_bounds, get_text_chunk, normalize_chunk_size
 from .serialize import serialize_for_mcp
@@ -1127,5 +1139,130 @@ def get_playlist_summary(
                 "include_transcript": include_transcript,
                 "videos": videos,
                 "brief": brief,
+            }
+        )
+
+
+def list_domains() -> list[dict[str, Any]]:
+    with session_scope() as session:
+        return serialize_for_mcp(domain_directory(session))
+
+
+def get_domain_observation(playlist_id: str | uuid.UUID) -> dict[str, Any]:
+    playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
+    with session_scope() as session:
+        return serialize_for_mcp(domain_observation(session, playlist_uuid))
+
+
+def get_domain_changes(
+    playlist_id: str | uuid.UUID,
+    *,
+    after_snapshot_id: str | uuid.UUID | None = None,
+    object_type: str | None = None,
+    change_type: str | None = None,
+    cursor: str | uuid.UUID | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
+    after_uuid = _parse_uuid(after_snapshot_id, "after_snapshot_id") if after_snapshot_id else None
+    cursor_uuid = _parse_uuid(cursor, "cursor") if cursor else None
+    with session_scope() as session:
+        return serialize_for_mcp(
+            list_semantic_changes(
+                session,
+                playlist_id=playlist_uuid,
+                after_snapshot_id=after_uuid,
+                object_type=object_type,
+                change_type=change_type,
+                cursor_id=cursor_uuid,
+                limit=_clamp_limit(limit, default=100, maximum=500),
+            )
+        )
+
+
+def get_canonical_history(
+    playlist_id: str | uuid.UUID,
+    canonical_id: str | uuid.UUID,
+) -> dict[str, Any]:
+    playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
+    canonical_uuid = _parse_uuid(canonical_id, "canonical_id")
+    with session_scope() as session:
+        return serialize_for_mcp(canonical_history(session, playlist_uuid, canonical_uuid))
+
+
+def get_domain_topic(
+    playlist_id: str | uuid.UUID,
+    topic_id: str | uuid.UUID,
+    *,
+    limit: int = 50,
+) -> dict[str, Any]:
+    playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
+    topic_uuid = _parse_uuid(topic_id, "topic_id")
+    with session_scope() as session:
+        return serialize_for_mcp(
+            topic_detail(
+                session,
+                playlist_uuid,
+                topic_uuid,
+                limit=_clamp_limit(limit, default=50, maximum=200),
+            )
+        )
+
+
+def list_domain_stories(playlist_id: str | uuid.UUID) -> list[dict[str, Any]]:
+    playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
+    with session_scope() as session:
+        if session.get(Playlist, playlist_uuid) is None:
+            raise LookupError("domain not found")
+        return serialize_for_mcp(story_directory(session, playlist_uuid))
+
+
+def get_story_history(
+    playlist_id: str | uuid.UUID,
+    story_identity_id: str | uuid.UUID,
+) -> dict[str, Any]:
+    playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
+    story_uuid = _parse_uuid(story_identity_id, "story_identity_id")
+    with session_scope() as session:
+        return serialize_for_mcp(story_history(session, playlist_uuid, story_uuid))
+
+
+def get_structured_brief(brief_id: str | uuid.UUID) -> dict[str, Any]:
+    brief_uuid = _parse_uuid(brief_id, "brief_id")
+    with session_scope() as session:
+        return serialize_for_mcp(structured_brief(session, brief_uuid))
+
+
+def get_evidence_context(
+    playlist_id: str | uuid.UUID,
+    revision_id: str | uuid.UUID,
+) -> dict[str, Any]:
+    playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
+    revision_uuid = _parse_uuid(revision_id, "revision_id")
+    with session_scope() as session:
+        return serialize_for_mcp(evidence_context(session, playlist_uuid, revision_uuid))
+
+
+def search_semantic_objects(
+    query: str,
+    *,
+    playlist_id: str | uuid.UUID | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    value = str(query or "").strip()
+    if not value:
+        raise ValueError("query is required")
+    playlist_uuid = _parse_uuid(playlist_id, "playlist_id") if playlist_id else None
+    with session_scope() as session:
+        return serialize_for_mcp(
+            {
+                "query": value,
+                "playlist_id": str(playlist_uuid) if playlist_uuid else None,
+                "groups": semantic_search(
+                    session,
+                    query=value,
+                    playlist_id=playlist_uuid,
+                    limit=_clamp_limit(limit, default=20, maximum=100),
+                ),
             }
         )

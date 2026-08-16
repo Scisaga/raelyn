@@ -52,17 +52,43 @@
           </button>
         </div>
 
+        <div class="border-b border-slate-800 px-2 py-2" x-show="!sidebarCollapsed" x-transition.opacity.duration.150ms>
+          <label class="block text-[10px] uppercase tracking-[0.16em] text-slate-600" for="raelyn-domain-switcher">观测域</label>
+          <div class="mt-1 flex items-center gap-1.5">
+            <span class="h-2 w-2 shrink-0 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(103,232,249,.55)]"></span>
+            <select
+              id="raelyn-domain-switcher"
+              class="min-w-0 flex-1 appearance-none bg-transparent py-1 text-xs font-medium text-slate-200 outline-none"
+              :value="selectedPlaylistId || ''"
+              @change="selectDomain($event.target.value)"
+              title="切换观测域"
+            >
+              <option value="" class="bg-slate-950">选择观测域</option>
+              <template x-for="domain in domains" :key="domain.id">
+                <option class="bg-slate-950" :value="domain.id" x-text="domain.name"></option>
+              </template>
+            </select>
+            <button type="button" class="rounded px-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200" @click="switchView('domains')" title="浏览观测域">⋯</button>
+            <button type="button" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-slate-500 hover:bg-slate-800 hover:text-slate-100" @click="openDomainSettings()" title="当前观测域设置" aria-label="当前观测域设置">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1.1 1.6V21h-4v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.8.3l-.1.1-2.8-2.8.1-.1a1.7 1.7 0 0 0 .3-1.8A1.7 1.7 0 0 0 3 14H3v-4h.1a1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1L7 4.2l.1.1a1.7 1.7 0 0 0 1.8.3A1.7 1.7 0 0 0 10 3.1V3h4v.1a1.7 1.7 0 0 0 1.1 1.6 1.7 1.7 0 0 0 1.8-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.8A1.7 1.7 0 0 0 20.9 10h.1v4h-.1a1.7 1.7 0 0 0-1.5 1Z"></path></svg>
+            </button>
+          </div>
+        </div>
+
         <nav class="flex-1 overflow-y-auto space-y-1 px-2 py-1 raelyn-sidebar-nav">
           <template x-for="item in navItems.filter(i => !i.hidden)" :key="item.key">
-            <button
-              class="group flex items-center rounded-md text-sm leading-none transition border border-transparent"
-              :class="[(sidebarCollapsed ? 'w-10 justify-center mx-auto my-1' : 'w-full gap-1 my-1'), activeView===item.key ? 'bg-slate-800/70 text-slate-50 border-slate-700/60' : 'text-slate-300 hover:bg-slate-800/40 hover:text-slate-100']"
-              @click="switchView(item.key)"
-              :title="sidebarCollapsed ? item.label : ''"
-            >
-              <span class="shrink-0 w-10 h-10 flex items-center justify-center" x-html="item.icon"></span>
-              <span class="truncate" x-show="!sidebarCollapsed" x-transition.opacity.duration.150ms x-text="item.label"></span>
-            </button>
+            <div>
+              <div class="mx-2 mb-1 mt-3 border-t border-slate-800 pt-2 text-[10px] uppercase tracking-[0.16em] text-slate-600" x-show="item.key==='operations' && !sidebarCollapsed">系统</div>
+              <button
+                class="group flex items-center rounded-md text-sm leading-none transition border border-transparent"
+                :class="[(sidebarCollapsed ? 'w-10 justify-center mx-auto my-1' : 'w-full gap-1 my-1'), activeView===item.key ? 'bg-slate-800/70 text-slate-50 border-slate-700/60' : 'text-slate-300 hover:bg-slate-800/40 hover:text-slate-100']"
+                @click="switchView(item.key)"
+                :title="sidebarCollapsed ? item.label : ''"
+              >
+                <span class="shrink-0 w-10 h-10 flex items-center justify-center" x-html="item.icon"></span>
+                <span class="truncate" x-show="!sidebarCollapsed" x-transition.opacity.duration.150ms x-text="item.label"></span>
+              </button>
+            </div>
           </template>
         </nav>
 

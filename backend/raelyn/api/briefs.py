@@ -6,12 +6,12 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from raelyn.api.asset_refs import AssetRef, build_asset_ref
 from raelyn.api.orm import OrmModel
 from raelyn.db import session_scope
-from raelyn.models import Asset, Brief, DailyBrief
+from raelyn.models import Asset, Brief, BriefReference, DailyBrief
 from raelyn.services.brief_actions import schedule_brief_generation, schedule_brief_generation_range
 from raelyn.services.brief_schedule import schedule_brief_refresh
 from raelyn.services.brief_prompt import build_brief_prompt_for_period
@@ -112,6 +112,9 @@ class BriefOut(OrmModel):
     granularity: str
     period_start: date
     period_end: date | None = None
+    snapshot_id: uuid.UUID | None = None
+    generation_basis: dict[str, Any] | None = None
+    reference_count: int = 0
     status: str
     markdown_asset: AssetRef | None = None
     error_message: str | None = None
@@ -135,6 +138,7 @@ def get_brief_by_period(playlist_id: uuid.UUID, granularity: str, date: date) ->
         out = BriefOut.model_validate(brief)
         out.period_end = period_end_inclusive(pstart, g)
         out.markdown_asset = build_asset_ref(session.get(Asset, brief.markdown_asset_id)) if brief.markdown_asset_id else None
+        out.reference_count = int(session.execute(select(func.count()).select_from(BriefReference).where(BriefReference.brief_id == brief.id)).scalar_one() or 0)
         return out
 
 
@@ -162,6 +166,7 @@ def list_briefs(
             row = BriefOut.model_validate(b)
             row.period_end = period_end_inclusive(row.period_start, row.granularity)
             row.markdown_asset = build_asset_ref(session.get(Asset, b.markdown_asset_id)) if b.markdown_asset_id else None
+            row.reference_count = int(session.execute(select(func.count()).select_from(BriefReference).where(BriefReference.brief_id == b.id)).scalar_one() or 0)
             out.append(row)
         return out
 
@@ -219,4 +224,5 @@ def get_brief(brief_id: uuid.UUID) -> BriefOut:
         out = BriefOut.model_validate(brief)
         out.period_end = period_end_inclusive(out.period_start, out.granularity)
         out.markdown_asset = build_asset_ref(session.get(Asset, brief.markdown_asset_id)) if brief.markdown_asset_id else None
+        out.reference_count = int(session.execute(select(func.count()).select_from(BriefReference).where(BriefReference.brief_id == brief.id)).scalar_one() or 0)
         return out

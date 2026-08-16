@@ -21,6 +21,7 @@ from raelyn.services.brief_prompt import (
     build_brief_blocks,
     compose_brief_prompt,
 )
+from raelyn.services.brief_references import attach_structured_brief_references
 from raelyn.services.llm import llm_enabled, llm_generate
 from raelyn.services.video_admission import (
     brief_admitted_video_expr,
@@ -134,6 +135,12 @@ def _brief_generate_period_impl(
 
         resp = llm_generate(prompt=prompt, think=True)
         md = _sanitize_brief_markdown(str(resp.get("text", "")))
+        md, reference_count = attach_structured_brief_references(
+            session,
+            brief=brief,
+            videos=videos,
+            markdown=md,
+        )
         out = wd / "brief.md"
         out.write_text(md, encoding="utf-8")
 
@@ -161,7 +168,12 @@ def _brief_generate_period_impl(
         brief.status = "ready"
         brief.markdown_asset_id = asset.id
         brief.error_message = None
-        return {"asset_id": str(asset.id), "llm_usage": resp.get("usage")}
+        return {
+            "asset_id": str(asset.id),
+            "reference_count": reference_count,
+            "snapshot_id": str(brief.snapshot_id) if brief.snapshot_id else None,
+            "llm_usage": resp.get("usage"),
+        }
 
 
 @registry.register("brief.generate_period")

@@ -93,3 +93,52 @@ def register_resources(mcp: FastMCP) -> None:
             return queries.get_job(job_id)
         except Exception as exc:
             _raise_resource_error(exc)
+
+    @mcp.resource("raelyn://domain/{playlist_id}/observation", mime_type="application/json")
+    def domain_observation_resource(playlist_id: str):
+        try:
+            return queries.get_domain_observation(playlist_id)
+        except Exception as exc:
+            _raise_resource_error(exc)
+
+    @mcp.resource("raelyn://domain/{playlist_id}/changes", mime_type="application/json")
+    def domain_changes_resource(playlist_id: str):
+        try:
+            return queries.get_domain_changes(playlist_id)
+        except Exception as exc:
+            _raise_resource_error(exc)
+
+    @mcp.resource("raelyn://domain/{playlist_id}/canonical/{canonical_id}", mime_type="application/json")
+    def canonical_history_resource(playlist_id: str, canonical_id: str):
+        try:
+            return queries.get_canonical_history(playlist_id, canonical_id)
+        except Exception as exc:
+            _raise_resource_error(exc)
+
+    @mcp.resource("raelyn://domain/{playlist_id}/topic/{topic_id}", mime_type="application/json")
+    def domain_topic_resource(playlist_id: str, topic_id: str):
+        try:
+            return queries.get_domain_topic(playlist_id, topic_id)
+        except Exception as exc:
+            _raise_resource_error(exc)
+
+    @mcp.resource("raelyn://domain/{playlist_id}/story/{story_identity_id}", mime_type="application/json")
+    def story_history_resource(playlist_id: str, story_identity_id: str):
+        try:
+            return queries.get_story_history(playlist_id, story_identity_id)
+        except Exception as exc:
+            _raise_resource_error(exc)
+
+    @mcp.resource("raelyn://brief/{brief_id}/structured", mime_type="application/json")
+    def structured_brief_resource(brief_id: str):
+        try:
+            return queries.get_structured_brief(brief_id)
+        except Exception as exc:
+            _raise_resource_error(exc)
+
+    @mcp.resource("raelyn://domain/{playlist_id}/evidence/{revision_id}", mime_type="application/json")
+    def evidence_context_resource(playlist_id: str, revision_id: str):
+        try:
+            return queries.get_evidence_context(playlist_id, revision_id)
+        except Exception as exc:
+            _raise_resource_error(exc)

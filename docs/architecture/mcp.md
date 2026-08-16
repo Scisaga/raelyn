@@ -23,7 +23,7 @@ MCP 作为主 API 的子应用挂载，但它直接复用现有 DB / model / ser
 
 ## 能力范围
 
-首版范围固定为 `Tools + Resources`：
+当前范围为 `Tools + Resources`：
 
 - 只读查询
 - 长文本 transcript 分块读取
@@ -33,7 +33,7 @@ MCP 作为主 API 的子应用挂载，但它直接复用现有 DB / model / ser
 
 - OAuth
 - Prompts
-- 全文检索 / 向量检索
+- 跨域向量检索（当前语义对象搜索为结构化分组文本检索）
 - 播放列表写操作
 - 媒体删除
 - 配置写入
@@ -72,6 +72,16 @@ MCP 没有复制 API 路由逻辑，而是复用了抽出的共享 helper：
 - `get_job`
 - `get_video_context`
 - `get_playlist_summary`
+- `list_domains`
+- `get_domain_observation`
+- `get_domain_changes`
+- `get_canonical_history`
+- `get_domain_topic`
+- `list_domain_stories`
+- `get_story_history`
+- `get_structured_brief`
+- `get_evidence_context`
+- `search_semantic_objects`
 - `sync_media`
 - `download_video`
 - `retranscribe_video`
@@ -100,6 +110,13 @@ MCP 没有复制 API 路由逻辑，而是复用了抽出的共享 helper：
 - `raelyn://playlist/{playlist_id}/briefs/by-date/{date}`
 - `raelyn://playlist/{playlist_id}/briefs/by-date/{date}/body`
 - `raelyn://job/{job_id}`
+- `raelyn://domain/{playlist_id}/observation`
+- `raelyn://domain/{playlist_id}/changes`
+- `raelyn://domain/{playlist_id}/canonical/{canonical_id}`
+- `raelyn://domain/{playlist_id}/topic/{topic_id}`
+- `raelyn://domain/{playlist_id}/story/{story_identity_id}`
+- `raelyn://brief/{brief_id}/structured`
+- `raelyn://domain/{playlist_id}/evidence/{revision_id}`
 
 设计约束：
 
@@ -144,9 +161,9 @@ MCP transcript 输出字段固定包含：
 - 优先在 chunk 末尾附近按最后一个换行切分
 - 越界块返回 `ok=false, status=not_found, reason=chunk_out_of_range`
 
-## 聚合能力
+## 聚合与语义对象能力
 
-首版除了基础对象读取，还补了两个面向 LLM 的高层 tool：
+除基础对象读取外，还提供面向 LLM 的聚合 tool：
 
 ### `get_video_context`
 
@@ -180,6 +197,14 @@ MCP transcript 输出字段固定包含：
 - `list_latest_briefs`：按播放列表维度返回 latest brief 列表。
 - brief JSON 会显式返回 `body_readable`、`body_resource_uri`、`body_mime_type`，正文内联字段统一为 `body_markdown`。
 - 简报正文资源优先走 `raelyn://brief/{brief_id}/body` 或 `raelyn://playlist/{playlist_id}/briefs/by-date/{date}/body`，资源类型固定为 `text/markdown`。
+
+### V2 观察语义
+
+- `get_domain_observation` 返回当前快照、观察游标和信源处理、事件抽取、入图、证据验证四类覆盖率。
+- `get_domain_changes` 按系统认知时间读取稳定变化游标，并同时保留事件发生时间。
+- canonical 与 story 接口返回长期稳定身份、跨快照修订和谱系/航迹，不把快照内临时 id 当作长期对象；`get_domain_topic` 返回当前快照中的主题层级和代表事件。
+- `get_structured_brief` 返回生成快照、生成口径和可导航引用；`get_evidence_context` 返回来源记录、字符区间与精确分段播放语义。
+- `search_semantic_objects` 按观测域、主题、真实事件、故事、实体、简报、信源和来源记录分组，并返回 Web 深链接。
 
 ## 与现有 REST 的关系
 

@@ -1,6 +1,38 @@
 		          <!-- Jobs -->
-		          <div x-show="activeView==='jobs'" x-transition.opacity class="h-full">
+		          <div x-show="activeView==='jobs' || activeView==='operations'" x-transition.opacity class="h-full">
 		            <div class="bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
+			              <div class="shrink-0 flex flex-wrap items-center justify-between gap-3 bg-slate-950/85 px-4 py-3" x-show="activeView==='operations'">
+			                <div class="min-w-0">
+			                  <div class="text-sm font-semibold text-slate-100" x-text="operationsContextTitle()"></div>
+			                  <div class="mt-0.5 truncate text-[11px] text-slate-500" x-text="operationsContextDetail()"></div>
+			                </div>
+			                <button type="button" class="rounded-md border border-slate-700 bg-slate-900/60 px-3 py-1.5 text-xs text-slate-300 hover:border-cyan-500/35 hover:text-cyan-100" @click="returnFromOperations()">返回观测现场</button>
+			              </div>
+			              <div class="shrink-0 grid grid-cols-2 gap-px bg-slate-800 lg:grid-cols-4" x-show="activeView==='operations'">
+			                <div class="bg-slate-950/70 px-4 py-3">
+			                  <div class="text-[10px] uppercase tracking-[0.12em] text-slate-600">来源处理覆盖</div>
+			                  <div class="mt-1 font-mono text-sm text-slate-200" x-text="domainObservation?.coverage?.source_processing ? formatInteger(domainObservation.coverage.source_processing.numerator)+' / '+formatInteger(domainObservation.coverage.source_processing.denominator) : '—'"></div>
+			                </div>
+			                <div class="bg-slate-950/70 px-4 py-3">
+			                  <div class="text-[10px] uppercase tracking-[0.12em] text-slate-600">事件抽取覆盖</div>
+			                  <div class="mt-1 font-mono text-sm text-cyan-200" x-text="domainObservation?.coverage?.event_extraction ? formatInteger(domainObservation.coverage.event_extraction.numerator)+' / '+formatInteger(domainObservation.coverage.event_extraction.denominator) : '—'"></div>
+			                </div>
+			                <div class="bg-slate-950/70 px-4 py-3">
+			                  <div class="text-[10px] uppercase tracking-[0.12em] text-slate-600">星域可入图覆盖</div>
+			                  <div class="mt-1 font-mono text-sm text-violet-200" x-text="domainObservation?.coverage?.field_admission ? formatInteger(domainObservation.coverage.field_admission.numerator)+' / '+formatInteger(domainObservation.coverage.field_admission.denominator) : '—'"></div>
+			                </div>
+			                <div class="bg-slate-950/70 px-4 py-3">
+			                  <div class="text-[10px] uppercase tracking-[0.12em] text-slate-600">证据验证覆盖</div>
+			                  <div class="mt-1 font-mono text-sm text-emerald-200" x-text="domainObservation?.coverage?.evidence_verification ? formatInteger(domainObservation.coverage.evidence_verification.numerator)+' / '+formatInteger(domainObservation.coverage.evidence_verification.denominator) : '—'"></div>
+			                </div>
+			              </div>
+			              <div class="shrink-0 flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-950/65 px-4 py-2" x-show="activeView==='operations'">
+			                <span class="mr-1 text-[10px] text-slate-600">当前观测域维护</span>
+			                <button type="button" class="rounded border border-slate-700 px-2.5 py-1.5 text-[10px] text-slate-300 hover:bg-slate-800 disabled:opacity-50" :disabled="!!operationsActionSubmitting" @click="runDomainOperation('backfill_events')">事件补齐</button>
+			                <button type="button" class="rounded border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[10px] text-amber-200 hover:bg-amber-500/20 disabled:opacity-50" :disabled="!!operationsActionSubmitting" @click="runDomainOperation('force_events')">全部重抽</button>
+			                <button type="button" class="rounded border border-violet-500/30 bg-violet-500/10 px-2.5 py-1.5 text-[10px] text-violet-200 hover:bg-violet-500/20 disabled:opacity-50" :disabled="!!operationsActionSubmitting" @click="runDomainOperation('build_field')">构建星域</button>
+			                <span class="ml-auto text-[10px] text-slate-600">停止任务请在下方运行中任务行操作</span>
+			              </div>
 			              <div class="shrink-0 px-4 py-3 flex flex-col gap-3">
 		                <div class="flex flex-wrap items-center justify-between gap-3">
 		                  <div class="flex flex-wrap items-center gap-2">

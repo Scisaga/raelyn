@@ -176,8 +176,6 @@
   - `video.extract_events` 读取 `plain` transcript 后的 LLM 分块字符上限，默认 `12000`。
 - `EVENT_EXTRACTION_OLLAMA_STREAM`
   - 当有效 LLM URL 为 Ollama `/api/generate` 时，事件抽取是否使用流式响应，默认 `true`。
-- `EVENT_EXTRACTION_OLLAMA_NUM_CTX`
-  - Ollama 事件抽取请求的 `options.num_ctx`，默认 `8192`。
 - `EVENT_EXTRACTION_OLLAMA_NUM_PREDICT`
   - Ollama 事件抽取请求的 `options.num_predict`，默认 `4000`，用于限制 JSON 生成不会无限延长。当无法解析的响应以 `done_reason=length` 结束，或输出 token 数达到该上限时，任务会明确记录为输出截断；不再使用相同上限调用 JSON 修复，也不重复执行确定性相同的 job attempt。
 - `EVENT_EXTRACTION_OLLAMA_IDLE_TIMEOUT_SECONDS`
@@ -185,7 +183,7 @@
 - `EVENT_EXTRACTION_OLLAMA_BUSY_DEFER_SECONDS`
   - 同一个 Ollama endpoint + model 已有事件抽取请求在运行时，后续事件抽取任务重排的延后秒数，默认 `15`。
 - `EVENT_EXTRACTION_OLLAMA_CHUNK_MAX_CHARS`
-  - Ollama 事件抽取的 transcript 分块上限封顶值，默认 `6000`。实际分块上限取 `EVENT_EXTRACTION_CHUNK_MAX_CHARS` 与该值的较小者，避免 `num_ctx=8192` 时 prompt 过大。
+  - Ollama 事件抽取的 transcript 分块上限封顶值，默认 `6000`。实际分块上限取 `EVENT_EXTRACTION_CHUNK_MAX_CHARS` 与该值的较小者，控制单次 prompt 规模。
 - `AUTO_EXTRACT_NEW_VIDEO_EVENTS`
   - 是否在新视频 transcript 生成后自动投递 `video.extract_events`，默认 `true`。
   - 关闭时不会影响播放列表页面手动触发的 `playlist.backfill_events` 历史回填。
@@ -223,12 +221,13 @@
 - `LLM_API_KEY`
 - `LLM_HEADERS_JSON`
 - `LLM_TIMEOUT_SECONDS`
+- `LLM_OLLAMA_NUM_CTX`
+  - 所有 Ollama `/api/generate` 请求统一使用的 `options.num_ctx`，默认 `32768`。事件抽取、文字稿润色和简报生成共享该值，避免同一模型因上下文参数变化反复卸载重载；旧变量 `EVENT_EXTRACTION_OLLAMA_NUM_CTX` 仍作为兼容别名读取。修改后需重启 `ai` worker。
 
 事件抽取 / 事件图谱：
 
 - `EVENT_EXTRACTION_CHUNK_MAX_CHARS`
 - `EVENT_EXTRACTION_OLLAMA_STREAM`
-- `EVENT_EXTRACTION_OLLAMA_NUM_CTX`
 - `EVENT_EXTRACTION_OLLAMA_NUM_PREDICT`
 - `EVENT_EXTRACTION_OLLAMA_IDLE_TIMEOUT_SECONDS`
 - `EVENT_EXTRACTION_OLLAMA_BUSY_DEFER_SECONDS`

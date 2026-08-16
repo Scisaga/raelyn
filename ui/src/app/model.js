@@ -20,6 +20,10 @@ import { createPlayerModule } from "./modules/player.js";
 import { createPlaylistsModule } from "./modules/playlists.js";
 import { createPwaModule } from "./modules/pwa.js";
 import { createMediaSessionModule } from "./modules/media-session.js";
+import { createV2Module } from "./modules/v2.js";
+import { createV2ViewMethods } from "../views/v2-model.js";
+import { createPlaybackModule } from "./modules/playback.js";
+import { createPlaybackViewMethods } from "../views/playback-model.js";
 
 const SIDEBAR_COLLAPSED_KEY = "raelyn.ui.sidebarCollapsed";
 const SIDEBAR_HIDDEN_KEY = "raelyn.ui.sidebarHidden";
@@ -46,6 +50,8 @@ export function createAppModel() {
     { name: "playlists", value: createPlaylistsModule() },
     { name: "pwa", value: createPwaModule({ installHintDismissedKey: PWA_INSTALL_HINT_DISMISSED_KEY }) },
     { name: "mediaSession", value: createMediaSessionModule() },
+    { name: "v2", value: createV2Module() },
+    { name: "playback", value: createPlaybackModule() },
     { name: "api", value: createApiMethods() },
     { name: "shared", value: createCommonViewMethods() },
     { name: "urlState", value: createUrlStateMethods({ settingsTabs: SETTINGS_TABS }) },
@@ -62,6 +68,8 @@ export function createAppModel() {
     },
     { name: "playlistsView", value: createPlaylistsViewMethods() },
     { name: "playlistView", value: createPlaylistViewMethods() },
+    { name: "v2View", value: createV2ViewMethods() },
+    { name: "playbackView", value: createPlaybackViewMethods() },
     { name: "init", value: createAppInitMethods() }
   );
 }

@@ -42,6 +42,7 @@ from raelyn.models import (
     Video,
 )
 from raelyn.services.brief_schedule import schedule_brief_refresh_for_media_change
+from raelyn.services.domain_management import attach_domain_source, delete_domain_record, detach_domain_source
 from raelyn.services.assets import replace_standalone_asset
 from raelyn.services.periods import day_bounds_utc, local_date, normalize_granularity, period_bounds_utc, period_start
 from raelyn.services.event_analysis import (
@@ -1322,16 +1323,24 @@ def _event_map_topics(session: Any, snapshot_id: uuid.UUID) -> list[EventMapTopi
     )
 
 @router.get("/playlists/{playlist_id}/events/map/manifest")
-def get_playlist_event_map_manifest(playlist_id: uuid.UUID, compact: bool = False) -> dict[str, Any]:
+def get_playlist_event_map_manifest(
+    playlist_id: uuid.UUID,
+    compact: bool = False,
+    snapshot_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
     with session_scope() as session:
         if not session.get(Playlist, playlist_id):
             raise HTTPException(status_code=404, detail="playlist not found")
         state = session.get(EventMapState, playlist_id)
         snapshot = None
-        if state is not None and state.current_snapshot_id is not None:
-            candidate = session.get(EventMapSnapshot, state.current_snapshot_id)
-            if _event_map_snapshot_is_current(candidate):
+        requested_snapshot_id = snapshot_id
+        candidate_id = requested_snapshot_id or (state.current_snapshot_id if state is not None else None)
+        if candidate_id is not None:
+            candidate = session.get(EventMapSnapshot, candidate_id)
+            if candidate is not None and candidate.playlist_id == playlist_id and _event_map_snapshot_is_current(candidate):
                 snapshot = candidate
+            elif requested_snapshot_id is not None:
+                raise HTTPException(status_code=409, detail="requested event map snapshot is not available")
         build_job = _active_event_map_build_job(session, playlist_id)
         backfill_job = _active_playlist_event_backfill_job(session, playlist_id)
         coverage = {} if compact else playlist_event_map_coverage(session, playlist_id)
@@ -1356,6 +1365,11 @@ def get_playlist_event_map_manifest(playlist_id: uuid.UUID, compact: bool = Fals
         payload: dict[str, Any] = {
             "playlist_id": str(playlist_id),
             "snapshot_id": str(snapshot.id) if snapshot is not None else None,
+            "is_current": bool(
+                snapshot is not None
+                and state is not None
+                and snapshot.id == state.current_snapshot_id
+            ),
             "status": status,
             "build_status": build_status,
             "build_error": state.last_error if state is not None else None,
@@ -1535,7 +1549,7 @@ def _event_map_scene_statement(
             EventMapCanonical.event_end_day,
             EventMapCanonical.event_type_code,
             EventMapCanonical.time_precision_code,
-            EventMapCanonical.uncertainty_flags,
+            EventMapCanonical.has_uncertainty,
             EventMapCanonical.time_disagreement_count,
             EventMapCanonical.member_count,
             macro_topic_member.topic_id.label("macro_topic_id"),
@@ -1582,7 +1596,7 @@ def _event_map_scene_chunks(
         event_end_day,
         event_type_code,
         time_precision_code,
-        uncertainty_flags,
+        has_uncertainty,
         time_disagreement_count,
         member_count,
         macro_topic_id,
@@ -1590,7 +1604,7 @@ def _event_map_scene_chunks(
     ) in rows:
         if int(point_index) != expected_index:
             raise RuntimeError("event map point_index is not contiguous")
-        flags = (1 if uncertainty_flags else 0) | (2 if int(time_disagreement_count or 0) else 0)
+        flags = (1 if has_uncertainty else 0) | (2 if int(time_disagreement_count or 0) else 0)
         chunk.extend(
             _EVENT_MAP_SCENE_RECORD.pack(
                 expected_index,
@@ -2423,53 +2437,44 @@ def clear_playlist_background(playlist_id: uuid.UUID) -> PlaylistOut:
         return _playlist_out(session, playlist)
 
 
-@router.delete("/playlists/{playlist_id}")
+@router.delete("/playlists/{playlist_id}", deprecated=True)
 def delete_playlist(playlist_id: uuid.UUID) -> dict:
     with session_scope() as session:
-        playlist = session.get(Playlist, playlist_id)
-        if not playlist:
-            raise HTTPException(status_code=404, detail="playlist not found")
-        session.delete(playlist)
+        try:
+            delete_domain_record(session, domain_id=playlist_id)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
     return {"ok": True}
 
 
 @router.post("/playlists/{playlist_id}/media")
 def add_playlist_media(playlist_id: uuid.UUID, payload: PlaylistMediaAdd) -> dict:
     with session_scope() as session:
-        playlist = session.get(Playlist, playlist_id)
-        if not playlist:
-            raise HTTPException(status_code=404, detail="playlist not found")
-        media = session.get(Media, payload.media_id)
-        if not media:
-            raise HTTPException(status_code=404, detail="media not found")
-
-        existing = session.get(PlaylistMedia, {"playlist_id": playlist_id, "media_id": payload.media_id})
-        if not existing:
-            session.add(PlaylistMedia(playlist_id=playlist_id, media_id=payload.media_id))
-            _schedule_playlist_event_map_dirty(session, playlist_id, reason="playlist_media_added")
-            schedule_brief_refresh_for_media_change(
+        try:
+            result = attach_domain_source(
                 session,
-                playlist_id=playlist_id,
-                changed_media_ids=[payload.media_id],
-                change_type="media_added",
+                domain_id=playlist_id,
+                media_id=payload.media_id,
             )
-    return {"ok": True}
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+    return {"ok": True, "attached": result.attached}
 
 
 @router.delete("/playlists/{playlist_id}/media/{media_id}")
 def remove_playlist_media(playlist_id: uuid.UUID, media_id: uuid.UUID) -> dict:
     with session_scope() as session:
-        existing = session.get(PlaylistMedia, {"playlist_id": playlist_id, "media_id": media_id})
-        if existing:
-            session.delete(existing)
-            _schedule_playlist_event_map_dirty(session, playlist_id, reason="playlist_media_removed")
-            schedule_brief_refresh_for_media_change(
+        try:
+            detached = detach_domain_source(
                 session,
-                playlist_id=playlist_id,
-                changed_media_ids=[media_id],
-                change_type="media_removed",
+                domain_id=playlist_id,
+                media_id=media_id,
             )
-    return {"ok": True}
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+    return {"ok": True, "detached": detached}
 
 
 @router.put("/playlists/{playlist_id}/media")
@@ -2694,7 +2699,12 @@ def _playlist_period_counts_from_timestamps(
 
 
 @router.get("/playlists/{playlist_id}/videos_by_date", response_model=list[PlaylistVideoOut])
-def list_playlist_videos_by_date(playlist_id: uuid.UUID, date: date, time_basis: str = "content") -> list[PlaylistVideoOut]:
+def list_playlist_videos_by_date(
+    playlist_id: uuid.UUID,
+    date: date,
+    time_basis: str = "content",
+    limit: int = Query(default=500, ge=1, le=500),
+) -> list[PlaylistVideoOut]:
     try:
         resolved_time_basis = normalize_time_basis(time_basis)
     except ValueError as e:
@@ -2726,7 +2736,7 @@ def list_playlist_videos_by_date(playlist_id: uuid.UUID, date: date, time_basis:
         )
         rows = (
             session.execute(
-                stmt.order_by(timeline_columns.timeline_at.asc(), Video.created_at.asc(), Video.id.asc())
+                stmt.order_by(timeline_columns.timeline_at.asc(), Video.created_at.asc(), Video.id.asc()).limit(limit)
             )
             .all()
         )

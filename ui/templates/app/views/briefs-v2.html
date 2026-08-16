@@ -1,0 +1,19 @@
+          <div x-show="activeView==='briefs'" x-transition.opacity class="h-full bg-[#040812]">
+            <div class="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[17rem_minmax(0,1fr)_19rem]">
+              <aside class="min-h-0 overflow-auto border-r border-slate-800 bg-slate-950/55 raelyn-scrollbar">
+                <div class="sticky top-0 z-10 border-b border-slate-800 bg-slate-950/95 px-4 py-3"><div class="text-xs font-semibold text-slate-100">星域简报</div><div class="mt-1 text-[10px] text-slate-600" x-text="currentDomainLabel()"></div><div class="mt-3 grid grid-cols-2 gap-2"><button type="button" class="rounded border border-slate-700 px-2 py-1.5 text-[10px] text-slate-300 hover:bg-slate-800" @click="openBriefGenerationSettings()">生成设置</button><button type="button" class="rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-1.5 text-[10px] text-cyan-100 hover:bg-cyan-500/20" @click="openBriefBatchGeneration()">批量生成</button></div></div>
+                <template x-for="brief in briefsV2" :key="brief.id"><button type="button" class="block w-full border-b border-slate-900 px-4 py-3 text-left" :class="briefV2SelectedId===brief.id ? 'border-l-2 border-l-cyan-400 bg-cyan-500/5' : 'hover:bg-slate-900/60'" @click="loadBriefV2Detail(brief.id)"><span class="block text-xs text-slate-200" x-text="brief.period_start+' · '+brief.granularity"></span><span class="mt-1 block text-[10px]" :class="brief.status==='ready' ? 'text-emerald-400' : 'text-slate-600'" x-text="brief.status"></span></button></template>
+                <div class="px-4 py-8 text-center text-xs text-slate-600" x-show="!briefsV2Loading && !briefsV2.length">暂无简报</div>
+              </aside>
+              <main class="min-h-0 overflow-auto raelyn-scrollbar">
+                <article class="raelyn-brief mx-auto max-w-3xl px-6 py-8 text-sm leading-7 text-slate-300" x-html="briefV2Html" x-show="briefV2Html"></article>
+                <div class="flex h-full items-center justify-center text-xs text-slate-600" x-show="briefV2Loading">正在恢复简报正文与星域上下文…</div>
+                <div class="flex h-full items-center justify-center text-xs text-slate-600" x-show="!briefV2Loading && !briefV2Html">选择一份已生成的简报</div>
+              </main>
+              <aside class="hidden min-h-0 overflow-auto border-l border-slate-800 bg-slate-950/50 lg:block raelyn-scrollbar">
+                <div class="sticky top-0 border-b border-slate-800 bg-slate-950/95 px-4 py-3"><div class="text-xs font-semibold text-slate-200">结构化引用</div><div class="mt-1 text-[10px] leading-4 text-slate-600">引用冻结当时对象与快照；后续合并、拆分和纠正通过历史解释。</div></div>
+                <template x-for="reference in briefV2Detail?.references || []" :key="reference.id"><button type="button" class="block w-full border-b border-slate-900 px-4 py-3 text-left hover:bg-slate-900/60" @click="briefOpenReference(reference)"><span class="font-mono text-[10px] text-cyan-400" x-text="'['+reference.position+'] · '+reference.object_type"></span><span class="mt-1 block text-xs leading-5 text-slate-300" x-text="reference.label || reference.object_id"></span><span class="mt-1 block font-mono text-[9px] text-slate-700" x-text="String(reference.snapshot_id || '').slice(0,8)"></span></button></template>
+                <div class="px-4 py-8 text-center text-xs text-slate-600" x-show="briefV2Detail && !(briefV2Detail.references || []).length">这份旧简报尚无 verified 星域引用；正文不会被伪造补链。</div>
+              </aside>
+            </div>
+          </div>

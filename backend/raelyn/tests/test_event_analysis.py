@@ -163,7 +163,7 @@ class EventAnalysisTests(unittest.TestCase):
         self.assertEqual(llm_generate.call_args.kwargs["idle_timeout_seconds"], 120)
         self.assertEqual(
             llm_generate.call_args.kwargs["options"],
-            {"temperature": 0, "num_ctx": 8192, "num_predict": 4000},
+            {"temperature": 0, "num_predict": 4000},
         )
 
     def test_parse_event_response_strips_think_and_drops_bad_events(self) -> None:

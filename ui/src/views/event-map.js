@@ -635,6 +635,9 @@ export class EventMapController {
       stencilBuffer: false,
     });
     this.storyGroup = new THREE.Group();
+    this.storyPath = null;
+    this.storyVisibleEdgeCount = 0;
+    this.storyAnimationStartedAt = 0;
     this.scene.add(this.storyGroup);
     this.homeDistance = 21;
   }
@@ -1035,6 +1038,8 @@ export class EventMapController {
   setSelection(index, detail = null) {
     this.selectedIndex = Number.isInteger(Number(index)) && this.isActiveIndex(Number(index)) ? Number(index) : null;
     this.selectedDetail = detail;
+    this.storyPath = null;
+    this.storyAnimationStartedAt = 0;
     this.selectedMask.fill(0);
     if (this.selectedIndex !== null) this.selectedMask[this.selectedIndex] = 1;
     this.geometry.getAttribute("aSelected").needsUpdate = true;
@@ -1051,6 +1056,40 @@ export class EventMapController {
     this.invalidate();
   }
 
+  setStoryPath(path) {
+    if (path && Array.isArray(path.edges)) {
+      const occurredAtById = new Map(
+        (path.nodes || []).map((node) => [String(node.canonical_id || ""), Date.parse(node.occurred_at || "") || 0])
+      );
+      this.storyPath = {
+        ...path,
+        edges: [...path.edges].sort((left, right) => {
+          const leftTime = occurredAtById.get(String(left.target_canonical_id || "")) || 0;
+          const rightTime = occurredAtById.get(String(right.target_canonical_id || "")) || 0;
+          return leftTime - rightTime || String(left.edge_id || "").localeCompare(String(right.edge_id || ""));
+        }),
+      };
+    } else this.storyPath = null;
+    const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    this.storyVisibleEdgeCount = reducedMotion ? Number(this.storyPath?.edges?.length || 0) : 0;
+    this.storyAnimationStartedAt = this.storyPath && !reducedMotion ? performance.now() : 0;
+    this.updateStoryLines();
+    this.invalidate();
+  }
+
+  updateStoryAnimation(now) {
+    if (!this.storyAnimationStartedAt || !this.storyPath) return false;
+    const edgeCount = Math.min(64, this.storyPath.edges.length);
+    const progress = Math.min(1, Math.max(0, (now - this.storyAnimationStartedAt) / Math.max(900, edgeCount * 180)));
+    const visible = Math.min(edgeCount, Math.ceil(progress * edgeCount));
+    if (visible !== this.storyVisibleEdgeCount) {
+      this.storyVisibleEdgeCount = visible;
+      this.updateStoryLines();
+    }
+    if (progress >= 1) this.storyAnimationStartedAt = 0;
+    return progress < 1;
+  }
+
   updateStoryLines() {
     const { THREE } = this.modules;
     for (const child of [...this.storyGroup.children]) {
@@ -1058,7 +1097,34 @@ export class EventMapController {
       child.geometry?.dispose();
       child.material?.dispose();
     }
-    if (this.currentLevel !== "event" || this.selectedIndex === null) return;
+    if (this.currentLevel !== "event") return;
+    if (this.storyPath) {
+      const edges = this.storyPath.edges.slice(0, Math.min(64, this.storyVisibleEdgeCount));
+      for (let edgeIndex = 0; edgeIndex < edges.length; edgeIndex += 1) {
+        const edge = edges[edgeIndex];
+        const sourceIndex = Number(edge.source_point_index);
+        const targetIndex = Number(edge.target_point_index);
+        if (!this.isActiveIndex(sourceIndex) || !this.isActiveIndex(targetIndex)) continue;
+        const start = this.worldPoint(sourceIndex);
+        const end = this.worldPoint(targetIndex);
+        if (!start || !end) continue;
+        const middle = start.clone().add(end).multiplyScalar(0.5);
+        const direction = end.clone().sub(start);
+        const offset = new THREE.Vector3(-direction.y, direction.x, direction.z * 0.2).normalize();
+        middle.addScaledVector(offset, Math.min(0.8, direction.length() * 0.12));
+        const curve = new THREE.QuadraticBezierCurve3(start, middle, end);
+        const geometry = new THREE.BufferGeometry().setFromPoints(curve.getPoints(24));
+        const material = new THREE.LineBasicMaterial({
+          color: edgeIndex % 2 ? 0x22d3ee : 0xa78bfa,
+          transparent: true,
+          opacity: 0.8,
+          depthWrite: false,
+        });
+        this.storyGroup.add(new THREE.Line(geometry, material));
+      }
+      return;
+    }
+    if (this.selectedIndex === null) return;
     const start = this.worldPoint(this.selectedIndex);
     if (!start) return;
     const edges = Array.isArray(this.selectedDetail?.story_edges) ? this.selectedDetail.story_edges.slice(0, 24) : [];
@@ -1411,6 +1477,35 @@ export class EventMapController {
     this.invalidate();
   }
 
+  cameraState() {
+    if (!this.camera || !this.controls) return null;
+    return {
+      mode: this.cameraMode,
+      position: this.camera.position.toArray(),
+      target: this.controls.target.toArray(),
+      zoom: Number(this.camera.zoom || 1),
+    };
+  }
+
+  restoreCameraState(state) {
+    const position = Array.isArray(state?.position) ? state.position.map(Number) : [];
+    const target = Array.isArray(state?.target) ? state.target.map(Number) : [];
+    if (position.length !== 3 || target.length !== 3 || ![...position, ...target].every(Number.isFinite)) return false;
+    this.setCameraMode(state?.mode);
+    this.introActive = false;
+    this.camera.position.fromArray(position);
+    this.controls.target.fromArray(target);
+    if (this.cameraMode === "orthographic" && Number.isFinite(Number(state?.zoom))) {
+      this.camera.zoom = Math.max(0.05, Math.min(50, Number(state.zoom)));
+    }
+    this.camera.lookAt(this.controls.target);
+    this.camera.updateProjectionMatrix();
+    this.updateSemanticLevel();
+    this.updateLabels();
+    this.invalidate();
+    return true;
+  }
+
   resetCamera({ animate = false } = {}) {
     this.controls.target.set(0, 0, 0);
     if (this.cameraMode === "orthographic") {
@@ -1506,11 +1601,12 @@ export class EventMapController {
     if (this.destroyed) return;
     const transitioning = this.updateTransition(now);
     const introducing = this.updateIntro(now);
+    const storyAnimating = this.updateStoryAnimation(now);
     const moving = this.controls.update();
-    if (transitioning || introducing || moving) this.updateLabels();
+    if (transitioning || introducing || storyAnimating || moving) this.updateLabels();
     this.renderer.render(this.scene, this.camera);
     this.monitorFrameRate(now);
-    if (transitioning || introducing || moving) this.invalidate();
+    if (transitioning || introducing || storyAnimating || moving) this.invalidate();
   }
 
   showError(message) {

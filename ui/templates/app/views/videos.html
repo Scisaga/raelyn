@@ -1,5 +1,5 @@
           <!-- Videos -->
-          <div x-show="activeView==='videos'" x-transition.opacity class="h-full">
+          <div x-show="activeView==='videos' || (activeView==='library' && libraryTab==='records')" x-transition.opacity class="h-full" :class="activeView==='library' ? 'pt-12' : ''">
             <div class="rounded-none bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
               <div class="shrink-0 px-4 py-3 space-y-3">
                 <div class="hidden sm:flex items-center justify-between gap-3">

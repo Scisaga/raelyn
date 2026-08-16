@@ -105,6 +105,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - checkpoint、ready finalize 和失败收尾都必须校验领取时捕获的 worker/token。失权执行不得写 snapshot，也不得更新 `event_map_state.last_error` 或 current snapshot 指针。
 - ready 切换后由独立的 `playlist.prune_event_map_snapshots` analysis job 做保留清理；它按播放列表去重、每次只删除一个旧快照并再次投递自己，current、上一版 ready 与所有运行中 staging 始终受保护。清理不进入 API 请求线程，也不扩大 ready 原子切换事务。
 - 应用启动迁移会先查询目录并跳过已经存在的索引和已经生效的表级分析参数；没有旧分析任务时也不会执行空 `UPDATE job`。这样启动进程不会在持有 job 表锁时等待事件地图大表 DDL 锁，避免与正在清理/构建的 analysis worker 形成锁顺序死锁。
+- 启动迁移的 schema 变更与 V2 历史回填使用两个连续事务：schema 先提交并释放关系锁，再从仍保留的 ready 快照幂等写入新增历史表。初始化 advisory lock 在两个事务期间保持，用于阻止多个启动进程重复迁移，但不能以长事务阻塞运行中 worker 对业务表的写入。
 
 事件 embedding 全量迁移同样使用执行级所有权：每批先在无写事务状态调用 embedding 服务，再以 `status=running + worker_id + execution_token` 锁回 Job，复核事件仍为 accepted 且文本 checksum 未变化后，单事务更新向量行与 Job checkpoint。失权、取消或批次写入异常都不会提交当前批；此前批次已经独立提交，重试从“不存在目标模型 ready 向量”的事件继续扫描。迁移完成前不逐事件投递地图 dirty，完成后才按播放列表各投递一次全量地图重建信号。
 

@@ -117,7 +117,7 @@ export function createPlaylistViewMethods() {
 
         const detail = await this.api(`/playlists/${encodeURIComponent(pid)}/detail`);
         if (Number(this.playlistLoadToken || 0) !== pageLoadToken) return;
-        if (this.activeView !== "playlist") return;
+        if (!["playlist", "field"].includes(this.activeView)) return;
         const currentPid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
         if (currentPid !== pid) return;
         this.playlistDetail = detail || null;
@@ -160,7 +160,7 @@ export function createPlaylistViewMethods() {
         this.playlistPrefetchCalendarCounts();
         this.playlistEditResetFromDetail();
         if (Number(this.playlistLoadToken || 0) !== pageLoadToken) return;
-        if (this.activeView !== "playlist") return;
+        if (!["playlist", "field"].includes(this.activeView)) return;
         if (this.playlistSubview === "analysis") {
           await this.playlistEventMapLoadView();
         } else {
@@ -428,15 +428,19 @@ export function createPlaylistViewMethods() {
 
       const next = this._periodClampIso(this._periodAddIso(selected, g, delta), start, end);
       if (next !== selected) {
-        this.playlistSelectedDate = next;
-        this.playlistCalendarEnsureVisible();
-        this.playlistPrefetchCalendarCounts();
-        if (this.playlistTimelineStart) {
-          const max = Number(this.playlistTimelineMax || 0);
-          this.playlistTimelineValue = Math.max(0, Math.min(max, this._periodDiff(this.playlistTimelineStart, next, g)));
+        if (this.activeView === "playlist" && typeof this.playbackSetDate === "function") {
+          this.playbackSetDate(next);
+        } else {
+          this.playlistSelectedDate = next;
+          this.playlistCalendarEnsureVisible();
+          this.playlistPrefetchCalendarCounts();
+          if (this.playlistTimelineStart) {
+            const max = Number(this.playlistTimelineMax || 0);
+            this.playlistTimelineValue = Math.max(0, Math.min(max, this._periodDiff(this.playlistTimelineStart, next, g)));
+          }
+          this._syncUrl({ push: false });
+          this.playlistLoadDay(next, { autoPlay: true });
         }
-        this._syncUrl({ push: false });
-        this.playlistLoadDay(next, { autoPlay: true });
       } else {
         this.playlistCalendarEnsureVisible();
         this.playlistPrefetchCalendarCounts();
@@ -478,7 +482,7 @@ export function createPlaylistViewMethods() {
     },
 
     playlistCalendarPointerDown(ev) {
-      if (this.playlistSubview !== "main") return;
+      if (this.activeView !== "playlist" && this.playlistSubview !== "main") return;
       if (this.playlistCalendarSettling) return;
       if (this.playlistCalendarDragPointerId !== null) return;
       if (!ev || (ev.pointerType === "mouse" && ev.button !== 0)) return;
@@ -571,6 +575,10 @@ export function createPlaylistViewMethods() {
         } catch {
           // ignore
         }
+        return;
+      }
+      if (this.activeView === "playlist" && typeof this.playbackSetDate === "function") {
+        this.playbackSetDate(date);
         return;
       }
       this.playlistSetDate(date);
@@ -936,6 +944,7 @@ export function createPlaylistViewMethods() {
 
     playlistGranularity() {
       try {
+        if (this.activeView === "playlist") return "day";
         const detailGranularity = this.playlistDetail && this.playlistDetail.brief_granularity ? String(this.playlistDetail.brief_granularity) : "";
         const next = (detailGranularity || this.playlistSettingsGranularityDraft || "day").trim().toLowerCase();
         return ["day", "week", "month"].includes(next) ? next : "day";
@@ -1646,7 +1655,7 @@ export function createPlaylistViewMethods() {
       }
       this._syncUrl({ push: false });
       this.playlistLoadDay(clamped, { autoPlay });
-      this.playlistLoadEventsPanel({ silent: true }).catch(() => null);
+      if (this.activeView !== "playlist") this.playlistLoadEventsPanel({ silent: true }).catch(() => null);
     },
 
     playlistTranscriptCacheKey(videoId, { variant = "", source = "" } = {}) {
@@ -1770,7 +1779,7 @@ export function createPlaylistViewMethods() {
       }
     },
 
-    async playlistLoadDay(iso, { autoPlay = false } = {}) {
+    async playlistLoadDay(iso, { autoPlay = false, preferredVideoId = "" } = {}) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       const g = this.playlistGranularity();
       const day = this._periodStartIso(String(iso || "").trim(), g);
@@ -1813,7 +1822,7 @@ export function createPlaylistViewMethods() {
         const ctrl = new AbortController();
         this._playlistDayAbortCtrl = ctrl;
         const items = await this.api(
-          `/playlists/${encodeURIComponent(pid)}/videos_by_period?granularity=${encodeURIComponent(g)}&date=${encodeURIComponent(day)}`,
+          `/playlists/${encodeURIComponent(pid)}/videos_by_period?granularity=${encodeURIComponent(g)}&date=${encodeURIComponent(day)}&limit=500&time_basis=content`,
           { signal: ctrl.signal }
         );
         if (Number(this.playlistLoadToken || 0) !== loadToken) return;
@@ -1822,7 +1831,9 @@ export function createPlaylistViewMethods() {
           if (diff !== 0) return diff;
           return String((a && a.id) || "").localeCompare(String((b && b.id) || ""));
         });
-        const keep = prevCurrentId ? this.playlistDayVideos.find((x) => x && String(x.id) === prevCurrentId) : null;
+        const preferredId = String(preferredVideoId || "").trim();
+        const preferred = preferredId ? this.playlistDayVideos.find((x) => x && String(x.id) === preferredId) : null;
+        const keep = preferred || (prevCurrentId ? this.playlistDayVideos.find((x) => x && String(x.id) === prevCurrentId) : null);
         if (keep) this.playlistCurrentVideo = keep;
         else this.playlistCurrentVideo = this.playlistDayVideos.length ? this.playlistDayVideos[0] : null;
       } catch (e) {
@@ -1856,7 +1867,9 @@ export function createPlaylistViewMethods() {
             fallbackVideos: autoPlay ? this.playlistDayVideos : null,
           })
         : Promise.resolve();
-      const briefPromise = this.playlistLoadBrief(day, { loadToken });
+      const briefPromise = this.activeView === "playlist"
+        ? Promise.resolve()
+        : this.playlistLoadBrief(day, { loadToken });
       try {
         await Promise.allSettled([selectPromise, briefPromise]);
       } catch {
@@ -1972,6 +1985,9 @@ export function createPlaylistViewMethods() {
       if (autoPlay) this.playlistPendingAutoPlayId = vid;
       else if (String(this.playlistPendingAutoPlayId || "").trim() === vid) this.playlistPendingAutoPlayId = "";
       this.playlistCurrentVideo = v;
+      if (this.activeView === "playlist" && typeof this.playbackSelectionChanged === "function") {
+        this.playbackSelectionChanged();
+      }
       this.playlistPlayerError = "";
       this.playlistPlayerNeedsDownload = false;
       const selectingId = vid;
@@ -2755,6 +2771,7 @@ export function createPlaylistViewMethods() {
     },
 
     playlistOnEnded(ev) {
+      if (this.activeView === "playlist" && !this.playbackAutoAdvance) return;
       const items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
       if (!items.length) return;
 
@@ -2798,6 +2815,10 @@ export function createPlaylistViewMethods() {
     },
 
     playlistJump(deltaPeriods) {
+      if (this.activeView === "playlist" && typeof this.playbackJumpDays === "function") {
+        this.playbackJumpDays(deltaPeriods);
+        return;
+      }
       if (this.playlistCalendarDragging || this.playlistCalendarSettling || this.playlistCalendarDragPointerId !== null) {
         this.playlistCalendarResetDragState();
       }
@@ -3062,6 +3083,14 @@ export function createPlaylistViewMethods() {
         if (!trimmed) {
           flushList();
           out.push("<div class=\"h-2\"></div>");
+          continue;
+        }
+        const structuredAnchor = trimmed.match(/^<a id="(field-ref-\d+)"><\/a>\s*(.*)$/);
+        if (structuredAnchor) {
+          flushList();
+          const anchorId = structuredAnchor[1];
+          const body = linkifyAndFormat(structuredAnchor[2] || "");
+          out.push(`<p id="${anchorId}" class="scroll-mt-6 rounded-md border border-cyan-500/15 bg-cyan-500/5 px-3 py-2">${body}</p>`);
           continue;
         }
         const m = trimmed.match(/^(#{1,4})\s+(.*)$/);

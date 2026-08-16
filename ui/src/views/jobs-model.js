@@ -2,6 +2,10 @@ import { wsUrl } from "../services/ws.js";
 
 export function createJobsViewMethods() {
   return {
+    jobsViewActive() {
+      return this.activeView === "jobs" || this.activeView === "operations";
+    },
+
     async loadJobs() {
       await this.refreshJobs();
     },
@@ -168,7 +172,7 @@ export function createJobsViewMethods() {
         this.jobsDoneTo = "";
       }
 
-      if (this.activeView !== "jobs") {
+      if (!this.jobsViewActive()) {
         this.jobsTab = tab;
         this.switchView("jobs");
         return;
@@ -239,7 +243,7 @@ export function createJobsViewMethods() {
           this.handleApiUnauthorized({});
           return;
         }
-        if (this.activeView === "jobs" && !(this.startupGateVisible && this.apiAuthPromptVisible)) {
+        if (this.jobsViewActive() && !(this.startupGateVisible && this.apiAuthPromptVisible)) {
           this._jobsWsRetryTimer = setTimeout(() => this._connectJobsWs(), 800);
         }
       };
@@ -281,7 +285,7 @@ export function createJobsViewMethods() {
 
     async _fetchJobsActiveSnapshot({ force = false } = {}) {
       try {
-        if (this.activeView !== "jobs") return;
+        if (!this.jobsViewActive()) return;
         const now = Date.now();
         if (!force && this._jobsActiveLastFetchAt && now - this._jobsActiveLastFetchAt < 2500) return;
         this._jobsActiveLastFetchAt = now;
@@ -293,7 +297,7 @@ export function createJobsViewMethods() {
         qs.set("offset", "0");
         if (typeFilter) qs.set("type", typeFilter);
         const items = await this.api(`/jobs?${qs.toString()}`);
-        if (this.activeView !== "jobs" || this.jobsTab !== "active") return;
+        if (!this.jobsViewActive() || this.jobsTab !== "active") return;
         if (String(this.jobsTypeFilter || "").trim() !== typeFilter) return;
         const jobs = Array.isArray(items) ? items : [];
 
@@ -322,7 +326,7 @@ export function createJobsViewMethods() {
 
     async refreshJobsActiveCount({ force = false } = {}) {
       try {
-        if (this.activeView !== "jobs" || this.jobsTab !== "active") return;
+        if (!this.jobsViewActive() || this.jobsTab !== "active") return;
         const typeFilter = String(this.jobsTypeFilter || "").trim();
         if (!typeFilter) {
           this.jobsActiveFilteredTotal = null;
@@ -337,7 +341,7 @@ export function createJobsViewMethods() {
         qs.set("status_in", "pending,running");
         qs.set("type", typeFilter);
         const payload = await this.api(`/jobs/counts?${qs.toString()}`);
-        if (this.activeView !== "jobs" || this.jobsTab !== "active") return;
+        if (!this.jobsViewActive() || this.jobsTab !== "active") return;
         if (String(this.jobsTypeFilter || "").trim() !== typeFilter) return;
         const total = payload && typeof payload.total === "number" ? payload.total : null;
         this.jobsActiveFilteredTotal = total != null && Number.isFinite(Number(total)) ? Number(total) : 0;
@@ -348,7 +352,7 @@ export function createJobsViewMethods() {
 
     async refreshJobsActiveTypeStats({ force = false } = {}) {
       try {
-        if (this.activeView !== "jobs" || this.jobsTab !== "active") return;
+        if (!this.jobsViewActive() || this.jobsTab !== "active") return;
         const now = Date.now();
         if (!force && this._jobsActiveTypeStatsLastFetchAt && now - this._jobsActiveTypeStatsLastFetchAt < 2500) return;
         this._jobsActiveTypeStatsLastFetchAt = now;
@@ -362,7 +366,7 @@ export function createJobsViewMethods() {
         this.jobsActiveTypeStatsLoading = force || !hasStats;
         this.jobsActiveTypeStatsError = "";
         const payload = await this.api(`/jobs/type_counts?${qs.toString()}`);
-        if (this.activeView !== "jobs" || this.jobsTab !== "active") return;
+        if (!this.jobsViewActive() || this.jobsTab !== "active") return;
         if (String(this.jobsTypeFilter || "").trim() !== typeFilter) return;
 
         const items = payload && Array.isArray(payload.items) ? payload.items : [];
@@ -578,7 +582,7 @@ export function createJobsViewMethods() {
 
     async refreshWorkers({ force = false } = {}) {
       try {
-        if (this.activeView !== "jobs" || this.jobsTab !== "active") return;
+        if (!this.jobsViewActive() || this.jobsTab !== "active") return;
         const now = Date.now();
         if (!force && this._workersLastFetchAt && now - this._workersLastFetchAt < 2500) return;
         this._workersLastFetchAt = now;
@@ -667,7 +671,7 @@ export function createJobsViewMethods() {
     },
 
     async deleteFailedJobsBulk() {
-      if (this.activeView !== "jobs" || this.jobsTab !== "failed" || this.jobsDeleteFailedSubmitting) return;
+      if (!this.jobsViewActive() || this.jobsTab !== "failed" || this.jobsDeleteFailedSubmitting) return;
       this._ensureJobsDoneRange();
 
       const type = String(this.jobsTypeFilter || "").trim();
@@ -704,7 +708,7 @@ export function createJobsViewMethods() {
     },
 
     async applyJobsRange() {
-      if (this.activeView !== "jobs" || this.jobsTab === "active") return;
+      if (!this.jobsViewActive() || this.jobsTab === "active") return;
       this._syncUrl({ push: false });
       await Promise.all([this.loadJobsDone(), this.refreshJobsSeries({ force: true })]);
     },
@@ -929,7 +933,7 @@ export function createJobsViewMethods() {
 
     _updateJobsDoneChart() {
       if (!this._ensureJobsDoneChart()) {
-        if (this.activeView === "jobs" && this.jobsTab !== "active") {
+        if (this.jobsViewActive() && this.jobsTab !== "active") {
           clearTimeout(this._jobsDoneChartRetryTimer);
           if (!window.LightweightCharts && typeof this.ensureLightweightCharts === "function") {
             this.ensureLightweightCharts()
@@ -1189,7 +1193,7 @@ export function createJobsViewMethods() {
 
     async refreshJobsSeries({ force = false } = {}) {
       try {
-        if (this.activeView !== "jobs" || this.jobsTab === "active") return;
+        if (!this.jobsViewActive() || this.jobsTab === "active") return;
         this._ensureJobsDoneRange();
         const now = Date.now();
         if (!force && this.jobsSeriesLastAt && now - this.jobsSeriesLastAt < 5000) return;
@@ -1233,7 +1237,7 @@ export function createJobsViewMethods() {
 
     async refreshJobs() {
       try {
-        if (this.activeView !== "jobs") {
+        if (!this.jobsViewActive()) {
           this._disconnectJobsWs();
           return;
         }
@@ -1274,7 +1278,7 @@ export function createJobsViewMethods() {
         this.globalStatus = "正在投递重试…";
         await this.api(`/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" });
         this.globalStatus = "已投递重试任务";
-        if (this.activeView === "jobs" && this.jobsTab !== "active") await this.refreshJobs();
+        if (this.jobsViewActive() && this.jobsTab !== "active") await this.refreshJobs();
         if (this.jobsHiddenDoneIds) delete this.jobsHiddenDoneIds[id];
       } catch (e) {
         try {

@@ -160,6 +160,7 @@ class PlaylistApiTests(unittest.TestCase):
         )
         snapshot = SimpleNamespace(
             id=snapshot_id,
+            playlist_id=playlist_id,
             status="ready",
             layout_algorithm_version="event_map_projection_v2",
             projection_method="incremental_pca50_umap3_cosine",
@@ -193,6 +194,54 @@ class PlaylistApiTests(unittest.TestCase):
         self.assertEqual(result["record_count"], 18)
         self.assertNotIn("topics", result)
         self.assertNotIn("topics", result)
+
+    def test_event_map_manifest_can_pin_an_available_historical_snapshot(self) -> None:
+        playlist_id = uuid.uuid4()
+        current_id = uuid.uuid4()
+        historical_id = uuid.uuid4()
+        state = SimpleNamespace(
+            current_snapshot_id=current_id,
+            dirty_generation=4,
+            built_generation=4,
+            last_error=None,
+            last_requested_at=None,
+            last_built_at=None,
+        )
+        historical = SimpleNamespace(
+            id=historical_id,
+            playlist_id=playlist_id,
+            status="ready",
+            layout_algorithm_version="event_map_projection_v2",
+            projection_method="incremental_pca50_umap3_cosine",
+            canonical_count=7,
+            member_count=9,
+            input_record_count=9,
+            skipped_reason_counts={},
+        )
+        session = Mock()
+
+        def get(model, key):
+            if model is Playlist:
+                return object()
+            if model is EventMapState:
+                return state
+            if model is EventMapSnapshot and key == historical_id:
+                return historical
+            return None
+
+        session.get.side_effect = get
+        with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
+            with patch("raelyn.api.playlists._active_event_map_build_job", return_value=None):
+                with patch("raelyn.api.playlists._active_playlist_event_backfill_job", return_value=None):
+                    result = get_playlist_event_map_manifest(
+                        playlist_id,
+                        compact=True,
+                        snapshot_id=historical_id,
+                    )
+
+        self.assertEqual(result["snapshot_id"], str(historical_id))
+        self.assertFalse(result["is_current"])
+        self.assertEqual(result["canonical_count"], 7)
 
     def test_event_map_local_entities_keep_frozen_roles_and_relations(self) -> None:
         source_entity_id = uuid.uuid4()
@@ -281,7 +330,7 @@ class PlaylistApiTests(unittest.TestCase):
                 "event_end_day",
                 "event_type_code",
                 "time_precision_code",
-                "uncertainty_flags",
+                "has_uncertainty",
                 "time_disagreement_count",
                 "member_count",
                 "macro_topic_id",

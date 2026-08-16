@@ -22,7 +22,7 @@ from raelyn.services.media_deletion import (
     active_media_delete_job,
     active_media_delete_job_map,
 )
-from raelyn.services.provider import detect_provider, extract_media_identity
+from raelyn.services.media_sources import resolve_media_url
 
 
 router = APIRouter(tags=["media"])
@@ -272,29 +272,16 @@ def _cleanup_video_out(video: Video, media: Media) -> CleanupVideoOut:
 
 @router.post("/media", response_model=MediaOut)
 def create_media(payload: MediaCreate) -> MediaOut:
-    provider = payload.provider or detect_provider(payload.url)
-    if not provider:
-        raise HTTPException(status_code=400, detail="无法从 URL 识别 provider，请显式传 provider")
-
-    try:
-        identity = extract_media_identity(provider=provider, url=payload.url)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"无法解析媒体：{e}") from e
     with session_scope() as session:
-        existing = session.execute(
-            select(Media).where(Media.provider == provider, Media.provider_media_id == identity.provider_media_id)
-        ).scalar_one_or_none()
-        if existing:
-            existing.url = payload.url
-            media = existing
-        else:
-            media = Media(provider=provider, provider_media_id=identity.provider_media_id, url=payload.url, monitor_enabled=False)
-            session.add(media)
-        session.flush()
-
-        enqueue_job(session, type_="media.sync_profile", params={"media_id": str(media.id)}, priority=10)
-
-        session.refresh(media)
+        try:
+            resolution = resolve_media_url(
+                session,
+                url=payload.url,
+                provider=payload.provider,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        media = resolution.media
         return _media_out(session, media, local_video_count=0)
 
 

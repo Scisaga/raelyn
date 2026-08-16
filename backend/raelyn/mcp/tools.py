@@ -200,6 +200,94 @@ def register_tools(mcp: FastMCP) -> None:
         except Exception as exc:
             _raise_tool_error(exc)
 
+    @mcp.tool(name="list_domains", structured_output=True)
+    def list_domains() -> list[dict[str, Any]]:
+        try:
+            return queries.list_domains()
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_domain_observation", structured_output=True)
+    def get_domain_observation(playlist_id: str) -> dict[str, Any]:
+        try:
+            return queries.get_domain_observation(playlist_id)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_domain_changes", structured_output=True)
+    def get_domain_changes(
+        playlist_id: str,
+        after_snapshot_id: str | None = None,
+        object_type: str | None = None,
+        change_type: str | None = None,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        try:
+            return queries.get_domain_changes(
+                playlist_id,
+                after_snapshot_id=after_snapshot_id,
+                object_type=object_type,
+                change_type=change_type,
+                cursor=cursor,
+                limit=limit,
+            )
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_canonical_history", structured_output=True)
+    def get_canonical_history(playlist_id: str, canonical_id: str) -> dict[str, Any]:
+        try:
+            return queries.get_canonical_history(playlist_id, canonical_id)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_domain_topic", structured_output=True)
+    def get_domain_topic(playlist_id: str, topic_id: str, limit: int = 50) -> dict[str, Any]:
+        try:
+            return queries.get_domain_topic(playlist_id, topic_id, limit=limit)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="list_domain_stories", structured_output=True)
+    def list_domain_stories(playlist_id: str) -> list[dict[str, Any]]:
+        try:
+            return queries.list_domain_stories(playlist_id)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_story_history", structured_output=True)
+    def get_story_history(playlist_id: str, story_identity_id: str) -> dict[str, Any]:
+        try:
+            return queries.get_story_history(playlist_id, story_identity_id)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_structured_brief", structured_output=True)
+    def get_structured_brief(brief_id: str) -> dict[str, Any]:
+        try:
+            return queries.get_structured_brief(brief_id)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="get_evidence_context", structured_output=True)
+    def get_evidence_context(playlist_id: str, revision_id: str) -> dict[str, Any]:
+        try:
+            return queries.get_evidence_context(playlist_id, revision_id)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
+    @mcp.tool(name="search_semantic_objects", structured_output=True)
+    def search_semantic_objects(
+        query: str,
+        playlist_id: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        try:
+            return queries.search_semantic_objects(query, playlist_id=playlist_id, limit=limit)
+        except Exception as exc:
+            _raise_tool_error(exc)
+
     @mcp.tool(name="sync_media", structured_output=True)
     def sync_media(media_id: str, scope: str = "recent") -> dict[str, Any]:
         try:

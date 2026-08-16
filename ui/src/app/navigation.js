@@ -2,9 +2,37 @@ import { raelynIcon } from "../shared/icons.js";
 
 export function createNavItems() {
   return [
-    { key: "overview", label: "概览", icon: raelynIcon('<path d="M4 4h7v7H4z"/><path d="M13 4h7v7h-7z"/><path d="M4 13h7v7H4z"/><path d="M13 13h7v7h-7z"/>') },
-    { key: "media", label: "媒体", icon: raelynIcon('<path d="M16 18a4 4 0 0 0-8 0"/><circle cx="12" cy="10" r="4"/><path d="M5 20h14"/>') },
-    { key: "videos", label: "视频", icon: raelynIcon('<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>') },
+    {
+      key: "field",
+      label: "星域",
+      icon: raelynIcon('<circle cx="12" cy="12" r="2.2"/><circle cx="5.2" cy="8" r="1.1"/><circle cx="18.7" cy="6.4" r="1.1"/><circle cx="18" cy="18" r="1.1"/><path d="m6.2 8.6 3.9 2.3m3.7-.2 3.9-3.5m-4.2 6.5 3.5 3.4"/><path d="M3.5 16.5c4.2 3.5 12.7 4.1 17-1.2" opacity=".55"/>'),
+    },
+    { key: "domains", label: "观测域", hidden: true, icon: raelynIcon('<circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.5 2.2 3.8 4.9 3.8 8S14.5 17.8 12 20M12 4c-2.5 2.2-3.8 4.9-3.8 8S9.5 17.8 12 20"/>') },
+    {
+      key: "stories",
+      label: "故事",
+      icon: raelynIcon('<path d="M4 18.5c3.1-5.5 5.9-8.8 9-9.7 2.5-.8 4.4-2.5 6-5.3"/><circle cx="4" cy="18.5" r="1.4"/><circle cx="13" cy="8.8" r="1.4"/><circle cx="19" cy="3.5" r="1.4"/><path d="M9 18h10" opacity=".55"/>'),
+    },
+    {
+      key: "briefs",
+      label: "简报",
+      icon: raelynIcon('<path d="M6 3.5h9l3 3V21H6z"/><path d="M15 3.5v3h3M9 11h6M9 15h6M9 18h4"/>'),
+    },
+    {
+      key: "playlist",
+      label: "播放列表",
+      icon: raelynIcon(
+        '<path d="M5.8 3.1h12.4" stroke-width="1.5"/><path d="M4.8 5.6h14.4" stroke-width="1.5"/><rect x="2.5" y="8.1" width="19" height="13.4" rx="3.1" stroke-width="1.6"/><path d="M9.7 10.9v7l6-3.5-6-3.5z" stroke-width="1.6"/>'
+      ),
+    },
+    {
+      key: "library",
+      label: "资料库",
+      icon: raelynIcon('<path d="M4 5.5h16v14H4z"/><path d="M8 5.5v14M4 9h4M11 10h6M11 14h6"/>'),
+    },
+    { key: "overview", label: "旧概览", hidden: true, icon: raelynIcon('<path d="M4 4h16v16H4z"/>') },
+    { key: "media", label: "信源", hidden: true, icon: raelynIcon('<circle cx="12" cy="10" r="4"/>') },
+    { key: "videos", label: "来源记录", hidden: true, icon: raelynIcon('<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>') },
     {
       key: "video",
       label: "视频详情",
@@ -13,28 +41,29 @@ export function createNavItems() {
     },
     {
       key: "playlists",
-      label: "播放列表",
-      icon: raelynIcon(
-        '<path d="M5.8 3.1h12.4" stroke-width="1.5"/><path d="M4.8 5.6h14.4" stroke-width="1.5"/><rect x="2.5" y="8.1" width="19" height="13.4" rx="3.1" stroke-width="1.6"/><path d="M9.7 10.9v7l6-3.5-6-3.5z" stroke-width="1.6"/>'
-      ),
-    },
-    {
-      key: "playlist",
-      label: "播放列表页",
+      label: "观测域目录",
       hidden: true,
       icon: raelynIcon(
         '<path d="M5.8 3.1h12.4" stroke-width="1.5"/><path d="M4.8 5.6h14.4" stroke-width="1.5"/><rect x="2.5" y="8.1" width="19" height="13.4" rx="3.1" stroke-width="1.6"/><path d="M9.7 10.9v7l6-3.5-6-3.5z" stroke-width="1.6"/>'
       ),
     },
-    { key: "jobs", label: "任务", icon: raelynIcon('<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>') },
+    { key: "jobs", label: "任务", hidden: true, icon: raelynIcon('<path d="M9 11l3 3L22 4"/>') },
+    {
+      key: "operations",
+      label: "运行中心",
+      system: true,
+      icon: raelynIcon('<path d="M4 17V9m5 8V5m5 12v-7m5 7V3"/><path d="M3 21h18"/>'),
+    },
     {
       key: "mcp-guide",
-      label: "MCP Server",
+      label: "智能体接入",
+      system: true,
       icon: `<svg viewBox="0 0 180 180" width="18" height="18" fill="none" stroke="currentColor" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:block"><path d="M18 84.8528L85.8822 16.9706C95.2548 7.59798 110.451 7.59798 119.823 16.9706C129.196 26.3431 129.196 41.5391 119.823 50.9117L68.5581 102.177"/><path d="M69.2652 101.47L119.823 50.9117C129.196 41.5391 144.392 41.5391 153.765 50.9117L154.118 51.2652C163.491 60.6378 163.491 75.8338 154.118 85.2063L92.7248 146.6C89.6006 149.724 89.6006 154.789 92.7248 157.913L105.331 170.52"/><path d="M102.853 33.9411L52.6482 84.1457C43.2756 93.5183 43.2756 108.714 52.6482 118.087C62.0208 127.459 77.2167 127.459 86.5893 118.087L136.794 67.8822"/></svg>`,
     },
     {
       key: "settings",
       label: "设置",
+      system: true,
       icon: raelynIcon(
         '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>'
       ),

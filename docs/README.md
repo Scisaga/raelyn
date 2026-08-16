@@ -2,8 +2,9 @@
 
 ## 产品与范围
 
-- [项目愿景](vision.md)
+- [V2 产品愿景](vision.md)
 - [V2 信息架构](product/information-architecture-v2.md)
+- [V2 现状能力差距](product/capability-gap-v2.md)
 
 ## 协作约定
 
@@ -13,6 +14,7 @@
 ## 架构
 
 - [架构总览](architecture/overview.md)
+- [V2 观察与存储架构](architecture/v2-observation.md)
 - [ADR-0001：B 站资料同步使用浏览器模拟读取公开空间页](adr/0001-bilibili-profile-fetch-browser-page.md)
 - [ADR-0002：媒体资料同步补齐可缓存头像来源](adr/0002-media-profile-avatar-sources.md)
 - [任务系统](architecture/job-system.md)
@@ -28,7 +30,7 @@
 - [REST API 设计](api/rest.md)
 - [UI 设计总览](ui/overview.md)
 - [UI 主题配色](ui/theme.md)
-- [V2 首页与星图低保真线框](ui/wireframes-v2.md)
+- [V2 核心界面线框规范](ui/wireframes-v2.md)
 
 ## 交付与运行
 

@@ -106,7 +106,7 @@ dirty 使用 generation 防止构建期间的新变化丢失，具体约束如�
 
 ## API 一致性
 
-`manifest` 是唯一可不带 `snapshot_id` 的地图接口，用于解析当前 ready 快照；轮询时可使用 `compact=true`，只读取状态和快照计数，避免重复装载主题数据与实时覆盖统计。`scene`、搜索、实体索引和对象详情都必须 pin `snapshot_id`，避免一次交互混用两版数据。实体数量、搜索和窗口筛选只查询 `event_map_entity_index`，局部角色与实体关系来自冻结的 record revision，不会回连可变的 `market_event_entity/relation`。播放期间前端不请求实体排行；暂停或手动完成窗口移动后，以单飞队列只提交最后一个窗口查询。新视频关系只有在抽取载荷显式给出的 `source_entity_key` / `target_entity_key` 与同事件规范键精确且唯一匹配时才形成局部连线；自然语言 `cause` / `effect` 本身不参与端点猜测。
+`manifest` 可不带 `snapshot_id` 解析当前 ready 快照，也可显式固定仍可用的历史 ready 快照；显式版本无效时不会回退。轮询时可使用 `compact=true`，只读取状态和快照计数，避免重复装载主题数据与实时覆盖统计。`scene`、搜索、实体索引和对象详情都必须 pin `snapshot_id`，V2 历史深链接还会把同一版本传入主题、故事航迹和主题简报反查，避免一次交互混用两版数据。实体数量、搜索和窗口筛选只查询 `event_map_entity_index`，局部角色与实体关系来自冻结的 record revision，不会回连可变的 `market_event_entity/relation`。播放期间前端不请求实体排行；暂停或手动完成窗口移动后，以单飞队列只提交最后一个窗口查询。新视频关系只有在抽取载荷显式给出的 `source_entity_key` / `target_entity_key` 与同事件规范键精确且唯一匹配时才形成局部连线；自然语言 `cause` / `effect` 本身不参与端点猜测。
 
 场景二进制协议 v2 每条 56 字节，小端布局 `<I16sfffiiBBBBIII>`：
 
@@ -120,6 +120,8 @@ uint32 member_count, macro_topic_index, local_topic_index
 ```
 
 不向浏览器传输原始 embedding。
+
+V2 默认首页仍复用这套不可变快照与二进制场景协议，但在其上增加观察游标、稳定故事身份、长期修订、变化流和结构化引用。星域主场景和线性替代视图只投影类型化热列；`has_uncertainty` 是物化审核位，来源记录与长期对象之间通过正规化关系表反查，不对修订 JSONB 做全表扫描。完整冷热边界和无停机迁移约束见 [V2 观察与存储架构](v2-observation.md)。
 
 ## 旧链清理
 

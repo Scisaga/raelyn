@@ -17,8 +17,12 @@ export function createAppInitMethods() {
         if (this.activeView === "videos" && viewKey !== "videos") this._teardownVideoIo();
         if (this.activeView === "jobs" && viewKey !== "jobs") this._destroyJobsDoneChart();
         if (this.activeView === "video" && viewKey !== "video" && typeof this.leaveVideoPage === "function") this.leaveVideoPage();
-        if (this.activeView === "playlist" && viewKey !== "playlist" && typeof this.leavePlaylistPage === "function") {
-          this.leavePlaylistPage();
+        if (this.activeView === "playlist" && viewKey !== "playlist" && typeof this.leavePlaybackPage === "function") {
+          this.leavePlaybackPage();
+        }
+        if (this.activeView === "field" && viewKey !== "field" && typeof this.leaveField === "function") {
+          this.saveFieldCursor({ immediate: true });
+          this.leaveField();
         }
         if (this.activeView !== viewKey && typeof this._stopDocumentMediaPlayback === "function") {
           this._stopDocumentMediaPlayback({ clearSources: true });
@@ -91,7 +95,7 @@ export function createAppInitMethods() {
         if (!statsReady) void this.loadStats({ silent: true });
         return;
       }
-      await this.loadMediaIndex({ lightweight: ["playlist", "playlists", "videos"].includes(this.activeView) });
+      await this.loadMediaIndex({ lightweight: ["field", "stories", "briefs", "library", "operations", "playlist", "playlists", "videos"].includes(this.activeView) });
       await this.refreshActive();
       if (!statsReady) {
         void this.loadStats({ silent: true });
@@ -117,6 +121,7 @@ export function createAppInitMethods() {
       this.initMediaSession();
       if (!healthReady) await this._refreshHealthStatus();
       this._resumeProtectedRealtime();
+      await this.loadDomains().catch(() => []);
       await this._refreshProtectedData({ statsReady });
     },
 
@@ -124,6 +129,7 @@ export function createAppInitMethods() {
       this.initMediaSession();
       if (!healthReady) await this._refreshHealthStatus();
       this._resumeProtectedRealtime();
+      await this.loadDomains().catch(() => []);
       await this._refreshProtectedData({ statsReady });
     },
 

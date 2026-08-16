@@ -217,8 +217,15 @@ openclaw gateway restart</code></pre>
                           <div><code class="text-slate-200">raelyn://video/{video_id}/transcript</code></div>
                           <div><code class="text-slate-200">raelyn://video/{video_id}/transcript/chunks/{chunk_index}</code></div>
                           <div><code class="text-slate-200">raelyn://playlist/{playlist_id}</code></div>
-                          <div><code class="text-slate-200">raelyn://brief/{playlist_id}/{granularity}/{date_in_period}</code></div>
+                          <div><code class="text-slate-200">raelyn://brief/{brief_id}</code></div>
+                          <div><code class="text-slate-200">raelyn://brief/{brief_id}/structured</code></div>
                           <div><code class="text-slate-200">raelyn://job/{job_id}</code></div>
+                          <div><code class="text-cyan-200">raelyn://domain/{domain_id}/observation</code></div>
+                          <div><code class="text-cyan-200">raelyn://domain/{domain_id}/changes</code></div>
+                          <div><code class="text-cyan-200">raelyn://domain/{domain_id}/canonical/{canonical_id}</code></div>
+                          <div><code class="text-cyan-200">raelyn://domain/{domain_id}/topic/{topic_id}</code></div>
+                          <div><code class="text-cyan-200">raelyn://domain/{domain_id}/story/{story_identity_id}</code></div>
+                          <div><code class="text-cyan-200">raelyn://domain/{domain_id}/evidence/{revision_id}</code></div>
                         </div>
                       </div>
                     </div>
@@ -286,10 +293,46 @@ openclaw gateway restart</code></pre>
                             <td class="hidden md:table-cell px-4 py-2 align-top text-slate-400">聚合返回视频级上下文。</td>
                           </tr>
                           <tr>
-                            <td class="px-4 py-2 align-top"><code>get_playlist_context</code></td>
-                            <td class="px-4 py-2 align-top text-slate-400">聚合返回播放列表上下文。</td>
+                            <td class="px-4 py-2 align-top"><code>get_playlist_summary</code></td>
+                            <td class="px-4 py-2 align-top text-slate-400">聚合返回观测域周期上下文。</td>
                             <td class="hidden md:table-cell px-4 py-2 align-top text-emerald-200"><code>sync_media</code></td>
                             <td class="hidden md:table-cell px-4 py-2 align-top text-slate-400">投递媒体同步任务。</td>
+                          </tr>
+                          <tr>
+                            <td class="px-4 py-2 align-top text-cyan-200"><code>list_domains</code></td>
+                            <td class="px-4 py-2 align-top text-slate-400">列出观测域与未读变化。</td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top text-cyan-200"><code>get_domain_observation</code></td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top text-slate-400">读取观察游标与四类覆盖率。</td>
+                          </tr>
+                          <tr>
+                            <td class="px-4 py-2 align-top text-cyan-200"><code>get_domain_changes</code></td>
+                            <td class="px-4 py-2 align-top text-slate-400">读取稳定变化游标与双时间语义。</td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top text-cyan-200"><code>get_canonical_history</code></td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top text-slate-400">读取真实事件修订与谱系。</td>
+                          </tr>
+                          <tr>
+                            <td class="px-4 py-2 align-top text-cyan-200"><code>get_domain_topic</code></td>
+                            <td class="px-4 py-2 align-top text-slate-400">读取主题层级、成员计数与代表事件。</td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top"></td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top text-slate-400"></td>
+                          </tr>
+                          <tr>
+                            <td class="px-4 py-2 align-top text-cyan-200"><code>list_domain_stories</code></td>
+                            <td class="px-4 py-2 align-top text-slate-400">列出稳定故事、关注与未读状态。</td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top text-cyan-200"><code>get_story_history</code></td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top text-slate-400">读取故事修订、变化与航迹。</td>
+                          </tr>
+                          <tr>
+                            <td class="px-4 py-2 align-top text-cyan-200"><code>get_structured_brief</code></td>
+                            <td class="px-4 py-2 align-top text-slate-400">读取生成口径与结构化引用。</td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top text-cyan-200"><code>get_evidence_context</code></td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top text-slate-400">读取证据、来源及播放定位。</td>
+                          </tr>
+                          <tr>
+                            <td class="px-4 py-2 align-top text-cyan-200"><code>search_semantic_objects</code></td>
+                            <td class="px-4 py-2 align-top text-slate-400">分组搜索语义对象并返回 Web 深链接。</td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top"></td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top text-slate-400"></td>
                           </tr>
                           <tr>
                             <td class="px-4 py-2 align-top text-emerald-200"><code>download_video</code></td>

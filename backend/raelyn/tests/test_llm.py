@@ -37,7 +37,7 @@ class LlmServiceTests(unittest.TestCase):
                     prompt="ping",
                     think=False,
                     response_format="json",
-                    options={"temperature": 0},
+                    options={"temperature": 0, "num_ctx": 8192},
                 )
 
         payload = client.return_value.__enter__.return_value.post.call_args.kwargs["json"]
@@ -46,7 +46,7 @@ class LlmServiceTests(unittest.TestCase):
         self.assertFalse(payload["stream"])
         self.assertFalse(payload["think"])
         self.assertEqual(payload["format"], "json")
-        self.assertEqual(payload["options"], {"temperature": 0})
+        self.assertEqual(payload["options"], {"temperature": 0, "num_ctx": 32768})
         self.assertEqual(result["text"], '{"ok": true}')
         self.assertEqual(result["usage"]["input_tokens"], 3)
         self.assertEqual(result["usage"]["output_tokens"], 5)
@@ -87,7 +87,7 @@ class LlmServiceTests(unittest.TestCase):
 
         payload = client.return_value.__enter__.return_value.stream.call_args.kwargs["json"]
         self.assertTrue(payload["stream"])
-        self.assertEqual(payload["options"], {"temperature": 0, "num_predict": 1200})
+        self.assertEqual(payload["options"], {"temperature": 0, "num_predict": 1200, "num_ctx": 32768})
         self.assertEqual(result["text"], '{"ok": true}')
         self.assertEqual(result["usage"]["input_tokens"], 7)
         self.assertEqual(result["usage"]["output_tokens"], 11)
