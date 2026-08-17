@@ -572,6 +572,8 @@ def canonical_directory(
     event_time_start: datetime | None = None,
     event_time_end: datetime | None = None,
     event_type: str | None = None,
+    normalized_key: str | None = None,
+    entity_type: str | None = None,
     limit: int = 500,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -597,6 +599,14 @@ def canonical_directory(
         statement = statement.where(EventMapCanonical.event_time_start <= event_time_end)
     if event_type:
         statement = statement.where(EventMapCanonical.event_type == event_type)
+    if normalized_key:
+        entity_scope = select(EventMapEntityIndex.canonical_id).where(
+            EventMapEntityIndex.snapshot_id == snapshot.id,
+            EventMapEntityIndex.normalized_key == normalized_key,
+        )
+        if entity_type:
+            entity_scope = entity_scope.where(EventMapEntityIndex.entity_type == entity_type)
+        statement = statement.where(EventMapCanonical.canonical_id.in_(entity_scope))
     rows = session.execute(
         statement.order_by(
             EventMapCanonical.event_time_start.desc(),

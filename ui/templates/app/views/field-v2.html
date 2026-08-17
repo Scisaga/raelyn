@@ -28,7 +28,11 @@
                         <span class="hidden 2xl:inline text-xs text-slate-600">三维语义星域 · 时间只改变当前窗口星云</span>
                       </div>
                       <div class="ml-auto flex flex-wrap items-center gap-2">
-                        <div class="inline-flex rounded-md border border-slate-800 bg-slate-950/40 p-0.5" x-show="activeView==='field'">
+                        <div class="inline-flex rounded-md border border-slate-800 bg-slate-950/30 p-0.5" x-show="activeView==='field'" aria-label="观察呈现方式">
+                          <button type="button" class="h-7 rounded px-2 text-[11px]" :class="!fieldLinearView ? 'bg-sky-500/15 text-sky-100' : 'text-slate-500 hover:text-slate-200'" @click="fieldSetPrimaryView('map')">星域</button>
+                          <button type="button" class="h-7 rounded px-2 text-[11px]" :class="fieldLinearView ? 'bg-sky-500/15 text-sky-100' : 'text-slate-500 hover:text-slate-200'" @click="fieldSetPrimaryView('list')">列表</button>
+                        </div>
+                        <div class="inline-flex rounded-md border border-slate-800 bg-slate-950/40 p-0.5" x-show="activeView==='field' && !fieldLinearView">
                           <template x-for="mode in ['now','replay','story','verify']" :key="mode">
                             <button type="button" class="h-7 rounded px-2.5 text-[11px]" :class="fieldMode===mode ? 'bg-cyan-400/15 text-cyan-100 shadow-[inset_0_0_0_1px_rgba(103,232,249,.16)]' : 'text-slate-500 hover:text-slate-200'" @click="fieldSetMode(mode)" x-text="fieldModeLabel(mode)"></button>
                           </template>
@@ -42,16 +46,10 @@
                             <button type="button" class="h-7 rounded px-2 text-[11px] text-slate-400 hover:text-slate-100" :class="playlistEventMapWindowMonths===months ? 'bg-sky-500/15 text-sky-100' : ''" @click="playlistEventMapSetWindowMonths(months)" x-text="months===12 ? '12月' : months+'月'"></button>
                           </template>
                         </div>
-                        <select class="h-8 max-w-36 rounded-md border border-slate-700 bg-slate-950/40 px-2 text-xs text-slate-300" x-model="playlistEventMapTypeFilter" @change="playlistEventMapHandleTypeFilterChange()" aria-label="事件类型">
-                          <option value="">全部事件类型</option>
-                          <template x-for="option in playlistEventMapTypeOptions()" :key="option.code">
-                            <option :value="String(option.code)" x-text="option.label || option.value"></option>
-                          </template>
-                        </select>
-                        <button type="button" class="h-8 rounded-md border border-slate-800 px-2 text-[11px] text-slate-400 hover:border-slate-600 hover:text-slate-100" @click="playlistEventMapResetCamera()" title="让当前时间窗口的星域适配可见画布">适配</button>
-                        <button type="button" class="h-8 rounded-md border px-2 text-[11px]" :class="playlistEventMapFiltersOpen ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100' : 'border-slate-800 text-slate-400 hover:text-slate-100'" @click="playlistEventMapToggleFilters()">搜索与筛选</button>
-                        <button type="button" class="h-8 rounded-md border px-2 text-[11px]" x-show="activeView==='field'" :class="fieldLinearView ? 'border-violet-500/35 bg-violet-500/10 text-violet-100' : 'border-slate-800 text-slate-500'" @click="fieldToggleLinearView()">线性列表</button>
-                        <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-[11px]" x-show="activeView==='field'" :class="fieldObservationRailOpen ? 'border-cyan-500/35 bg-cyan-500/10 text-cyan-100' : 'border-slate-800 text-slate-500'" @click="fieldToggleObservationRail()" title="查看自上次观察后的现实事件、系统认知与故事变化"><span>星域变化</span><span class="rounded-full bg-cyan-400/15 px-1.5 font-mono text-[9px] text-cyan-200" x-show="fieldObservationUnreadLabel()" x-text="fieldObservationUnreadLabel()"></span></button>
+                        <button type="button" class="h-8 rounded-md border border-slate-800 px-2 text-[11px] text-slate-400 hover:border-slate-600 hover:text-slate-100" x-show="!fieldLinearView" @click="playlistEventMapResetCamera()" title="让当前时间窗口的星域适配可见画布">适配</button>
+                        <button type="button" class="h-8 rounded-md border px-2 text-[11px]" :class="playlistEventMapSearchOpen ? 'border-sky-500/40 bg-sky-500/10 text-sky-100' : 'border-slate-800 text-slate-400 hover:text-slate-100'" @click="playlistEventMapOpenSearch(); $nextTick(() => $refs.playlistEventMapSearchInput?.focus())">查找</button>
+                        <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-[11px]" :class="playlistEventMapFiltersOpen || playlistEventMapActiveFilterCount() ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100' : 'border-slate-800 text-slate-400 hover:text-slate-100'" @click="playlistEventMapToggleFilters()"><span>筛选</span><span class="rounded-full bg-emerald-400/15 px-1.5 font-mono text-[9px]" x-show="playlistEventMapActiveFilterCount()" x-text="playlistEventMapActiveFilterCount()"></span></button>
+                        <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-[11px]" x-show="activeView==='field' && !fieldLinearView" :class="fieldObservationRailVisible() ? 'border-cyan-500/35 bg-cyan-500/10 text-cyan-100' : 'border-slate-800 text-slate-500 hover:text-slate-200'" @click="fieldToggleObservationRail()" :title="playlistEventMapSelectedId && fieldObservationRailOpen ? '关闭对象详情并返回星域变化' : '查看自上次观察后的现实事件、系统认知与故事变化'"><span x-text="fieldObservationRailActionLabel()"></span><span class="rounded-full bg-cyan-400/15 px-1.5 font-mono text-[9px] text-cyan-200" x-show="fieldObservationUnreadLabel()" x-text="fieldObservationUnreadLabel()"></span></button>
                       </div>
                     </div>
                     <div class="border-t border-cyan-500/20 bg-cyan-500/10 px-4 py-2 text-xs text-cyan-200" x-show="playlistEventMapActiveBackfillJob()" x-text="playlistEventMapBackfillJobText()"></div>
@@ -69,18 +67,10 @@
                     </div>
                   </header>
 
-                  <div class="shrink-0 border-b border-slate-800 px-4 py-1.5 flex flex-wrap items-center gap-1.5" x-show="playlistEventMapFilterChips().length">
-                    <span class="text-[10px] text-slate-500">当前条件</span>
-                    <template x-for="chip in playlistEventMapFilterChips()" :key="chip.key">
-                      <button type="button" class="inline-flex items-center gap-1 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-100 hover:bg-emerald-500/15" @click="playlistEventMapClearFilter(chip.key)">
-                        <span x-text="chip.label"></span><span aria-hidden="true">×</span>
-                      </button>
-                    </template>
-                  </div>
-
                   <div class="relative flex-1 min-h-0 overflow-hidden bg-black">
                     <main
                       class="absolute inset-y-0 left-0 right-0 overflow-hidden bg-black"
+                      x-show="!fieldLinearView"
                       :class="playlistEventMapSelectedId ? 'lg:right-[380px]' : (activeView==='field' && fieldObservationRailOpen ? 'lg:right-80' : '')"
                     >
                       <div x-ref="playlistEventMap" class="absolute inset-0" role="application" aria-label="可旋转、缩放和平移的三维事件语义星域"></div>
@@ -100,15 +90,15 @@
                       </div>
                     </main>
 
-                    <section class="absolute inset-0 z-[24] flex flex-col bg-slate-950/96 backdrop-blur" x-show="activeView==='field' && fieldLinearView" x-transition.opacity>
+                    <section class="absolute inset-0 z-20 flex flex-col bg-slate-950" x-show="activeView==='field' && fieldLinearView" x-transition.opacity>
                       <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-                        <div><div class="text-sm font-semibold text-slate-100">真实事件 · 线性视图</div><div class="mt-1 text-[10px] text-slate-500">与当前星域时间窗口、事件类型口径一致；最多显示 500 条</div></div>
-                        <button type="button" class="text-xs text-slate-500 hover:text-slate-200" @click="fieldLinearView=false">返回星域</button>
+                        <div><div class="text-sm font-semibold text-slate-100">事件列表</div><div class="mt-1 text-[10px] text-slate-500">当前时间窗口的线性替代视图；最多显示 500 条真实事件</div></div>
+                        <span class="font-mono text-[10px] text-slate-500" x-text="formatInteger(fieldLinearItems.length)+' 条'"></span>
                       </div>
                       <div class="min-h-0 flex-1 overflow-auto raelyn-scrollbar">
                         <div class="px-4 py-8 text-center text-xs text-slate-500" x-show="fieldLinearLoading">正在读取当前快照的类型化索引…</div>
                         <template x-for="item in fieldLinearItems" :key="item.canonical_id">
-                          <button type="button" class="grid w-full grid-cols-[9rem_minmax(0,1fr)_auto] items-start gap-4 border-b border-slate-900 px-4 py-3 text-left hover:bg-slate-900/65" @click="fieldLinearView=false; fieldOpenCanonical(item.canonical_id, item.point_index)">
+                          <button type="button" class="grid w-full grid-cols-[9rem_minmax(0,1fr)_auto] items-start gap-4 border-b border-slate-900 px-4 py-3 text-left hover:bg-slate-900/65" @click="fieldOpenLinearItem(item)">
                             <span class="font-mono text-[10px] text-cyan-300" x-text="fieldLinearItemTime(item)"></span>
                             <span class="min-w-0"><span class="block text-xs font-medium leading-5 text-slate-200" x-text="item.title || '未命名真实事件'"></span><span class="mt-1 block line-clamp-2 text-[11px] leading-4 text-slate-500" x-text="item.summary || ''"></span></span>
                             <span class="flex items-center gap-2"><span class="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400" x-text="item.event_type"></span><span class="h-2 w-2 rounded-full bg-amber-300" x-show="item.has_uncertainty" title="存在不确定性"></span></span>
@@ -118,34 +108,55 @@
                       </div>
                     </section>
 
-                    <aside class="absolute inset-y-0 left-0 z-30 flex w-72 flex-col border-r border-slate-800 bg-slate-950/95 shadow-2xl backdrop-blur-md" x-show="playlistEventMapFiltersOpen" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="-translate-x-full opacity-0" x-transition:enter-end="translate-x-0 opacity-100" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="translate-x-0 opacity-100" x-transition:leave-end="-translate-x-full opacity-0">
-                      <div class="flex items-center justify-between border-b border-slate-800 px-3 py-2.5">
-                        <div><div class="text-xs font-semibold text-slate-200">搜索与筛选</div><div class="mt-0.5 text-[10px] text-slate-500">只影响当前时间窗口</div></div>
-                        <button type="button" class="text-xs text-slate-500 hover:text-slate-100" @click="playlistEventMapFiltersOpen=false">关闭</button>
-                      </div>
-                      <div class="relative border-b border-slate-800 p-3">
-                        <input class="h-8 w-full rounded-md border border-slate-700 bg-slate-950/35 px-2.5 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/40" x-model="playlistEventMapSearchQuery" @input="playlistEventMapScheduleSearch()" @keydown="playlistEventMapSearchKeydown($event)" placeholder="事件、主题或实体" aria-label="查找事件地图对象" />
-                        <div class="absolute inset-x-3 top-12 z-40 max-h-64 overflow-auto border border-slate-700 bg-slate-950 shadow-xl raelyn-scrollbar" x-show="playlistEventMapSearchResults.length">
-                          <template x-for="group in playlistEventMapSearchGroups()" :key="group.key"><div><div class="border-y border-slate-800 bg-slate-900/80 px-2 py-1 text-[10px] text-slate-500" x-text="group.label"></div><template x-for="item in group.items" :key="item.kind+':'+item.id"><button type="button" class="block w-full px-2 py-2 text-left hover:bg-slate-800/70" :class="playlistEventMapSearchActiveIndex===item._eventMapSearchIndex ? 'bg-slate-800/70' : ''" @mouseenter="playlistEventMapSearchActiveIndex=item._eventMapSearchIndex" @click="playlistEventMapSelectSearchResult(item)"><span class="block truncate text-xs text-slate-200" x-text="item.label || item.title || item.name"></span><span class="mt-0.5 block text-[10px] text-slate-500" x-text="playlistEventMapSearchKindLabel(item.kind)"></span></button></template></div></template>
+                    <section class="absolute inset-0 z-40 flex items-start justify-center bg-black/60 p-4 pt-8" x-show="playlistEventMapSearchOpen" x-transition.opacity @click.self="playlistEventMapCloseSearch()">
+                      <div class="flex max-h-[calc(100%-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-lg border border-slate-700 bg-slate-950 shadow-2xl" @click.stop>
+                        <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+                          <div><div class="text-sm font-semibold text-slate-100">查找当前窗口</div><div class="mt-0.5 text-[10px] text-slate-500">定位真实事件或主题；选择实体结果时会明确应用实体筛选</div></div>
+                          <button type="button" class="text-xs text-slate-500 hover:text-slate-100" @click="playlistEventMapCloseSearch()">关闭</button>
                         </div>
-                        <div class="mt-1 text-[10px] text-slate-500" x-show="playlistEventMapSearchLoading">正在查找…</div>
+                        <div class="border-b border-slate-800 p-4">
+                          <input x-ref="playlistEventMapSearchInput" class="h-10 w-full rounded-md border border-slate-700 bg-slate-900/60 px-3 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-sky-500/50 focus:ring-2 focus:ring-sky-500/15" x-model="playlistEventMapSearchQuery" @input="playlistEventMapScheduleSearch()" @keydown="playlistEventMapSearchKeydown($event)" placeholder="输入事件、主题或实体" aria-label="查找事件地图对象" />
+                        </div>
+                        <div class="min-h-0 flex-1 overflow-auto raelyn-scrollbar">
+                          <template x-for="group in playlistEventMapSearchGroups()" :key="group.key"><div><div class="border-b border-slate-800 bg-slate-900/70 px-4 py-1.5 text-[10px] text-slate-500" x-text="group.label"></div><template x-for="item in group.items" :key="item.kind+':'+item.id"><button type="button" class="block w-full border-b border-slate-900 px-4 py-3 text-left hover:bg-slate-900/70" :class="playlistEventMapSearchActiveIndex===item._eventMapSearchIndex ? 'bg-slate-900/70' : ''" @mouseenter="playlistEventMapSearchActiveIndex=item._eventMapSearchIndex" @click="playlistEventMapSelectSearchResult(item)"><span class="block truncate text-xs text-slate-200" x-text="item.label || item.title || item.name"></span><span class="mt-1 block text-[10px] text-slate-500" x-text="playlistEventMapSearchKindLabel(item.kind)"></span></button></template></div></template>
+                          <div class="px-4 py-8 text-center text-xs text-slate-500" x-show="playlistEventMapSearchLoading">正在查找…</div>
+                          <div class="px-4 py-8 text-center text-xs text-slate-600" x-show="!playlistEventMapSearchLoading && String(playlistEventMapSearchQuery || '').trim().length < 2">输入至少两个字符开始查找</div>
+                          <div class="px-4 py-8 text-center text-xs text-slate-600" x-show="!playlistEventMapSearchLoading && String(playlistEventMapSearchQuery || '').trim().length >= 2 && !playlistEventMapSearchResults.length">当前窗口没有匹配对象</div>
+                        </div>
                       </div>
-                      <div class="border-b border-slate-800 p-3">
-                        <div class="flex items-center justify-between gap-2"><span class="text-xs font-semibold text-slate-300">当前窗口实体</span><button type="button" class="text-[10px] text-slate-500 hover:text-slate-200" x-show="playlistEventMapEntityFilter" @click="playlistEventMapClearEntityFilter()">清除</button></div>
-                        <input class="mt-2 h-8 w-full rounded-md border border-slate-700 bg-slate-950/35 px-2.5 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/40" x-model="playlistEventMapEntityQuery" @input="playlistEventMapScheduleEntities()" placeholder="筛选实体" />
-                      </div>
-                      <div class="min-h-0 flex-1 overflow-auto raelyn-scrollbar">
-                        <template x-for="entity in playlistEventMapEntities" :key="entity.entity_type+':'+entity.normalized_key"><button type="button" class="flex w-full items-center gap-2 border-b border-slate-900/80 px-3 py-2 text-left hover:bg-slate-900/55" :class="playlistEventMapEntityFilter && playlistEventMapEntityFilter.normalized_key===entity.normalized_key ? 'bg-emerald-500/10' : ''" @click="playlistEventMapApplyEntityFilter(entity)"><span class="h-2 w-2 shrink-0 rounded-full bg-emerald-400"></span><span class="min-w-0 flex-1"><span class="block truncate text-xs text-slate-200" x-text="entity.name || entity.normalized_key"></span><span class="block text-[10px] text-slate-500" x-text="entity.entity_type"></span></span><span class="font-mono tabular-nums text-[10px] text-slate-400" x-text="formatInteger(entity.canonical_count || entity.event_count || 0)"></span></button></template>
-                        <div class="p-3 text-xs text-slate-500" x-show="playlistEventMapEntitiesLoading">实体加载中…</div>
-                        <div class="p-3 text-xs text-slate-500" x-show="!playlistEventMapEntitiesLoading && !playlistEventMapEntities.length">当前窗口没有实体。</div>
-                      </div>
-                      <div class="border-t border-slate-800 p-3">
-                        <button type="button" class="text-xs text-emerald-200 hover:text-emerald-100" @click="playlistEventMapObjectGuideOpen=!playlistEventMapObjectGuideOpen">六对象与出现条件</button>
-                        <div class="mt-2 divide-y divide-slate-800" x-show="playlistEventMapObjectGuideOpen"><template x-for="item in playlistEventMapObjectGuide()" :key="item.key"><div class="py-2"><div class="flex justify-between gap-2 text-[10px]"><span class="text-slate-200" x-text="item.shape+' · '+item.label"></span><span class="text-slate-500" x-text="item.visible"></span></div><div class="mt-0.5 text-[10px] leading-4 text-slate-500" x-text="item.description"></div></div></template></div>
-                      </div>
-                    </aside>
+                    </section>
 
-                    <aside class="absolute inset-y-0 right-0 z-[25] flex w-80 max-w-[92vw] flex-col border-l border-slate-800/90 bg-slate-950/90 shadow-2xl backdrop-blur-md" x-show="activeView==='field' && fieldObservationRailOpen && !playlistEventMapSelectedId" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="translate-x-full opacity-0" x-transition:enter-end="translate-x-0 opacity-100" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="translate-x-0 opacity-100" x-transition:leave-end="translate-x-full opacity-0">
+                    <section class="absolute inset-0 z-40 flex items-start justify-center bg-black/60 p-4 pt-8" x-show="playlistEventMapFiltersOpen" x-transition.opacity @click.self="playlistEventMapFiltersOpen=false">
+                      <div class="flex max-h-[calc(100%-2rem)] w-full max-w-xl flex-col overflow-hidden rounded-lg border border-slate-700 bg-slate-950 shadow-2xl" @click.stop>
+                        <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+                          <div><div class="text-sm font-semibold text-slate-100">筛选当前窗口</div><div class="mt-0.5 text-[10px] text-slate-500">筛选持续作用于星域与列表；主题点选不属于筛选</div></div>
+                          <div class="flex items-center gap-3"><button type="button" class="text-xs text-emerald-300 hover:text-emerald-100" x-show="playlistEventMapActiveFilterCount()" @click="playlistEventMapClearAllFilters()">全部清除</button><button type="button" class="text-xs text-slate-500 hover:text-slate-100" @click="playlistEventMapFiltersOpen=false">完成</button></div>
+                        </div>
+                        <div class="border-b border-slate-800 p-4">
+                          <label class="block text-xs font-semibold text-slate-300">事件类型</label>
+                          <select class="mt-2 h-9 w-full rounded-md border border-slate-700 bg-slate-900/60 px-2.5 text-xs text-slate-200" x-model="playlistEventMapTypeFilter" @change="playlistEventMapHandleTypeFilterChange()" aria-label="事件类型筛选">
+                            <option value="">全部事件类型</option>
+                            <template x-for="option in playlistEventMapTypeOptions()" :key="option.code"><option :value="String(option.code)" x-text="option.label || option.value"></option></template>
+                          </select>
+                        </div>
+                        <div class="border-b border-slate-800 p-4">
+                          <div class="flex items-center justify-between gap-2"><span class="text-xs font-semibold text-slate-300">实体</span><button type="button" class="text-[10px] text-slate-500 hover:text-slate-200" x-show="playlistEventMapEntityFilter" @click="playlistEventMapClearEntityFilter()">清除实体</button></div>
+                          <div class="mt-2 rounded border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-2 text-xs text-emerald-100" x-show="playlistEventMapEntityFilter"><span class="text-slate-500">已筛选：</span><span x-text="playlistEventMapEntityFilter?.name || playlistEventMapEntityFilter?.normalized_key"></span></div>
+                          <input class="mt-2 h-9 w-full rounded-md border border-slate-700 bg-slate-900/60 px-2.5 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-emerald-500/40" x-model="playlistEventMapEntityQuery" @input="playlistEventMapScheduleEntities()" placeholder="查找实体筛选项" />
+                        </div>
+                        <div class="min-h-0 flex-1 overflow-auto raelyn-scrollbar">
+                          <template x-for="entity in playlistEventMapEntities" :key="entity.entity_type+':'+entity.normalized_key"><button type="button" class="flex w-full items-center gap-2 border-b border-slate-900 px-4 py-2.5 text-left hover:bg-slate-900/60" :class="playlistEventMapEntityFilter && playlistEventMapEntityFilter.normalized_key===entity.normalized_key ? 'bg-emerald-500/10' : ''" @click="playlistEventMapApplyEntityFilter(entity, {focus:false})"><span class="h-2 w-2 shrink-0 rounded-full bg-emerald-400"></span><span class="min-w-0 flex-1"><span class="block truncate text-xs text-slate-200" x-text="entity.name || entity.normalized_key"></span><span class="block text-[10px] text-slate-500" x-text="entity.entity_type"></span></span><span class="font-mono tabular-nums text-[10px] text-slate-400" x-text="formatInteger(entity.canonical_count || entity.event_count || 0)"></span></button></template>
+                          <div class="p-4 text-xs text-slate-500" x-show="playlistEventMapEntitiesLoading">实体加载中…</div>
+                          <div class="p-4 text-xs text-slate-500" x-show="!playlistEventMapEntitiesLoading && !playlistEventMapEntities.length">当前窗口没有实体。</div>
+                        </div>
+                        <div class="border-t border-slate-800 px-4 py-3">
+                          <button type="button" class="text-xs text-slate-400 hover:text-slate-100" @click="playlistEventMapObjectGuideOpen=!playlistEventMapObjectGuideOpen">了解地图对象</button>
+                          <div class="mt-2 divide-y divide-slate-800" x-show="playlistEventMapObjectGuideOpen"><template x-for="item in playlistEventMapObjectGuide()" :key="item.key"><div class="py-2"><div class="flex justify-between gap-2 text-[10px]"><span class="text-slate-200" x-text="item.shape+' · '+item.label"></span><span class="text-slate-500" x-text="item.visible"></span></div><div class="mt-0.5 text-[10px] leading-4 text-slate-500" x-text="item.description"></div></div></template></div>
+                        </div>
+                      </div>
+                    </section>
+
+                    <aside class="absolute inset-y-0 right-0 z-[25] flex w-80 max-w-[92vw] flex-col border-l border-slate-800/90 bg-slate-950/90 shadow-2xl backdrop-blur-md" x-show="activeView==='field' && fieldObservationRailVisible()" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="translate-x-full opacity-0" x-transition:enter-end="translate-x-0 opacity-100" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="translate-x-0 opacity-100" x-transition:leave-end="translate-x-full opacity-0">
                       <div class="border-b border-slate-800 px-3 py-3">
                         <div class="flex items-center justify-between"><div><div class="text-xs font-semibold text-slate-100">星域变化</div><div class="mt-0.5 text-[10px] text-slate-600">自上次观察以来；待验证是当前快照存量</div></div><button type="button" class="text-xs text-slate-600 hover:text-slate-200" @click="fieldObservationRailOpen=false">关闭</button></div>
                         <div class="mt-3 grid grid-cols-4 gap-1 rounded-lg border border-slate-800 bg-slate-950/60 p-1">
@@ -165,10 +176,10 @@
                       <div class="border-t border-slate-800 px-3 py-2 text-[10px] leading-4 text-slate-600" x-text="domainObservationFeed?.definitions?.[fieldObservationRailTab] || ''"></div>
                     </aside>
 
-                    <aside class="absolute inset-y-0 right-0 z-30 w-[380px] max-w-[92vw] overflow-auto border-l border-slate-800 bg-slate-950/95 shadow-2xl backdrop-blur-md raelyn-scrollbar" x-show="playlistEventMapSelectedId" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="translate-x-full opacity-0" x-transition:enter-end="translate-x-0 opacity-100" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="translate-x-0 opacity-100" x-transition:leave-end="translate-x-full opacity-0">
+                    <aside class="absolute inset-y-0 right-0 z-30 w-[380px] max-w-[92vw] overflow-auto border-l border-slate-800 bg-slate-950/95 shadow-2xl backdrop-blur-md raelyn-scrollbar" x-show="!fieldLinearView && playlistEventMapSelectedId" x-transition:enter="transition ease-out duration-200" x-transition:enter-start="translate-x-full opacity-0" x-transition:enter-end="translate-x-0 opacity-100" x-transition:leave="transition ease-in duration-150" x-transition:leave-start="translate-x-0 opacity-100" x-transition:leave-end="translate-x-full opacity-0">
                       <div x-show="playlistEventMapSelectedKind==='topic'">
                         <div class="border-b border-slate-800 p-4">
-                          <div class="flex items-center justify-between gap-2"><span class="rounded-full border border-sky-500/25 bg-sky-500/10 px-2 py-0.5 text-[10px] text-sky-100" x-text="Number(playlistEventMapSelectedDetail?.level || 0)===0 ? '一级星域' : '二级主题'"></span><button type="button" class="text-xs text-slate-500 hover:text-slate-200" @click="playlistEventMapClearTopicFocus()">关闭</button></div>
+                          <div class="flex items-center justify-between gap-2"><span class="rounded-full border border-sky-500/25 bg-sky-500/10 px-2 py-0.5 text-[10px] text-sky-100" x-text="Number(playlistEventMapSelectedDetail?.level || 0)===0 ? '一级星域' : '二级主题'"></span><button type="button" class="text-xs text-slate-500 hover:text-slate-200" @click="playlistEventMapClearTopicFocus()" x-text="fieldInspectorCloseLabel()"></button></div>
                           <div class="mt-3 flex items-center gap-1.5 text-[10px] text-slate-500" x-show="playlistEventMapTopicParent()">
                             <button type="button" class="truncate text-left text-sky-200 hover:text-sky-100" @click="playlistEventMapSelectTopic(playlistEventMapTopicParent())" x-text="playlistEventMapTopicParent()?.label"></button><span>/</span><span class="truncate text-slate-300" x-text="playlistEventMapSelectedDetail?.label"></span>
                           </div>
@@ -199,7 +210,7 @@
 
                       <div x-show="playlistEventMapSelectedKind==='canonical'">
                         <div class="border-b border-slate-800 p-4">
-                          <div class="flex items-center justify-between gap-2"><span class="rounded-full border border-fuchsia-500/30 bg-fuchsia-500/10 px-2 py-0.5 text-[10px] text-fuchsia-200">真实事件</span><div class="flex items-center gap-3"><button type="button" class="text-xs text-sky-300 hover:text-sky-100" @click="playlistEventMapFocusSelectedCanonical()">定位</button><button type="button" class="text-xs text-slate-500 hover:text-slate-200" @click="playlistEventMapClearSelection()">关闭</button></div></div>
+                          <div class="flex items-center justify-between gap-2"><span class="rounded-full border border-fuchsia-500/30 bg-fuchsia-500/10 px-2 py-0.5 text-[10px] text-fuchsia-200">真实事件</span><div class="flex items-center gap-3"><button type="button" class="text-xs text-sky-300 hover:text-sky-100" @click="playlistEventMapFocusSelectedCanonical()">定位</button><button type="button" class="text-xs text-slate-500 hover:text-slate-200" @click="playlistEventMapClearSelection()" x-text="fieldInspectorCloseLabel()"></button></div></div>
                           <div class="mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[10px] text-slate-500" x-show="playlistEventMapCanonicalBreadcrumb().length"><template x-for="(crumb, index) in playlistEventMapCanonicalBreadcrumb()" :key="crumb.topic_id || crumb.label"><span x-show="index>0">/</span><button type="button" class="max-w-40 truncate text-left text-sky-200 hover:text-sky-100" :class="crumb.canonical ? 'pointer-events-none text-slate-400' : ''" @click="!crumb.canonical && playlistEventMapSelectTopic(crumb)" x-text="crumb.label"></button></template></div>
                           <div class="mt-2 text-sm font-semibold leading-5 text-slate-100" x-text="playlistEventMapSelectedDetail?.title || '详情加载中…'"></div>
                           <div class="mt-1 font-mono tabular-nums text-[10px] text-slate-500" x-text="playlistEventMapSelectedDetail?.occurrence_label || playlistEventMapSelectedDetail?.event_time_start || ''"></div>
@@ -226,7 +237,7 @@
 
                       <div x-show="playlistEventMapSelectedKind==='evidence'">
                         <div class="border-b border-slate-800 p-4">
-                          <div class="flex items-center justify-between gap-2"><span class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-200">证据核验</span><button type="button" class="text-xs text-slate-500 hover:text-slate-200" @click="fieldCloseEvidence()">关闭</button></div>
+                          <div class="flex items-center justify-between gap-2"><span class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-200">证据核验</span><button type="button" class="text-xs text-slate-500 hover:text-slate-200" @click="fieldCloseEvidence()" x-text="fieldInspectorCloseLabel()"></button></div>
                           <div class="mt-3 text-sm font-semibold leading-5 text-slate-100" x-text="fieldEvidenceDetail?.source?.title || (fieldEvidenceLoading ? '正在恢复证据上下文…' : '证据上下文')"></div>
                           <div class="mt-1 text-[10px] text-slate-500" x-text="fieldEvidenceDetail?.source?.media_name || ''"></div>
                         </div>
@@ -254,6 +265,7 @@
                       <button
                         type="button"
                         class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-700 bg-slate-950/40 text-slate-200 hover:bg-slate-900/70 disabled:cursor-not-allowed disabled:opacity-40"
+                        x-show="!fieldLinearView"
                         :class="playlistEventMapPlaying ? 'border-sky-500/40 bg-sky-500/20 text-sky-100' : ''"
                         :disabled="!playlistEventMapCanPlay()"
                         @click="playlistEventMapTogglePlayback()"

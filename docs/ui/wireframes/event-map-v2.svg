@@ -113,19 +113,19 @@
     <text x="361" y="97" fill="#a7f3d0" font-size="10">12 月观察窗</text>
     <text class="mono" x="455" y="98">截至 2026-07-27</text>
 
-    <rect class="button" x="770" y="77" width="96" height="32" rx="6"/>
-    <text class="small" x="791" y="97">搜索与筛选</text>
-    <rect class="button-active" x="876" y="77" width="50" height="32" rx="6"/>
-    <text x="893" y="98" fill="#bae6fd" font-size="11">3D</text>
-    <rect class="button" x="932" y="77" width="58" height="32" rx="6"/>
-    <text class="small" x="947" y="97">俯视</text>
-    <rect class="button" x="1000" y="77" width="58" height="32" rx="6"/>
-    <text class="small" x="1015" y="97">复位</text>
-    <rect class="button" x="1068" y="77" width="58" height="32" rx="6"/>
-    <text class="small" x="1083" y="97">全屏</text>
-    <rect class="button" x="1136" y="77" width="84" height="32" rx="6"/>
-    <text class="small" x="1152" y="97">数据质量</text>
-    <text class="tiny" x="1236" y="96">覆盖 86% · 未入图 60 · 失败 2</text>
+    <rect class="button-active" x="770" y="77" width="54" height="32" rx="6"/>
+    <text x="786" y="98" fill="#bae6fd" font-size="11">星域</text>
+    <rect class="button" x="828" y="77" width="54" height="32" rx="6"/>
+    <text class="small" x="844" y="97">列表</text>
+    <rect class="button" x="892" y="77" width="54" height="32" rx="6"/>
+    <text class="small" x="908" y="97">查找</text>
+    <rect class="button" x="956" y="77" width="54" height="32" rx="6"/>
+    <text class="small" x="972" y="97">筛选</text>
+    <rect class="button" x="1020" y="77" width="54" height="32" rx="6"/>
+    <text class="small" x="1036" y="97">适配</text>
+    <rect class="button" x="1084" y="77" width="76" height="32" rx="6"/>
+    <text class="small" x="1098" y="97">星域变化</text>
+    <text class="tiny" x="1176" y="96">覆盖 86% · 未入图 60 · 失败 2</text>
 
     <circle class="callout" cx="1424" cy="64" r="12"/>
     <text class="callout-text" x="1424" y="64">1</text>
@@ -137,10 +137,10 @@
     <circle cx="600" cy="430" r="310" fill="url(#spaceGlow)"/>
     <path class="grid" d="M245 340 C410 260 740 260 1036 340 M238 445 C445 350 770 375 1048 470 M245 560 C465 470 800 500 1046 610 M350 148 C440 300 410 590 325 795 M610 138 C540 320 565 610 700 810 M880 148 C770 310 815 600 1010 790"/>
 
-    <!-- Search drawer -->
-    <g aria-label="搜索筛选抽屉">
-      <rect class="panel-opaque" x="224" y="142" width="268" height="558" rx="8"/>
-      <text class="heading" x="244" y="170">搜索与筛选</text>
+    <!-- Transient search panel -->
+    <g aria-label="查找临时面板" transform="translate(300 0)">
+      <rect class="panel-opaque" x="224" y="142" width="268" height="250" rx="8"/>
+      <text class="heading" x="244" y="170">查找当前窗口</text>
       <text class="tiny" x="432" y="170">关闭</text>
       <rect class="panel-soft" x="244" y="185" width="228" height="34" rx="6"/>
       <text class="small" x="258" y="206">事件、主题或实体</text>
@@ -151,29 +151,6 @@
       <rect class="panel-soft" x="244" y="321" width="228" height="58" rx="6"/>
       <text class="body" x="258" y="343">美联储维持利率不变</text>
       <text class="tiny" x="258" y="363">真实事件 · 2026-07-27</text>
-
-      <line class="divider" x1="244" y1="398" x2="472" y2="398"/>
-      <text class="tiny" x="244" y="422">事件语义族</text>
-      <rect class="pill" x="244" y="435" width="94" height="26" rx="13"/>
-      <circle cx="257" cy="448" r="4" fill="#60a5fa"/>
-      <text class="tiny" x="267" y="452">宏观与政策</text>
-      <rect class="pill" x="346" y="435" width="112" height="26" rx="13"/>
-      <circle cx="359" cy="448" r="4" fill="#f59e0b"/>
-      <text class="tiny" x="369" y="452">产业与供给链</text>
-      <rect class="pill" x="244" y="469" width="94" height="26" rx="13"/>
-      <circle cx="257" cy="482" r="4" fill="#c084fc"/>
-      <text class="tiny" x="267" y="486">地缘与监管</text>
-
-      <text class="tiny" x="244" y="526">当前窗口实体</text>
-      <rect class="panel-soft" x="244" y="538" width="228" height="34" rx="6"/>
-      <text class="small" x="258" y="559">筛选实体</text>
-      <text class="body" x="244" y="600">Federal Reserve</text>
-      <text class="mono" x="432" y="600">184</text>
-      <line class="divider" x1="244" y1="612" x2="472" y2="612"/>
-      <text class="body" x="244" y="638">Semiconductor</text>
-      <text class="mono" x="432" y="638">127</text>
-      <line class="divider" x1="244" y1="650" x2="472" y2="650"/>
-      <text x="244" y="678" fill="#a7f3d0" font-size="10">地图语法与六种对象 →</text>
 
       <circle class="callout" cx="490" cy="142" r="12"/>
       <text class="callout-text" x="490" y="142">3</text>

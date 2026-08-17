@@ -29,6 +29,7 @@ export function createV2Module() {
     fieldLinearView: false,
     fieldLinearItems: [],
     fieldLinearLoading: false,
+    _fieldLinearRequestToken: 0,
     fieldChangesLoading: false,
     stories: [],
     storiesLoading: false,

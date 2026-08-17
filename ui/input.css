@@ -7,7 +7,9 @@
 
 .event-map-label {
   --event-map-label-color: #67e8f9;
+  --event-map-label-opacity: 1;
   color: color-mix(in srgb, var(--event-map-label-color) 84%, #64748b 16%);
+  opacity: var(--event-map-label-opacity);
   background-color: transparent;
   border: 0;
   box-shadow: none;
@@ -15,6 +17,7 @@
     0 1px 1px rgb(0 0 0 / 98%),
     0 0 3px rgb(0 0 0 / 86%);
   transition:
+    opacity 150ms ease,
     color 150ms ease,
     background-color 150ms ease,
     box-shadow 150ms ease,
@@ -23,6 +26,7 @@
 
 .event-map-label:is(:hover, :focus-visible) {
   color: var(--event-map-label-color);
+  opacity: 1;
   background-color: rgb(2 6 23 / 86%);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--event-map-label-color) 52%, transparent),

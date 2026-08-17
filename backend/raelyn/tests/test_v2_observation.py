@@ -23,6 +23,7 @@ from raelyn.models import (
     EventMapCanonicalHistoryRevision,
     EventMapCanonicalIdentity,
     EventMapChange,
+    EventMapEntityIndex,
     EventMapRecordRevision,
     EventMapSnapshot,
     EventMapState,
@@ -47,6 +48,7 @@ from raelyn.services.event_map_snapshot import (
     _story_has_new_correction,
 )
 from raelyn.services.v2_observation import (
+    canonical_directory,
     canonical_history,
     change_payload,
     domain_directory,
@@ -133,6 +135,57 @@ class V2ObservationIntegrationTests(unittest.TestCase):
         self.assertEqual(second.snapshot_id, self.current.id)
         self.assertEqual(second.view_mode, "replay")
         self.assertEqual(second.filter_state, {"event_type": "policy"})
+
+    def test_canonical_directory_reuses_typed_entity_filter(self) -> None:
+        self.session.add(EventMapState(playlist_id=self.playlist.id, current_snapshot_id=self.current.id))
+        canonicals = []
+        entities = []
+        for point_index, (title, entity_key) in enumerate((("苹果发布产品", "apple"), ("谷歌发布模型", "google"))):
+            canonical_id = uuid.uuid4()
+            canonicals.append(
+                EventMapCanonical(
+                    snapshot_id=self.current.id,
+                    canonical_id=canonical_id,
+                    representative_revision_id=uuid.uuid4(),
+                    title=title,
+                    summary=f"{title}摘要",
+                    event_type="equity",
+                    event_time_start=self.now,
+                    event_time_end=self.now,
+                    time_precision="day",
+                    event_start_day=1,
+                    event_end_day=1,
+                    event_type_code=1,
+                    time_precision_code=1,
+                    centroid_checksum=f"centroid-{point_index}",
+                    point_index=point_index,
+                    x=float(point_index),
+                    y=0,
+                    z=0,
+                )
+            )
+            entities.append(
+                EventMapEntityIndex(
+                    snapshot_id=self.current.id,
+                    canonical_id=canonical_id,
+                    entity_type="company",
+                    normalized_key=entity_key,
+                    name=entity_key.title(),
+                    point_index=point_index,
+                    record_count=1,
+                )
+            )
+        self.session.add_all([*canonicals, *entities])
+        self.session.commit()
+
+        payload = canonical_directory(
+            self.session,
+            self.playlist.id,
+            normalized_key="apple",
+            entity_type="company",
+        )
+
+        self.assertEqual([item["title"] for item in payload["items"]], ["苹果发布产品"])
 
     def test_change_cursor_has_stable_order_and_time_basis(self) -> None:
         object_ids = [uuid.uuid4(), uuid.uuid4(), uuid.uuid4()]

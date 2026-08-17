@@ -35,6 +35,62 @@ test("星域变化默认收起，并优先打开第一个有内容的口径", ()
   assert.equal(ctx.fieldFeedTabs()[1].label, "认知变化");
 });
 
+test("打开星域变化会返回星域并关闭临时工具", () => {
+  const ctx = context({
+    fieldLinearView: true,
+    playlistEventMapSearchOpen: true,
+    playlistEventMapFiltersOpen: true,
+    playlistEventMapCloseSearch() { this.playlistEventMapSearchOpen = false; },
+  });
+
+  ctx.fieldToggleObservationRail();
+
+  assert.equal(ctx.fieldLinearView, false);
+  assert.equal(ctx.fieldObservationRailOpen, true);
+  assert.equal(ctx.playlistEventMapSearchOpen, false);
+  assert.equal(ctx.playlistEventMapFiltersOpen, false);
+});
+
+test("对象详情与星域变化复用同一轨道并提供明确返回动作", () => {
+  const fromChanges = context({
+    fieldObservationRailOpen: true,
+    playlistEventMapSelectedKind: "topic",
+    playlistEventMapSelectedId: "topic-1",
+    playlistEventMapClearTopicFocus() {
+      this.playlistEventMapSelectedKind = "";
+      this.playlistEventMapSelectedId = "";
+    },
+  });
+
+  assert.equal(fromChanges.fieldObservationRailVisible(), false);
+  assert.equal(fromChanges.fieldObservationRailActionLabel(), "返回变化");
+  assert.equal(fromChanges.fieldInspectorCloseLabel(), "返回变化");
+
+  fromChanges.fieldToggleObservationRail();
+
+  assert.equal(fromChanges.playlistEventMapSelectedId, "");
+  assert.equal(fromChanges.fieldObservationRailOpen, true);
+  assert.equal(fromChanges.fieldObservationRailVisible(), true);
+
+  const directDetail = context({
+    fieldObservationRailOpen: false,
+    playlistEventMapSelectedKind: "canonical",
+    playlistEventMapSelectedId: "canonical-1",
+    playlistEventMapClearSelection() {
+      this.playlistEventMapSelectedKind = "";
+      this.playlistEventMapSelectedId = "";
+    },
+  });
+
+  assert.equal(directDetail.fieldObservationRailActionLabel(), "星域变化");
+  assert.equal(directDetail.fieldInspectorCloseLabel(), "关闭");
+
+  directDetail.fieldToggleObservationRail();
+
+  assert.equal(directDetail.playlistEventMapSelectedId, "");
+  assert.equal(directDetail.fieldObservationRailVisible(), true);
+});
+
 test("旧版取景、旧快照、旧时间窗或不同视口的相机状态不会覆盖当前窗口取景", () => {
   const ctx = context({
     playlistEventMapController: () => ({ cameraState: () => ({ viewport_aspect: 2 }) }),
@@ -86,10 +142,14 @@ test("canonical 深链接通过当前快照历史定位，不把空 point_index 
   assert.deepEqual(selected, [[37, "canonical-1"]]);
 });
 
-test("线性替代视图复用当前时间窗，并把类型码还原为事件类型值", async () => {
+test("事件列表复用当前时间窗、类型和实体筛选", async () => {
   let requested = "";
   const ctx = context({
     playlistEventMapTypeFilter: "4",
+    playlistEventMapEntityFilter: {
+      normalized_key: "apple",
+      entity_type: "company",
+    },
     playlistEventMapTypeOptions: () => [{ code: 4, value: "policy", label: "政策" }],
     async api(path) {
       requested = path;
@@ -104,6 +164,8 @@ test("线性替代视图复用当前时间窗，并把类型码还原为事件�
   assert.equal(url.searchParams.get("event_time_start"), "2026-01-01T00:00:00Z");
   assert.equal(url.searchParams.get("event_time_end"), "2026-12-31T23:59:59Z");
   assert.equal(url.searchParams.get("event_type"), "policy");
+  assert.equal(url.searchParams.get("normalized_key"), "apple");
+  assert.equal(url.searchParams.get("entity_type"), "company");
   assert.equal(ctx.fieldLinearItems[0].point_index, 8);
 });
 
@@ -213,7 +275,7 @@ test("当前域移除信源只调用解除关联接口，不调用全局删除",
   assert.equal(calls.some(([path]) => path === "/media/media-1"), false);
 });
 
-test("V2 主界面保留四种观察模式、线性视图和完整故事航迹", async () => {
+test("V2 主界面区分主视图、临时工具与星域上下文", async () => {
   const template = await readFile(new URL("../../../templates/app/views/field-v2.html", import.meta.url), "utf8");
   const controller = await readFile(new URL("../event-map.js", import.meta.url), "utf8");
   const navigation = await readFile(new URL("../../app/navigation.js", import.meta.url), "utf8");
@@ -223,11 +285,18 @@ test("V2 主界面保留四种观察模式、线性视图和完整故事航迹",
   const playlistModel = await readFile(new URL("../event-map-model.js", import.meta.url), "utf8");
 
   assert.match(template, /\['now','replay','story','verify'\]/);
-  assert.match(template, /线性列表/);
-  assert.match(template, /真实事件 · 线性视图/);
+  assert.match(template, /fieldSetPrimaryView\('map'\)[^>]*>星域</);
+  assert.match(template, /fieldSetPrimaryView\('list'\)[^>]*>列表</);
+  assert.match(template, />事件列表</);
+  assert.match(template, />查找当前窗口</);
+  assert.match(template, />筛选当前窗口</);
+  assert.doesNotMatch(template, /当前条件|playlistEventMapFilterChips|搜索与筛选/);
   assert.doesNotMatch(template, /3D 空间|平面俯视|playlistEventMapCameraMode|playlistEventMapSetCameraMode/);
   assert.match(template, /三维语义空间 · 左键旋转/);
   assert.match(template, /星域变化/);
+  assert.match(template, /fieldObservationRailVisible\(\)/);
+  assert.match(template, /fieldObservationRailActionLabel\(\)/);
+  assert.match(template, /fieldInspectorCloseLabel\(\)/);
   assert.match(template, /返回当前星域/);
   assert.match(controller, /setStoryPath\(path\)/);
   assert.match(controller, /source_point_index/);

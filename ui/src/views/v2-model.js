@@ -130,7 +130,12 @@ export function createV2ViewMethods() {
       }
       this.playlistSubview = "analysis";
       this._fieldHydrating = true;
+      this._fieldLinearRequestToken = Number(this._fieldLinearRequestToken || 0) + 1;
+      this.fieldLinearView = false;
+      this.fieldLinearItems = [];
       this.fieldObservationRailOpen = false;
+      this.playlistEventMapSearchOpen = false;
+      this.playlistEventMapFiltersOpen = false;
       this.fieldObservationRailTab = "newly_occurred";
       this.domainObservationFeed = emptyObservationFeed();
       this.fieldObservationFeedLoading = true;
@@ -215,6 +220,7 @@ export function createV2ViewMethods() {
       }
       this.playlistEventMapStopPolling();
       this.playlistEventMapReset();
+      this._fieldLinearRequestToken = Number(this._fieldLinearRequestToken || 0) + 1;
       this.fieldEvidenceLoading = false;
       this.fieldLinearLoading = false;
     },
@@ -225,7 +231,12 @@ export function createV2ViewMethods() {
       if (next === "replay" && this.playlistEventMapCanPlay()) this.playlistEventMapTogglePlayback();
       if (next !== "replay" && this.playlistEventMapPlaying) this.playlistEventMapStopPlayback();
       this.fieldObservationRailTab = next === "verify" ? "needs_review" : next === "story" ? "story_updates" : this.fieldObservationRailTab;
-      if (["story", "verify"].includes(next)) this.fieldObservationRailOpen = true;
+      if (["story", "verify"].includes(next)) {
+        this.fieldLinearView = false;
+        this.playlistEventMapCloseSearch?.();
+        this.playlistEventMapFiltersOpen = false;
+        this.fieldObservationRailOpen = true;
+      }
       await this.saveFieldCursor({ immediate: true });
     },
 
@@ -251,8 +262,40 @@ export function createV2ViewMethods() {
     },
 
     fieldToggleObservationRail() {
+      if (this.playlistEventMapSelectedId) {
+        this.fieldLinearView = false;
+        this.playlistEventMapCloseSearch?.();
+        this.playlistEventMapFiltersOpen = false;
+        this.fieldObservationRailOpen = true;
+        this.fieldCloseSelectedInspector();
+        this.fieldSelectAvailableFeedTab();
+        return;
+      }
       this.fieldObservationRailOpen = !this.fieldObservationRailOpen;
-      if (this.fieldObservationRailOpen) this.fieldSelectAvailableFeedTab();
+      if (!this.fieldObservationRailOpen) return;
+      this.fieldLinearView = false;
+      this.playlistEventMapCloseSearch?.();
+      this.playlistEventMapFiltersOpen = false;
+      this.fieldSelectAvailableFeedTab();
+    },
+
+    fieldObservationRailVisible() {
+      return Boolean(this.fieldObservationRailOpen && !this.fieldLinearView && !this.playlistEventMapSelectedId);
+    },
+
+    fieldObservationRailActionLabel() {
+      if (this.playlistEventMapSelectedId && this.fieldObservationRailOpen) return "返回变化";
+      return "星域变化";
+    },
+
+    fieldInspectorCloseLabel() {
+      return this.fieldObservationRailOpen ? "返回变化" : "关闭";
+    },
+
+    fieldCloseSelectedInspector() {
+      if (this.playlistEventMapSelectedKind === "topic") this.playlistEventMapClearTopicFocus();
+      else if (this.playlistEventMapSelectedKind === "evidence") this.fieldCloseEvidence();
+      else if (this.playlistEventMapSelectedId) this.playlistEventMapClearSelection();
     },
 
     fieldObservationUnreadLabel() {
@@ -452,11 +495,33 @@ export function createV2ViewMethods() {
       this.switchView("video");
     },
 
-    async fieldToggleLinearView() {
-      this.fieldLinearView = !this.fieldLinearView;
-      if (!this.fieldLinearView) return;
+    async fieldSetPrimaryView(view) {
+      const showList = String(view || "") === "list";
+      this.playlistEventMapCloseSearch?.();
+      this.playlistEventMapFiltersOpen = false;
+      if (!showList) {
+        this.fieldLinearView = false;
+        if (["story", "verify"].includes(this.fieldMode)) {
+          this.fieldObservationRailOpen = true;
+          this.fieldSelectAvailableFeedTab({ preferred: this.fieldMode === "story" ? "story_updates" : "needs_review" });
+        }
+        this.$nextTick?.(() => this.playlistEventMapController?.()?.resize?.());
+        return;
+      }
+      this.playlistEventMapStopPlayback?.();
+      this.fieldLinearView = true;
+      this.fieldObservationRailOpen = false;
+      if (this.playlistEventMapSelectedKind === "topic") this.playlistEventMapClearTopicFocus();
+      else if (this.playlistEventMapSelectedKind === "evidence") this.fieldCloseEvidence();
+      else if (this.playlistEventMapSelectedId) this.playlistEventMapClearSelection();
+      await this.fieldLoadLinearItems();
+    },
+
+    async fieldLoadLinearItems() {
       const domainId = String(this.selectedPlaylistId || "");
       if (!domainId) return;
+      const token = Number(this._fieldLinearRequestToken || 0) + 1;
+      this._fieldLinearRequestToken = token;
       this.fieldLinearLoading = true;
       try {
         const params = new URLSearchParams({ limit: "500" });
@@ -468,11 +533,31 @@ export function createV2ViewMethods() {
           );
           if (option?.value) params.set("event_type", String(option.value));
         }
+        if (this.playlistEventMapEntityFilter?.normalized_key) {
+          params.set("normalized_key", String(this.playlistEventMapEntityFilter.normalized_key));
+          if (this.playlistEventMapEntityFilter.entity_type) {
+            params.set("entity_type", String(this.playlistEventMapEntityFilter.entity_type));
+          }
+        }
         const payload = await this.api(`/domains/${encodeURIComponent(domainId)}/canonicals?${params.toString()}`);
+        if (Number(this._fieldLinearRequestToken || 0) !== token) return;
         this.fieldLinearItems = Array.isArray(payload?.items) ? payload.items : [];
+      } catch (error) {
+        if (Number(this._fieldLinearRequestToken || 0) === token) {
+          this.fieldLinearItems = [];
+          this.playlistEventMapError = error?.message || String(error);
+        }
       } finally {
-        this.fieldLinearLoading = false;
+        if (Number(this._fieldLinearRequestToken || 0) === token) this.fieldLinearLoading = false;
       }
+    },
+
+    async fieldToggleLinearView() { return this.fieldSetPrimaryView(this.fieldLinearView ? "map" : "list"); },
+
+    async fieldOpenLinearItem(item) {
+      if (!item?.canonical_id) return;
+      await this.fieldSetPrimaryView("map");
+      await this.fieldOpenCanonical(item.canonical_id, item.point_index);
     },
 
     async fieldReturnToCurrentSnapshot() {

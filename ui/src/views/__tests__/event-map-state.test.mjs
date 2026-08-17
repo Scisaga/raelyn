@@ -46,6 +46,16 @@ test("已有快照在后台构建时说明当前星域可浏览", () => {
   assert.match(firstBuild.playlistEventMapStatusBadgeHint(), /首个可浏览的星域快照/);
 });
 
+test("筛选计数只包含持续条件，不把主题点选当作筛选", () => {
+  const ctx = context({}, {
+    playlistEventMapTypeFilter: "4",
+    playlistEventMapEntityFilter: { normalized_key: "apple", entity_type: "company" },
+    playlistEventMapTopicFocus: { topic_id: "topic-1" },
+  });
+
+  assert.equal(ctx.playlistEventMapActiveFilterCount(), 2);
+});
+
 async function withFakePollingEnvironment(callback) {
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;

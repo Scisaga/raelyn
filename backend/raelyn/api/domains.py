@@ -254,6 +254,8 @@ def list_domain_canonicals(
     event_time_start: datetime | None = None,
     event_time_end: datetime | None = None,
     event_type: str | None = None,
+    normalized_key: str | None = None,
+    entity_type: str | None = None,
     limit: int = Query(default=500, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
@@ -266,6 +268,8 @@ def list_domain_canonicals(
             event_time_start=event_time_start,
             event_time_end=event_time_end,
             event_type=event_type,
+            normalized_key=normalized_key,
+            entity_type=entity_type,
             limit=limit,
             offset=offset,
         )

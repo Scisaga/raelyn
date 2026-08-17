@@ -10,6 +10,7 @@ import {
   buildEventMapSpacetimeGrid,
   countEventMapVisiblePoints,
   eventMapLayerVisibility,
+  eventMapLabelFocusOpacity,
   eventMapLabelText,
   eventMapLabelWidth,
   eventMapSemanticPalette,
@@ -92,6 +93,32 @@ test("选中主题保留成员语义颜色、加细金边并弱化其余事件",
   assert.match(template, /当前窗口已高亮/);
 });
 
+test("选中节点后标签按成员、直接关系、同级上下文和无关对象分层弱化", () => {
+  const focus = {
+    selectedIndex: null,
+    topicFocusIndex: 4,
+    topicByIndex: new Map([
+      [1, { topic_index: 1, parent_topic_index: null }],
+      [4, { topic_index: 4, parent_topic_index: 1 }],
+      [5, { topic_index: 5, parent_topic_index: 1 }],
+      [6, { topic_index: 6, parent_topic_index: 2 }],
+    ]),
+    isTopicMember(pointIndex, topicIndex) {
+      return pointIndex === 10 && topicIndex === 4;
+    },
+  };
+
+  assert.equal(EventMapController.prototype.labelFocusRelation.call(focus, { selected: true }), "selected");
+  assert.equal(EventMapController.prototype.labelFocusRelation.call(focus, { kind: "event", pointIndex: 10 }), "member");
+  assert.equal(EventMapController.prototype.labelFocusRelation.call(focus, { kind: "topic", index: 1, topic: focus.topicByIndex.get(1) }), "direct");
+  assert.equal(EventMapController.prototype.labelFocusRelation.call(focus, { kind: "topic", index: 5, topic: focus.topicByIndex.get(5) }), "context");
+  assert.equal(EventMapController.prototype.labelFocusRelation.call(focus, { kind: "topic", index: 6, topic: focus.topicByIndex.get(6) }), "unrelated");
+  assert.deepEqual(
+    ["selected", "member", "direct", "context", "unrelated", "normal"].map(eventMapLabelFocusOpacity),
+    [1, 0.82, 0.62, 0.54, 0.34, 1]
+  );
+});
+
 test("选中真实事件在原位保留白芯金环与带引线的稳定标签", async () => {
   const source = await readFile(new URL("../event-map.js", import.meta.url), "utf8");
   assert.match(source, /attribute float aSelected;/);
@@ -109,8 +136,10 @@ test("地图标签默认透明无边框，交互时恢复承托且不应用景�
   assert.match(source, /text-\[10px\] font-medium/);
   assert.match(source, /event-map-label rounded px-1\.5 py-0\.5/);
   assert.match(source, /element\.style\.setProperty\("--event-map-label-color", semanticColor\)/);
+  assert.match(source, /element\.style\.setProperty\("--event-map-label-opacity"/);
   assert.match(styles, /\.event-map-label \{[\s\S]*?background-color: transparent;[\s\S]*?border: 0;[\s\S]*?text-shadow:/);
-  assert.match(styles, /\.event-map-label:is\(:hover, :focus-visible\) \{[\s\S]*?background-color: rgb\(2 6 23 \/ 86%\);[\s\S]*?box-shadow:/);
+  assert.match(styles, /\.event-map-label \{[\s\S]*?opacity: var\(--event-map-label-opacity\)/);
+  assert.match(styles, /\.event-map-label:is\(:hover, :focus-visible\) \{[\s\S]*?opacity: 1;[\s\S]*?background-color: rgb\(2 6 23 \/ 86%\);[\s\S]*?box-shadow:/);
   assert.doesNotMatch(source, /element\.style\.borderColor/);
   assert.doesNotMatch(source, /element\.style\.opacity/);
   assert.doesNotMatch(source, /element\.style\.borderLeft/);

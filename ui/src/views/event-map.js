@@ -261,6 +261,17 @@ export function eventMapLabelWidth(text, measureText = null, maximum = 460) {
   return Math.min(Math.max(48, Number(maximum || 460)), Math.max(48, Math.ceil(Number.isFinite(textWidth) ? textWidth : fallbackWidth) + 18));
 }
 
+export function eventMapLabelFocusOpacity(relation = "normal") {
+  return {
+    selected: 1,
+    member: 0.82,
+    direct: 0.62,
+    context: 0.54,
+    unrelated: 0.34,
+    normal: 1,
+  }[String(relation || "normal")] ?? 1;
+}
+
 export function buildEventMapSpacetimeGrid({
   extent = 15,
   lineCount = 23,
@@ -978,8 +989,8 @@ export class EventMapController {
   }
 
   updateTopicFocusStyles() {
-    const topicIndex = Number(this.topicFocusIndex);
-    const hasFocus = Number.isInteger(topicIndex) && this.hasActiveTopic(topicIndex);
+    const topicIndex = Number.isInteger(this.topicFocusIndex) ? this.topicFocusIndex : null;
+    const hasFocus = topicIndex !== null && this.hasActiveTopic(topicIndex);
     for (let pointIndex = 0; pointIndex < this.sceneData.count; pointIndex += 1) {
       const focused = hasFocus
         && Boolean(this.activeMask[pointIndex])
@@ -1028,8 +1039,58 @@ export class EventMapController {
       || this.semanticPalette.fallback;
   }
 
+  labelFocusRelation(label) {
+    if (label.selected) return "selected";
+    const focusedTopicIndex = Number.isInteger(this.topicFocusIndex) ? this.topicFocusIndex : null;
+    const selectedPointIndex = Number.isInteger(this.selectedIndex) ? this.selectedIndex : null;
+
+    if (focusedTopicIndex !== null) {
+      if (label.kind === "event") {
+        return this.isTopicMember(label.pointIndex, focusedTopicIndex) ? "member" : "unrelated";
+      }
+      if (label.kind === "topic") {
+        const focusedTopic = this.topicByIndex.get(focusedTopicIndex);
+        const labelIndex = Number(label.index);
+        const focusedParent = focusedTopic?.parent_topic_index !== null
+          && focusedTopic?.parent_topic_index !== undefined
+          && Number.isInteger(Number(focusedTopic.parent_topic_index))
+          ? Number(focusedTopic.parent_topic_index)
+          : null;
+        const labelParent = label.topic?.parent_topic_index !== null
+          && label.topic?.parent_topic_index !== undefined
+          && Number.isInteger(Number(label.topic.parent_topic_index))
+          ? Number(label.topic.parent_topic_index)
+          : null;
+        if (labelIndex === focusedTopicIndex || labelIndex === focusedParent || labelParent === focusedTopicIndex) return "direct";
+        if (focusedParent !== null && labelParent === focusedParent) return "context";
+        return "unrelated";
+      }
+    }
+
+    if (selectedPointIndex !== null) {
+      const selectedMacro = this.sceneData.macroTopicIndex[selectedPointIndex];
+      const selectedLocal = this.sceneData.localTopicIndex[selectedPointIndex];
+      if (label.kind === "event") {
+        const pointIndex = Number(label.pointIndex);
+        if (!Number.isInteger(pointIndex)) return "unrelated";
+        if (selectedLocal !== NO_INDEX && this.sceneData.localTopicIndex[pointIndex] === selectedLocal) return "member";
+        if (selectedMacro !== NO_INDEX && this.sceneData.macroTopicIndex[pointIndex] === selectedMacro) return "context";
+        return "unrelated";
+      }
+      if (label.kind === "topic") {
+        const labelIndex = Number(label.index);
+        if (labelIndex === selectedLocal || labelIndex === selectedMacro) return "direct";
+        if (selectedMacro !== NO_INDEX && Number(label.topic?.parent_topic_index) === selectedMacro) return "context";
+        return "unrelated";
+      }
+    }
+
+    return "normal";
+  }
+
   selectedTopicCandidate() {
-    const index = Number(this.topicFocusIndex);
+    if (!Number.isInteger(this.topicFocusIndex)) return null;
+    const index = this.topicFocusIndex;
     const topic = this.topicByIndex.get(index);
     const count = this.topicCounts?.get(index) || 0;
     if (!topic || !count) return null;
@@ -1041,7 +1102,7 @@ export class EventMapController {
       count,
       index,
       topic,
-      selected: true,
+      selected: this.selectedIndex === null,
       kind: "topic",
       semantic: this.semanticFamilyForTopic(index),
     };
@@ -1342,6 +1403,9 @@ export class EventMapController {
       if (!label.selected) {
         const semanticColor = label.semantic?.color || (label.topic?.level === 0 ? "#7dd3fc" : "#67e8f9");
         element.style.setProperty("--event-map-label-color", semanticColor);
+        const focusRelation = this.labelFocusRelation(label);
+        element.dataset.focusRelation = focusRelation;
+        element.style.setProperty("--event-map-label-opacity", String(eventMapLabelFocusOpacity(focusRelation)));
       }
       if (selectedEvent && label.anchor) {
         const anchorX = label.anchor.x - label.rect.left;

@@ -517,8 +517,8 @@
 
 ### `GET /api/domains/{domain_id}/canonicals`
 
-- query 可选 `event_time_start`、`event_time_end`、`event_type`、`limit`、`offset`。
-- 返回 current ready 快照的线性真实事件列表，供 3D 星域的无障碍/低性能替代视图使用；查询只读类型化热列。
+- query 可选 `event_time_start`、`event_time_end`、`event_type`、`normalized_key`、`entity_type`、`limit`、`offset`。
+- 返回 current ready 快照的线性真实事件列表，供 3D 星域的无障碍/低性能替代视图使用；时间、事件类型和实体条件与星域一致，查询只读 canonical 热列与实体索引，不解析 JSONB。
 
 ### `GET /api/domains/{domain_id}/canonicals/{canonical_id}/history`
 
