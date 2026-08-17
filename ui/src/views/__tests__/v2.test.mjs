@@ -18,6 +18,49 @@ function context(overrides = {}) {
   };
 }
 
+test("星域变化默认收起，并优先打开第一个有内容的口径", () => {
+  const ctx = context({
+    domainObservationFeed: {
+      newly_occurred: [],
+      newly_mapped: [{ id: "change-1" }],
+      story_updates: [],
+      needs_review: [{ id: "review-1" }],
+    },
+  });
+  assert.equal(ctx.fieldObservationRailOpen, false);
+  assert.equal(ctx.fieldObservationRailTab, "newly_occurred");
+  ctx.fieldToggleObservationRail();
+  assert.equal(ctx.fieldObservationRailOpen, true);
+  assert.equal(ctx.fieldObservationRailTab, "newly_mapped");
+  assert.equal(ctx.fieldFeedTabs()[1].label, "认知变化");
+});
+
+test("旧版取景、旧快照、旧时间窗或不同视口的相机状态不会覆盖当前窗口取景", () => {
+  const ctx = context({
+    playlistEventMapController: () => ({ cameraState: () => ({ viewport_aspect: 2 }) }),
+  });
+  const compatible = {
+    framing_version: 4,
+    snapshot_id: "snapshot-1",
+    window_start: "2026-01-01",
+    window_end: "2026-12-31",
+    viewport_aspect: 2.2,
+  };
+  assert.equal(ctx.fieldCameraStateCompatible(compatible), true);
+  assert.equal(ctx.fieldCameraStateCompatible({ ...compatible, framing_version: 3 }), false);
+  assert.equal(ctx.fieldCameraStateCompatible({ ...compatible, snapshot_id: "snapshot-old" }), false);
+  assert.equal(ctx.fieldCameraStateCompatible({ ...compatible, viewport_aspect: 3 }), false);
+});
+
+test("星域首屏读取轻量游标，不请求昂贵的覆盖率摘要", async () => {
+  const source = await readFile(new URL("../v2-model.js", import.meta.url), "utf8");
+  const start = source.indexOf("async loadField()");
+  const loadField = source.slice(start, source.indexOf("\n    leaveField()", start));
+  assert.match(loadField, /observation\/cursor/);
+  assert.doesNotMatch(loadField, /observation`/);
+  assert.ok(loadField.indexOf("playlistEventMapLoadView") < loadField.indexOf("observation/feed"));
+});
+
 test("canonical 深链接通过当前快照历史定位，不把空 point_index 误当成第 0 点", async () => {
   const calls = [];
   const selected = [];
@@ -127,7 +170,7 @@ test("星域中的故事请求固定到 URL 指定的历史快照", async () => 
   assert.equal(url.searchParams.get("snapshot_id"), "snapshot-history");
 });
 
-test("观察流中的退休对象切到最后包含它的快照并保留本次变化", async () => {
+test("星域变化中的退休对象切到最后包含它的快照并保留本次变化", async () => {
   const calls = [];
   const ctx = context({
     activeView: "field",
@@ -182,6 +225,9 @@ test("V2 主界面保留四种观察模式、线性视图和完整故事航迹",
   assert.match(template, /\['now','replay','story','verify'\]/);
   assert.match(template, /线性列表/);
   assert.match(template, /真实事件 · 线性视图/);
+  assert.doesNotMatch(template, /3D 空间|平面俯视|playlistEventMapCameraMode|playlistEventMapSetCameraMode/);
+  assert.match(template, /三维语义空间 · 左键旋转/);
+  assert.match(template, /星域变化/);
   assert.match(template, /返回当前星域/);
   assert.match(controller, /setStoryPath\(path\)/);
   assert.match(controller, /source_point_index/);

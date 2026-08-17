@@ -500,6 +500,7 @@
 ### `GET|PUT /api/domains/{domain_id}/observation/cursor`
 
 - 保存或读取快照、系统认知时间、事件时间窗、`now|replay|story|verify` 模式、相机、筛选和最后选择对象。
+- 星域首屏使用该轻量接口恢复观察位置，不读取 `/observation` 中的覆盖率聚合；相机状态记录三维镜头位置、观察目标、快照、时间窗口、取景版本和视口比例，不再记录平面/三维模式，不兼容时按当前窗口重新取景。
 - `last_page` 支持 `field|stories|briefs|playlist|library|operations`；`playlist` 表示来源播放工作台。
 - 相同状态重复提交为幂等更新，不创建新的游标记录。
 

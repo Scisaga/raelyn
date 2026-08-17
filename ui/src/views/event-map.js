@@ -2,6 +2,7 @@ const SCENE_RECORD_SIZE = 56;
 const INDEX_RECORD_SIZE = 4;
 const DAY_MS = 86_400_000;
 const NO_INDEX = 0xffff_ffff;
+const ACTIVE_WINDOW_PERSPECTIVE_DISTANCE_SCALE = 1.9;
 const TOPIC_ZOOM_ENTER = 1.7;
 const TOPIC_ZOOM_EXIT = 1.45;
 const EVENT_ZOOM_ENTER = 4.8;
@@ -183,6 +184,32 @@ export function countEventMapVisiblePoints(scene, windowStart = "", windowEnd = 
     count += 1;
   }
   return count;
+}
+
+export function eventMapActiveBounds(scene, activeMask) {
+  if (!scene || !activeMask || !Number(scene.count || 0)) return null;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  let count = 0;
+  for (let index = 0; index < scene.count; index += 1) {
+    if (!activeMask[index]) continue;
+    const x = Number(scene.x[index]);
+    const y = Number(scene.y[index]);
+    const z = Number(scene.z[index]);
+    if (![x, y, z].every(Number.isFinite)) continue;
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+    minZ = Math.min(minZ, z);
+    maxZ = Math.max(maxZ, z);
+    count += 1;
+  }
+  return count ? { minX, maxX, minY, maxY, minZ, maxZ, count } : null;
 }
 
 function eventMapWebGl2Available() {
@@ -506,7 +533,7 @@ export class EventMapController {
     this.pointerDown = null;
     this.frameSamples = [];
     this.reducedQuality = false;
-    this.pixelRatioLimit = 2;
+    this.pixelRatioLimit = scene.count > 100_000 ? 1.25 : 1.5;
     this.topics = Array.isArray(manifest.topics) ? manifest.topics : [];
     this.topicByIndex = new Map(this.topics.map((topic, index) => [topicIndexOf(topic, index), topic]));
     this.semanticPalette = eventMapSemanticPalette(manifest);
@@ -610,10 +637,7 @@ export class EventMapController {
     this.scene.add(this.corePoints);
     this.setupSpacetimeGrid({ xBounds, yBounds, zBounds });
 
-    this.perspectiveCamera = new THREE.PerspectiveCamera(42, 1, 0.02, 160);
-    this.orthographicCamera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.02, 160);
-    this.cameraMode = "perspective";
-    this.camera = this.perspectiveCamera;
+    this.camera = new THREE.PerspectiveCamera(42, 1, 0.02, 160);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
@@ -1152,7 +1176,6 @@ export class EventMapController {
 
   semanticZoom() {
     const distance = Math.max(0.001, this.camera.position.distanceTo(this.controls.target));
-    if (this.cameraMode === "orthographic") return this.homeDistance / Math.max(0.001, distance) * this.orthographicCamera.zoom;
     return this.homeDistance / distance;
   }
 
@@ -1435,19 +1458,22 @@ export class EventMapController {
     this.invalidate();
   }
 
-  fitBounds(bounds = {}) {
+  fitBounds(bounds = {}, framing = {}) {
     if (![bounds.minX, bounds.maxX, bounds.minY, bounds.maxY].every(Number.isFinite)) return;
     const minimum = this.rawToWorld(bounds.minX, bounds.minY, Number.isFinite(bounds.minZ) ? bounds.minZ : this.rawCenter.z);
     const maximum = this.rawToWorld(bounds.maxX, bounds.maxY, Number.isFinite(bounds.maxZ) ? bounds.maxZ : this.rawCenter.z);
     const box = new this.THREE.Box3(minimum.min(maximum.clone()), maximum.max(minimum.clone()));
     const sphere = box.getBoundingSphere(new this.THREE.Sphere());
-    this.focusSphere(sphere.center, sphere.radius);
+    this.focusSphere(sphere.center, sphere.radius, framing);
   }
 
-  focusSphere(center, radius) {
-    const distance = Math.max(2.4, Number(radius || 0.2) * 3.1);
-    const direction = this.camera.position.clone().sub(this.controls.target).normalize();
+  focusSphere(center, radius, {
+    perspectiveDistanceScale = 3.1,
+  } = {}) {
+    this.introActive = false;
     this.controls.target.copy(center);
+    const distance = Math.max(2.4, Number(radius || 0.2) * Number(perspectiveDistanceScale));
+    const direction = this.camera.position.clone().sub(this.controls.target).normalize();
     this.camera.position.copy(center).addScaledVector(direction, distance);
     this.camera.updateProjectionMatrix();
     this.updateSemanticLevel();
@@ -1455,35 +1481,21 @@ export class EventMapController {
     this.invalidate();
   }
 
-  setCameraMode(mode) {
-    const next = mode === "orthographic" ? "orthographic" : "perspective";
-    if (next === this.cameraMode) return;
-    const target = this.controls.target.clone();
-    const direction = this.camera.position.clone().sub(target).normalize();
-    const distance = this.camera.position.distanceTo(target);
-    this.cameraMode = next;
-    this.camera = next === "orthographic" ? this.orthographicCamera : this.perspectiveCamera;
-    this.camera.position.copy(target).addScaledVector(direction, distance || this.homeDistance);
-    this.camera.up.set(0, 1, 0);
-    if (next === "orthographic") {
-      this.camera.position.copy(target).add(new this.THREE.Vector3(0, 0, this.homeDistance));
-      this.camera.zoom = 1;
-    }
-    this.camera.lookAt(target);
-    this.controls.object = this.camera;
-    this.resize();
-    this.updateSemanticLevel();
-    this.updateLabels();
-    this.invalidate();
+  fitActiveWindow() {
+    const bounds = eventMapActiveBounds(this.sceneData, this.activeMask);
+    if (!bounds) return false;
+    this.fitBounds(bounds, {
+      perspectiveDistanceScale: ACTIVE_WINDOW_PERSPECTIVE_DISTANCE_SCALE,
+    });
+    return true;
   }
 
   cameraState() {
     if (!this.camera || !this.controls) return null;
     return {
-      mode: this.cameraMode,
       position: this.camera.position.toArray(),
       target: this.controls.target.toArray(),
-      zoom: Number(this.camera.zoom || 1),
+      viewport_aspect: Math.max(1, this.target.clientWidth || 1) / Math.max(1, this.target.clientHeight || 1),
     };
   }
 
@@ -1491,13 +1503,9 @@ export class EventMapController {
     const position = Array.isArray(state?.position) ? state.position.map(Number) : [];
     const target = Array.isArray(state?.target) ? state.target.map(Number) : [];
     if (position.length !== 3 || target.length !== 3 || ![...position, ...target].every(Number.isFinite)) return false;
-    this.setCameraMode(state?.mode);
     this.introActive = false;
-    this.camera.position.fromArray(position);
     this.controls.target.fromArray(target);
-    if (this.cameraMode === "orthographic" && Number.isFinite(Number(state?.zoom))) {
-      this.camera.zoom = Math.max(0.05, Math.min(50, Number(state.zoom)));
-    }
+    this.camera.position.fromArray(position);
     this.camera.lookAt(this.controls.target);
     this.camera.updateProjectionMatrix();
     this.updateSemanticLevel();
@@ -1508,18 +1516,13 @@ export class EventMapController {
 
   resetCamera({ animate = false } = {}) {
     this.controls.target.set(0, 0, 0);
-    if (this.cameraMode === "orthographic") {
-      this.camera.position.set(0, 0, this.homeDistance);
-      this.camera.zoom = 1;
-    } else {
-      this.camera.position.set(13.5, 10.5, 15.5);
-      if (animate) {
-        this.introFinalPosition = this.camera.position.clone();
-        this.camera.position.multiplyScalar(1.45).applyAxisAngle(new this.THREE.Vector3(0, 1, 0), -0.24);
-        this.introStartPosition = this.camera.position.clone();
-        this.introStartedAt = performance.now();
-        this.introActive = true;
-      }
+    this.camera.position.set(13.5, 10.5, 15.5);
+    if (animate) {
+      this.introFinalPosition = this.camera.position.clone();
+      this.camera.position.multiplyScalar(1.45).applyAxisAngle(new this.THREE.Vector3(0, 1, 0), -0.24);
+      this.introStartPosition = this.camera.position.clone();
+      this.introStartedAt = performance.now();
+      this.introActive = true;
     }
     this.camera.lookAt(this.controls.target);
     this.camera.updateProjectionMatrix();
@@ -1536,14 +1539,8 @@ export class EventMapController {
     this.renderer.setPixelRatio(ratio);
     this.renderer.setSize(width, height, false);
     this.pickTarget.setSize(Math.max(1, Math.floor(width * ratio)), Math.max(1, Math.floor(height * ratio)));
-    this.perspectiveCamera.aspect = width / height;
-    this.perspectiveCamera.updateProjectionMatrix();
-    const halfHeight = 8;
-    this.orthographicCamera.left = -halfHeight * width / height;
-    this.orthographicCamera.right = halfHeight * width / height;
-    this.orthographicCamera.top = halfHeight;
-    this.orthographicCamera.bottom = -halfHeight;
-    this.orthographicCamera.updateProjectionMatrix();
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
     this.coreMaterial.uniforms.uPixelRatio.value = ratio;
     this.pickMaterial.uniforms.uPixelRatio.value = ratio;
     this.updateLabels();
@@ -1587,7 +1584,7 @@ export class EventMapController {
     const fps = duration > 0 ? (this.frameSamples.length - 1) * 1000 / duration : 60;
     if (fps >= 30) return;
     this.reducedQuality = true;
-    this.pixelRatioLimit = 1.5;
+    this.pixelRatioLimit = 1;
     this.resize();
   }
 

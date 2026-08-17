@@ -24,6 +24,8 @@ event_map_state.current_snapshot_id
 
 场景记录包含 `point_index`、canonical UUID、x/y/z、事件起止日、事件类型码、时间精度码、审核位、成员数和两级主题索引。接口使用不可变快照 ETag 和长期私有缓存；前端不会下载并逐点解析 canonical JSONB。
 
+星域首屏只读取播放列表详情、轻量观察游标、manifest 与不可变 scene。当前或显式历史 `snapshot_id` 已由域目录/深链接确定时，manifest 与 scene 并行读取；WebGL 首帧完成后立即开放交互，实体排行和变化列表随后加载。包含四类全量覆盖率统计的 `/observation` 只在设置和运行中心等确实需要覆盖率的页面读取，不进入星域首屏关键路径。前端以当前窗口活动点计算镜头边界，但不修改全局坐标或裁剪历史事件。
+
 `event_map_canonical.has_uncertainty` 是审核位的物化布尔列。场景流和待审核列表直接读取该列，不再对 `uncertainty_flags` 做逐行 JSONB 数组判断。时间窗、类型、实体和主题筛选分别由类型化列、`event_map_entity_index` 与 `event_map_topic_member` 支撑；主题成员下钻使用 `(snapshot_id, topic_id, level)` 复合索引。
 
 当前服务会在首次请求某个不可变快照时从类型化列流式编码场景。只有当实测表明冷启动编码而非网络或 GPU 成为瓶颈时，才进一步把完整二进制场景固化为对象存储资产；在没有观测证据前不维护第二份同义场景事实。
@@ -39,7 +41,7 @@ event_map_state.current_snapshot_id
 - `story_read_state`：保存关注状态、最后阅读快照与故事位置。
 - `brief.snapshot_id` / `brief.generation_basis` / `brief_reference`：固定简报的生成口径和可导航引用。
 
-变化记录保存 before/after 修订。显式、带证据的 `corrects` 故事边会形成独立 correction 变化；普通文本修订不推断为纠正。retire 对象的链接固定到最后包含它的历史快照，观察流因此仍能打开对象并展示本次差异。
+变化记录保存 before/after 修订。显式、带证据的 `corrects` 故事边会形成独立 correction 变化；普通文本修订不推断为纠正。retire 对象的链接固定到最后包含它的历史快照，星域变化因此仍能打开对象并展示本次差异。
 
 长期历史与当前大快照分离，因此快照保留策略可以回收旧的全量空间投影，而不抹除对象修订、变化语义、阅读状态和简报引用。
 
@@ -75,7 +77,7 @@ event_map_state.current_snapshot_id
 
 - `/api/domains/{domain_id}/observation`：当前观察状态与四类覆盖率。
 - `/api/domains/{domain_id}/changes`：稳定变化游标。
-- `/api/domains/{domain_id}/observation/feed`：新发生、新入图、故事更新和待审核。
+- `/api/domains/{domain_id}/observation/feed`：新发生、认知变化、故事更新和待验证；协议字段仍为 `newly_occurred / newly_mapped / story_updates / needs_review`。
 - `/api/domains/{domain_id}/canonicals`：当前快照的类型化线性事件视图。
 - `/api/domains/{domain_id}/canonicals/{canonical_id}/history`：canonical 修订与谱系。
 - `/api/domains/{domain_id}/topics/{topic_id}`：当前或显式历史快照的主题层级、成员和代表事件。

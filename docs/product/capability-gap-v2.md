@@ -15,7 +15,7 @@ V2 的核心观测闭环已经建立：
 - 故事目录、关注、已读状态和当前完整航迹可直接消费；
 - 简报保存生成快照、生成口径，以及 canonical、story、evidence、source 四类结构化引用；
 - 证据、来源记录、canonical 和简报可以双向定位；
-- 观察流可恢复变化所属快照并展示 before/after，显式有证据的 `corrects` 关系形成独立纠正变化；
+- 星域变化可恢复变化所属快照并展示 before/after，显式有证据的 `corrects` 关系形成独立纠正变化；
 - 信源与来源记录收敛到资料库，并支持当前域/全局范围；
 - 来源播放已经拆为当前观测域的独立按日工作台，导航、URL 恢复、播放器/转写和星域生命周期彼此隔离；
 - 观测域身份与安全删除、当前域信源范围、简报生成设置和运行命令已经迁移到各自唯一归属；
@@ -33,7 +33,7 @@ V2 的核心观测闭环已经建立：
 | Field Change Set | `event_map_change` 与稳定 `(observed_at, id)` 游标 |
 | Canonical History | 长期修订、正规化成员索引、merge/split lineage |
 | Story Identity / Revision | 稳定身份、修订、变化、关注、阅读位置和当前航迹 |
-| Domain Observation Feed | 新发生、新入图、故事更新、待审核四个独立集合 |
+| Domain Observation Feed | 新发生、认知变化、故事更新、待验证四个独立集合 |
 | Structured Brief References | `brief.snapshot_id`、`generation_basis`、`brief_reference` |
 | Evidence Navigation | 来源记录、字符区间、精确分段播放与反向引用 |
 | Semantic MCP Objects | 观测域、变化、canonical、topic、story、brief、evidence 与分组搜索 |

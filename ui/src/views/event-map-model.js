@@ -130,7 +130,7 @@ export function createPlaylistEventMapMethods() {
       Object.assign(this, {
         playlistEventMapManifest: null, playlistEventMapScene: null, playlistEventMapStatus: null, playlistEventMapStatusLoading: false, playlistEventMapStatusError: "", playlistEventMapLoading: false, playlistEventMapError: "", playlistEventMapSnapshotId: "",
         playlistEventMapEntities: [], playlistEventMapEntitiesLoading: false, playlistEventMapEntityQuery: "", playlistEventMapEntityFilter: null, playlistEventMapEntityIndices: new Set(), playlistEventMapSelectedIndex: null, playlistEventMapSelectedKind: "", playlistEventMapSelectedId: "", playlistEventMapSelectedDetail: null, playlistEventMapDetailLoading: false, playlistEventMapDetailTab: "overview", playlistEventMapTopicFocus: null, playlistEventMapTopicDetail: null, playlistEventMapTopicDetailLoading: false, playlistEventMapVisibleCount: 0,
-        playlistEventMapViewportSummary: { sceneLevel: "overview", viewportCanonicalCount: 0, renderedTopicLabelCount: 0, ready: false }, playlistEventMapObjectGuideOpen: false, playlistEventMapFiltersOpen: false, playlistEventMapCameraMode: "perspective", playlistEventMapWindowStart: "", playlistEventMapWindowEnd: "", playlistEventMapTimelineScope: "normal", playlistEventMapTimelineMonths: [], playlistEventMapWindowMonths: 12, playlistEventMapWindowPreviewStartIndex: null, playlistEventMapWindowPreviewEndIndex: null, playlistEventMapTimelineWindowDragging: false, playlistEventMapTimelineWindowPointerId: null, playlistEventMapTimelineTrackWidth: 0, playlistEventMapTypeFilter: "", playlistEventMapSearchQuery: "", playlistEventMapSearchResults: [], playlistEventMapSearchLoading: false, playlistEventMapSearchActiveIndex: -1,
+        playlistEventMapViewportSummary: { sceneLevel: "overview", viewportCanonicalCount: 0, renderedTopicLabelCount: 0, ready: false }, playlistEventMapObjectGuideOpen: false, playlistEventMapFiltersOpen: false, playlistEventMapWindowStart: "", playlistEventMapWindowEnd: "", playlistEventMapTimelineScope: "normal", playlistEventMapTimelineMonths: [], playlistEventMapWindowMonths: 12, playlistEventMapWindowPreviewStartIndex: null, playlistEventMapWindowPreviewEndIndex: null, playlistEventMapTimelineWindowDragging: false, playlistEventMapTimelineWindowPointerId: null, playlistEventMapTimelineTrackWidth: 0, playlistEventMapTypeFilter: "", playlistEventMapSearchQuery: "", playlistEventMapSearchResults: [], playlistEventMapSearchLoading: false, playlistEventMapSearchActiveIndex: -1,
       });
       this._playlistEventMapTimelineItemsCache = null; this._playlistEventMapTimelineMaxCache = null;
       this._playlistEventMapPlaylistId = "";
@@ -215,14 +215,30 @@ export function createPlaylistEventMapMethods() {
       if (!silent) this.playlistEventMapLoading = true; this.playlistEventMapError = "";
       let pendingMount = null; let pendingController = null;
       try {
+        const anticipatedSnapshotId = String(
+          (this.activeView === "field" && this.fieldRequestedSnapshotId)
+          || this.playlistEventMapStatus?.snapshot_id
+          || this.currentDomain?.()?.snapshot?.id
+          || ""
+        );
+        const shouldPrefetchScene = anticipatedSnapshotId
+          && (!this.playlistEventMapScene || String(this.playlistEventMapSnapshotId || "") !== anticipatedSnapshotId);
+        const anticipatedScene = shouldPrefetchScene
+          ? this.playlistEventMapFetchBinary(
+            `/playlists/${encodeURIComponent(pid)}/events/map/scene?${new URLSearchParams({ snapshot_id: anticipatedSnapshotId })}`,
+            { signal: requestController.signal, cache: "force-cache" }
+          ).then((buffer) => ({ buffer, error: null })).catch((error) => ({ buffer: null, error }))
+          : null;
         const manifest = await this.playlistEventMapLoadManifest({ silent: true, signal: requestController.signal }); if (Number(this._playlistEventMapRequestToken || 0) !== token) return;
         if (!manifest) return;
         const snapshotId = String(manifest?.snapshot_id || "");
         if (!snapshotId || manifest?.status !== "ready") { this.playlistEventMapDestroy(); this.playlistEventMapManifest = manifest || null; this.playlistEventMapTimelineMonths = normalizeTimeline(manifest); this.playlistEventMapScene = null; this.playlistEventMapSnapshotId = ""; return; }
         if (snapshotId === this.playlistEventMapSnapshotId && this.playlistEventMapScene && this.playlistEventMapController()) { this.playlistEventMapManifest = manifest; this.playlistEventMapTimelineMonths = normalizeTimeline(manifest); this.playlistEventMapInitializeWindow(); this.playlistEventMapUpdateLayers(); return; }
-        const buffer = await this.playlistEventMapFetchBinary(
+        const prefetched = anticipatedScene && anticipatedSnapshotId === snapshotId ? await anticipatedScene : null;
+        if (prefetched?.error) throw prefetched.error;
+        const buffer = prefetched?.buffer || await this.playlistEventMapFetchBinary(
           `/playlists/${encodeURIComponent(pid)}/events/map/scene?${new URLSearchParams({ snapshot_id: snapshotId })}`,
-          { signal: requestController.signal, cache: "no-store" }
+          { signal: requestController.signal, cache: "force-cache" }
         );
         if (Number(this._playlistEventMapRequestToken || 0) !== token) return;
         if (Number(manifest.dimension || 0) !== 3 || Number(manifest.scene_record_size || 0) !== 56) throw new Error("事件语义星域快照不是三维 v2 协议，请先完成星域重建");
@@ -234,8 +250,8 @@ export function createPlaylistEventMapMethods() {
         const previousController = this.playlistEventMapController(); const previousMount = this._playlistEventMapMount; this._playlistEventMapController = pendingController; this._playlistEventMapMount = pendingMount; pendingController = null; pendingMount = null;
         this.playlistEventMapManifest = manifest; this.playlistEventMapTimelineMonths = normalizeTimeline(manifest); this.playlistEventMapScene = scene; this.playlistEventMapSnapshotId = snapshotId;
         this.playlistEventMapResetSnapshotPinnedState(stableEntityFilter);
-        this.playlistEventMapInitializeWindow(); previousController?.destroy(); previousMount?.remove(); if (!this._playlistEventMapMount.isConnected) target.appendChild(this._playlistEventMapMount); this._playlistEventMapMount.style.visibility = "visible"; this.playlistEventMapController().setCameraMode(this.playlistEventMapCameraMode); this.playlistEventMapUpdateLayers();
-        await this.playlistEventMapLoadEntities({ silent: true });
+        this.playlistEventMapInitializeWindow(); previousController?.destroy(); previousMount?.remove(); if (!this._playlistEventMapMount.isConnected) target.appendChild(this._playlistEventMapMount); this._playlistEventMapMount.style.visibility = "visible"; this.playlistEventMapUpdateLayers(); this.playlistEventMapController().fitActiveWindow();
+        this.playlistEventMapLoadEntities({ silent: true });
         if (stableEntityFilter && Number(this._playlistEventMapRequestToken || 0) === token) await this.playlistEventMapApplyEntityFilter(stableEntityFilter, { resume: true });
       } catch (error) { pendingController?.destroy(); pendingMount?.remove(); if (!abortError(error) && Number(this._playlistEventMapRequestToken || 0) === token) this.playlistEventMapError = error?.message || String(error); }
       finally {
@@ -506,8 +522,7 @@ export function createPlaylistEventMapMethods() {
     playlistEventMapTypeOptions() { return Array.isArray(this.playlistEventMapManifest?.type_categories) ? this.playlistEventMapManifest.type_categories : []; },
     playlistEventMapHandleTypeFilterChange() { this.playlistEventMapStopPlayback({ refresh: false, loadEntities: false }); this.playlistEventMapUpdateLayers(); this.playlistEventMapRefreshTopicDetail(); this.playlistEventMapScheduleEntities(); },
     playlistEventMapToggleFilters() { this.playlistEventMapFiltersOpen = !this.playlistEventMapFiltersOpen; },
-    playlistEventMapSetCameraMode(mode) { this.playlistEventMapCameraMode = mode === "orthographic" ? "orthographic" : "perspective"; this.playlistEventMapController()?.setCameraMode(this.playlistEventMapCameraMode); },
-    playlistEventMapResetCamera() { this.playlistEventMapController()?.resetCamera(); },
+    playlistEventMapResetCamera() { const controller = this.playlistEventMapController(); if (!controller?.fitActiveWindow()) controller?.resetCamera(); },
     playlistEventMapLevelInfo() { return EVENT_MAP_LEVELS[String(this.playlistEventMapViewportSummary?.sceneLevel || "overview")] || EVENT_MAP_LEVELS.overview; },
     playlistEventMapObjectGuide() { return EVENT_MAP_OBJECT_GUIDE; },
     playlistEventMapSemanticLegend() { return Array.isArray(this.playlistEventMapManifest?.semantic_families) ? this.playlistEventMapManifest.semantic_families : []; },
@@ -517,7 +532,33 @@ export function createPlaylistEventMapMethods() {
     playlistEventMapLegendItems() { const items = this.playlistEventMapViewportSummary?.sceneLevel === "event" ? ["金色＝选中事件", "绿色＝实体命中"] : ["点密度＝事件聚集程度", "颜色＝事件语义族"]; if (this.playlistEventMapTopicFocus) items.push("主题选中＝加亮与细金边"); return items; },
     playlistEventMapMetaLabel() { const manifest = this.playlistEventMapManifest || {}; if (!Number(manifest.canonical_count || 0)) return "暂无可进入地图的真实事件"; return `${this.formatInteger(manifest.canonical_count)} 个真实事件 · ${this.formatInteger(manifest.record_count || 0)} 条记录 · 当前窗口 ${this.formatInteger(this.playlistEventMapVisibleCount || 0)}`; },
     playlistEventMapEmptyLabel() { const manifest = this.playlistEventMapManifest || {}; if (this.playlistEventMapError) return this.playlistEventMapError; if (this.playlistEventMapLoading) return "事件语义星域加载中…"; if (["pending", "running"].includes(String(manifest.build_status || manifest.status || ""))) return "首个事件语义星域快照正在构建。"; if (manifest.build_status === "failed" || manifest.status === "failed") return manifest.build_error || manifest.last_error || "事件语义星域构建失败。"; if (!manifest.snapshot_id) return "尚未构建事件语义星域快照。"; if (!Number(manifest.canonical_count || 0)) return "没有同时具备事件发生时间和语义向量的已确认事件。"; return this.playlistEventMapScene && !this.playlistEventMapVisibleCount ? "当前时间窗口没有可显示的真实事件。" : ""; },
-    playlistEventMapStatusBadgeLabel() { const manifest = this.playlistEventMapStatus || this.playlistEventMapManifest || {}; if (manifest.building || ["pending", "running"].includes(String(manifest.build_status || ""))) return "地图构建中"; if (manifest.build_status === "failed") return manifest.snapshot_id ? "地图更新失败" : "构建失败"; if (manifest.status === "failed") return "构建失败"; if (manifest.dirty || manifest.state?.dirty) return manifest.snapshot_id ? "地图待更新" : "地图未构建"; return manifest.snapshot_id ? "地图已就绪" : "地图未构建"; },
+    playlistEventMapStatusBadgeLabel() {
+      const manifest = this.playlistEventMapStatus || this.playlistEventMapManifest || {};
+      if (this.playlistEventMapLoading && !manifest.snapshot_id) return "星域加载中";
+      if (manifest.building || ["pending", "running"].includes(String(manifest.build_status || ""))) {
+        return manifest.snapshot_id ? "星域后台更新中" : "首次生成中";
+      }
+      if (manifest.build_status === "failed") return manifest.snapshot_id ? "星域更新失败" : "生成失败";
+      if (manifest.status === "failed") return "生成失败";
+      if (manifest.dirty || manifest.state?.dirty) return manifest.snapshot_id ? "有新事件待更新" : "尚未生成星域";
+      return manifest.snapshot_id ? "星域已同步" : "尚未生成星域";
+    },
+    playlistEventMapStatusBadgeHint() {
+      const manifest = this.playlistEventMapStatus || this.playlistEventMapManifest || {};
+      if (this.playlistEventMapLoading && !manifest.snapshot_id) return "正在下载首个可交互的星域快照。";
+      if (manifest.building || ["pending", "running"].includes(String(manifest.build_status || ""))) {
+        return manifest.snapshot_id
+          ? "当前星域可以正常浏览；后台正在把新增或重新分析的事件生成到下一版快照。"
+          : "后台正在生成首个可浏览的星域快照。";
+      }
+      if (manifest.build_status === "failed" || manifest.status === "failed") {
+        return manifest.snapshot_id ? "当前快照仍可浏览，但最近一次后台更新失败。" : "首个星域快照生成失败。";
+      }
+      if (manifest.dirty || manifest.state?.dirty) {
+        return manifest.snapshot_id ? "当前星域可以正常浏览；已有新事件等待进入下一版快照。" : "已有事件，但尚未生成首个星域快照。";
+      }
+      return manifest.snapshot_id ? "当前星域快照已同步，可以正常浏览。" : "还没有可浏览的星域快照。";
+    },
     playlistEventMapStatusBadgeClass() { const label = this.playlistEventMapStatusBadgeLabel(); return label.includes("失败") ? "border-rose-500/30 bg-rose-500/10 text-rose-200" : label.includes("中") ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-200" : label.includes("待") || label.includes("未") ? "border-amber-500/30 bg-amber-500/10 text-amber-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"; },
     playlistEventMapCoverageLabel() { const manifest = this.playlistEventMapStatus || {}; return this.formatInteger(Number(manifest.event_embedded ?? manifest.embedding_ready_count ?? 0)); },
     playlistEventMapSkippedLabel() { const manifest = this.playlistEventMapStatus || {}; return this.formatInteger(Number(manifest.event_skipped ?? manifest.skipped_count ?? 0)); },

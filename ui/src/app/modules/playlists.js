@@ -45,7 +45,6 @@ export function createPlaylistsModule() {
     },
     playlistEventMapObjectGuideOpen: false,
     playlistEventMapFiltersOpen: false,
-    playlistEventMapCameraMode: "perspective",
     playlistEventMapWindowStart: "",
     playlistEventMapWindowEnd: "",
     playlistEventMapTimelineScope: "normal",

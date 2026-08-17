@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   EVENT_MAP_NO_INDEX,
   EventMapController,
+  eventMapActiveBounds,
   buildEventMapLayerState,
   buildEventMapSpacetimeGrid,
   countEventMapVisiblePoints,
@@ -203,6 +204,25 @@ test("观察窗口严格排除窗口外事件，且不移动全局坐标", () =>
   assert.deepEqual(Array.from(scene.x), x); assert.deepEqual(Array.from(scene.y), y); assert.deepEqual(Array.from(scene.z), z);
 });
 
+test("当前窗口取景只使用活动事件边界，不被全历史坐标范围缩小", () => {
+  const scene = {
+    count: 4,
+    x: new Float32Array([-100, -2, 3, 120]),
+    y: new Float32Array([-80, -1, 4, 90]),
+    z: new Float32Array([-60, -3, 2, 70]),
+  };
+  assert.deepEqual(eventMapActiveBounds(scene, new Uint8Array([0, 1, 1, 0])), {
+    minX: -2,
+    maxX: 3,
+    minY: -1,
+    maxY: 4,
+    minZ: -3,
+    maxZ: 2,
+    count: 2,
+  });
+  assert.equal(eventMapActiveBounds(scene, new Uint8Array(4)), null);
+});
+
 test("缩放决定星域、主题与逐事件三层，并带迟滞", () => {
   assert.equal(eventMapSemanticLevel(1.6, "overview"), "overview");
   assert.equal(eventMapSemanticLevel(1.8, "overview"), "topic");
@@ -238,9 +258,22 @@ test("事件类型映射为稳定语义色，未知类型使用灰蓝色", () =>
 });
 
 test("三维控制器公开相机、显式聚焦、选择与资源销毁入口", () => {
-  for (const method of ["setCameraMode", "resetCamera", "focusPoint", "focusTopic", "fitBounds", "setSelection", "setSelectionDetail", "previewWindow", "cancelWindowPreview", "destroy"]) {
+  for (const method of ["resetCamera", "focusPoint", "focusTopic", "fitBounds", "fitActiveWindow", "setSelection", "setSelectionDetail", "previewWindow", "cancelWindowPreview", "destroy"]) {
     assert.equal(typeof EventMapController.prototype[method], "function");
   }
+  assert.equal(typeof EventMapController.prototype.setCameraMode, "undefined");
+});
+
+test("不可变场景使用浏览器缓存，首帧不等待实体排行，并只保留三维透视相机", async () => {
+  const controller = await readFile(new URL("../event-map.js", import.meta.url), "utf8");
+  const model = await readFile(new URL("../event-map-model.js", import.meta.url), "utf8");
+  assert.match(model, /cache: "force-cache"/);
+  assert.match(model, /const anticipatedScene = shouldPrefetchScene/);
+  assert.ok(model.indexOf("const anticipatedScene = shouldPrefetchScene") < model.indexOf("const manifest = await this.playlistEventMapLoadManifest"));
+  assert.doesNotMatch(model, /await this\.playlistEventMapLoadEntities\(\{ silent: true \}\)/);
+  assert.match(controller, /scene\.count > 100_000 \? 1\.25 : 1\.5/);
+  assert.match(controller, /ACTIVE_WINDOW_PERSPECTIVE_DISTANCE_SCALE = 1\.9/);
+  assert.doesNotMatch(controller, /OrthographicCamera|orthographicCamera|cameraMode|setCameraMode/);
 });
 
 test("事件语义星域状态与控制合并在同一工具栏", async () => {
@@ -248,11 +281,15 @@ test("事件语义星域状态与控制合并在同一工具栏", async () => {
   const section = template.slice(template.indexOf("<!-- V2 事件语义星域：独立于来源播放与旧设置。 -->"));
   assert.match(section, /<header class="shrink-0 border-b border-slate-800 bg-slate-950\/45">[\s\S]*?截至[\s\S]*?<\/header>/);
   assert.match(section, /事件语义星域/);
+  assert.doesNotMatch(section, /x-text="activeView==='field' \? currentDomainLabel\(\)/);
+  assert.match(section, /playlistEventMapStatusBadgeHint/);
   assert.match(section, /三维语义星域 · 时间只改变当前窗口星云/);
-  assert.match(section, /点选星点保持镜头 · 点击标签展开主题/);
+  assert.match(section, /三维语义空间 · 左键旋转/);
   assert.match(section, /代表事件/);
   assert.match(section, /playlistEventMapFocusSelectedCanonical/);
   assert.match(template, /x-show="activeView==='field'"/);
   assert.doesNotMatch(template, /<path d="M3 3v18h18"><\/path>/);
   assert.doesNotMatch(section, /<div class="text-sm font-semibold text-slate-100">三维事件星图<\/div>/);
+  assert.match(section, /playlistEventMapSelectedId \? 'lg:right-\[380px\]'/);
+  assert.match(section, /fieldObservationRailOpen \? 'lg:right-80'/);
 });

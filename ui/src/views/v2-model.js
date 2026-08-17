@@ -1,5 +1,16 @@
 const FIELD_MODES = new Set(["now", "replay", "story", "verify"]);
 const LIBRARY_TABS = new Set(["sources", "records"]);
+const FIELD_CAMERA_FRAMING_VERSION = 4;
+
+function emptyObservationFeed() {
+  return {
+    newly_occurred: [],
+    newly_mapped: [],
+    story_updates: [],
+    needs_review: [],
+    definitions: {},
+  };
+}
 
 function todayLocalIso() {
   const now = new Date();
@@ -118,47 +129,83 @@ export function createV2ViewMethods() {
         return;
       }
       this.playlistSubview = "analysis";
+      this._fieldHydrating = true;
+      this.fieldObservationRailOpen = false;
+      this.fieldObservationRailTab = "newly_occurred";
+      this.domainObservationFeed = emptyObservationFeed();
+      this.fieldObservationFeedLoading = true;
+      this.fieldObservationFeedLoaded = false;
+      this.fieldObservationFeedError = "";
       if (this._playlistEventMapPlaylistId && String(this._playlistEventMapPlaylistId) !== String(domainId)) {
         this.playlistEventMapReset();
       }
       this._playlistEventMapPlaylistId = String(domainId);
-      this.playlistDetail = await this.api(`/playlists/${encodeURIComponent(domainId)}/detail`);
-      if (this.activeView !== "field") return;
-      await this.playlistEventMapLoadView();
-      if (this.activeView !== "field") return;
-      const [observation, feed] = await Promise.all([
-        this.api(`/domains/${encodeURIComponent(domainId)}/observation`),
-        this.api(`/domains/${encodeURIComponent(domainId)}/observation/feed?limit=40`),
-      ]);
-      this.domainObservation = observation;
-      this.domainObservationFeed = feed || this.domainObservationFeed;
-      const cursor = observation?.cursor || {};
-      if (FIELD_MODES.has(String(cursor.view_mode || ""))) this.fieldMode = cursor.view_mode;
-      if (cursor.event_time_start) this.playlistEventMapWindowStart = String(cursor.event_time_start).slice(0, 10);
-      if (cursor.event_time_end) this.playlistEventMapWindowEnd = String(cursor.event_time_end).slice(0, 10);
-      if (Object.prototype.hasOwnProperty.call(cursor.filter_state || {}, "event_type")) this.playlistEventMapTypeFilter = cursor.filter_state.event_type || "";
-      if (["normal", "full"].includes(cursor.filter_state?.timeline_scope)) this.playlistEventMapTimelineScope = cursor.filter_state.timeline_scope;
-      this.playlistEventMapUpdateLayers();
-      if (cursor.camera_state) this.playlistEventMapController()?.restoreCameraState(cursor.camera_state);
-      const entity = this.fieldRequestedEntity || cursor.filter_state?.entity;
-      if (entity?.normalized_key) await this.playlistEventMapApplyEntityFilter(entity, { resume: true, focus: Boolean(this.fieldRequestedEntity) });
-      this.pageTitle = observation?.domain?.name || this.playlistDetail?.name || "星域";
-      const canonicalId = queryValue("canonical_id") || this.fieldRequestedCanonicalId;
-      if (canonicalId) await this.fieldOpenCanonical(canonicalId);
-      const topicId = queryValue("topic_id") || this.fieldRequestedTopicId;
-      if (topicId) {
-        const topic = (this.playlistEventMapManifest?.topics || []).find(
-          (item) => String(item.topic_id || "") === String(topicId)
-        );
-        if (topic) this.playlistEventMapSelectTopic(topic, { focus: true });
+      try {
+        const [detail, cursor] = await Promise.all([
+          this.api(`/playlists/${encodeURIComponent(domainId)}/detail`),
+          this.api(`/domains/${encodeURIComponent(domainId)}/observation/cursor`),
+        ]);
+        if (this.activeView !== "field" || String(this.selectedPlaylistId || "") !== String(domainId)) return;
+        this.playlistDetail = detail;
+        const domain = this.currentDomain();
+        this.domainObservation = {
+          domain: domain ? { id: domain.id, name: domain.name, description: domain.description } : null,
+          snapshot: domain?.snapshot || null,
+          cursor,
+          unobserved_change_count: Number(domain?.unobserved_change_count || 0),
+        };
+        if (FIELD_MODES.has(String(cursor?.view_mode || ""))) this.fieldMode = cursor.view_mode;
+        if (cursor?.event_time_start) this.playlistEventMapWindowStart = String(cursor.event_time_start).slice(0, 10);
+        if (cursor?.event_time_end) this.playlistEventMapWindowEnd = String(cursor.event_time_end).slice(0, 10);
+        if (Object.prototype.hasOwnProperty.call(cursor?.filter_state || {}, "event_type")) this.playlistEventMapTypeFilter = cursor.filter_state.event_type || "";
+        if (["normal", "full"].includes(cursor?.filter_state?.timeline_scope)) this.playlistEventMapTimelineScope = cursor.filter_state.timeline_scope;
+        await this.playlistEventMapLoadView();
+        if (this.activeView !== "field" || String(this.selectedPlaylistId || "") !== String(domainId)) return;
+        const controller = this.playlistEventMapController();
+        if (this.fieldCameraStateCompatible(cursor?.camera_state)) controller?.restoreCameraState(cursor.camera_state);
+        else controller?.fitActiveWindow();
+
+        const entity = this.fieldRequestedEntity || cursor?.filter_state?.entity;
+        if (entity?.normalized_key) await this.playlistEventMapApplyEntityFilter(entity, { resume: true, focus: Boolean(this.fieldRequestedEntity) });
+        this.pageTitle = domain?.name || this.playlistDetail?.name || "星域";
+        const canonicalId = queryValue("canonical_id") || this.fieldRequestedCanonicalId;
+        if (canonicalId) await this.fieldOpenCanonical(canonicalId);
+        const topicId = queryValue("topic_id") || this.fieldRequestedTopicId;
+        if (topicId) {
+          const topic = (this.playlistEventMapManifest?.topics || []).find(
+            (item) => String(item.topic_id || "") === String(topicId)
+          );
+          if (topic) this.playlistEventMapSelectTopic(topic, { focus: true });
+        }
+        const storyId = queryValue("story_id");
+        if (storyId) {
+          this.fieldMode = "story";
+          await this.fieldOpenStory(storyId);
+        }
+        const evidenceId = queryValue("evidence_id") || this.fieldRequestedEvidenceId;
+        if (evidenceId) await this.fieldOpenEvidence(evidenceId);
+
+        try {
+          const feed = await this.api(`/domains/${encodeURIComponent(domainId)}/observation/feed?limit=40`);
+          if (this.activeView === "field" && String(this.selectedPlaylistId || "") === String(domainId)) {
+            this.domainObservationFeed = feed || emptyObservationFeed();
+            this.fieldObservationFeedLoaded = true;
+            this.fieldSelectAvailableFeedTab();
+          }
+        } catch (error) {
+          this.fieldObservationFeedError = error?.message || String(error);
+        }
+        if (["story", "verify"].includes(this.fieldMode)) {
+          this.fieldObservationRailOpen = true;
+          this.fieldSelectAvailableFeedTab({ preferred: this.fieldMode === "story" ? "story_updates" : "needs_review" });
+        }
+      } finally {
+        this._fieldHydrating = false;
+        this.fieldObservationFeedLoading = false;
       }
-      const storyId = queryValue("story_id");
-      if (storyId) {
-        this.fieldMode = "story";
-        await this.fieldOpenStory(storyId);
+      if (this.activeView === "field" && String(this.selectedPlaylistId || "") === String(domainId)) {
+        this.saveFieldCursor({ immediate: true });
       }
-      const evidenceId = queryValue("evidence_id") || this.fieldRequestedEvidenceId;
-      if (evidenceId) await this.fieldOpenEvidence(evidenceId);
     },
 
     leaveField() {
@@ -178,7 +225,7 @@ export function createV2ViewMethods() {
       if (next === "replay" && this.playlistEventMapCanPlay()) this.playlistEventMapTogglePlayback();
       if (next !== "replay" && this.playlistEventMapPlaying) this.playlistEventMapStopPlayback();
       this.fieldObservationRailTab = next === "verify" ? "needs_review" : next === "story" ? "story_updates" : this.fieldObservationRailTab;
-      this.fieldObservationRailOpen = true;
+      if (["story", "verify"].includes(next)) this.fieldObservationRailOpen = true;
       await this.saveFieldCursor({ immediate: true });
     },
 
@@ -190,10 +237,27 @@ export function createV2ViewMethods() {
       const feed = this.domainObservationFeed || {};
       return [
         { key: "newly_occurred", label: "新发生", count: (feed.newly_occurred || []).length },
-        { key: "newly_mapped", label: "新入图", count: (feed.newly_mapped || []).length },
+        { key: "newly_mapped", label: "认知变化", count: (feed.newly_mapped || []).length },
         { key: "story_updates", label: "故事更新", count: (feed.story_updates || []).length },
-        { key: "needs_review", label: "待审核", count: (feed.needs_review || []).length },
+        { key: "needs_review", label: "待验证", count: (feed.needs_review || []).length },
       ];
+    },
+
+    fieldSelectAvailableFeedTab({ preferred = "" } = {}) {
+      const tabs = this.fieldFeedTabs();
+      const preferredTab = tabs.find((tab) => tab.key === preferred && tab.count > 0);
+      const currentTab = tabs.find((tab) => tab.key === this.fieldObservationRailTab && tab.count > 0);
+      this.fieldObservationRailTab = preferredTab?.key || currentTab?.key || tabs.find((tab) => tab.count > 0)?.key || preferred || "newly_occurred";
+    },
+
+    fieldToggleObservationRail() {
+      this.fieldObservationRailOpen = !this.fieldObservationRailOpen;
+      if (this.fieldObservationRailOpen) this.fieldSelectAvailableFeedTab();
+    },
+
+    fieldObservationUnreadLabel() {
+      const count = Number(this.domainObservation?.unobserved_change_count || 0);
+      return count > 99 ? "99+" : count > 0 ? String(count) : "";
     },
 
     fieldFeedItems() {
@@ -202,6 +266,29 @@ export function createV2ViewMethods() {
 
     fieldFeedItemTitle(item) {
       return item?.title || item?.after_revision?.title || item?.after_revision?.summary || item?.change_type || "语义对象变化";
+    },
+
+    fieldFeedItemKindLabel(item) {
+      if (item?.change_type) return this.fieldChangeTypeLabel(item.change_type);
+      if (this.fieldObservationRailTab === "newly_occurred") return "事件发生";
+      if (this.fieldObservationRailTab === "needs_review") return "待验证";
+      return "系统认知变化";
+    },
+
+    fieldFeedEmptyLabel() {
+      if (this.fieldObservationFeedError) return `变化读取失败：${this.fieldObservationFeedError}`;
+      if (!this.fieldObservationFeedLoaded) return "正在读取自上次观察后的变化…";
+      return this.fieldObservationRailTab === "needs_review" ? "当前快照没有待验证事件" : "这个口径下暂时没有新变化";
+    },
+
+    fieldCameraStateCompatible(state) {
+      if (Number(state?.framing_version || 0) !== FIELD_CAMERA_FRAMING_VERSION) return false;
+      if (!state || String(state.snapshot_id || "") !== String(this.playlistEventMapSnapshotId || "")) return false;
+      if (String(state.window_start || "") !== String(this.playlistEventMapWindowStart || "")) return false;
+      if (String(state.window_end || "") !== String(this.playlistEventMapWindowEnd || "")) return false;
+      const savedAspect = Number(state.viewport_aspect || 0);
+      const currentAspect = Number(this.playlistEventMapController()?.cameraState()?.viewport_aspect || 0);
+      return savedAspect > 0 && currentAspect > 0 && Math.max(savedAspect, currentAspect) / Math.min(savedAspect, currentAspect) <= 1.25;
     },
 
     fieldFeedItemTime(item) {
@@ -406,20 +493,29 @@ export function createV2ViewMethods() {
     },
 
     saveFieldCursor({ immediate = false } = {}) {
+      if (this._fieldHydrating) return null;
       if (this._fieldCursorSaveTimer) window.clearTimeout(this._fieldCursorSaveTimer);
       const save = async () => {
         this._fieldCursorSaveTimer = null;
         const domainId = String(this.selectedPlaylistId || "");
         if (!domainId) return;
         const latestChange = this.fieldFeedItems()?.[0]?.id || null;
+        const rawCameraState = this.playlistEventMapController()?.cameraState() || null;
+        const cameraState = rawCameraState ? {
+          ...rawCameraState,
+          framing_version: FIELD_CAMERA_FRAMING_VERSION,
+          snapshot_id: this.playlistEventMapSnapshotId || null,
+          window_start: this.playlistEventMapWindowStart || null,
+          window_end: this.playlistEventMapWindowEnd || null,
+        } : null;
         const payload = {
           snapshot_id: this.playlistEventMapSnapshotId || this.domainObservation?.snapshot?.id || null,
-          observed_at: this.domainObservation?.snapshot?.observed_at || null,
+          observed_at: this.domainObservation?.snapshot?.observed_at || this.currentDomain()?.snapshot?.observed_at || null,
           event_time_start: this.playlistEventMapWindowStart ? `${this.playlistEventMapWindowStart}T00:00:00Z` : null,
           event_time_end: this.playlistEventMapWindowEnd ? `${this.playlistEventMapWindowEnd}T23:59:59Z` : null,
           view_mode: this.fieldMode,
           last_page: "field",
-          camera_state: this.playlistEventMapController()?.cameraState() || null,
+          camera_state: cameraState,
           filter_state: {
             event_type: this.playlistEventMapTypeFilter || null,
             entity: this.playlistEventMapEntityFilter || null,

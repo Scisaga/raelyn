@@ -36,6 +36,16 @@ function pollingContext(manifest, overrides = {}) {
   });
 }
 
+test("已有快照在后台构建时说明当前星域可浏览", () => {
+  const updating = context({ snapshot_id: "snapshot-1", building: true });
+  assert.equal(updating.playlistEventMapStatusBadgeLabel(), "星域后台更新中");
+  assert.match(updating.playlistEventMapStatusBadgeHint(), /当前星域可以正常浏览/);
+
+  const firstBuild = context({ building: true });
+  assert.equal(firstBuild.playlistEventMapStatusBadgeLabel(), "首次生成中");
+  assert.match(firstBuild.playlistEventMapStatusBadgeHint(), /首个可浏览的星域快照/);
+});
+
 async function withFakePollingEnvironment(callback) {
   const originalSetTimeout = globalThis.setTimeout;
   const originalClearTimeout = globalThis.clearTimeout;
@@ -404,6 +414,12 @@ test("代码与模板只保留单窗口时间状态", () => {
   assert.match(content, /playlistEventMapTimelineWindowDragging/);
 });
 
+test("时间轴数据柱使用平直顶边", () => {
+  const template = readFileSync(new URL("../../../templates/app/views/field-v2.html", import.meta.url), "utf8");
+  assert.match(template, /playlistEventMapTimelineBarStyle\(item\)/);
+  assert.doesNotMatch(template, /rounded-t/);
+});
+
 test("三维事件星图不再保留 Atlas、全期参照或实体卫星链", () => {
   const files = [
     "../event-map.js",
@@ -413,7 +429,7 @@ test("三维事件星图不再保留 Atlas、全期参照或实体卫星链", ()
   ];
   const content = files.map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
   assert.match(content, /event-map-three/);
-  assert.match(content, /setCameraMode/);
+  assert.doesNotMatch(content, /setCameraMode|playlistEventMapCameraMode|OrthographicCamera/);
   assert.match(content, /anchor_title/);
   assert.match(content, /level === "topic" \? 80 : 24/);
   assert.match(content, /playlistEventMapSemanticLegend/);
