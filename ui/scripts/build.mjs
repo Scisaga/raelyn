@@ -28,6 +28,9 @@ const glyphSourcePng = resolve(uiDir, "assets/brand/raelyn-glyph.png");
 const brandOutputSvg = resolve(brandDir, "raelyn-event-horizon.svg");
 const faviconOutputSvg = resolve(brandDir, "raelyn-favicon.svg");
 const glyphOutputSvg = resolve(brandDir, "raelyn-glyph.svg");
+// Android 会把 purpose=any 的图标用于 PWA 原生启动层；保留四周留白，
+// 避免系统按固定容器展示时把品牌标识放大到接近满屏。
+const pwaAnyIconContentScale = 0.6;
 
 mkdirSync(cssDir, { recursive: true });
 mkdirSync(vendorDir, { recursive: true });
@@ -75,7 +78,12 @@ function resolveFfmpegBinary() {
   throw new Error("[ui] ffmpeg not found; required to generate brand icon sizes");
 }
 
-function renderBrandPng(ffmpegBin, sourcePath, outputPath, size) {
+function renderBrandPng(ffmpegBin, sourcePath, outputPath, size, { contentScale = 1 } = {}) {
+  const contentSize = Math.max(1, Math.round(size * contentScale));
+  const filters = [`scale=${contentSize}:${contentSize}:flags=lanczos`];
+  if (contentSize !== size) {
+    filters.push(`pad=${size}:${size}:(ow-iw)/2:(oh-ih)/2:color=0x00000000`);
+  }
   execFileSync(
     ffmpegBin,
     [
@@ -85,7 +93,7 @@ function renderBrandPng(ffmpegBin, sourcePath, outputPath, size) {
       "-i",
       sourcePath,
       "-vf",
-      `scale=${size}:${size}:flags=lanczos`,
+      filters.join(","),
       "-frames:v",
       "1",
       "-update",
@@ -109,8 +117,12 @@ function buildBrandAssets() {
   }
   copyFileSync(glyphSourcePng, resolve(brandDir, "logo-r.png"));
   renderBrandPng(ffmpegBin, faviconSourcePng, resolve(brandDir, "favicon-32.png"), 32);
-  renderBrandPng(ffmpegBin, brandSourcePng, resolve(pwaDir, "icon-192.png"), 192);
-  renderBrandPng(ffmpegBin, brandSourcePng, resolve(pwaDir, "icon-512.png"), 512);
+  renderBrandPng(ffmpegBin, brandSourcePng, resolve(pwaDir, "icon-192.png"), 192, {
+    contentScale: pwaAnyIconContentScale,
+  });
+  renderBrandPng(ffmpegBin, brandSourcePng, resolve(pwaDir, "icon-512.png"), 512, {
+    contentScale: pwaAnyIconContentScale,
+  });
   renderBrandPng(ffmpegBin, brandSourcePng, resolve(pwaDir, "icon-maskable-512.png"), 512);
   renderBrandPng(ffmpegBin, brandSourcePng, resolve(pwaDir, "apple-touch-icon.png"), 180);
 

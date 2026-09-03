@@ -31,7 +31,7 @@ function alphaBounds(path) {
 }
 
 test("侧栏、启动门面与 favicon 使用同一版事件视界品牌标识", async () => {
-  const [sidebar, startup, head, mark, markPng, glyph, glyphPng, favicon, faviconPng, brandBuilder] = await Promise.all([
+  const [sidebar, startup, head, mark, markPng, glyph, glyphPng, favicon, faviconPng, iconAny, iconMaskable, brandBuilder] = await Promise.all([
     readFile(resolve(uiDir, "templates/app/components/sidebar.html"), "utf8"),
     readFile(resolve(uiDir, "templates/app/layout/app-shell.html"), "utf8"),
     readFile(resolve(uiDir, "templates/app/layout/head.html"), "utf8"),
@@ -41,6 +41,8 @@ test("侧栏、启动门面与 favicon 使用同一版事件视界品牌标识",
     readFile(resolve(uiDir, "assets/brand/raelyn-glyph.png")),
     readFile(resolve(uiDir, "assets/brand/raelyn-favicon.svg"), "utf8"),
     readFile(resolve(uiDir, "assets/brand/raelyn-favicon.png")),
+    readFile(resolve(uiDir, "../static/pwa/icon-512.png")),
+    readFile(resolve(uiDir, "../static/pwa/icon-maskable-512.png")),
     readFile(resolve(uiDir, "scripts/build-brand-logo.mjs"), "utf8"),
   ]);
 
@@ -75,12 +77,20 @@ test("侧栏、启动门面与 favicon 使用同一版事件视界品牌标识",
   assert.deepEqual(pngSize(markPng), [2048, 2048]);
   assert.deepEqual(pngSize(glyphPng), [2048, 2048]);
   assert.deepEqual(pngSize(faviconPng), [1024, 1024]);
+  assert.deepEqual(pngSize(iconAny), [512, 512]);
+  assert.deepEqual(pngSize(iconMaskable), [512, 512]);
   const [glyphWidth, glyphHeight, glyphX, glyphY] = alphaBounds(resolve(uiDir, "assets/brand/raelyn-glyph.png"));
   assert.ok(glyphWidth >= 1060 && glyphWidth <= 1075, `R 字形宽度异常：${glyphWidth}`);
   assert.ok(glyphHeight >= 1030 && glyphHeight <= 1040, `R 字形高度异常：${glyphHeight}`);
   assert.ok(glyphX >= 500 && glyphX <= 510, `R 字形横向位置异常：${glyphX}`);
   assert.ok(glyphY >= 485 && glyphY <= 495, `R 字形纵向位置异常：${glyphY}`);
   assert.ok(glyphHeight / glyphWidth >= 0.967, "R 字形不应被纵向压扁");
+  const [iconAnyWidth, iconAnyHeight] = alphaBounds(resolve(uiDir, "../static/pwa/icon-512.png"));
+  const [iconMaskableWidth, iconMaskableHeight] = alphaBounds(resolve(uiDir, "../static/pwa/icon-maskable-512.png"));
+  assert.ok(iconAnyWidth >= 295 && iconAnyWidth <= 300, `PWA 启动图标宽度异常：${iconAnyWidth}`);
+  assert.ok(iconAnyHeight >= 295 && iconAnyHeight <= 300, `PWA 启动图标高度异常：${iconAnyHeight}`);
+  assert.ok(iconMaskableWidth >= 495, `PWA maskable 图标不应跟随启动图标缩小：${iconMaskableWidth}`);
+  assert.ok(iconMaskableHeight >= 495, `PWA maskable 图标不应跟随启动图标缩小：${iconMaskableHeight}`);
   assert.match(brandBuilder, /-c:v",\s*"librsvg"/);
   assert.match(brandBuilder, /renderSvgPng\(svgRenderer, eventHorizonSvg, eventHorizonPng, 2048\)/);
   assert.match(brandBuilder, /renderSvgPng\(svgRenderer, faviconSvg, faviconPng, 1024\)/);
