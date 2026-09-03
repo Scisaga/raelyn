@@ -11,6 +11,12 @@ function pngSize(buffer) {
   return [buffer.readUInt32BE(16), buffer.readUInt32BE(20)];
 }
 
+function markPath(svg) {
+  const match = svg.match(/<path\s+d="([^"]+)"\s+fill="url\(#mark\)"/s);
+  assert.ok(match);
+  return match[1];
+}
+
 test("侧栏、启动门面与 favicon 使用同一版事件视界品牌标识", async () => {
   const [sidebar, startup, head, mark, markPng, glyph, glyphPng, favicon, faviconPng, brandBuilder] = await Promise.all([
     readFile(resolve(uiDir, "templates/app/components/sidebar.html"), "utf8"),
@@ -32,7 +38,11 @@ test("侧栏、启动门面与 favicon 使用同一版事件视界品牌标识",
   assert.match(head, /rel="icon" href="\/static\/brand\/raelyn-favicon\.svg/);
   assert.match(head, /rel="icon" href="\/static\/brand\/favicon-32\.png/);
   assert.match(mark, /<title[^>]*>RAELYN 事件视界<\/title>/);
-  assert.match(mark, /M102 98.*M230 196/s);
+  const glyphPath = markPath(glyph);
+  assert.equal(markPath(mark), glyphPath);
+  assert.equal(markPath(favicon), glyphPath);
+  assert.match(glyphPath, /^M102 98H278C365 98/);
+  assert.doesNotMatch(glyphPath, /M230 196/);
   assert.match(mark, /rotate\(-14 32 33\)/);
   assert.match(mark, /rx="24"\s+ry="7\.2"/s);
   assert.match(mark, /M8 33C8 38\.6 18\.8 40\.2 32 40\.2C45\.2 40\.2 56 38\.6 56 33/);
@@ -49,7 +59,6 @@ test("侧栏、启动门面与 favicon 使用同一版事件视界品牌标识",
   assert.match(glyph, /#bef264/);
   assert.match(glyph, /#5eead4/);
   assert.match(glyph, /#38bdf8/);
-  assert.match(glyph, /M102 98.*M230 196/s);
   assert.deepEqual(pngSize(markPng), [2048, 2048]);
   assert.deepEqual(pngSize(glyphPng), [2048, 2048]);
   assert.deepEqual(pngSize(faviconPng), [1024, 1024]);
