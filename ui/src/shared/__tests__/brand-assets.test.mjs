@@ -59,7 +59,7 @@ test("侧栏、启动门面与 favicon 使用同一版事件视界品牌标识",
   assert.match(mark, /rotate\(-14 32 33\)/);
   assert.match(mark, /rx="24"\s+ry="7\.2"/s);
   assert.match(mark, /M8 33C8 38\.6 18\.8 40\.2 32 40\.2C45\.2 40\.2 56 38\.6 56 33/);
-  assert.match(mark, /matrix\(0\.0510366826 0 0 -0\.0510366826 0 64\)/);
+  assert.match(mark, /matrix\(0\.0410996338 0 0 -0\.0410996338 5\.36931687 57\.20204558\)/);
   assert.match(mark, /#818cf8" stop-opacity="0\.34"/);
   assert.match(mark, /#bef264/);
   assert.doesNotMatch(mark, /M7\.5 35\.8C15\.2 20\.7/);
@@ -67,7 +67,7 @@ test("侧栏、启动门面与 favicon 使用同一版事件视界品牌标识",
   assert.doesNotMatch(mark, /M8\.5 33C9 37\.7/);
   assert.match(favicon, /<title[^>]*>RAELYN favicon<\/title>/);
   assert.match(favicon, /#21485c/);
-  assert.match(favicon, /matrix\(0\.0510366826 0 0 -0\.0510366826 0 64\)/);
+  assert.match(favicon, /matrix\(0\.0410996338 0 0 -0\.0410996338 5\.36931687 57\.20204558\)/);
   assert.match(glyph, /<title[^>]*>RAELYN 渐变 R 字形<\/title>/);
   assert.match(glyph, /#bef264/);
   assert.match(glyph, /#5eead4/);
@@ -75,9 +75,11 @@ test("侧栏、启动门面与 favicon 使用同一版事件视界品牌标识",
   assert.deepEqual(pngSize(markPng), [2048, 2048]);
   assert.deepEqual(pngSize(glyphPng), [2048, 2048]);
   assert.deepEqual(pngSize(faviconPng), [1024, 1024]);
-  const [glyphWidth, glyphHeight] = alphaBounds(resolve(uiDir, "assets/brand/raelyn-glyph.png"));
-  assert.ok(glyphWidth >= 1320 && glyphWidth <= 1330, `R 字形宽度异常：${glyphWidth}`);
-  assert.ok(glyphHeight >= 1280 && glyphHeight <= 1290, `R 字形高度异常：${glyphHeight}`);
+  const [glyphWidth, glyphHeight, glyphX, glyphY] = alphaBounds(resolve(uiDir, "assets/brand/raelyn-glyph.png"));
+  assert.ok(glyphWidth >= 1060 && glyphWidth <= 1075, `R 字形宽度异常：${glyphWidth}`);
+  assert.ok(glyphHeight >= 1030 && glyphHeight <= 1040, `R 字形高度异常：${glyphHeight}`);
+  assert.ok(glyphX >= 500 && glyphX <= 510, `R 字形横向位置异常：${glyphX}`);
+  assert.ok(glyphY >= 485 && glyphY <= 495, `R 字形纵向位置异常：${glyphY}`);
   assert.ok(glyphHeight / glyphWidth >= 0.967, "R 字形不应被纵向压扁");
   assert.match(brandBuilder, /-c:v",\s*"librsvg"/);
   assert.match(brandBuilder, /renderSvgPng\(svgRenderer, eventHorizonSvg, eventHorizonPng, 2048\)/);
