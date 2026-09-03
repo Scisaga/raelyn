@@ -6,7 +6,7 @@
 
 - `api`：FastAPI（提供 `/api/*` 与 `/` UI）
 - `worker`：执行 Job（建议按队列拆分：download / process / sync / ai）
-- `scheduler`：分钟级投递 `media.sync_videos`
+- `scheduler`：分钟级投递 `media.sync_videos`，并按小时投递 `system.capture_usage_snapshot`
 - `mcp`：挂载在主 API 进程内的 MCP HTTP 入口（可选，默认 `/mcp`）
 
 最少启动 3 个进程（或用 docker compose 一次拉起）。推荐在本地把 worker 拆分为多个角色，避免不同类型任务互相“饿死”。
@@ -34,6 +34,32 @@ docker compose up --build
 打开：`http://127.0.0.1:8000/`
 
 Docker 单容器入口会直接守护 worker 子进程：某个 worker 崩溃退出时，只重启该 worker，默认等待 `WORKER_RESTART_DELAY_SECONDS=5` 秒；API 或 scheduler 退出仍视为关键进程故障，容器会退出并交给外层 Docker/Compose 策略处理。
+
+### 对象存储传输并发
+
+`upload_file` / `download_file` 会显式使用同一组 boto3 transfer 配置。当前 4 块 HDD 的生产默认值是：
+
+- 单文件最多 `2` 个分片并发；
+- 文件达到 64 MiB 后使用 multipart；
+- multipart 分片大小为 64 MiB。
+
+对应环境变量为 `S3_TRANSFER_MAX_CONCURRENCY`、`S3_TRANSFER_MULTIPART_THRESHOLD_BYTES` 和 `S3_TRANSFER_MULTIPART_CHUNKSIZE_BYTES`。这些限制按“单个文件、单个 API/worker 进程”计算；例如两个 worker 同时传输大文件时，最多可能产生约 4 个活跃分片请求，并非全局只允许 2 个。增加 worker 数或调高单文件并发前，应先观察 HDD 的 I/O wait、队列深度和 MinIO 吞吐。
+
+每次 S3 操作只在发起调用的进程内创建 client，项目不缓存可跨 fork 或跨进程复用的 client。调整传输环境变量后，需要重启 API、scheduler 和相关 worker；无需修改数据库，也无需重建已有对象。
+
+### 资源用量采集
+
+资源用量页包含三条彼此独立的数据路径：
+
+- LLM、ASR、Embedding 的真实外部请求完成或失败时，调用方立即把调用数、成功 / 失败、耗时和可用 token 累加到 `ExternalServiceUsageDaily`；这不是 Uvicorn access log，也不统计浏览器或站内 `/api/*` 请求。
+- Scheduler 在 `usage.legacy_llm_backfill` 完成标记版本过旧时幂等投递 `system.backfill_legacy_usage`；`sync` worker 从终态 Job 结果恢复历史 LLM 调用与 token，并从带 `attempt` 的 ASR 请求事件恢复可核验的历史转写调用。两类数据都用独立 `legacy.*` operation 精确重建；没有请求事件的旧 ASR 任务不推算调用，不读取重复的事件抽取运行记录。任务可安全重试，且不会删除或覆盖实时采集行。
+- Scheduler 每小时检查最近一次 `ResourceUsageDaily.captured_at`。到期且没有活跃同类任务时，只投递一个低优先级 `system.capture_usage_snapshot`；`sync` worker 执行实际的视频行数、逻辑资产和数据库规模查询，并幂等写入当天快照。
+
+Scheduler 不直接扫描库存，也不在调度循环中持有长数据库事务。运行资源趋势必须同时保持 scheduler 与至少一个 `sync` worker 在线；若 `sync` worker 不可用，快照任务会留在统一 Job 队列中等待，不会由 API 请求线程代跑。系统暂停期间 Scheduler 不新增快照任务。
+
+资源日桶固定使用 `Asia/Shanghai`。同一天可生成多次快照，但只有 `captured_at` 较新的结果覆盖当日旧值；因此当天趋势点是截至最近快照的部分日数据。LLM 调用可从旧 Job 结果回填；旧结果没有保存耗时时不推测耗时，页面标明“历史未记录”。ASR、Embedding 与资源规模只从采集功能启用后开始形成历史，不回填不存在的旧采样，页面用空缺而不是 `0` 表达缺失。
+
+逻辑资产容量仅为已知 `Asset.size_bytes` 的和，数据库容量在 PostgreSQL 下使用 `pg_database_size(current_database())`。当前没有能同时适用于宿主机、Docker volume 和远端 S3/MinIO 的物理磁盘容量来源，因此不展示主机磁盘总量、剩余空间或占用百分比。
 
 ## 本地启动（无 Docker）
 
@@ -223,6 +249,7 @@ YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“�
 - 若你手动多终端启动，并且希望兑现 `YOUTUBE_DOWNLOAD_CONCURRENCY=N` / `BILIBILI_DOWNLOAD_CONCURRENCY=N` 的真实下载并发，需要把对应 `download_*` worker 命令至少启动 `N` 次。
 - 若你手动多终端启动，并且希望兑现 `ASR_WORKER_CONCURRENCY=N` 的 ASR 请求并发，需要把 `./scripts/dev/run-worker.sh asr` 至少启动 `N` 次。
 - 若你手动多终端启动，并且希望兑现 `AI_WORKER_CONCURRENCY=N` 的 LLM 任务并发，需要把 `./scripts/dev/run-worker.sh ai` 至少启动 `N` 次。
+- `sync` worker 除媒体资料与视频同步外，也执行一次性 `system.backfill_legacy_usage` 和周期性 `system.capture_usage_snapshot`。独立资源用量趋势要求至少保留 1 个 sync worker；Scheduler 只负责幂等入队，不会自行执行回填或快照。
 - `ai` worker 负责 `video.extract_events`、`video.extract_events_batch`、`playlist.backfill_events` 与 `playlist.backfill_events_range`，播放列表回填父任务先按月拆分范围任务，范围任务再按 source 字符数投递批量或单视频抽取；事件抽取读取 `plain` transcript 并调用 LLM。Ollama `/api/generate` 事件抽取会使用 endpoint + model 级 advisory lock，锁忙时重排任务，因此提高 `AI_WORKER_CONCURRENCY` 不会让同一个本地大模型的事件抽取并发增加。
 - `embedding` worker 负责 `event.embed` 与可恢复的 `event.backfill_embeddings`；前者为单条 accepted 事件生成结构化 embedding，后者以 64 条为一批原位迁移存量向量，并在每批提交后持久化进度、吞吐、ETA 与 lease。
 - `analysis` worker 负责 `playlist.mark_event_map_dirty`、`playlist.build_event_map_snapshot` 与 `playlist.prune_event_map_snapshots`。至少保留 1 个 analysis worker，才能让新增视频在 embedding ready 后按微批自动更新地图，并在构建成功后保留 current 与上一版 ready 快照、分批清理更旧快照。构建按 `ANALYSIS_STREAM_BATCH_SIZE` 流式冻结输入、生成 canonical/topic/story、执行 IncrementalPCA，并在独立子进程运行 UMAP。

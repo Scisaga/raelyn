@@ -21,6 +21,7 @@ from raelyn.api.media import router as media_router
 from raelyn.api.playlists import router as playlists_router
 from raelyn.api.stats import router as stats_router
 from raelyn.api.system import router as system_router
+from raelyn.api.usage import router as usage_router
 from raelyn.api.workers import router as workers_router
 from raelyn.api.videos import router as videos_router
 from raelyn.api.video_assets import router as video_assets_router
@@ -132,6 +133,7 @@ def create_app() -> FastAPI:
     app.include_router(config_router, prefix="/api")
     app.include_router(stats_router, prefix="/api")
     app.include_router(system_router, prefix="/api")
+    app.include_router(usage_router, prefix="/api")
     app.include_router(workers_router, prefix="/api")
     app.include_router(ws_router, prefix="/api")
 

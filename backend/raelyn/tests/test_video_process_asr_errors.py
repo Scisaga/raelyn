@@ -149,6 +149,7 @@ class VideoAsrTranscribeErrorTests(unittest.TestCase):
         *,
         configured_language: str,
         asr_payload: dict,
+        observation_enabled: bool = True,
     ) -> tuple[dict, Mock, Mock, Mock]:
         session, job = self._job_context()
 
@@ -167,6 +168,12 @@ class VideoAsrTranscribeErrorTests(unittest.TestCase):
             ensure_asset = stack.enter_context(patch("raelyn.jobs.handlers.video_process.ensure_asset"))
             enqueue_job = stack.enter_context(patch("raelyn.jobs.handlers.video_process.enqueue_job"))
             stack.enter_context(patch("raelyn.jobs.handlers.video_process.llm_enabled", return_value=True))
+            stack.enter_context(
+                patch(
+                    "raelyn.jobs.handlers.video_process.video_has_enabled_observation",
+                    return_value=observation_enabled,
+                )
+            )
             stack.enter_context(patch("raelyn.jobs.handlers.video_process._schedule_auto_video_event_extraction"))
             stack.enter_context(patch("raelyn.jobs.handlers.video_process._enqueue_brief_for_video_playlists"))
 
@@ -228,6 +235,17 @@ class VideoAsrTranscribeErrorTests(unittest.TestCase):
             self.assertIn("/transcript/zh/", call.kwargs["s3_key"])
         enqueue_job.assert_called_once()
         self.assertEqual(enqueue_job.call_args.kwargs["params"]["language"], "zh")
+
+    def test_disabled_observation_keeps_transcript_archive_without_polish(self) -> None:
+        result, _asr_transcribe, ensure_asset, enqueue_job = self._run_success_case(
+            configured_language="zh-CN",
+            asr_payload={"text": "你好", "segments": []},
+            observation_enabled=False,
+        )
+
+        self.assertEqual(result["language"], "zh")
+        self.assertEqual(len(ensure_asset.call_args_list), 2)
+        enqueue_job.assert_not_called()
 
     def test_capacity_guard_reschedules_before_audio_download(self) -> None:
         session, job = self._job_context()

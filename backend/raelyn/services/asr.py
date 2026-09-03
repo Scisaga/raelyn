@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import math
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,7 @@ import httpx
 
 from raelyn.config import settings
 from raelyn.services.inference import EffectiveAsrConfig, LOCAL_PROVIDER, get_effective_asr_config
+from raelyn.services.usage import record_external_service_usage
 
 _LOCAL_ASR_TIMEOUT_MIN_REALTIME_FACTOR = 4
 _NON_LOCAL_ASR_TIMEOUT_MIN_REALTIME_FACTOR = 5
@@ -176,6 +178,7 @@ def asr_transcribe(
     media_duration_seconds: int | None = None,
     config: EffectiveAsrConfig | None = None,
     timeout_seconds: int | None = None,
+    usage_operation: str | None = None,
 ) -> dict[str, Any]:
     cfg = config or get_effective_asr_config()
     if not cfg.configured:
@@ -188,88 +191,112 @@ def asr_transcribe(
             media_duration_seconds=media_duration_seconds,
             provider=cfg.provider,
         )
-    payload: Any
-    if cfg.provider == "local":
-        base_url = cfg.url.strip()
-        endpoint = str(settings.asr_endpoint or "").strip()
-        if endpoint:
-            url = endpoint if endpoint.startswith(("http://", "https://")) else _join_url(base_url, endpoint)
+    audio_bytes = audio_path.read_bytes()
+    started_at = time.perf_counter()
+    try:
+        payload: Any
+        if cfg.provider == "local":
+            base_url = cfg.url.strip()
+            endpoint = str(settings.asr_endpoint or "").strip()
+            if endpoint:
+                url = endpoint if endpoint.startswith(("http://", "https://")) else _join_url(base_url, endpoint)
+            else:
+                # Default: OpenAI-compatible endpoint.
+                url = base_url.rstrip("/") if _is_openai_transcriptions_url(base_url) else _join_url(base_url, "/v1/audio/transcriptions")
+            timeout = httpx.Timeout(request_timeout_seconds)
+            files = {"file": (audio_path.name, audio_bytes)}
+            data: dict[str, Any] = {}
+            if language:
+                data["language"] = language
+            if cfg.model:
+                data["model"] = cfg.model
+            if cfg.prompt:
+                data["prompt"] = cfg.prompt
+            if cfg.temperature is not None:
+                data["temperature"] = cfg.temperature
+            if cfg.response_format:
+                data["response_format"] = cfg.response_format
+
+            with httpx.Client(timeout=timeout, trust_env=False) as client:
+                resp = client.post(url, files=files, data=data)
+                resp.raise_for_status()
+                payload = resp.json()
         else:
-            # Default: OpenAI-compatible endpoint.
-            url = base_url.rstrip("/") if _is_openai_transcriptions_url(base_url) else _join_url(base_url, "/v1/audio/transcriptions")
-        timeout = httpx.Timeout(request_timeout_seconds)
-        files = {"file": (audio_path.name, audio_path.read_bytes())}
-        data: dict[str, Any] = {}
-        if language:
-            data["language"] = language
-        if cfg.model:
-            data["model"] = cfg.model
-        if cfg.prompt:
-            data["prompt"] = cfg.prompt
-        if cfg.temperature is not None:
-            data["temperature"] = cfg.temperature
-        if cfg.response_format:
-            data["response_format"] = cfg.response_format
+            timeout = httpx.Timeout(request_timeout_seconds)
+            headers = {
+                "Content-Type": "application/json",
+                "X-Api-App-Key": cfg.app_key,
+                "X-Api-Access-Key": cfg.access_key,
+                "X-Api-Resource-Id": cfg.resource_id,
+                "X-Api-Request-Id": str(uuid.uuid4()),
+                "X-Api-Sequence": "-1",
+            }
+            audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+            request_payload: dict[str, Any] = {
+                "user": {"uid": cfg.app_key},
+                "audio": {"data": audio_base64},
+                "request": {"model_name": cfg.model},
+            }
+            with httpx.Client(timeout=timeout, trust_env=False) as client:
+                resp = client.post(cfg.url, json=request_payload, headers=headers)
+                resp.raise_for_status()
+                payload = resp.json()
+            if isinstance(payload, dict):
+                provider_result = payload.get("result")
+                if isinstance(provider_result, dict):
+                    utterances = provider_result.get("utterances")
+                    payload = {
+                        "text": str(provider_result.get("text") or "").strip(),
+                        "segments": (
+                            [
+                                {
+                                    "start": item.get("start_time"),
+                                    "end": item.get("end_time"),
+                                    "text": str(item.get("text") or ""),
+                                    "words": item.get("words"),
+                                }
+                                for item in utterances
+                                if isinstance(item, dict)
+                            ]
+                            if isinstance(utterances, list)
+                            else []
+                        ),
+                        "raw": payload,
+                    }
 
-        with httpx.Client(timeout=timeout, trust_env=False) as client:
-            resp = client.post(url, files=files, data=data)
-            resp.raise_for_status()
-            payload = resp.json()
-    else:
-        timeout = httpx.Timeout(request_timeout_seconds)
-        headers = {
-            "Content-Type": "application/json",
-            "X-Api-App-Key": cfg.app_key,
-            "X-Api-Access-Key": cfg.access_key,
-            "X-Api-Resource-Id": cfg.resource_id,
-            "X-Api-Request-Id": str(uuid.uuid4()),
-            "X-Api-Sequence": "-1",
-        }
-        audio_base64 = base64.b64encode(audio_path.read_bytes()).decode("utf-8")
-        request_payload: dict[str, Any] = {
-            "user": {"uid": cfg.app_key},
-            "audio": {"data": audio_base64},
-            "request": {"model_name": cfg.model},
-        }
-        with httpx.Client(timeout=timeout, trust_env=False) as client:
-            resp = client.post(cfg.url, json=request_payload, headers=headers)
-            resp.raise_for_status()
-            payload = resp.json()
-        if isinstance(payload, dict):
-            result = payload.get("result")
-            if isinstance(result, dict):
-                utterances = result.get("utterances")
-                payload = {
-                    "text": str(result.get("text") or "").strip(),
-                    "segments": (
-                        [
-                            {
-                                "start": item.get("start_time"),
-                                "end": item.get("end_time"),
-                                "text": str(item.get("text") or ""),
-                                "words": item.get("words"),
-                            }
-                            for item in utterances
-                            if isinstance(item, dict)
-                        ]
-                        if isinstance(utterances, list)
-                        else []
-                    ),
-                    "raw": payload,
-                }
+        if not isinstance(payload, dict):
+            result_payload = {"text": str(payload), "segments": []}
+        else:
+            if "text" not in payload and "transcript" in payload:
+                payload["text"] = payload.get("transcript") or ""
 
-    if not isinstance(payload, dict):
-        return {"text": str(payload), "segments": []}
+            if "segments" not in payload:
+                # Some servers return "chunks" or "segment" variants; normalize best-effort.
+                segments = payload.get("chunks") or payload.get("segment") or []
+                payload["segments"] = segments if isinstance(segments, list) else []
 
-    if "text" not in payload and "transcript" in payload:
-        payload["text"] = payload.get("transcript") or ""
+            if "text" not in payload:
+                payload["text"] = ""
+            result_payload = payload
+    except Exception:
+        if usage_operation:
+            record_external_service_usage(
+                service="asr",
+                operation=usage_operation,
+                provider=cfg.provider,
+                model=cfg.model,
+                succeeded=False,
+                duration_ms=round((time.perf_counter() - started_at) * 1000),
+            )
+        raise
 
-    if "segments" not in payload:
-        # Some servers return "chunks" or "segment" variants; normalize best-effort.
-        segments = payload.get("chunks") or payload.get("segment") or []
-        payload["segments"] = segments if isinstance(segments, list) else []
-
-    if "text" not in payload:
-        payload["text"] = ""
-
-    return payload
+    if usage_operation:
+        record_external_service_usage(
+            service="asr",
+            operation=usage_operation,
+            provider=cfg.provider,
+            model=cfg.model,
+            succeeded=True,
+            duration_ms=round((time.perf_counter() - started_at) * 1000),
+        )
+    return result_payload

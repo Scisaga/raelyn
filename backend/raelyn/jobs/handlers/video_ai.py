@@ -13,6 +13,7 @@ from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
 from raelyn.models import Asset, Job, Video
 from raelyn.services.assets import ensure_asset
+from raelyn.services.domain_observation_control import video_has_enabled_observation
 from raelyn.services.llm import llm_enabled, llm_generate
 from raelyn.services.s3 import s3_download_file
 from raelyn.services.transcript_polish_prompt import (
@@ -74,6 +75,8 @@ def video_polish_transcript(session: Session, job: Job) -> dict | None:
     video = session.get(Video, video_id)
     if not video:
         return {"skipped": "video not found"}
+    if not video_has_enabled_observation(session, video_id):
+        return {"skipped": "domain observation is disabled"}
 
     language = str(job.params.get("language") or "").strip().lower()
     source = str(job.params.get("source") or "").strip()
@@ -289,7 +292,7 @@ def _polish_transcript_chunk_via_llm(
     try:
         protected_chunk, numeric_replacements = _protect_numeric_evidence(chunk)
         prompt = _build_transcript_polish_prompt(session=session, chunk=protected_chunk, index=index, total=total)
-        resp = llm_generate(prompt=prompt, think=False)
+        resp = llm_generate(prompt=prompt, think=False, usage_operation="transcript_polish")
         out = _sanitize_llm_plain_text(str(resp.get("text", "")))
         return _restore_numeric_evidence(out, numeric_replacements), resp.get("usage") if isinstance(resp, dict) else {}
     except httpx.TimeoutException:

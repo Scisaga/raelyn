@@ -185,6 +185,10 @@ def schedule_brief_refresh(
     trigger_mode = str(trigger_mode or "auto").strip().lower() or "auto"
     if trigger_mode not in {"auto", "manual"}:
         trigger_mode = "auto"
+    if playlist.observation_enabled is False:
+        if trigger_mode == "manual":
+            raise ValueError("domain observation is disabled")
+        return None
     if trigger_mode == "auto" and not _auto_brief_generation_enabled():
         return None
 
@@ -324,7 +328,12 @@ def schedule_brief_refresh_for_video(session: Session, *, video: Video, reason: 
     if not playlist_ids:
         return 0
 
-    rows = session.execute(select(Playlist.id, Playlist.brief_granularity).where(Playlist.id.in_(list(playlist_ids)))).all()
+    rows = session.execute(
+        select(Playlist.id, Playlist.brief_granularity).where(
+            Playlist.id.in_(list(playlist_ids)),
+            Playlist.observation_enabled.is_(True),
+        )
+    ).all()
     count = 0
     for playlist_id, granularity in rows:
         period_start = brief_period_start(day, _normalize_granularity(granularity))
@@ -364,6 +373,8 @@ def schedule_brief_refresh_for_media_change(
 
     playlist = session.get(Playlist, playlist_id)
     if not playlist:
+        return 0
+    if playlist.observation_enabled is False:
         return 0
 
     media_ids = list(dict.fromkeys(changed_media_ids or []))

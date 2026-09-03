@@ -1,21 +1,68 @@
-          <div x-show="activeView==='domains'" x-transition.opacity class="h-full overflow-auto bg-[#030711] raelyn-scrollbar">
+          <div x-show="activeView==='domains'" x-transition.opacity class="raelyn-view raelyn-view--domains h-full overflow-auto raelyn-scrollbar">
             <div class="mx-auto max-w-7xl px-5 py-8 lg:px-8">
               <div class="flex flex-wrap items-end justify-between gap-4">
-                <div><div class="text-[10px] uppercase tracking-[0.2em] text-cyan-400">Semantic observatories</div><h1 class="mt-2 text-2xl font-semibold text-slate-100">选择一个持续演化的观测域</h1><p class="mt-2 max-w-2xl text-sm leading-6 text-slate-500">每张缩略星域都来自该观测域当前 ready 快照的真实类型化坐标采样；不同观测域保持各自语义空间，不拼成虚假的全局地图。</p></div>
-                <button type="button" class="rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 text-xs text-slate-300 hover:border-cyan-500/35 hover:text-cyan-100" @click="switchView('playlists')">管理观测域与信源</button>
+                <div><div class="text-[10px] uppercase tracking-[0.2em] text-cyan-400">Semantic observatories</div><h1 class="mt-2 text-2xl font-semibold text-slate-100">选择一个持续演化的观测域</h1><p class="mt-2 max-w-2xl text-sm leading-6 text-slate-500">每个观测域保持自己的语义空间、故事与观察位置；选择后直接恢复上次观测现场。</p></div>
+                <button type="button" class="rounded-md border border-slate-700 bg-slate-900/60 px-3 py-2 text-xs text-slate-300 hover:border-cyan-500/35 hover:text-cyan-100" @click="openGlobalSources()">管理信源</button>
               </div>
-              <div class="mt-7 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <div class="mt-7 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 <template x-for="domain in domains" :key="domain.id">
-                  <button type="button" class="group overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/55 text-left transition hover:-translate-y-0.5 hover:border-cyan-500/30 hover:shadow-[0_18px_50px_rgba(8,145,178,.08)]" @click="openDomain(domain.id)">
-                    <div class="relative h-44 overflow-hidden bg-[radial-gradient(circle_at_50%_40%,rgba(14,116,144,.12),transparent_60%)]">
-                      <svg class="absolute inset-0 h-full w-full" viewBox="0 0 100 44" preserveAspectRatio="none" aria-hidden="true">
-                        <path d="M0 11H100M0 22H100M0 33H100M25 0V44M50 0V44M75 0V44" stroke="rgba(30,64,175,.16)" stroke-width=".2" />
-                        <template x-for="(point,index) in domain.preview_points || []" :key="index"><circle :cx="point.x" :cy="point.y" :r="index%11===0 ? .62 : .34" :fill="domainPreviewColor(point.event_type_code)" :opacity="index%7===0 ? .95 : .68" /></template>
-                      </svg>
-                      <div class="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-slate-950 to-transparent"></div>
-                      <div class="absolute bottom-3 left-4 right-4 flex items-end justify-between gap-3"><div class="min-w-0"><div class="truncate text-base font-semibold text-slate-100" x-text="domain.name"></div><div class="mt-1 truncate text-[10px] text-slate-500" x-text="domainFreshnessLabel(domain)"></div></div><span class="rounded-full border border-violet-500/20 bg-violet-500/10 px-2 py-1 font-mono text-[10px] text-violet-200" x-text="formatInteger(domain.snapshot?.event_count || 0)+' 星点'"></span></div>
+                  <button
+                    type="button"
+                    class="group relative w-full overflow-hidden rounded-xl border border-slate-800 bg-slate-950/20 hover:border-slate-700 hover:bg-slate-900/40 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+                    style="aspect-ratio: 1 / 1;"
+                    @click="openDomain(domain.id)"
+                    :title="domain.name || '打开观测域'"
+                    aria-label="打开观测域"
+                  >
+                    <div class="absolute inset-0">
+                      <template x-if="domain.avatar_asset">
+                        <img
+                          class="h-full w-full object-cover will-change-transform transition-transform duration-500 ease-out group-hover:scale-110 motion-reduce:transform-none motion-reduce:transition-none"
+                          :src="assetContentUrl(domain.avatar_asset)"
+                          alt=""
+                          loading="lazy"
+                          @error="clearAssetRef(domain, 'avatar_asset')"
+                        />
+                      </template>
+                      <template x-if="!domain.avatar_asset">
+                        <div class="flex h-full w-full items-center justify-center bg-slate-900/40">
+                          <span class="text-2xl font-semibold text-slate-100" x-text="String(domain.name || '?').trim().slice(0,2) || '?'"></span>
+                        </div>
+                      </template>
+                      <div class="absolute inset-0 raelyn-vignette"></div>
                     </div>
-                    <div class="grid grid-cols-3 divide-x divide-slate-800 border-t border-slate-800 px-2 py-3 text-center"><div><div class="font-mono text-xs text-cyan-200" x-text="formatInteger(domain.unobserved_change_count || 0)"></div><div class="mt-1 text-[9px] text-slate-600">待观察变化</div></div><div><div class="font-mono text-xs text-violet-200" x-text="formatInteger(domain.snapshot?.story_count || 0)"></div><div class="mt-1 text-[9px] text-slate-600">故事</div></div><div><div class="font-mono text-xs text-slate-300" x-text="formatInteger(domain.media_count || 0)"></div><div class="mt-1 text-[9px] text-slate-600">信源</div></div></div>
+                    <div class="absolute inset-0 flex flex-col p-3 text-left">
+                      <div class="min-w-0">
+                        <div class="truncate text-base font-normal text-slate-100" x-text="domain.name || '-'"></div>
+                        <div class="mt-1 truncate text-[11px] text-slate-300" x-text="domainFreshnessLabel(domain)"></div>
+                      </div>
+                      <div class="mt-3 flex min-h-0 flex-1 flex-col justify-end">
+                        <div class="flex items-center justify-between gap-3">
+                          <div class="flex min-w-0 items-center -space-x-2" x-show="(domain.media_count || 0) > 0">
+                            <template x-for="media in (domain.media_preview || []).slice(0,5)" :key="media.id">
+                              <div class="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full border-2 border-black/20 bg-slate-800 text-[9px] font-semibold text-slate-200" :title="mediaDisplayName(media)">
+                                <template x-if="media.avatar_asset">
+                                  <img class="h-full w-full object-cover" :src="assetContentUrl(media.avatar_asset)" alt="" loading="lazy" @error="clearAssetRef(media, 'avatar_asset')" />
+                                </template>
+                                <span x-show="!media.avatar_asset" x-text="mediaAvatarLabel(media)"></span>
+                              </div>
+                            </template>
+                            <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 border-black/20 bg-slate-800 font-mono text-[10px] text-slate-100" x-show="(domain.media_count || 0) > (domain.media_preview || []).length" x-text="'+' + formatInteger((domain.media_count || 0) - (domain.media_preview || []).length)"></div>
+                          </div>
+                          <span class="text-[11px] text-slate-400" x-show="!(domain.media_count || 0)">暂无信源</span>
+                          <div class="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-slate-600/70 bg-slate-950/35 px-2.5 py-1 font-mono text-[11px] tabular-nums text-slate-100" title="来源记录">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-slate-300" aria-hidden="true"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+                            <span x-text="formatInteger(domain.video_count || 0)"></span>
+                            <span class="sr-only">条来源记录</span>
+                          </div>
+                        </div>
+                        <div class="mt-3 grid grid-cols-3 gap-3 border-t border-white/15 pt-3">
+                          <div class="min-w-0"><div class="font-mono text-xs tabular-nums text-cyan-100" x-text="formatInteger(domain.unobserved_change_count || 0)"></div><div class="mt-0.5 truncate text-[9px] text-slate-400">待观察变化</div></div>
+                          <div class="min-w-0"><div class="font-mono text-xs tabular-nums text-violet-100" x-text="formatInteger(domain.snapshot?.story_count || 0)"></div><div class="mt-0.5 text-[9px] text-slate-400">故事</div></div>
+                          <div class="min-w-0"><div class="font-mono text-xs tabular-nums text-slate-100" x-text="formatInteger(domain.snapshot?.event_count || 0)"></div><div class="mt-0.5 text-[9px] text-slate-400">星点</div></div>
+                        </div>
+                      </div>
+                    </div>
                   </button>
                 </template>
               </div>

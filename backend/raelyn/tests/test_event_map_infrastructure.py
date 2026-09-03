@@ -20,6 +20,7 @@ from raelyn.models import (
     EventMapSnapshot,
     EventMapState,
     EventMapStoryEdge,
+    EventMapStoryIdentity,
     EventMapTopic,
     EventMapTopicMember,
     Job,
@@ -140,6 +141,17 @@ class EventMapModelTests(unittest.TestCase):
         for model, names in expected.items():
             with self.subTest(table=model.__tablename__):
                 self.assertTrue(names.issubset({index.name for index in model.__table__.indexes}))
+
+    def test_story_identity_exposes_frozen_title_and_material_update_cursor(self) -> None:
+        columns = EventMapStoryIdentity.__table__.columns
+        self.assertFalse(columns["stable_title"].nullable)
+        self.assertTrue(columns["last_material_snapshot_id"].nullable)
+        self.assertEqual(list(columns["last_material_snapshot_id"].foreign_keys), [])
+        self.assertFalse(columns["last_material_changed_at"].nullable)
+        self.assertIn(
+            "event_map_story_identity_material_idx",
+            {index.name for index in EventMapStoryIdentity.__table__.indexes},
+        )
 
     def test_runtime_and_data_migrations_add_snapshot_delete_indexes(self) -> None:
         expected_by_table = {
@@ -298,6 +310,245 @@ class EventMapModelTests(unittest.TestCase):
                                 )
                     finally:
                         engine.dispose()
+
+    def test_runtime_and_data_migrations_add_story_evidence_graph_columns(self) -> None:
+        expected = {
+            "event_map_story": {"anchor_key", "maturity", "quality_score"},
+            "event_map_story_edge": {"evidence_json"},
+            "event_map_story_history_revision": {"anchor_key", "maturity", "quality_score"},
+        }
+        for migrate_schema in (_migrate_runtime_schema, _migrate_data_schema):
+            with self.subTest(migrate_schema=migrate_schema.__module__):
+                with tempfile.TemporaryDirectory() as tmp:
+                    engine = create_engine(f"sqlite:///{Path(tmp) / 'story-schema.sqlite'}")
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(text("create table event_map_story (story_id text primary key)"))
+                            conn.execute(text("create table event_map_story_edge (edge_id text primary key)"))
+                            conn.execute(
+                                text(
+                                    "create table event_map_story_history_revision "
+                                    "(id text primary key)"
+                                )
+                            )
+                            migrate_schema(conn)
+                            inspector = inspect(conn)
+                            for table_name, expected_columns in expected.items():
+                                observed = {
+                                    column["name"]
+                                    for column in inspector.get_columns(table_name)
+                                }
+                                self.assertTrue(expected_columns.issubset(observed))
+                    finally:
+                        engine.dispose()
+
+    def test_runtime_and_data_migrations_backfill_story_identity_reading_metadata(self) -> None:
+        for migrate_schema in (_migrate_runtime_schema, _migrate_data_schema):
+            with self.subTest(migrate_schema=migrate_schema.__module__):
+                with tempfile.TemporaryDirectory() as tmp:
+                    engine = create_engine(f"sqlite:///{Path(tmp) / 'story-identity.sqlite'}")
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text(
+                                    "create table event_map_story_identity ("
+                                    "id text primary key, playlist_id text not null, status text not null, "
+                                    "created_snapshot_id text, retired_snapshot_id text, "
+                                    "created_at datetime not null, updated_at datetime not null)"
+                                )
+                            )
+                            conn.execute(
+                                text(
+                                    "create table event_map_story_history_revision ("
+                                    "id text primary key, story_identity_id text not null, snapshot_id text not null, "
+                                    "title text not null, observed_at datetime not null)"
+                                )
+                            )
+                            conn.execute(
+                                text(
+                                    "create table event_map_change ("
+                                    "id text primary key, object_id text not null, object_type text not null, "
+                                    "change_type text not null, to_snapshot_id text not null, "
+                                    "observed_at datetime not null)"
+                                )
+                            )
+                            conn.execute(
+                                text(
+                                    "insert into event_map_story_identity "
+                                    "(id, playlist_id, status, created_snapshot_id, created_at, updated_at) "
+                                    "values ('story-1', 'playlist-1', 'active', 'snapshot-1', "
+                                    "'2026-08-01 00:00:00', '2026-08-01 00:00:00')"
+                                )
+                            )
+                            conn.execute(
+                                text(
+                                    "insert into event_map_story_history_revision "
+                                    "(id, story_identity_id, snapshot_id, title, observed_at) values "
+                                    "('revision-1', 'story-1', 'snapshot-1', '最早稳定标题', '2026-08-01 01:00:00'), "
+                                    "('revision-2', 'story-1', 'snapshot-2', '后来措辞标题', '2026-08-02 01:00:00')"
+                                )
+                            )
+                            conn.execute(
+                                text(
+                                    "insert into event_map_change "
+                                    "(id, object_id, object_type, change_type, to_snapshot_id, observed_at) values "
+                                    "('change-1', 'story-1', 'story', 'story_added', 'snapshot-1', "
+                                    "'2026-08-01 01:00:00'), "
+                                    "('change-2', 'story-1', 'story', 'story_maturity_changed', 'snapshot-2', "
+                                    "'2026-08-02 01:00:00'), "
+                                    "('change-3', 'story-1', 'story', 'story_summary_changed', 'snapshot-3', "
+                                    "'2026-08-03 01:00:00')"
+                                )
+                            )
+
+                            migrate_schema(conn)
+
+                            row = conn.execute(
+                                text(
+                                    "select stable_title, last_material_snapshot_id, last_material_changed_at "
+                                    "from event_map_story_identity where id = 'story-1'"
+                                )
+                            ).one()
+                            self.assertEqual(row[0], "最早稳定标题")
+                            self.assertEqual(row[1], "snapshot-2")
+                            self.assertEqual(str(row[2]), "2026-08-02 01:00:00")
+                            conn.execute(
+                                text(
+                                    "insert into event_map_story_history_revision "
+                                    "(id, story_identity_id, snapshot_id, title, observed_at) values "
+                                    "('revision-0', 'story-1', 'snapshot-0', '后来补录的更早标题', "
+                                    "'2026-07-31 01:00:00')"
+                                )
+                            )
+                            migrate_schema(conn)
+                            self.assertEqual(
+                                conn.execute(
+                                    text(
+                                        "select stable_title from event_map_story_identity "
+                                        "where id = 'story-1'"
+                                    )
+                                ).scalar_one(),
+                                "最早稳定标题",
+                            )
+                            self.assertIn(
+                                "event_map_story_identity_material_idx",
+                                {
+                                    index["name"]
+                                    for index in inspect(conn).get_indexes(
+                                        "event_map_story_identity"
+                                    )
+                                },
+                            )
+                    finally:
+                        engine.dispose()
+
+    def test_runtime_and_data_migrations_reject_active_identity_without_a_title(self) -> None:
+        for migrate_schema in (_migrate_runtime_schema, _migrate_data_schema):
+            with self.subTest(migrate_schema=migrate_schema.__module__):
+                with tempfile.TemporaryDirectory() as tmp:
+                    engine = create_engine(f"sqlite:///{Path(tmp) / 'broken-story-identity.sqlite'}")
+                    try:
+                        with self.assertRaisesRegex(RuntimeError, "cannot backfill stable_title"):
+                            with engine.begin() as conn:
+                                conn.execute(
+                                    text(
+                                        "create table event_map_story_identity ("
+                                        "id text primary key, playlist_id text not null, status text not null, "
+                                        "created_snapshot_id text, retired_snapshot_id text, "
+                                        "created_at datetime not null, updated_at datetime not null)"
+                                    )
+                                )
+                                conn.execute(
+                                    text(
+                                        "insert into event_map_story_identity "
+                                        "(id, playlist_id, status, created_at, updated_at) values "
+                                        "('story-without-title', 'playlist-1', 'active', "
+                                        "'2026-08-01 00:00:00', '2026-08-01 00:00:00')"
+                                    )
+                                )
+                                migrate_schema(conn)
+                    finally:
+                        engine.dispose()
+
+    def test_runtime_migration_only_seeds_unlinked_legacy_story_identities(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = create_engine(f"sqlite:///{Path(tmp) / 'legacy-story-identity.sqlite'}")
+            try:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "create table event_map_snapshot ("
+                            "id text primary key, playlist_id text not null, job_id text)"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "create table event_map_story_identity ("
+                            "id text primary key, playlist_id text not null, status text not null, "
+                            "created_snapshot_id text, retired_snapshot_id text, "
+                            "created_at datetime not null, updated_at datetime not null)"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "create table event_map_story ("
+                            "snapshot_id text not null, story_id text not null, "
+                            "story_identity_id text, title text not null, created_at datetime not null)"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "insert into event_map_snapshot (id, playlist_id, job_id) values "
+                            "('snapshot-1', 'playlist-1', null), "
+                            "('snapshot-2', 'playlist-1', null)"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "insert into event_map_story_identity "
+                            "(id, playlist_id, status, created_snapshot_id, created_at, updated_at) "
+                            "values ('stable-story', 'playlist-1', 'active', 'snapshot-1', "
+                            "'2026-08-01 00:00:00', '2026-08-01 00:00:00')"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "insert into event_map_story "
+                            "(snapshot_id, story_id, story_identity_id, title, created_at) values "
+                            "('snapshot-1', 'already-linked-story', 'stable-story', "
+                            "'已连接稳定身份', '2026-08-01 00:00:00'), "
+                            "('snapshot-2', 'legacy-unlinked-story', null, "
+                            "'旧快照故事', '2026-08-02 00:00:00')"
+                        )
+                    )
+
+                    _migrate_runtime_schema(conn)
+
+                    self.assertEqual(
+                        conn.execute(
+                            text("select count(*) from event_map_story_identity")
+                        ).scalar_one(),
+                        2,
+                    )
+                    self.assertIsNone(
+                        conn.execute(
+                            text(
+                                "select id from event_map_story_identity "
+                                "where id = 'already-linked-story'"
+                            )
+                        ).scalar_one_or_none()
+                    )
+                    self.assertEqual(
+                        conn.execute(
+                            text(
+                                "select story_identity_id from event_map_story "
+                                "where story_id = 'legacy-unlinked-story'"
+                            )
+                        ).scalar_one(),
+                        "legacy-unlinked-story",
+                    )
+            finally:
+                engine.dispose()
 
 
 class EventMapJobTests(unittest.TestCase):

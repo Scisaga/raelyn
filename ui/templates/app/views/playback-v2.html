@@ -1,13 +1,13 @@
-          <!-- V2 来源复盘工作台：只加载按日记录、播放资产和转写。 -->
-          <div x-show="activeView==='playlist'" x-transition.opacity class="relative h-full bg-[#02050c] text-slate-200">
+          <!-- V2 来源复盘工作台：记录与简报共用观测域周期导航和右侧播放器。 -->
+          <div x-show="activeView==='playlist'" x-transition.opacity class="raelyn-view raelyn-view--playback relative h-full text-slate-200">
             <div class="flex h-full min-h-0 flex-col">
-              <header class="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-slate-800 bg-slate-950/90 px-3 sm:px-4">
+              <header class="raelyn-surface-toolbar flex h-14 shrink-0 items-center justify-between gap-3 border-b border-slate-800 px-3 sm:px-4">
                 <div class="min-w-0">
                   <div class="truncate text-sm font-semibold text-slate-100" x-text="playlistDetail?.name || '播放列表'"></div>
                   <div class="mt-0.5 flex items-center gap-2 text-[10px] text-slate-500">
-                    <span x-text="playlistSelectedDate || '选择日期'"></span>
+                    <span x-text="playbackBriefPeriodLabel()"></span>
                     <span>·</span>
-                    <span x-text="`${playlistDayVideos.length} 条可播放记录`"></span>
+                    <span x-text="`${playlistBriefTitle()} · ${playlistDayVideos.length} 条可播放记录`"></span>
                     <span class="text-amber-300" x-show="playbackDayTruncated">已达到 500 条上限，当前列表已截断</span>
                   </div>
                 </div>
@@ -16,15 +16,20 @@
                     <button type="button" class="rounded px-2 py-1 text-[11px]" :class="!playlistAudioOnly ? 'bg-cyan-500/15 text-cyan-100' : 'text-slate-500'" @click="playlistAudioOnly && playlistToggleAudioOnly()">视频</button>
                     <button type="button" class="rounded px-2 py-1 text-[11px]" :class="playlistAudioOnly ? 'bg-cyan-500/15 text-cyan-100' : 'text-slate-500'" @click="!playlistAudioOnly && playlistToggleAudioOnly()">音频</button>
                   </div>
-                  <a class="inline-flex h-8 items-center rounded-md border border-slate-800 px-2.5 text-[11px] text-slate-400 hover:text-slate-100" :href="playlistCurrentVideo?.url || '#'" target="_blank" rel="noreferrer" :class="playlistCurrentVideo ? '' : 'pointer-events-none opacity-40'">原始链接</a>
+                  <a x-show="playbackContentTab==='records'" class="inline-flex h-8 items-center rounded-md border border-slate-800 px-2.5 text-[11px] text-slate-400 hover:text-slate-100" :href="playlistCurrentVideo?.url || '#'" target="_blank" rel="noreferrer" :class="playlistCurrentVideo ? '' : 'pointer-events-none opacity-40'">原始链接</a>
                 </div>
               </header>
 
               <div class="min-h-0 flex-1 pb-[6.5rem] md:flex md:flex-col md:pb-16 lg:grid lg:grid-cols-[38%_62%] lg:pb-16">
-                <!-- 记录列表：桌面独立滚动；手机通过标签切换。 -->
-                <section class="h-full min-h-0 flex-col border-r border-slate-800 bg-slate-950/35 md:order-2 md:h-[38%] lg:order-none lg:h-full" :class="playbackMobileTab==='records' ? 'flex' : 'hidden md:flex'" aria-label="当日来源记录">
+                <!-- 左栏只切换本周期记录与本周期简报；右栏播放器保持不变。 -->
+                <section class="raelyn-surface-base min-h-0 flex-col border-r border-slate-800 md:order-2 md:h-[38%] lg:order-none lg:h-full" :class="playbackMobileTab==='records' ? 'flex h-full' : 'hidden h-full md:flex'" aria-label="播放列表内容切换">
+                  <div class="grid h-11 shrink-0 grid-cols-2 border-b border-slate-800 bg-slate-950/60 p-1" role="tablist" aria-label="播放列表内容">
+                    <button type="button" role="tab" class="rounded-md text-xs transition" :aria-selected="playbackContentTab==='records'" :class="playbackContentTab==='records' ? 'bg-cyan-500/15 font-semibold text-cyan-100' : 'text-slate-500 hover:text-slate-200'" @click="playbackSetContentTab('records')">记录</button>
+                    <button type="button" role="tab" class="rounded-md text-xs transition" :aria-selected="playbackContentTab==='brief'" :class="playbackContentTab==='brief' ? 'bg-cyan-500/15 font-semibold text-cyan-100' : 'text-slate-500 hover:text-slate-200'" @click="playbackSetContentTab('brief')">简报</button>
+                  </div>
+                  <div x-show="playbackContentTab==='records'" class="min-h-0 flex flex-1 flex-col">
                   <div class="flex h-10 shrink-0 items-center justify-between border-b border-slate-800 px-3">
-                    <span class="text-xs font-semibold text-slate-300">当日记录</span>
+                    <span class="text-xs font-semibold text-slate-300">本期记录</span>
                     <span class="font-mono text-[10px] text-slate-600" x-text="playlistDayVideosLoading ? '加载中…' : `${playlistDayVideos.length}/500`"></span>
                   </div>
                   <div x-ref="playlistDayListScroller" class="min-h-0 flex-1 divide-y divide-slate-800 overflow-auto raelyn-scrollbar">
@@ -48,15 +53,34 @@
                     </template>
                     <div class="p-4 text-xs text-slate-500" x-show="playlistDayVideosLoading">正在加载可播放记录…</div>
                     <div class="p-4 text-xs text-rose-300" x-show="playlistDayVideosError" x-text="playlistDayVideosError"></div>
-                    <div class="p-4 text-xs text-slate-500" x-show="!playlistDayVideosLoading && !playlistDayVideosError && !playlistDayVideos.length">这一天没有具备播放资产的记录。</div>
+                    <div class="p-4 text-xs text-slate-500" x-show="!playlistDayVideosLoading && !playlistDayVideosError && !playlistDayVideos.length">本周期没有具备播放资产的记录。</div>
+                  </div>
+                  </div>
+                  <div x-show="playbackContentTab==='brief'" class="min-h-0 flex flex-1 flex-col">
+                    <div class="flex h-10 shrink-0 items-center justify-between gap-3 border-b border-slate-800 px-3">
+                      <div class="min-w-0 truncate text-xs font-semibold text-slate-300" x-text="`${playlistBriefTitle()} · ${playbackBriefPeriodLabel()}`"></div>
+                      <div class="flex shrink-0 items-center gap-1">
+                        <button type="button" class="rounded-md border border-slate-800 px-2 py-1 text-[10px] text-slate-400 hover:text-slate-100 disabled:opacity-40" :disabled="!playlistBriefCanCopy() || playlistBriefCopying" @click="playlistCopyBriefText()">复制</button>
+                        <button type="button" class="rounded-md border border-slate-800 px-2 py-1 text-[10px] text-slate-400 hover:text-slate-100 disabled:opacity-40" :disabled="!playlistBriefCanSpeak()" :title="playlistBriefSpeechButtonTitle()" @click="playlistSpeakBrief()" x-text="playlistBriefSpeechButtonLabel()"></button>
+                      </div>
+                    </div>
+                    <div class="min-h-0 flex-1 overflow-auto raelyn-scrollbar">
+                      <div class="flex min-h-full items-center justify-center px-6 text-xs text-slate-600" x-show="playlistBriefLoading">正在读取当前周期简报…</div>
+                      <div class="flex min-h-full items-center justify-center px-6 text-xs text-rose-300" x-show="!playlistBriefLoading && playlistBriefError" x-text="playlistBriefError"></div>
+                      <article x-ref="playlistBriefContentEl" class="raelyn-brief px-4 py-5 text-sm leading-7 text-slate-300" x-show="!playlistBriefLoading && !playlistBriefError && playlistBriefHtml" x-html="playlistBriefHtml" @click="playlistBriefClick($event)"></article>
+                      <div class="flex min-h-full flex-col items-center justify-center gap-3 px-6 text-center text-xs text-slate-600" x-show="!playlistBriefLoading && !playlistBriefError && !playlistBriefHtml">
+                        <span>当前周期尚无简报。</span>
+                        <button type="button" class="text-cyan-300 hover:text-cyan-200" @click="switchView('domain-settings')">前往观测域设置</button>
+                      </div>
+                    </div>
                   </div>
                 </section>
 
                 <!-- 播放器与转写：平板/手机播放器在上，转写在下。 -->
-                <section class="h-full min-h-0 flex-col bg-slate-950/15 md:order-1 md:h-[62%] lg:order-none lg:h-full" :class="playbackMobileTab==='transcript' ? 'flex' : 'hidden md:flex'" aria-label="播放器与转写">
+                <section class="raelyn-surface-reading h-full min-h-0 flex-col md:order-1 md:h-[62%] lg:order-none lg:h-full" :class="playbackMobileTab==='transcript' ? 'flex' : 'hidden md:flex'" aria-label="播放器与转写">
                   <div class="shrink-0 border-b border-slate-800 bg-black/40">
                     <div class="relative mx-auto aspect-video max-h-[46vh] w-full bg-black lg:max-h-[42vh]" x-show="!playlistAudioOnly">
-                      <video x-ref="playlistVideoEl" class="absolute inset-0 h-full w-full" :src="playlistPlayerVideoUrl || null" playsinline preload="metadata" @loadedmetadata="playbackMediaOnLoadedMetadata($event)" @durationchange="playbackMediaOnLoadedMetadata($event)" @timeupdate="playbackMediaOnTimeUpdate($event)" @play="playlistMediaOnPlay($event)" @pause="playlistMediaOnPause($event)" @volumechange="playlistMediaOnVolumeChange($event)" @canplay="playlistMaybeAutoPlay($event)" @ended="playlistOnEnded($event)"></video>
+                      <video x-ref="playlistVideoEl" class="absolute inset-0 h-full w-full cursor-pointer" :src="playlistPlayerVideoUrl || null" playsinline preload="metadata" role="button" tabindex="0" :aria-label="playlistMediaPlaying ? '暂停视频' : '播放视频'" @click="playlistMediaTogglePlay()" @keydown.space.prevent="playlistMediaTogglePlay()" @keydown.enter.prevent="playlistMediaTogglePlay()" @loadedmetadata="playbackMediaOnLoadedMetadata($event)" @durationchange="playbackMediaOnLoadedMetadata($event)" @timeupdate="playbackMediaOnTimeUpdate($event)" @play="playlistMediaOnPlay($event)" @pause="playlistMediaOnPause($event)" @volumechange="playlistMediaOnVolumeChange($event)" @canplay="playlistMaybeAutoPlay($event)" @ended="playlistOnEnded($event)"></video>
                       <div class="absolute inset-0 flex items-center justify-center px-6 text-center text-xs text-slate-500" x-show="!playlistCurrentVideo">请选择一条来源记录</div>
                     </div>
                     <audio x-ref="playlistAudioEl" class="hidden" :src="playlistPlayerAudioUrl || null" preload="metadata" @loadedmetadata="playbackMediaOnLoadedMetadata($event)" @durationchange="playbackMediaOnLoadedMetadata($event)" @timeupdate="playbackMediaOnTimeUpdate($event)" @play="playlistMediaOnPlay($event)" @pause="playlistMediaOnPause($event)" @volumechange="playlistMediaOnVolumeChange($event)" @canplay="playlistMaybeAutoPlay($event)" @ended="playlistOnEnded($event)"></audio>
@@ -78,6 +102,21 @@
                       </div>
                       <div class="mt-2 flex items-center justify-between gap-3 text-[10px]" x-show="playlistPlayerError || playlistPlayerNeedsDownload"><span class="text-amber-300" x-text="playlistPlayerError"></span><button type="button" class="shrink-0 rounded border border-amber-500/30 px-2 py-1 text-amber-200" x-show="playlistCanDownloadCurrentVideo()" @click="playlistDownloadCurrentVideo()">重新下载</button></div>
                     </div>
+                    <div data-playback-brief-source x-show="playbackContentTab==='brief' && playlistCurrentVideo" class="flex min-h-14 items-center gap-3 border-t border-slate-800 bg-slate-950/80 px-3 py-2">
+                      <div class="h-9 w-9 shrink-0 overflow-hidden rounded-md border border-slate-800 bg-slate-900">
+                        <img x-show="playlistCurrentVideo?.media_avatar_asset" class="h-full w-full object-cover" :src="playlistCurrentVideo?.media_avatar_asset ? assetContentUrl(playlistCurrentVideo.media_avatar_asset) : ''" alt="" loading="lazy" />
+                        <div x-show="!playlistCurrentVideo?.media_avatar_asset" class="flex h-full w-full items-center justify-center text-[10px] text-slate-500" x-text="String(playlistCurrentVideo?.media_name || '?').slice(0,2)"></div>
+                      </div>
+                      <div class="min-w-0 flex-1">
+                        <div class="truncate text-xs font-medium text-slate-100" :title="playlistCurrentVideo?.title || playlistCurrentVideo?.url || ''" x-text="playlistCurrentVideo?.title || playlistCurrentVideo?.url || '来源记录'"></div>
+                        <div class="mt-1 flex min-w-0 items-center gap-2 text-[10px] text-slate-500">
+                          <span class="max-w-[45%] truncate" x-text="playlistCurrentVideo?.media_name || playlistCurrentVideo?.media_id || '未知媒体'"></span>
+                          <span class="shrink-0 font-mono tabular-nums" x-text="formatDateTimeShortWithSeconds(playlistVideoTimelineAt(playlistCurrentVideo)) || '-'"></span>
+                          <span class="ml-auto hidden shrink-0 font-mono tabular-nums sm:inline" x-text="formatDuration(playlistCurrentVideo?.duration_sec) || ''"></span>
+                        </div>
+                      </div>
+                      <a class="shrink-0 rounded-md border border-slate-800 px-2.5 py-1.5 text-[10px] text-slate-400 hover:bg-slate-800 hover:text-slate-100" :href="playlistCurrentVideo?.url || '#'" target="_blank" rel="noreferrer">原始链接</a>
+                    </div>
                   </div>
 
                   <div class="flex min-h-0 flex-1 flex-col">
@@ -95,15 +134,16 @@
                     </div>
                   </div>
                 </section>
+
               </div>
 
-              <!-- 手机切换器位于固定日历上方。 -->
+              <!-- 手机切换器位于固定周期导航上方。 -->
               <div class="absolute inset-x-0 bottom-16 z-20 grid h-10 grid-cols-2 border-y border-slate-800 bg-slate-950/95 md:hidden">
-                <button type="button" class="text-xs" :class="playbackMobileTab==='records' ? 'bg-cyan-500/15 text-cyan-100' : 'text-slate-500'" @click="playbackSetMobileTab('records')">记录列表</button>
+                <button type="button" class="text-xs" :class="playbackMobileTab==='records' ? 'bg-cyan-500/15 text-cyan-100' : 'text-slate-500'" @click="playbackSetMobileTab('records')" x-text="playbackContentTab==='brief' ? '简报' : '记录列表'"></button>
                 <button type="button" class="text-xs" :class="playbackMobileTab==='transcript' ? 'bg-cyan-500/15 text-cyan-100' : 'text-slate-500'" @click="playbackSetMobileTab('transcript')">播放器与转写</button>
               </div>
 
-              <!-- 固定 64px 按日日历：保留原播放页的网格、滑动轨道和跳转按钮。 -->
+              <!-- 固定 64px 周期导航：卡片粒度来自当前观测域的唯一简报周期。 -->
               <footer class="absolute inset-x-0 bottom-0 z-30 h-16 overflow-hidden border-t-[2px] border-slate-700/90 bg-slate-950/10 shadow-[0_-12px_18px_-10px_rgba(0,0,0,0.55)]">
 		                  <div class="pointer-events-none absolute inset-x-0 top-[2px] h-2 bg-gradient-to-b from-black/35 to-transparent"></div>
 		                  <div class="h-16 grid items-stretch divide-x divide-slate-800 bg-slate-950/15" :style="playlistCalendarLayoutStyle()">

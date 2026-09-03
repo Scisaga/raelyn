@@ -2,20 +2,31 @@ from __future__ import annotations
 
 import hashlib
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from raelyn.config import settings
 from raelyn.db import init_db, session_scope
 from raelyn.jobs.enqueue import enqueue_job
-from raelyn.models import Media
+from raelyn.models import AppConfig, Job, Media, ResourceUsageDaily
 from raelyn.services.log_timestamps import install_if_needed
 from raelyn.services.provider_pause import get_provider_pause, provider_pause_allows_public_discovery
 from raelyn.services.s3 import s3_ensure_bucket
 from raelyn.services.system_pause import is_paused
+from raelyn.services.usage import (
+    LEGACY_USAGE_BACKFILL_CONFIG_KEY,
+    LEGACY_USAGE_BACKFILL_VERSION,
+    USAGE_TIMEZONE,
+)
 from raelyn.timeutil import utcnow
+
+
+_USAGE_SNAPSHOT_JOB_TYPE = "system.capture_usage_snapshot"
+_USAGE_LEGACY_BACKFILL_JOB_TYPE = "system.backfill_legacy_usage"
+_USAGE_SNAPSHOT_INTERVAL = timedelta(hours=1)
 
 
 def _has_pending_sync_job(session, media_id) -> bool:
@@ -54,6 +65,83 @@ def _positive_int(value: Any, *, default: int) -> int:
     except Exception:
         n = int(default)
     return max(1, n)
+
+
+def _resource_usage_snapshot_due_at(last_captured_at: datetime | None, now: datetime) -> bool:
+    if last_captured_at is None:
+        return True
+    last = last_captured_at
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    current = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    return last.astimezone(timezone.utc) + _USAGE_SNAPSHOT_INTERVAL <= current.astimezone(timezone.utc)
+
+
+def _has_active_usage_snapshot_job(session) -> bool:
+    return session.execute(
+        select(Job.id)
+        .where(
+            Job.type == _USAGE_SNAPSHOT_JOB_TYPE,
+            Job.status.in_(("pending", "running")),
+        )
+        .limit(1)
+    ).scalar_one_or_none() is not None
+
+
+def _legacy_usage_backfill_completed(session) -> bool:
+    marker = session.get(AppConfig, LEGACY_USAGE_BACKFILL_CONFIG_KEY)
+    value = marker.value if marker is not None and isinstance(marker.value, dict) else {}
+    try:
+        return int(value.get("version") or 0) >= LEGACY_USAGE_BACKFILL_VERSION
+    except (TypeError, ValueError):
+        return False
+
+
+def tick_usage_legacy_backfill() -> int:
+    """一次性入队历史 LLM 用量迁移；聚合扫描由 sync worker 执行。"""
+
+    with session_scope() as session:
+        if is_paused(session) or _legacy_usage_backfill_completed(session):
+            return 0
+        active_job = session.execute(
+            select(Job.id)
+            .where(
+                Job.type == _USAGE_LEGACY_BACKFILL_JOB_TYPE,
+                Job.status.in_(("pending", "running")),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        if active_job is not None:
+            return 0
+        enqueue_job(
+            session,
+            type_=_USAGE_LEGACY_BACKFILL_JOB_TYPE,
+            params={"version": LEGACY_USAGE_BACKFILL_VERSION},
+            priority=0,
+        )
+        return 1
+
+
+def tick_usage_snapshot() -> int:
+    """只负责按小时入队；库存扫描与快照写入由 worker 执行。"""
+
+    now = utcnow()
+    with session_scope() as session:
+        if is_paused(session) or _has_active_usage_snapshot_job(session):
+            return 0
+        last_captured_at = session.execute(
+            select(func.max(ResourceUsageDaily.captured_at))
+        ).scalar_one_or_none()
+        if not _resource_usage_snapshot_due_at(last_captured_at, now):
+            return 0
+        local_day = now.astimezone(ZoneInfo(USAGE_TIMEZONE)).date().isoformat()
+        enqueue_job(
+            session,
+            type_=_USAGE_SNAPSHOT_JOB_TYPE,
+            params={"date": local_day},
+            priority=0,
+        )
+        return 1
 
 
 def tick() -> int:
@@ -109,6 +197,8 @@ def main() -> None:
     s3_ensure_bucket()
     while True:
         tick()
+        tick_usage_legacy_backfill()
+        tick_usage_snapshot()
         time.sleep(60)
 
 

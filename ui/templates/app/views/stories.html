@@ -1,58 +1,201 @@
-          <div x-show="activeView==='stories'" x-transition.opacity class="h-full bg-[#030711]">
-            <div class="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[20rem_minmax(0,1fr)]">
-              <aside class="flex min-h-0 flex-col border-r border-slate-800 bg-slate-950/55">
-                <div class="border-b border-slate-800 px-4 py-3">
-                  <div class="flex items-center justify-between"><div><div class="text-xs font-semibold text-slate-100">故事航迹</div><div class="mt-1 text-[10px] text-slate-600" x-text="currentDomainLabel()"></div></div><span class="rounded-full border border-violet-500/20 bg-violet-500/10 px-2 py-0.5 font-mono text-[10px] text-violet-200" x-text="stories.length"></span></div>
-                </div>
-                <div class="flex-1 overflow-auto raelyn-scrollbar">
-                  <div class="px-4 py-8 text-center text-xs text-slate-600" x-show="storiesLoading">正在读取稳定故事身份…</div>
+          <div x-show="activeView==='stories'" x-transition.opacity class="raelyn-view raelyn-view--stories flex h-full min-h-0 flex-col" @keydown.escape.window="storyInspectorOpen && storyCloseInspector()">
+            <header class="raelyn-toolbar-band flex h-16 shrink-0 items-center justify-between border-b border-slate-800 px-4" data-story-context-band>
+              <div class="min-w-0">
+                <div class="text-sm font-semibold text-slate-100">故事更新</div>
+                <div class="mt-1 truncate text-[10px] text-slate-500" x-text="currentDomainLabel()"></div>
+              </div>
+              <div class="flex shrink-0 items-center gap-2 text-[10px] text-cyan-200" x-show="domainSwitcherSwitching">
+                <svg class="animate-spin" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-5.5-7.6"></path></svg>
+                <span>正在切换观测域</span>
+              </div>
+            </header>
+            <div class="grid min-h-0 flex-1 grid-cols-1" :class="storyInspectorOpen ? 'lg:grid-cols-[20rem_minmax(0,1fr)_24rem]' : 'lg:grid-cols-[20rem_minmax(0,1fr)]'">
+              <aside class="raelyn-surface-base min-h-0 flex-col border-r border-slate-800" :class="storySelectedId ? 'hidden lg:flex' : 'flex'">
+                <nav class="grid h-12 shrink-0 grid-cols-4 gap-1 border-b border-slate-800 px-2" aria-label="故事阅读队列">
+                  <template x-for="tab in storyQueueTabs()" :key="tab.scope">
+                    <button type="button" class="my-1.5 rounded-md px-1 text-center text-[11px] transition" :class="storyScope===tab.scope ? 'bg-violet-500/12 text-violet-100' : 'text-slate-500 hover:bg-slate-900/60 hover:text-slate-300'" @click="storySetScope(tab.scope)" x-text="tab.label"></button>
+                  </template>
+                </nav>
+                <form class="flex h-12 shrink-0 items-center border-b border-slate-800 px-3" @submit.prevent="storySearch()">
+                  <label class="sr-only" for="story-queue-search">搜索当前故事队列</label>
+                  <div class="flex h-8 w-full items-center gap-2 rounded-md border border-slate-800 bg-slate-950/35 px-2.5 focus-within:border-violet-400/35 focus-within:ring-2 focus-within:ring-violet-500/10">
+                    <svg class="shrink-0 text-slate-600" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <circle cx="11" cy="11" r="6.5"></circle>
+                      <path d="m16 16 4.2 4.2"></path>
+                    </svg>
+                    <input id="story-queue-search" type="search" class="min-w-0 flex-1 border-0 bg-transparent p-0 text-xs text-slate-200 outline-none placeholder:text-slate-600" placeholder="搜索故事或最新进展" x-model="storyQueueQueries[storyScope]" @input.debounce.350ms="storySearch()" />
+                  </div>
+                </form>
+                <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar" aria-live="polite">
+                  <div class="px-4 py-8 text-center text-xs text-slate-600" x-show="storiesPreparing || storiesLoading">正在恢复观测域并整理故事…</div>
                   <template x-for="story in stories" :key="story.story_identity_id">
-                    <button type="button" class="block w-full border-b border-slate-900 px-4 py-3 text-left transition" :class="storySelectedId===story.story_identity_id ? 'bg-violet-500/8 border-l-2 border-l-violet-400' : 'hover:bg-slate-900/60'" @click="loadStoryDetail(story.story_identity_id,{markRead:true})">
-                      <div class="flex items-start gap-2"><span class="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" :class="story.unread ? 'bg-violet-300 shadow-[0_0_8px_rgba(196,181,253,.7)]' : 'bg-slate-700'"></span><span class="min-w-0 flex-1 text-xs font-medium leading-5 text-slate-200" x-text="story.title"></span><span class="text-[10px] text-amber-200" x-show="story.followed">关注</span></div>
-                      <div class="mt-1.5 line-clamp-2 text-[10px] leading-4 text-slate-600" x-text="story.summary"></div>
-                      <div class="mt-2 flex items-center justify-between font-mono text-[10px] text-slate-600"><span x-text="String(story.event_time_start || '').slice(0,10)+' → '+String(story.event_time_end || '').slice(0,10)"></span><span x-text="story.canonical_count+' 节点'"></span></div>
+                    <button type="button" class="block w-full border-b border-slate-900 px-4 py-3 text-left transition" :class="storySelectedId===story.story_identity_id ? 'border-l-2 border-l-violet-400 bg-violet-500/8' : 'hover:bg-slate-900/60'" @click="storyOpen(story.story_identity_id)">
+                      <div class="flex items-start gap-2">
+                        <span class="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full" :class="story.unread ? 'bg-violet-300 shadow-[0_0_8px_rgba(196,181,253,.7)]' : 'bg-slate-700'" :aria-label="story.unread ? '未读更新' : '已读'"></span>
+                        <span class="min-w-0 flex-1 text-xs font-medium leading-5 text-slate-200" x-text="storyStableTitle(story)"></span>
+                        <span class="shrink-0 text-amber-200" x-show="story.followed" aria-label="已关注" title="已关注">
+                          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 4A1.5 1.5 0 0 1 9 2.5h6A1.5 1.5 0 0 1 16.5 4v17l-4.5-3-4.5 3V4z"></path></svg>
+                        </span>
+                      </div>
+                      <div class="mt-1.5 line-clamp-2 pl-3.5 text-[11px] leading-4 text-slate-500" x-text="storyDirectoryProgress(story)"></div>
+                      <div class="mt-2 flex items-center justify-between gap-3 pl-3.5 text-[10px]">
+                        <span class="min-w-0 truncate text-cyan-300/80" x-text="storyMaterialChangeLabel(story)"></span>
+                        <time class="shrink-0 font-mono tabular-nums text-slate-600" x-text="storyObservedDateTimeLabel(story.last_material_changed_at)"></time>
+                      </div>
                     </button>
                   </template>
-                  <div class="px-4 py-8 text-center text-xs text-slate-600" x-show="!storiesLoading && !stories.length">当前观测域还没有形成有证据关系的故事</div>
+                  <div class="px-5 py-10 text-center text-xs leading-5 text-slate-500" x-show="!storiesPreparing && storiesDomainMissing">
+                    <div>尚未选择观测域，无法读取故事。</div>
+                    <button type="button" class="mt-3 rounded-md border border-violet-400/25 bg-violet-400/10 px-3 py-1.5 text-violet-100" @click="switchView('domains')">选择观测域</button>
+                  </div>
+                  <div class="px-5 py-10 text-center text-xs leading-5 text-rose-200" x-show="!storiesPreparing && !storiesDomainMissing && storiesError">
+                    <div>故事目录加载失败</div>
+                    <div class="mt-1 break-words text-[10px] text-rose-300/70" x-text="storiesError"></div>
+                    <button type="button" class="mt-3 rounded-md border border-rose-300/25 bg-rose-400/10 px-3 py-1.5 text-rose-100" @click="loadStories({scope:storyScope})">重新加载</button>
+                  </div>
+                  <div class="px-5 py-10 text-center text-xs leading-5 text-slate-500" x-show="!storiesPreparing && !storiesLoading && !storiesDomainMissing && !storiesError && !stories.length && storyScope==='attention'">
+                    <svg class="mx-auto text-emerald-300/70" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"></path></svg>
+                    <div class="mt-3 text-slate-300">当前没有新的实质更新</div>
+                    <div class="mt-1 text-[10px] text-slate-600">故事仍在，可以继续浏览已形成故事或初步线索。</div>
+                    <div class="mt-4 flex justify-center gap-2">
+                      <button type="button" class="rounded-md border border-violet-400/25 bg-violet-400/10 px-3 py-1.5 text-violet-100" @click="storySetScope('established')">查看已形成</button>
+                      <button type="button" class="rounded-md border border-slate-700 px-3 py-1.5 text-slate-300" @click="storySetScope('emerging')">查看初步线索</button>
+                    </div>
+                  </div>
+                  <div class="px-5 py-10 text-center text-xs leading-5 text-slate-600" x-show="!storiesPreparing && !storiesLoading && !storiesDomainMissing && !storiesError && !stories.length && storyScope!=='attention'" x-text="storyQueueTabs().find(tab => tab.scope===storyScope)?.empty"></div>
+                  <div class="px-4 py-4" x-show="storiesHasMore">
+                    <button type="button" class="w-full rounded-md border border-violet-500/20 bg-violet-500/5 px-3 py-2 text-xs text-violet-200 transition hover:bg-violet-500/10 disabled:cursor-wait disabled:opacity-50" :disabled="storiesLoadingMore" @click="loadMoreStories()">
+                      <span x-show="!storiesLoadingMore">加载更多</span><span x-show="storiesLoadingMore">正在读取下一页…</span>
+                    </button>
+                  </div>
                 </div>
               </aside>
 
-              <main class="min-h-0 overflow-auto raelyn-scrollbar">
-                <div class="mx-auto max-w-5xl px-5 py-6 lg:px-8" x-show="storyDetail">
-                  <div class="flex flex-wrap items-start justify-between gap-4 border-b border-slate-800 pb-5">
-                    <div class="min-w-0"><div class="text-[10px] uppercase tracking-[0.18em] text-violet-400">Stable Story · <span class="font-mono" x-text="String(storySelectedId).slice(0,8)"></span></div><h1 class="mt-2 text-xl font-semibold leading-8 text-slate-100" x-text="storyDetail?.revisions?.[storyDetail.revisions.length-1]?.title || '故事'"></h1><p class="mt-2 max-w-3xl text-sm leading-6 text-slate-400" x-text="storyDetail?.revisions?.[storyDetail.revisions.length-1]?.summary || '仅呈现冻结成员与有证据关系，不表达市场因果。'"></p></div>
-                    <div class="flex items-center gap-2"><button type="button" class="rounded-full border px-3 py-1.5 text-xs" :class="storyDetail?.followed ? 'border-amber-400/30 bg-amber-400/10 text-amber-100' : 'border-slate-700 text-slate-400'" @click="storyUpdateReadState({followed:!storyDetail.followed})" x-text="storyDetail?.followed ? '已关注' : '关注'"></button><button type="button" class="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-xs text-cyan-100" @click="storyOpenInField()">在星域中点亮</button></div>
+              <main class="raelyn-surface-reading min-h-0 overflow-auto raelyn-scrollbar" :class="storySelectedId ? 'block' : 'hidden lg:block'">
+                <div class="sticky top-0 z-10 flex items-center justify-between border-b border-slate-800 bg-slate-950/90 px-4 py-2 backdrop-blur lg:hidden">
+                  <button type="button" class="flex items-center gap-1 text-xs text-slate-300" @click="storyBackToQueue()"><svg class="shrink-0" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5m6-6-6 6 6 6"></path></svg>返回故事更新</button>
+                  <button type="button" class="text-xs text-cyan-200" x-show="storyDetail" @click="storyJumpLatest()">跳到最新</button>
+                </div>
+                <div class="mx-auto w-full max-w-6xl px-5 py-6 lg:px-8 xl:px-10" x-show="storyDetail">
+                  <div class="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-400/20 bg-amber-400/5 px-3 py-2" x-show="storyIsHistorical()">
+                    <div class="text-xs text-amber-100">正在阅读这条故事过去一次被观察到的样子</div>
+                    <button type="button" class="text-xs font-medium text-amber-200 underline decoration-amber-400/40 underline-offset-4" @click="storyReturnCurrent()">返回当前进展</button>
                   </div>
-
-                  <section class="mt-7">
-                    <div class="flex items-center justify-between"><h2 class="text-xs font-semibold text-slate-200">事件时间线</h2><span class="text-[10px] text-slate-600">按事件发生时间，不按入库时间</span></div>
-                    <div class="relative mt-4 space-y-0 before:absolute before:bottom-4 before:left-[7px] before:top-4 before:w-px before:bg-gradient-to-b before:from-violet-400/50 before:to-cyan-400/20">
-                      <template x-for="(canonicalId,index) in (storyDetail?.revisions?.[storyDetail.revisions.length-1]?.member_ids || [])" :key="canonicalId">
-                        <button type="button" class="relative block w-full py-3 pl-8 text-left" @click="storyOpenCanonical(canonicalId,index)"><span class="absolute left-0 top-[18px] h-3.5 w-3.5 rounded-full border border-violet-300/60 bg-slate-950 shadow-[0_0_10px_rgba(167,139,250,.35)]"></span><span class="block font-mono text-[10px] text-slate-600" x-text="'节点 '+String(index+1).padStart(2,'0')"></span><span class="mt-1 block text-xs text-slate-300" x-text="canonicalId"></span></button>
-                      </template>
+                  <header class="border-b border-slate-800 pb-6">
+                    <div class="flex flex-wrap items-start justify-between gap-5">
+                      <div class="min-w-0 flex-1">
+                        <div class="flex flex-wrap items-center gap-2 text-[10px] text-slate-500">
+                          <span class="rounded-full border border-violet-400/20 bg-violet-400/8 px-2 py-0.5 text-violet-200" x-text="storyMaturityLabel(storySelectedRevision()?.maturity)"></span>
+                          <time class="font-mono tabular-nums" x-text="storyDateSpan()"></time><span>·</span><span x-text="'实质更新于 '+storyObservedDateTimeLabel(storyDetail?.last_material_changed_at)"></span>
+                        </div>
+                        <h1 class="mt-3 max-w-4xl text-2xl font-semibold leading-9 text-slate-100" x-text="storyStableTitle()"></h1>
+                        <div class="mt-5 max-w-4xl border-l-2 border-cyan-400/40 pl-4">
+                          <div class="text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-300/70">最新真实进展</div>
+                          <h2 class="mt-1.5 text-base font-medium leading-7 text-slate-200" x-text="storyHeaderProgressTitle()"></h2>
+                          <p class="mt-1 text-sm leading-6 text-slate-400" x-show="storyHeaderProgressSummary()" x-text="storyHeaderProgressSummary()"></p>
+                        </div>
+                        <div class="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-[11px] text-slate-500 tabular-nums">
+                          <span><strong class="font-medium text-slate-300" x-text="storyTrajectory()?.nodes?.length || 0"></strong> 个事件</span>
+                          <span><strong class="font-medium text-slate-300" x-text="storyTrajectory()?.edges?.length || 0"></strong> 条真实关系</span>
+                          <span><strong class="font-medium text-slate-300" x-text="storySupportRecordCount()"></strong> 份支持记录</span>
+                        </div>
+                      </div>
+                      <div class="flex shrink-0 flex-wrap items-center gap-2">
+                        <button type="button" class="flex h-8 w-8 items-center justify-center rounded-full border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/30" :class="storyDetail?.followed ? 'border-amber-400/30 bg-amber-400/10 text-amber-100' : 'border-slate-700 text-slate-400 hover:text-slate-200'" @click="storyToggleFollowed()" :aria-label="storyDetail?.followed ? '取消关注' : '关注故事'" :title="storyDetail?.followed ? '取消关注' : '关注故事'" :aria-pressed="Boolean(storyDetail?.followed)">
+                          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" :fill="storyDetail?.followed ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 4A1.5 1.5 0 0 1 9 2.5h6A1.5 1.5 0 0 1 16.5 4v17l-4.5-3-4.5 3V4z"></path></svg>
+                        </button>
+                        <button type="button" class="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1.5 text-xs text-cyan-100 transition hover:bg-cyan-400/15" @click="storyOpenInField()">在星域中点亮</button>
+                        <button type="button" class="rounded-full bg-violet-400 px-3 py-1.5 text-xs font-medium text-slate-950 transition hover:bg-violet-300" x-show="storyCanMarkRead()" @click="storyMarkCurrentUpdateRead()">标记本次更新已读</button>
+                      </div>
                     </div>
+                  </header>
+                  <section class="mt-6 rounded-lg border border-violet-400/20 bg-violet-500/7 p-4" x-show="storyHasReadingUpdate()">
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                      <div><h2 class="text-sm font-semibold text-violet-100">自上次阅读后</h2><p class="mt-1 text-[11px] text-slate-500">这里只列影响故事事实结构的变化。</p></div>
+                      <button type="button" class="flex items-center gap-1 rounded-md border border-violet-300/25 bg-violet-400/10 px-3 py-1.5 text-xs text-violet-100" @click="storyContinueFromUpdate()"><svg class="shrink-0" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v16m-6-6 6 6 6-6"></path></svg>从新增处继续</button>
+                    </div>
+                    <ul class="mt-3 space-y-1.5 text-xs leading-5 text-slate-300"><template x-for="(item,index) in storyReadingUpdateItems()" :key="index"><li class="flex gap-2"><span class="mt-2 h-1 w-1 shrink-0 rounded-full bg-violet-300"></span><span x-text="item"></span></li></template></ul>
                   </section>
-
-                  <section class="mt-7 grid gap-3 md:grid-cols-2">
-                    <template x-for="edge in (storyDetail?.revisions?.[storyDetail.revisions.length-1]?.edges || [])" :key="edge.edge_id">
-                      <div class="rounded-xl border border-slate-800 bg-slate-950/45 p-4"><div class="flex items-center justify-between"><span class="rounded-full border border-violet-500/20 bg-violet-500/10 px-2 py-0.5 text-[10px] text-violet-200" x-text="edge.relation_type"></span><span class="font-mono text-[10px] text-slate-600" x-text="edge.evidence_revision_ids.length+' 份证据'"></span></div><div class="mt-3 break-all text-[10px] leading-5 text-slate-500" x-text="edge.source_canonical_id+' → '+edge.target_canonical_id"></div><div class="mt-3 flex flex-wrap gap-1"><template x-for="evidenceId in edge.evidence_revision_ids" :key="evidenceId"><button type="button" class="rounded border border-emerald-500/20 bg-emerald-500/5 px-2 py-1 font-mono text-[9px] text-emerald-300" @click="openEvidenceInField(evidenceId)" x-text="'证据 '+evidenceId.slice(0,8)"></button></template></div></div>
-                    </template>
-                  </section>
-
-                  <section class="mt-8 border-t border-slate-800 pt-5"><div class="text-xs font-semibold text-slate-300">解释这条故事的简报</div><div class="mt-3 grid gap-2 md:grid-cols-2"><template x-for="reference in storyDetail?.brief_references || []" :key="reference.id"><button type="button" class="rounded-lg border border-cyan-500/15 bg-cyan-500/5 p-3 text-left" @click="openBriefAtReference(reference)"><span class="block text-xs text-slate-200" x-text="reference.label || reference.anchor"></span><span class="mt-1 block font-mono text-[10px] text-cyan-400" x-text="'简报段落 ['+reference.position+']'"></span></button></template><div class="text-xs text-slate-600" x-show="!(storyDetail?.brief_references || []).length">尚无简报引用这条故事。</div></div></section>
-                  <section class="mt-8 border-t border-slate-800 pt-5">
-                    <div class="flex items-center justify-between"><div class="text-xs font-semibold text-slate-300">版本历史</div><div class="text-[10px] text-slate-600">认知时间轴</div></div>
-                    <div class="mt-3 space-y-2">
-                      <template x-for="revision in storyDetail?.revisions || []" :key="revision.id">
-                        <div class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/35 px-3 py-2">
-                          <div class="font-mono text-[10px] text-slate-500" x-text="String(revision.observed_at || '').slice(0,16).replace('T',' ')+' · '+revision.member_ids.length+' 节点'"></div>
-                          <div class="text-[10px]" :class="revision.delta?.baseline ? 'text-violet-300' : 'text-cyan-300'" x-text="storyRevisionDeltaLabel(revision)"></div>
+                  <section class="mt-8">
+                    <div class="flex flex-wrap items-end justify-between gap-3 border-b border-slate-800 pb-3">
+                      <div><h2 class="text-sm font-semibold text-slate-100">故事发展</h2><p class="mt-1 text-[11px] text-slate-500">按现实发生时间排列；只有存在的关系才会附着在目标事件下。</p></div>
+                      <button type="button" class="flex items-center gap-1 text-xs text-cyan-200" @click="storyJumpLatest()"><svg class="shrink-0" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20h14M12 4v11m-5-5 5 5 5-5"></path></svg>跳到最新</button>
+                    </div>
+                    <div class="mt-4 space-y-8">
+                      <template x-for="group in storyTimelineGroups()" :key="group.key">
+                        <div>
+                          <div class="sticky top-0 z-[1] flex items-center gap-2 border-b border-slate-800/80 bg-slate-950/90 px-3 py-2 font-mono text-[10px] tabular-nums text-slate-500 backdrop-blur">
+                            <svg class="shrink-0 text-slate-600" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="15" rx="2"></rect><path d="M8 3.5v4M16 3.5v4M3.5 10h17"></path></svg>
+                            <span x-text="group.label"></span>
+                          </div>
+                          <div class="divide-y divide-slate-800/70">
+                            <template x-for="node in group.nodes" :key="node.canonical_id || node._storyIndex">
+                              <article class="scroll-mt-16 px-3 py-4 outline-none" :id="'story-event-'+node._storyIndex" tabindex="-1" :class="storyFocusIndex===node._storyIndex ? 'bg-violet-500/[0.035]' : ''">
+                                <button type="button" class="block w-full text-left" @click="storyOpenEventInspector(node,node._storyIndex,$event)">
+                                  <div class="flex items-start gap-3"><span class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-slate-700 bg-slate-950 text-[10px] tabular-nums text-slate-400" x-text="node._storyIndex+1"></span><div class="min-w-0 flex-1"><time class="font-mono text-[10px] tabular-nums text-slate-500" x-text="storyEventTimeLabel(node)"></time><h3 class="mt-1 text-sm font-medium leading-6 text-slate-200" x-text="node.title"></h3><p class="mt-1 text-xs leading-5 text-slate-500" x-show="node.summary" x-text="node.summary"></p><div class="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-slate-600"><span x-show="node.event_type" x-text="node.event_type"></span><span x-show="Number(node.member_count || 0)>0" x-text="node.member_count+' 条事实成员'"></span><span class="rounded-full border border-amber-400/20 bg-amber-400/5 px-2 py-0.5 text-amber-200" x-show="node.has_uncertainty">存在时间或事实不确定性</span></div></div><svg class="self-center shrink-0 text-slate-600" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"></path></svg></div>
+                                </button>
+                                <div class="ml-9 mt-2 space-y-2" x-show="storyIncomingEdges(node).length">
+                                  <template x-for="edge in storyIncomingEdges(node)" :key="edge.edge_id">
+                                    <button type="button" class="flex w-full items-start gap-2 rounded-md border border-cyan-400/15 bg-cyan-400/[0.035] px-3 py-2 text-left transition hover:border-cyan-400/30 hover:bg-cyan-400/[0.06]" @click="storyOpenEdgeInspector(edge,$event)"><svg class="mt-0.5 shrink-0 text-cyan-300/70" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1.1l2-2A5 5 0 0 0 12 4l-1.1 1.1"></path><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"></path></svg><span class="min-w-0 flex-1 text-[11px] leading-5 text-slate-400"><strong class="font-medium text-cyan-200" x-text="edge.relation_label || storyRelationLabel(edge.relation_type)"></strong><span> · 来自「</span><span class="text-slate-300" x-text="storyEdgeSourceTitle(edge)"></span><span>」</span></span><span class="shrink-0 text-[10px] text-slate-600" x-text="Number(edge.support_record_count || 0)+' 份支持'"></span></button>
+                                  </template>
+                                </div>
+                              </article>
+                            </template>
+                          </div>
                         </div>
                       </template>
                     </div>
                   </section>
+                  <section class="mt-10 border-t border-slate-800 pt-6" x-show="(storyDetail?.brief_references || []).length">
+                    <h2 class="text-sm font-semibold text-slate-200">相关简报</h2>
+                    <div class="mt-3 grid gap-2 md:grid-cols-2"><template x-for="reference in storyDetail?.brief_references || []" :key="reference.id"><button type="button" class="rounded-md border border-cyan-500/15 bg-cyan-500/5 p-3 text-left transition hover:bg-cyan-500/10" @click="openBriefAtReference(reference)"><span class="block text-xs font-medium text-slate-200" x-text="storyBriefLabel(reference)"></span><span class="mt-1 block text-[11px] text-slate-500" x-text="reference.label || '查看引用这条故事的上下文'"></span></button></template></div>
+                  </section>
+                  <section class="mt-8 border-t border-slate-800 pt-5" x-show="(storyDetail?.material_history || []).length">
+                    <details class="group"><summary class="flex cursor-pointer list-none items-center justify-between gap-3 py-2 text-sm font-semibold text-slate-200"><span>故事变化</span><span class="flex items-center gap-2 text-[10px] font-normal text-slate-600"><span x-text="(storyDetail?.material_history || []).length+' 次实质变化'"></span><svg class="shrink-0 transition group-open:rotate-180" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></span></summary>
+                      <div class="mt-2 divide-y divide-slate-800 border-y border-slate-800"><template x-for="change in (storyDetail?.material_history || []).slice().reverse()" :key="change.snapshot_id || change.observed_at"><div class="flex flex-wrap items-start justify-between gap-3 py-3"><div class="min-w-0 flex-1"><time class="font-mono text-[10px] tabular-nums text-slate-600" x-text="storyRevisionObservedAtLabel(change)"></time><div class="mt-1 text-xs leading-5 text-slate-300" x-text="storyMaterialHistoryLabel(change)"></div></div><button type="button" class="shrink-0 text-[11px] text-cyan-200 underline decoration-cyan-400/30 underline-offset-4" x-show="change.snapshot_id" @click="storySelectHistory(change.snapshot_id)">查看当时故事</button></div></template></div>
+                    </details>
+                  </section>
+                  <section class="mt-8 border-t border-slate-800 pt-5">
+                    <details class="group"><summary class="flex cursor-pointer list-none items-center justify-between gap-3 py-2 text-sm font-semibold text-slate-400"><span>技术与识别审计</span><svg class="shrink-0 transition group-open:rotate-180" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+                      <div class="mt-3 rounded-md border border-slate-800 bg-slate-950/35 p-4 text-[11px] text-slate-500">
+                        <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><div><div class="text-slate-600">识别次数</div><div class="mt-1 font-mono text-slate-300" x-text="storyDetail?.audit_summary?.recognition_count ?? storyDetail?.revisions?.length ?? 0"></div></div><div><div class="text-slate-600">无变化复核</div><div class="mt-1 font-mono text-slate-300" x-text="storyDetail?.audit_summary?.unchanged_review_count ?? 0"></div></div><div><div class="text-slate-600">首次观察</div><div class="mt-1 font-mono text-slate-300" x-text="storyRevisionObservedAtLabel({observed_at:storyDetail?.audit_summary?.first_observed_at}) || '未知'"></div></div><div><div class="text-slate-600">最近观察</div><div class="mt-1 font-mono text-slate-300" x-text="storyRevisionObservedAtLabel({observed_at:storyDetail?.audit_summary?.last_observed_at}) || '未知'"></div></div></div>
+                        <div class="mt-4 border-t border-slate-800 pt-3"><div class="text-slate-600">故事身份 ID</div><code class="mt-1 block select-all break-all font-mono text-[10px] text-slate-400" x-text="storyDetail?.story_identity_id"></code></div>
+                        <div class="mt-3" x-show="(storyDetail?.audit_summary?.algorithm_versions || []).length"><div class="text-slate-600">算法版本</div><div class="mt-1 flex flex-wrap gap-1"><template x-for="version in storyDetail?.audit_summary?.algorithm_versions || []" :key="version"><code class="rounded border border-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400" x-text="version"></code></template></div></div>
+                        <details class="group/audit mt-4 border-t border-slate-800 pt-3"><summary class="flex cursor-pointer list-none items-center justify-between text-[11px] text-slate-500"><span>完整快照审计</span><svg class="shrink-0 transition group-open/audit:rotate-180" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary><div class="mt-2 divide-y divide-slate-800"><template x-for="revision in storyDetail?.revisions || []" :key="revision.id"><div class="py-2 font-mono text-[10px] leading-5 text-slate-600"><div><span x-text="storyRevisionObservedAtLabel(revision)"></span><span> · </span><span x-text="storyRevisionDeltaLabel(revision)"></span></div><div class="select-all break-all" x-text="'revision '+revision.id"></div><div class="select-all break-all" x-text="'snapshot '+revision.snapshot_id"></div></div></template></div></details>
+                      </div>
+                    </details>
+                  </section>
                 </div>
-                <div class="flex h-full items-center justify-center text-xs text-slate-600" x-show="!storyDetail && !storyDetailLoading">从左侧选择一条故事航迹</div>
+                <div class="flex h-full items-center justify-center px-6 text-center text-xs leading-5 text-slate-600" x-show="!storyDetail && !storyDetailLoading" x-text="(storiesPreparing || domainsLoading) ? '正在恢复观测域…' : storiesDomainMissing ? '请先选择一个观测域' : storiesError ? '故事目录加载失败，请从左侧重试' : stories.length ? '从左侧选择一条故事更新' : storyScope==='attention' ? '当前没有新的实质更新；可从左侧继续浏览故事库' : '当前队列暂时没有故事'">从左侧选择一条故事更新</div>
+                <div class="flex h-full items-center justify-center text-xs text-slate-600" x-show="storyDetailLoading">正在整理这条故事的当前进展…</div>
               </main>
+
+              <div class="fixed inset-0 z-40 bg-black/60 lg:hidden" x-show="storyInspectorOpen" x-transition.opacity @click="storyCloseInspector()"></div>
+              <aside class="fixed inset-y-0 right-0 z-50 flex w-[min(24rem,calc(100vw-2rem))] min-h-0 flex-col border-l border-slate-800 bg-slate-950 shadow-2xl lg:static lg:z-auto lg:w-auto lg:shadow-none" x-show="storyInspectorOpen" x-transition:enter="transition duration-200" x-transition:enter-start="translate-x-full" x-transition:enter-end="translate-x-0" x-transition:leave="transition duration-150" x-transition:leave-start="translate-x-0" x-transition:leave-end="translate-x-full" role="dialog" aria-modal="true" aria-label="故事上下文检查器">
+                <div class="flex shrink-0 items-center justify-between border-b border-slate-800 px-4 py-3"><div class="text-xs font-semibold text-slate-200" x-text="storyInspectorMode==='relation' ? '关系依据' : '事件事实'"></div><button type="button" class="rounded-md p-1 text-slate-500 hover:bg-slate-900 hover:text-slate-200" @click="storyCloseInspector()" aria-label="关闭检查器"><svg class="shrink-0" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg></button></div>
+                <div class="flex-1 min-h-0 overflow-auto p-4 raelyn-scrollbar">
+                  <div x-show="storyInspectorMode==='event'">
+                    <time class="font-mono text-[10px] tabular-nums text-slate-500" x-text="storyEventTimeLabel(storyEventDetail())"></time><h2 class="mt-2 text-base font-semibold leading-7 text-slate-100" x-text="storyEventDetail()?.title"></h2><p class="mt-2 text-xs leading-5 text-slate-400" x-text="storyEventDetail()?.summary || '当前事件没有单独摘要。'"></p>
+                    <div class="mt-3 rounded-md border border-slate-800 px-3 py-3 text-center text-[11px] text-slate-600" x-show="storyInspectorLoading">正在读取所选观察时点的事件依据…</div><div class="mt-3 rounded-md border border-rose-400/20 bg-rose-400/5 px-3 py-3 text-[11px] text-rose-200" x-show="storyInspectorError" x-text="storyInspectorError"></div>
+                    <dl class="mt-4 grid grid-cols-2 gap-3 border-y border-slate-800 py-4 text-[11px]"><div><dt class="text-slate-600">事件类型</dt><dd class="mt-1 text-slate-300" x-text="storyEventDetail()?.event_type || '未分类'"></dd></div><div><dt class="text-slate-600">事实成员</dt><dd class="mt-1 text-slate-300" x-text="Number(storyEventDetail()?.member_count || 0)+' 条'"></dd></div></dl>
+                    <div class="mt-4 rounded-md border px-3 py-2 text-[11px] leading-5" :class="(storyEventDetail()?.uncertainty_flags || []).length ? 'border-amber-400/20 bg-amber-400/5 text-amber-100' : 'border-emerald-400/15 bg-emerald-400/5 text-emerald-200'"><span x-text="(storyEventDetail()?.uncertainty_flags || []).length ? '该事件存在时间或事实不确定性，请结合来源记录判断。' : '当前事件未标记额外不确定性。'"></span><ul class="mt-1 list-disc pl-4" x-show="(storyEventDetail()?.uncertainty_flags || []).length"><template x-for="flag in storyEventDetail()?.uncertainty_flags || []" :key="flag"><li x-text="flag"></li></template></ul></div>
+                    <div class="mt-5"><h3 class="text-xs font-semibold text-slate-300">来源记录</h3><div class="mt-2 space-y-2"><template x-for="record in storyEventSourceRecords()" :key="record.record_revision_id || record.id"><button type="button" class="block w-full rounded-md border border-slate-800 bg-slate-900/30 p-3 text-left" @click="storyOpenSupportRecord(record)"><span class="block text-xs text-slate-200" x-text="storySupportSourceLabel(record)"></span><span class="mt-1 block text-[11px] leading-5 text-slate-500" x-text="record.summary || '打开查看原始来源'"></span></button></template><div class="rounded-md border border-slate-800 px-3 py-3 text-[11px] leading-5 text-slate-600" x-show="!storyInspectorLoading && !storyEventSourceRecords().length">所选观察时点没有可展示的来源记录。</div></div></div>
+                    <div class="mt-5" x-show="storyEventEvidence().length"><h3 class="text-xs font-semibold text-slate-300">原文依据</h3><div class="mt-2 space-y-2"><template x-for="evidence in storyEventEvidence()" :key="evidence.id"><blockquote class="rounded-md border border-slate-800 bg-slate-900/30 px-3 py-2 text-[11px] leading-5 text-slate-400" x-text="evidence.text || evidence.evidence_text"></blockquote></template></div></div>
+                    <button type="button" class="mt-5 flex w-full items-center justify-center gap-1 rounded-md border border-cyan-400/20 bg-cyan-400/5 px-3 py-2 text-xs text-cyan-100" @click="storyOpenCanonical(storyInspectorItem?.canonical_id,storyInspectorItem?._storyIndex)"><svg class="shrink-0" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 5h5v5M13 11l6-6M19 13v6H5V5h6"></path></svg>在星域中查看事件</button>
+                  </div>
+                  <div x-show="storyInspectorMode==='relation'">
+                    <div class="text-[10px] uppercase tracking-[0.14em] text-cyan-300/70" x-text="storyInspectorItem?.relation_label || storyRelationLabel(storyInspectorItem?.relation_type)"></div><h2 class="mt-2 text-base font-semibold leading-7 text-slate-100">为什么认为「<span x-text="storyEdgeSourceTitle(storyInspectorItem)"></span>」与「<span x-text="storyEdgeTargetTitle(storyInspectorItem)"></span>」存在这种关系？</h2>
+                    <div class="mt-4 space-y-3 text-xs leading-5">
+                      <div class="rounded-md border border-slate-800 bg-slate-900/30 p-3"><div class="text-[10px] text-slate-600">来源事件命题</div><div class="mt-1 text-slate-300" x-text="storyRelationExplanation()?.source_claim || '暂无可读命题'"></div><div class="mt-2 space-y-1" x-show="(storyRelationExplanation()?.source_excerpts || []).length"><template x-for="(excerpt,index) in storyRelationExplanation()?.source_excerpts || []" :key="index"><blockquote class="border-l border-cyan-400/30 pl-2 text-[11px] text-slate-500" x-text="excerpt?.text || excerpt"></blockquote></template></div></div>
+                      <div class="rounded-md border border-slate-800 bg-slate-900/30 p-3"><div class="text-[10px] text-slate-600">目标事件命题</div><div class="mt-1 text-slate-300" x-text="storyRelationExplanation()?.target_claim || '暂无可读命题'"></div><div class="mt-2 space-y-1" x-show="(storyRelationExplanation()?.target_excerpts || []).length"><template x-for="(excerpt,index) in storyRelationExplanation()?.target_excerpts || []" :key="index"><blockquote class="border-l border-violet-400/30 pl-2 text-[11px] text-slate-500" x-text="excerpt?.text || excerpt"></blockquote></template></div></div>
+                    </div>
+                    <div class="mt-3 text-[11px] text-slate-500" x-show="storyRelationExplanation()?.gap_days !== null && storyRelationExplanation()?.gap_days !== undefined" x-text="'两端事件相隔约 '+storyRelationExplanation()?.gap_days+' 天'"></div>
+                    <div class="mt-4 rounded-md border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-[11px] leading-5 text-amber-100">当前依据粒度为“记录修订”：支持记录帮助核对两端事实与关系判断，但不代表每段摘录都已精确证明这条关系。</div>
+                    <div class="mt-5"><div class="flex items-center justify-between"><h3 class="text-xs font-semibold text-slate-300">支持记录</h3><span class="text-[10px] text-slate-600" x-text="storySupportRecords().length+' 份'"></span></div><div class="mt-2 rounded-md border border-slate-800 px-3 py-4 text-center text-[11px] text-slate-600" x-show="storyInspectorLoading">正在读取关系依据…</div><div class="mt-2 rounded-md border border-rose-400/20 bg-rose-400/5 px-3 py-3 text-[11px] text-rose-200" x-show="storyInspectorError" x-text="storyInspectorError"></div>
+                      <div class="mt-2 space-y-2"><template x-for="record in storySupportRecords()" :key="record.record_revision_id"><article class="rounded-md border border-slate-800 bg-slate-900/30 p-3"><div class="flex items-start justify-between gap-2"><h4 class="min-w-0 text-xs font-medium leading-5 text-slate-200" x-text="storySupportSourceLabel(record)"></h4><span class="shrink-0 rounded-full border px-2 py-0.5 text-[9px]" :class="storySupportStatusLabel(record)==='已验证' ? 'border-emerald-400/20 text-emerald-200' : 'border-amber-400/20 text-amber-200'" x-text="storySupportStatusLabel(record)"></span></div><p class="mt-2 text-[11px] leading-5 text-slate-500" x-text="storySupportExcerpt(record)"></p><div class="mt-2 space-y-1 text-[10px] text-amber-200/80"><div x-show="storySupportVersionWarning(record)" x-text="storySupportVersionWarning(record)"></div><div x-show="storySupportPlaybackPosition(record)===null">没有精确播放位置。</div></div><button type="button" class="mt-3 text-[11px] text-cyan-200 underline decoration-cyan-400/30 underline-offset-4" @click="storyOpenSupportRecord(record)">打开原始来源</button></article></template><div class="rounded-md border border-slate-800 px-3 py-3 text-[11px] leading-5 text-slate-600" x-show="!storyInspectorLoading && !storyInspectorError && !storySupportRecords().length">目前没有可展示的支持记录，不能把这条关系当作已被充分验证。</div></div>
+                    </div>
+                  </div>
+                </div>
+              </aside>
             </div>
           </div>

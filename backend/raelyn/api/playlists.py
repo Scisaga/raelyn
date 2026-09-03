@@ -130,6 +130,7 @@ class PlaylistOut(OrmModel):
     description: str | None = None
     avatar_asset: AssetRef | None = None
     background_asset: AssetRef | None = None
+    observation_enabled: bool = True
     brief_granularity: str = "day"
     media_count: int | None = None
     media_preview: list[PlaylistMediaOut] = Field(default_factory=list)
@@ -1085,7 +1086,17 @@ def extract_playlist_events(
         if not session.get(Playlist, playlist_id):
             raise HTTPException(status_code=404, detail="playlist not found")
         data = payload or PlaylistEventsExtractRequest()
-        job = request_playlist_event_backfill(session, playlist_id=playlist_id, force=bool(data.force), priority=1)
+        try:
+            job = request_playlist_event_backfill(
+                session,
+                playlist_id=playlist_id,
+                force=bool(data.force),
+                priority=1,
+            )
+        except ValueError as error:
+            if str(error) == "domain observation is disabled":
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            raise
         return {
             "ok": True,
             "playlist_id": str(playlist_id),
@@ -1322,10 +1333,102 @@ def _event_map_topics(session: Any, snapshot_id: uuid.UUID) -> list[EventMapTopi
         .all()
     )
 
+
+def _compact_playlist_event_backfill_job_payload(
+    session: Any,
+    playlist_id: uuid.UUID,
+) -> dict[str, Any] | None:
+    """返回 compact manifest 展示与轮询所需的活跃任务状态，不展开任务树。"""
+    active_statuses = ["pending", "running"]
+    columns = (
+        Job.id,
+        Job.status,
+        Job.progress_current,
+        Job.progress_total,
+        Job.created_at,
+        Job.started_at,
+        Job.cancel_requested_at,
+    )
+    row = session.execute(
+        select(*columns)
+        .where(
+            Job.type.in_(["playlist.backfill_events", "playlist.backfill_events_range"]),
+            Job.status.in_(active_statuses),
+            Job.params["playlist_id"].as_string() == str(playlist_id),
+        )
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        range_job = aliased(Job)
+        row = session.execute(
+            select(*columns)
+            .join(range_job, range_job.id == Job.parent_job_id)
+            .where(
+                Job.type.in_(["video.extract_events", "video.extract_events_batch"]),
+                Job.status.in_(active_statuses),
+                range_job.type == "playlist.backfill_events_range",
+                range_job.params["playlist_id"].as_string() == str(playlist_id),
+            )
+            .order_by(Job.created_at.desc(), Job.id.desc())
+            .limit(1)
+        ).first()
+    if row is None:
+        return None
+    return {
+        "job_id": str(row.id),
+        "status": str(row.status or ""),
+        "progress_current": row.progress_current,
+        "progress_total": row.progress_total,
+        "created_at": row.created_at,
+        "started_at": row.started_at,
+        "cancel_requested_at": row.cancel_requested_at,
+    }
+
+
+def _compact_event_map_topic_geometry(
+    session: Any,
+    snapshot_id: uuid.UUID,
+) -> list[dict[str, Any]]:
+    """只投影首帧最终语义网格所需的主题几何列。"""
+    rows = session.execute(
+        select(
+            EventMapTopic.level,
+            EventMapTopic.center_x,
+            EventMapTopic.center_y,
+            EventMapTopic.center_z,
+            EventMapTopic.radius,
+            EventMapTopic.canonical_count,
+        )
+        .where(EventMapTopic.snapshot_id == snapshot_id)
+        .order_by(EventMapTopic.level.asc(), EventMapTopic.label.asc(), EventMapTopic.topic_id.asc())
+    ).all()
+    return [
+        {
+            "topic_index": index,
+            "level": int(level),
+            "center_x": center_x,
+            "center_y": center_y,
+            "center_z": center_z,
+            "radius": radius,
+            "canonical_count": int(canonical_count or 0),
+        }
+        for index, (
+            level,
+            center_x,
+            center_y,
+            center_z,
+            radius,
+            canonical_count,
+        ) in enumerate(rows)
+    ]
+
+
 @router.get("/playlists/{playlist_id}/events/map/manifest")
 def get_playlist_event_map_manifest(
     playlist_id: uuid.UUID,
     compact: bool = False,
+    include_coverage: bool | None = None,
     snapshot_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     with session_scope() as session:
@@ -1342,8 +1445,14 @@ def get_playlist_event_map_manifest(
             elif requested_snapshot_id is not None:
                 raise HTTPException(status_code=409, detail="requested event map snapshot is not available")
         build_job = _active_event_map_build_job(session, playlist_id)
-        backfill_job = _active_playlist_event_backfill_job(session, playlist_id)
-        coverage = {} if compact else playlist_event_map_coverage(session, playlist_id)
+        backfill_job = None if compact else _active_playlist_event_backfill_job(session, playlist_id)
+        compact_backfill_job = (
+            _compact_playlist_event_backfill_job_payload(session, playlist_id)
+            if compact
+            else None
+        )
+        should_include_coverage = not compact if include_coverage is None else include_coverage
+        coverage = playlist_event_map_coverage(session, playlist_id) if should_include_coverage else {}
         dirty_generation = int(state.dirty_generation or 0) if state is not None else 0
         built_generation = int(state.built_generation or 0) if state is not None else 0
         dirty = dirty_generation > built_generation
@@ -1381,7 +1490,7 @@ def get_playlist_event_map_manifest(
             "last_built_at": state.last_built_at if state is not None else None,
             "last_error": state.last_error if state is not None else None,
             "build_job": _event_map_job_payload(build_job),
-            "backfill_job": (
+            "backfill_job": compact_backfill_job if compact else (
                 _playlist_event_backfill_job_out(session, backfill_job).model_dump()
                 if backfill_job is not None
                 else None
@@ -1389,6 +1498,11 @@ def get_playlist_event_map_manifest(
             **coverage,
         }
         if compact:
+            topic_geometry = (
+                _compact_event_map_topic_geometry(session, snapshot.id)
+                if snapshot is not None
+                else []
+            )
             payload.update(
                 {
                     "canonical_count": int(snapshot.canonical_count or 0) if snapshot is not None else 0,
@@ -1398,6 +1512,22 @@ def get_playlist_event_map_manifest(
                         if snapshot is not None
                         else 0
                     ),
+                    "dimension": 3,
+                    "scene_protocol_version": _EVENT_MAP_SCENE_PROTOCOL_VERSION,
+                    "scene_record_size": _EVENT_MAP_SCENE_RECORD.size,
+                    "bounds": getattr(snapshot, "bounds", None) or {},
+                    "type_categories": enrich_event_map_type_categories(
+                        getattr(snapshot, "type_categories", None)
+                    ),
+                    "semantic_families": list(EVENT_MAP_SEMANTIC_FAMILIES),
+                    "monthly_distribution": (
+                        getattr(snapshot, "monthly_distribution", None) or []
+                        if snapshot is not None
+                        else []
+                    ),
+                    # 首屏只需要主题几何来创建最终语义网格。标签、关键词和锚点仍由
+                    # 完整 manifest 延后加载，避免用另一套占位背景再切换。
+                    "topic_geometry": topic_geometry,
                 }
             )
             return payload
@@ -1534,6 +1664,8 @@ def _event_map_scene_topic_order(session: Any, snapshot_id: uuid.UUID) -> dict[u
 def _event_map_scene_statement(
     *,
     snapshot_id: uuid.UUID,
+    point_stride: int = 1,
+    limit: int | None = None,
 ) -> Any:
     """只读取二进制场景记录所需列，避免为全量点创建 ORM 实体。"""
     macro_topic_member = aliased(EventMapTopicMember)
@@ -1573,9 +1705,11 @@ def _event_map_scene_statement(
             ),
         )
     )
-    return statement.where(EventMapCanonical.snapshot_id == snapshot_id).order_by(
-        EventMapCanonical.point_index.asc()
-    )
+    statement = statement.where(EventMapCanonical.snapshot_id == snapshot_id)
+    if point_stride > 1:
+        statement = statement.where(EventMapCanonical.point_index % point_stride == 0)
+    statement = statement.order_by(EventMapCanonical.point_index.asc())
+    return statement.limit(limit) if limit is not None else statement
 
 
 def _event_map_scene_chunks(
@@ -1583,6 +1717,7 @@ def _event_map_scene_chunks(
     *,
     canonical_count: int,
     topic_order: dict[uuid.UUID, int],
+    reindex: bool = False,
 ) -> Iterator[bytes]:
     chunk = bytearray()
     expected_index = 0
@@ -1602,7 +1737,7 @@ def _event_map_scene_chunks(
         macro_topic_id,
         local_topic_id,
     ) in rows:
-        if int(point_index) != expected_index:
+        if not reindex and int(point_index) != expected_index:
             raise RuntimeError("event map point_index is not contiguous")
         flags = (1 if has_uncertainty else 0) | (2 if int(time_disagreement_count or 0) else 0)
         chunk.extend(
@@ -1637,7 +1772,8 @@ def _event_map_scene_chunks(
 def get_playlist_event_map_scene(
     playlist_id: uuid.UUID,
     snapshot_id: uuid.UUID,
-) -> StreamingResponse:
+    preview_limit: Annotated[int | None, Query(ge=1, le=20_000)] = None,
+) -> Response:
     with session_scope() as session:
         if not session.get(Playlist, playlist_id):
             raise HTTPException(status_code=404, detail="playlist not found")
@@ -1647,6 +1783,44 @@ def get_playlist_event_map_scene(
             snapshot_id=snapshot_id,
         )
         canonical_count = int(snapshot.canonical_count or 0)
+
+    if preview_limit is not None:
+        with session_scope() as preview_session:
+            pinned = _resolve_event_map_snapshot(
+                preview_session,
+                playlist_id=playlist_id,
+                snapshot_id=snapshot_id,
+            )
+            topic_order = _event_map_scene_topic_order(preview_session, pinned.id)
+            point_stride = max(1, (canonical_count + preview_limit - 1) // preview_limit)
+            rows = preview_session.execute(
+                _event_map_scene_statement(
+                    snapshot_id=pinned.id,
+                    point_stride=point_stride,
+                    limit=preview_limit,
+                )
+            ).all()
+            body = b"".join(
+                _event_map_scene_chunks(
+                    rows,
+                    canonical_count=len(rows),
+                    topic_order=topic_order,
+                    reindex=True,
+                )
+            )
+        return Response(
+            content=body,
+            media_type="application/octet-stream",
+            headers={
+                "Cache-Control": "private, max-age=31536000, immutable",
+                "ETag": f'"event-map-scene-{snapshot_id}-preview-{preview_limit}"',
+                "X-Event-Map-Snapshot-Id": str(snapshot_id),
+                "X-Event-Map-Record-Size": str(_EVENT_MAP_SCENE_RECORD.size),
+                "X-Event-Map-Protocol-Version": str(_EVENT_MAP_SCENE_PROTOCOL_VERSION),
+                "X-Event-Map-Canonical-Count": str(len(rows)),
+                "X-Event-Map-Preview": "true",
+            },
+        )
 
     def stream_scene() -> Iterator[bytes]:
         with session_scope() as stream_session:
@@ -1812,7 +1986,95 @@ def get_playlist_event_map_entity_indices(
         )
 
 
-def _event_map_record_payload(revision: EventMapRecordRevision, member: EventMapCanonicalMember) -> dict[str, Any]:
+def _event_map_record_playback_position(revision: EventMapRecordRevision) -> float | None:
+    for raw_item in revision.evidence_json or []:
+        item = dict(raw_item)
+        provenance = item.get("evidence_json") if isinstance(item.get("evidence_json"), dict) else item
+        value = provenance.get("start_seconds")
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
+
+
+def _event_map_record_video_contexts(
+    session: Any,
+    member_rows: list[tuple[EventMapCanonicalMember, EventMapRecordRevision]],
+) -> tuple[dict[uuid.UUID, dict[str, Any]], list[dict[str, Any]]]:
+    video_ids = {
+        revision.source_video_id
+        for _member, revision in member_rows
+        if revision.source_video_id is not None
+    }
+    if not video_ids:
+        return {}, []
+    video_rows = session.execute(
+        select(Video, Media)
+        .join(Media, Media.id == Video.media_id)
+        .where(Video.id.in_(video_ids))
+    ).all()
+    video_by_id = {video.id: (video, media) for video, media in video_rows}
+    thumbnail_assets = session.execute(
+        select(Asset)
+        .where(Asset.video_id.in_(video_ids), Asset.type == "thumbnail")
+        .order_by(Asset.video_id.asc(), Asset.created_at.desc(), Asset.id.asc())
+    ).scalars().all()
+    thumbnail_by_video: dict[uuid.UUID, Asset] = {}
+    for asset in thumbnail_assets:
+        if asset.video_id is not None:
+            thumbnail_by_video.setdefault(asset.video_id, asset)
+
+    contexts: dict[uuid.UUID, dict[str, Any]] = {}
+    support_counts: dict[uuid.UUID, int] = {}
+    representative_video_ids: set[uuid.UUID] = set()
+    playback_by_video: dict[uuid.UUID, float | None] = {}
+    for member, revision in member_rows:
+        video_id = revision.source_video_id
+        if video_id is None or video_id not in video_by_id:
+            continue
+        support_counts[video_id] = support_counts.get(video_id, 0) + 1
+        if member.is_representative:
+            representative_video_ids.add(video_id)
+        playback = _event_map_record_playback_position(revision)
+        if video_id not in playback_by_video or playback_by_video[video_id] is None:
+            playback_by_video[video_id] = playback
+
+    for video_id, (video, media) in video_by_id.items():
+        thumbnail_asset = build_asset_ref(thumbnail_by_video.get(video_id))
+        contexts[video_id] = {
+            "video_id": str(video.id),
+            "title": video.title,
+            "url": video.url,
+            "player_url": f"/video?video_id={video.id}",
+            "media_id": str(media.id),
+            "media_name": media.name,
+            "thumbnail_url": video.thumbnail_url,
+            "thumbnail_asset": thumbnail_asset.model_dump() if thumbnail_asset else None,
+            "duration_sec": video.duration_sec,
+        }
+    videos = [
+        {
+            **contexts[video_id],
+            "support_record_count": support_counts.get(video_id, 0),
+            "is_representative": video_id in representative_video_ids,
+            "playback_position_seconds": playback_by_video.get(video_id),
+        }
+        for video_id in sorted(
+            contexts,
+            key=lambda value: (
+                value not in representative_video_ids,
+                -support_counts.get(value, 0),
+                str(value),
+            ),
+        )
+    ]
+    return contexts, videos
+
+
+def _event_map_record_payload(
+    revision: EventMapRecordRevision,
+    member: EventMapCanonicalMember,
+    source_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     source = dict(revision.source_json or {})
     relations = list(source.pop("relations", []) or [])
     return {
@@ -1833,6 +2095,8 @@ def _event_map_record_payload(revision: EventMapRecordRevision, member: EventMap
         "assignment_kind": member.assignment_kind,
         "decision_score": member.decision_score,
         "reason_codes": member.reason_codes or [],
+        "source_context": source_context,
+        "playback_position_seconds": _event_map_record_playback_position(revision),
     }
 
 
@@ -1958,7 +2222,15 @@ def get_playlist_event_map_canonical(
             )
             .limit(100)
         ).all()
-        members = [_event_map_record_payload(revision, member) for member, revision in member_rows]
+        video_contexts, videos = _event_map_record_video_contexts(session, member_rows)
+        members = [
+            _event_map_record_payload(
+                revision,
+                member,
+                video_contexts.get(revision.source_video_id) if revision.source_video_id else None,
+            )
+            for member, revision in member_rows
+        ]
 
         entity_values = {
             (row.entity_type, row.normalized_key): {
@@ -2074,6 +2346,7 @@ def get_playlist_event_map_canonical(
                 else None
             ),
             "members": members,
+            "videos": videos,
             "story_edges": story_edges,
             "entities": list(entity_values.values()),
             "entity_relations": entity_relations,
@@ -2171,6 +2444,9 @@ def get_playlist_event_map_story(
             "title": story.title,
             "summary": story.summary,
             "story_type": story.story_type,
+            "anchor_key": story.anchor_key,
+            "maturity": story.maturity,
+            "quality_score": story.quality_score,
             "event_time_start": story.event_time_start,
             "event_time_end": story.event_time_end,
             "edges": [
@@ -2181,6 +2457,8 @@ def get_playlist_event_map_story(
                     "relation_type": edge.relation_type,
                     "status": edge.status,
                     "score": edge.score,
+                    "evidence_revision_ids": edge.evidence_revision_ids or [],
+                    "evidence": edge.evidence_json or {},
                 }
                 for edge in edges
             ],
@@ -2296,7 +2574,12 @@ def rebuild_playlist_event_map(playlist_id: uuid.UUID) -> dict[str, Any]:
         if not session.get(Playlist, playlist_id):
             raise HTTPException(status_code=404, detail="playlist not found")
         existing = _active_event_map_build_job(session, playlist_id)
-        job = request_event_map_rebuild(session, playlist_id, priority=1)
+        try:
+            job = request_event_map_rebuild(session, playlist_id, priority=1)
+        except ValueError as error:
+            if str(error) == "domain observation is disabled":
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            raise
         state = _event_map_state(session, playlist_id)
         return {
             "ok": True,

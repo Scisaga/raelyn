@@ -1214,7 +1214,7 @@ def list_domain_stories(playlist_id: str | uuid.UUID) -> list[dict[str, Any]]:
     with session_scope() as session:
         if session.get(Playlist, playlist_uuid) is None:
             raise LookupError("domain not found")
-        return serialize_for_mcp(story_directory(session, playlist_uuid))
+        return serialize_for_mcp(story_directory(session, playlist_uuid)["items"])
 
 
 def get_story_history(

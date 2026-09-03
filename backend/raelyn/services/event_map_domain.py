@@ -15,7 +15,7 @@ from sklearn.cluster import MiniBatchKMeans
 
 EVENT_MAP_CANONICAL_VERSION = "event_map_canonical_v2"
 EVENT_MAP_TOPIC_VERSION = "event_map_topic_hierarchical_kmeans_v2"
-EVENT_MAP_STORY_VERSION = "event_map_story_continuation_v1"
+EVENT_MAP_STORY_VERSION = "event_map_story_evidence_graph_v2"
 EVENT_MAP_RANDOM_SEED = 42
 
 EVENT_MAP_SEMANTIC_FAMILIES = (
@@ -142,14 +142,74 @@ _NUMBER_RE = re.compile(
 )
 _WORD_RE = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]+", re.IGNORECASE)
 _STORY_PHASES = {
-    "announce": ("announce", "announced", "宣布", "公布", "发布", "發布"),
-    "approve": ("approve", "approved", "批准", "通过", "通過", "核准"),
-    "begin": ("begin", "began", "start", "started", "启动", "啟動", "开始", "開始"),
-    "complete": ("complete", "completed", "close", "closed", "完成", "交割", "結案", "结案"),
+    "proposal": ("propose", "proposed", "plan", "planned", "提议", "提議", "拟", "擬", "计划", "計劃"),
+    "announcement": ("announce", "announced", "宣布", "公布", "发布", "發布"),
+    "approval": ("approve", "approved", "批准", "通过", "通過", "核准", "获批", "獲批", "获准", "獲准"),
+    "implementation": ("implement", "implemented", "begin", "began", "start", "started", "实施", "實施", "启动", "啟動", "开始", "開始"),
+    "progress": ("progress", "expand", "expanded", "推进", "推進", "扩大", "擴大", "延续", "延續"),
+    "completion": ("complete", "completed", "close", "closed", "完成", "交割", "結案", "结案"),
     "delay": ("delay", "delayed", "postpone", "延期", "推迟", "推遲"),
-    "cancel": ("cancel", "cancelled", "canceled", "撤回", "取消", "终止", "終止"),
-    "increase": ("increase", "raise", "raised", "上调", "上調", "提高", "加息"),
-    "decrease": ("decrease", "cut", "lower", "下调", "下調", "降低", "降息"),
+    "suspension": ("suspend", "suspended", "pause", "paused", "暂停", "暫停", "中止"),
+    "cancellation": ("cancel", "cancelled", "canceled", "withdraw", "撤回", "取消", "终止", "終止"),
+    "increase": ("increase", "raise", "raised", "上调", "上調", "提高", "加息", "增长", "增長", "上涨", "上漲"),
+    "decrease": ("decrease", "cut", "lower", "下调", "下調", "降低", "降息", "下降", "下跌"),
+}
+_STORY_PHASE_TRANSITIONS = {
+    ("proposal", "announcement"),
+    ("proposal", "approval"),
+    ("proposal", "implementation"),
+    ("proposal", "cancellation"),
+    ("announcement", "approval"),
+    ("announcement", "implementation"),
+    ("announcement", "delay"),
+    ("announcement", "cancellation"),
+    ("approval", "implementation"),
+    ("approval", "progress"),
+    ("approval", "cancellation"),
+    ("implementation", "progress"),
+    ("implementation", "completion"),
+    ("implementation", "delay"),
+    ("implementation", "suspension"),
+    ("implementation", "cancellation"),
+    ("progress", "completion"),
+    ("progress", "delay"),
+    ("progress", "suspension"),
+    ("progress", "cancellation"),
+    ("delay", "implementation"),
+    ("delay", "progress"),
+    ("delay", "completion"),
+    ("suspension", "implementation"),
+    ("suspension", "cancellation"),
+}
+_STORY_CORRECTION_CUES = (
+    "correct", "corrected", "correction", "revise", "revised", "clarify", "clarified",
+    "deny", "denied", "更正", "纠正", "糾正", "修正", "澄清", "否认", "否認",
+)
+_STORY_RESPONSE_CUES = (
+    "respond", "responded", "response", "reaction", "reacted", "in response to", "after the",
+    "回应", "回應", "响应", "響應", "反应", "反應", "应对", "應對", "随后", "隨後", "在此之后", "在此之後",
+)
+_STORY_GENERIC_WORDS = {
+    "about", "after", "before", "company", "event", "market", "markets", "report", "reports", "said", "says",
+    "the", "this", "will", "公司", "事件", "市场", "市場", "表示", "指出", "认为", "認為", "相关", "相關",
+    "宣布", "公布", "发布", "發布", "预计", "預計", "影响", "影響", "最新", "消息",
+}
+_STORY_GENERIC_ENTITY_TYPES = {"country", "sector", "other"}
+_STORY_ENTITY_PRIORITY = {
+    "asset": 8,
+    "company": 7,
+    "institution": 6,
+    "person": 5,
+    "indicator": 4,
+    "country": 3,
+    "sector": 2,
+    "other": 1,
+}
+_STORY_RELATION_LABELS = {
+    "continuation": "阶段推进",
+    "causes": "因果承接",
+    "response": "事件响应",
+    "corrects": "事实纠正",
 }
 
 
@@ -215,6 +275,18 @@ class EventMapRelationRef:
     relation_type: str
     confidence: float | None = None
     evidence_text: str | None = None
+    source_claim: str | None = None
+    target_claim: str | None = None
+    source_entity_key: str | None = None
+    target_entity_key: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EventMapEvidenceRef:
+    evidence_id: uuid.UUID
+    video_id: uuid.UUID
+    evidence_text: str
+    confidence: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,8 +301,10 @@ class EventMapRecord:
     start_day: int
     end_day: int
     time_precision: str
+    source_video_id: uuid.UUID | None = None
     entities: tuple[EventMapEntityRef, ...] = ()
     relations: tuple[EventMapRelationRef, ...] = ()
+    evidence: tuple[EventMapEvidenceRef, ...] = ()
 
     @property
     def core_entity_keys(self) -> frozenset[str]:
@@ -287,6 +361,7 @@ class EventMapStoryEdgeResult:
     target_group_index: int
     relation_type: str
     confidence: float
+    anchor_key: str
     evidence: dict[str, object]
 
 
@@ -296,6 +371,11 @@ class EventMapStoryResult:
     member_group_indices: tuple[int, ...]
     edges: tuple[EventMapStoryEdgeResult, ...]
     label: str
+    summary: str
+    anchor_key: str
+    story_type: str
+    maturity: str
+    quality_score: float
 
 
 def _event_types_compatible(left: str, right: str) -> bool:
@@ -867,105 +947,539 @@ def _story_phases(record: EventMapRecord) -> frozenset[str]:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _StoryNodeProfile:
+    group_index: int
+    representative: EventMapRecord
+    records: tuple[EventMapRecord, ...]
+    start_day: int
+    end_day: int
+    entity_names: dict[str, str]
+    core_entity_keys: frozenset[str]
+    claim_terms: frozenset[str]
+    phases: frozenset[str]
+    source_video_ids: frozenset[uuid.UUID]
+    evidence_revision_ids: tuple[uuid.UUID, ...]
+    evidence_excerpts: tuple[str, ...]
+    relations: tuple[EventMapRelationRef, ...]
+    has_uncertainty: bool
+
+
+def _story_text(record: EventMapRecord) -> str:
+    return unicodedata.normalize("NFKC", f"{record.title} {record.summary}").casefold()
+
+
+def _story_claim_terms_from_text(text: str, entity_names: Iterable[str] = ()) -> frozenset[str]:
+    normalized = unicodedata.normalize("NFKC", str(text or "")).casefold()
+    for name in sorted({str(value or "").strip().casefold() for value in entity_names}, key=len, reverse=True):
+        if name:
+            normalized = normalized.replace(name, " ")
+    terms: set[str] = set()
+    for token in re.findall(r"[a-z][a-z0-9_-]{2,}", normalized):
+        if token not in _STORY_GENERIC_WORDS:
+            terms.add(f"w:{token}")
+    for span in re.findall(r"[\u3400-\u9fff]{2,}", normalized):
+        for width in (2, 3):
+            for offset in range(max(0, len(span) - width + 1)):
+                token = span[offset : offset + width]
+                if token not in _STORY_GENERIC_WORDS:
+                    terms.add(f"c:{token}")
+    return frozenset(terms)
+
+
+def _story_claim_overlap(left: frozenset[str], right: frozenset[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / min(len(left), len(right))
+
+
+def _story_entity_type(entity_key: str) -> str:
+    return entity_key.split(":", 1)[0] if ":" in entity_key else "other"
+
+
+def _story_anchor_is_specific(anchor_key: str) -> bool:
+    return _story_entity_type(anchor_key) not in _STORY_GENERIC_ENTITY_TYPES
+
+
+def _story_best_anchor(left: _StoryNodeProfile, right: _StoryNodeProfile) -> str | None:
+    shared = left.core_entity_keys & right.core_entity_keys
+    if not shared:
+        return None
+    return min(
+        shared,
+        key=lambda key: (-_STORY_ENTITY_PRIORITY.get(_story_entity_type(key), 0), key),
+    )
+
+
+def _story_profile(
+    group_index: int,
+    group: EventMapCanonicalGroup,
+    records: Sequence[EventMapRecord],
+) -> _StoryNodeProfile:
+    members = tuple(records[index] for index in group.member_indices)
+    representative = records[group.representative_index]
+    entity_counts: dict[str, tuple[str, int]] = {}
+    entity_names: list[str] = []
+    for record in members:
+        for entity in record.entities:
+            if not entity.is_core:
+                continue
+            key = entity.canonical_key
+            name, count = entity_counts.get(key, (entity.name, 0))
+            entity_counts[key] = (name, count + 1)
+            entity_names.append(entity.name)
+
+    evidence_revision_ids: list[uuid.UUID] = []
+    evidence_excerpts: list[str] = []
+    source_video_ids: set[uuid.UUID] = set()
+    for record in members:
+        if record.source_video_id is not None:
+            source_video_ids.add(record.source_video_id)
+        has_support = False
+        for evidence in record.evidence:
+            source_video_ids.add(evidence.video_id)
+            excerpt = str(evidence.evidence_text or "").strip()
+            if excerpt:
+                has_support = True
+                if excerpt not in evidence_excerpts:
+                    evidence_excerpts.append(excerpt[:320])
+        if any(
+            str(value or "").strip()
+            for relation in record.relations
+            for value in (relation.evidence_text, relation.source_claim, relation.target_claim)
+        ):
+            has_support = True
+        if has_support:
+            evidence_revision_ids.append(record.revision_id)
+
+    return _StoryNodeProfile(
+        group_index=group_index,
+        representative=representative,
+        records=members,
+        start_day=min(record.start_day for record in members),
+        end_day=max(record.end_day for record in members),
+        entity_names={key: name for key, (name, _count) in entity_counts.items()},
+        core_entity_keys=frozenset(entity_counts),
+        claim_terms=frozenset().union(
+            *(
+                _story_claim_terms_from_text(_story_text(record), entity_names)
+                for record in members
+            )
+        ),
+        phases=frozenset().union(*(_story_phases(record) for record in members)),
+        source_video_ids=frozenset(source_video_ids),
+        evidence_revision_ids=tuple(sorted(set(evidence_revision_ids), key=str)),
+        evidence_excerpts=tuple(evidence_excerpts[:6]),
+        relations=tuple(relation for record in members for relation in record.relations),
+        has_uncertainty=bool(group.uncertainty_flags),
+    )
+
+
+def _story_phase_transition_strength(source: _StoryNodeProfile, target: _StoryNodeProfile) -> float:
+    if any((left, right) in _STORY_PHASE_TRANSITIONS for left in source.phases for right in target.phases):
+        return 1.0
+    if source.phases & {"increase", "decrease"} and target.phases & {"increase", "decrease"}:
+        return 0.65
+    return 0.0
+
+
+def _story_relation_bridge(source: _StoryNodeProfile, target: _StoryNodeProfile) -> tuple[float, dict[str, str]]:
+    entity_names = tuple(source.entity_names.values()) + tuple(target.entity_names.values())
+    best_score = 0.0
+    best_evidence: dict[str, str] = {}
+    for relation in source.relations + target.relations:
+        if normalize_event_map_text(relation.relation_type) not in {"cause", "causes", "effect", "affects"}:
+            continue
+        source_claim = str(relation.source_claim or "").strip()
+        target_claim = str(relation.target_claim or "").strip()
+        if not source_claim or not target_claim:
+            continue
+        source_terms = _story_claim_terms_from_text(source_claim, entity_names)
+        target_terms = _story_claim_terms_from_text(target_claim, entity_names)
+        forward = min(
+            _story_claim_overlap(source.claim_terms, source_terms),
+            _story_claim_overlap(target.claim_terms, target_terms),
+        )
+        forward *= float(relation.confidence) if relation.confidence is not None else 0.75
+        if forward > best_score:
+            best_score = forward
+            best_evidence = {
+                "source_claim": source_claim[:320],
+                "target_claim": target_claim[:320],
+            }
+    return best_score, best_evidence
+
+
+def _story_relation_candidate(
+    source: _StoryNodeProfile,
+    target: _StoryNodeProfile,
+    vectors: np.ndarray,
+    vector_norms: np.ndarray,
+    *,
+    max_gap_days: int,
+) -> EventMapStoryEdgeResult | None:
+    gap_days = target.start_day - source.end_day
+    if gap_days < 0 or gap_days > max_gap_days:
+        return None
+    if "year" in {source.representative.time_precision, target.representative.time_precision}:
+        return None
+    if not source.evidence_revision_ids or not target.evidence_revision_ids:
+        return None
+
+    anchor_key = _story_best_anchor(source, target)
+    if anchor_key is None:
+        return None
+    anchor_specific = _story_anchor_is_specific(anchor_key)
+    shared_entities = source.core_entity_keys & target.core_entity_keys
+    entity_overlap = len(shared_entities) / max(1, min(len(source.core_entity_keys), len(target.core_entity_keys)))
+    claim_overlap = _story_claim_overlap(source.claim_terms, target.claim_terms)
+    phase_strength = _story_phase_transition_strength(source, target)
+    bridge_strength, bridge_evidence = _story_relation_bridge(source, target)
+    target_text = " ".join(_story_text(record) for record in target.records)
+    correction_cue = next((cue for cue in _STORY_CORRECTION_CUES if cue in target_text), "")
+    response_cue = next((cue for cue in _STORY_RESPONSE_CUES if cue in target_text), "")
+    source_numbers = frozenset().union(*(record.numeric_signature for record in source.records))
+    target_numbers = frozenset().union(*(record.numeric_signature for record in target.records))
+    numeric_continuity = bool(source_numbers & target_numbers)
+    source_family = event_map_semantic_family(source.representative.event_type)["code"]
+    target_family = event_map_semantic_family(target.representative.event_type)["code"]
+
+    relation_type = ""
+    relation_strength = 0.0
+    minimum_cosine = 1.0
+    if correction_cue and (claim_overlap >= 0.06 or bridge_strength >= 0.12):
+        relation_type = "corrects"
+        relation_strength = 1.0
+        minimum_cosine = 0.72
+    elif bridge_strength >= 0.18:
+        relation_type = "causes"
+        relation_strength = min(1.0, bridge_strength / 0.35)
+        minimum_cosine = 0.68
+    elif response_cue and (claim_overlap >= 0.06 or bridge_strength >= 0.12):
+        relation_type = "response"
+        relation_strength = 1.0
+        minimum_cosine = 0.72
+    elif (
+        gap_days > 0
+        and source_family == target_family
+        and phase_strength > 0
+        and (claim_overlap >= 0.08 or numeric_continuity)
+    ):
+        relation_type = "continuation"
+        relation_strength = phase_strength
+        minimum_cosine = 0.80
+    else:
+        return None
+
+    similarity = _cosine_similarity(
+        vectors,
+        source.representative.vector_index,
+        target.representative.vector_index,
+        vector_norms,
+    )
+    if similarity < minimum_cosine:
+        return None
+    if relation_type == "continuation" and not anchor_specific:
+        if claim_overlap < 0.16 or similarity < 0.88:
+            return None
+
+    distinct_sources = bool(source.source_video_ids - target.source_video_ids) or bool(
+        target.source_video_ids - source.source_video_ids
+    )
+    claim_strength = max(min(1.0, claim_overlap / 0.25), bridge_strength)
+    anchor_strength = 1.0 if anchor_specific else 0.35
+    uncertainty_factor = 0.85 if source.has_uncertainty or target.has_uncertainty else 1.0
+    confidence = uncertainty_factor * (
+        0.24 * similarity
+        + 0.20 * claim_strength
+        + 0.15 * entity_overlap
+        + 0.12 * anchor_strength
+        + 0.12 * relation_strength
+        + 0.10
+        + 0.07 * (1.0 if distinct_sources else 0.35)
+    )
+    threshold = 0.78 if relation_type == "causes" else 0.80
+    if relation_type == "continuation":
+        threshold = 0.82
+    if confidence < threshold:
+        return None
+
+    revision_ids = tuple(
+        sorted(set(source.evidence_revision_ids + target.evidence_revision_ids), key=str)
+    )[:12]
+    evidence: dict[str, object] = {
+        "anchor_key": anchor_key,
+        "shared_entities": sorted(shared_entities),
+        "gap_days": gap_days,
+        "cosine": round(similarity, 6),
+        "claim_overlap": round(claim_overlap, 6),
+        "source_phases": sorted(source.phases),
+        "target_phases": sorted(target.phases),
+        "numeric_continuity": numeric_continuity,
+        "distinct_sources": distinct_sources,
+        "supporting_revision_ids": [str(value) for value in revision_ids],
+        "source_excerpts": list(source.evidence_excerpts[:2]),
+        "target_excerpts": list(target.evidence_excerpts[:2]),
+    }
+    if correction_cue:
+        evidence["correction_cue"] = correction_cue
+    if response_cue:
+        evidence["response_cue"] = response_cue
+    if bridge_evidence:
+        evidence["claim_bridge"] = bridge_evidence
+    return EventMapStoryEdgeResult(
+        source_group_index=source.group_index,
+        target_group_index=target.group_index,
+        relation_type=relation_type,
+        confidence=round(confidence, 6),
+        anchor_key=anchor_key,
+        evidence=evidence,
+    )
+
+
+def _story_anchor_name(anchor_key: str, profiles: Sequence[_StoryNodeProfile]) -> str:
+    counts: dict[str, int] = defaultdict(int)
+    for profile in profiles:
+        name = profile.entity_names.get(anchor_key)
+        if name:
+            counts[name] += 1
+    if counts:
+        return min(counts, key=lambda name: (-counts[name], name))
+    return anchor_key.split(":", 1)[-1] or "未命名主题"
+
+
+def _story_title_part(title: str, anchor_name: str) -> str:
+    value = unicodedata.normalize("NFKC", str(title or "")).strip()
+    if anchor_name:
+        value = value.replace(anchor_name, "")
+    value = re.sub(r"^[\s·:：,，;；—-]+|[\s·:：,，;；—-]+$", "", value)
+    return value or str(title or "事件").strip() or "事件"
+
+
+def _story_label_summary(
+    anchor_key: str,
+    profiles: Sequence[_StoryNodeProfile],
+    edges: Sequence[EventMapStoryEdgeResult],
+) -> tuple[str, str, str]:
+    anchor_name = _story_anchor_name(anchor_key, profiles)
+    first = _story_title_part(profiles[0].representative.title, anchor_name)
+    latest = _story_title_part(profiles[-1].representative.title, anchor_name)
+    label = f"{anchor_name}：{first}" if first == latest else f"{anchor_name}：{first} → {latest}"
+    relation_counts: dict[str, int] = defaultdict(int)
+    for edge in edges:
+        relation_counts[edge.relation_type] += 1
+    relation_label = "、".join(
+        f"{_STORY_RELATION_LABELS.get(kind, kind)} {count} 条"
+        for kind, count in sorted(relation_counts.items())
+    )
+    source_count = len(set().union(*(profile.source_video_ids for profile in profiles)))
+    summary = (
+        f"围绕“{anchor_name}”的证据关系图，从“{profiles[0].representative.title}”发展至"
+        f"“{profiles[-1].representative.title}”；包含 {len(profiles)} 个真实事件、{relation_label}，"
+        f"证据来自 {source_count} 条来源记录。"
+    )
+    story_type = next(iter(relation_counts)) if len(relation_counts) == 1 else "trajectory"
+    return label[:120], summary[:500], story_type
+
+
 def build_event_map_stories(
     groups: Sequence[EventMapCanonicalGroup],
     records: Sequence[EventMapRecord],
     vectors: np.ndarray,
     *,
-    max_gap_days: int = 180,
-    max_members: int = 24,
+    max_gap_days: int = 365,
+    max_members: int = 48,
+    lookahead_per_entity: int = 8,
 ) -> list[EventMapStoryResult]:
+    if not groups:
+        return []
+    if vectors.ndim != 2 or vectors.shape[0] != len(records):
+        raise ValueError("story vector row count does not match records")
+
     vector_norms = _vector_norms(vectors)
-    by_entity_type: dict[tuple[str, str], list[int]] = defaultdict(list)
+    profiles = [_story_profile(index, group, records) for index, group in enumerate(groups)]
+    by_entity: dict[str, list[int]] = defaultdict(list)
     for group_index, group in enumerate(groups):
-        record = records[group.representative_index]
-        for entity_key in sorted(record.core_entity_keys):
-            by_entity_type[(entity_key, normalize_event_map_text(record.event_type))].append(group_index)
+        for entity_key in sorted(profiles[group_index].core_entity_keys):
+            by_entity[entity_key].append(group_index)
 
     edge_by_pair: dict[tuple[int, int], EventMapStoryEdgeResult] = {}
-    for (entity_key, _event_type), group_indices in sorted(by_entity_type.items()):
+    for _entity_key, group_indices in sorted(by_entity.items()):
         ordered = sorted(
             set(group_indices),
             key=lambda index: (
-                records[groups[index].representative_index].start_day,
-                str(records[groups[index].representative_index].event_id),
+                profiles[index].start_day,
+                str(profiles[index].representative.event_id),
             ),
         )
-        for source_index, target_index in zip(ordered, ordered[1:]):
-            source = records[groups[source_index].representative_index]
-            target = records[groups[target_index].representative_index]
-            gap = target.start_day - source.end_day
-            if gap <= 0 or gap > max_gap_days:
-                continue
-            source_phases = _story_phases(source)
-            target_phases = _story_phases(target)
-            if not source_phases or not target_phases or source_phases == target_phases:
-                continue
-            similarity = _cosine_similarity(
-                vectors,
-                source.vector_index,
-                target.vector_index,
-                vector_norms,
-            )
-            if similarity < 0.80:
-                continue
-            pair = (source_index, target_index)
-            evidence = {
-                "shared_entity": entity_key,
-                "source_phases": sorted(source_phases),
-                "target_phases": sorted(target_phases),
-                "gap_days": gap,
-                "cosine": round(similarity, 6),
-            }
-            candidate = EventMapStoryEdgeResult(source_index, target_index, "continuation", similarity, evidence)
-            existing = edge_by_pair.get(pair)
-            if existing is None or candidate.confidence > existing.confidence:
-                edge_by_pair[pair] = candidate
+        for offset, source_index in enumerate(ordered):
+            for target_index in ordered[offset + 1 : offset + 1 + lookahead_per_entity]:
+                if profiles[target_index].start_day - profiles[source_index].end_day > max_gap_days:
+                    break
+                candidate = _story_relation_candidate(
+                    profiles[source_index],
+                    profiles[target_index],
+                    vectors,
+                    vector_norms,
+                    max_gap_days=max_gap_days,
+                )
+                if candidate is None:
+                    continue
+                pair = (source_index, target_index)
+                existing = edge_by_pair.get(pair)
+                if existing is None or candidate.confidence > existing.confidence:
+                    edge_by_pair[pair] = candidate
 
-    outgoing: dict[int, list[EventMapStoryEdgeResult]] = defaultdict(list)
-    incoming: dict[int, int] = defaultdict(int)
+    edges_by_anchor: dict[str, list[EventMapStoryEdgeResult]] = defaultdict(list)
     for edge in edge_by_pair.values():
-        outgoing[edge.source_group_index].append(edge)
-        incoming[edge.target_group_index] += 1
-    for edges in outgoing.values():
-        edges.sort(key=lambda edge: (-edge.confidence, edge.target_group_index))
+        edges_by_anchor[edge.anchor_key].append(edge)
 
-    stories: list[EventMapStoryResult] = []
-    visited_edges: set[tuple[int, int]] = set()
-    starts = sorted(set(outgoing) | set(incoming), key=lambda index: (incoming[index] > 0, index))
-    for start in starts:
-        for first_edge in outgoing.get(start, []):
-            first_key = (first_edge.source_group_index, first_edge.target_group_index)
-            if first_key in visited_edges:
+    built: list[tuple[str, tuple[int, ...], tuple[EventMapStoryEdgeResult, ...], str, str, str, str, float]] = []
+    for anchor_key, anchor_edges in sorted(edges_by_anchor.items()):
+        outgoing: dict[int, list[EventMapStoryEdgeResult]] = defaultdict(list)
+        incoming: dict[int, list[EventMapStoryEdgeResult]] = defaultdict(list)
+        for edge in anchor_edges:
+            outgoing[edge.source_group_index].append(edge)
+            incoming[edge.target_group_index].append(edge)
+        allowed_out = {
+            (edge.source_group_index, edge.target_group_index)
+            for edges in outgoing.values()
+            for edge in sorted(edges, key=lambda item: (-item.confidence, item.target_group_index))[:3]
+        }
+        allowed_in = {
+            (edge.source_group_index, edge.target_group_index)
+            for edges in incoming.values()
+            for edge in sorted(edges, key=lambda item: (-item.confidence, item.source_group_index))[:3]
+        }
+        selected_edges = [
+            edge
+            for edge in anchor_edges
+            if (edge.source_group_index, edge.target_group_index) in allowed_out & allowed_in
+        ]
+        if not selected_edges:
+            continue
+
+        nodes = sorted(
+            {edge.source_group_index for edge in selected_edges}
+            | {edge.target_group_index for edge in selected_edges}
+        )
+        parent = {node: node for node in nodes}
+        size = {node: 1 for node in nodes}
+
+        def find(node: int) -> int:
+            while parent[node] != node:
+                parent[node] = parent[parent[node]]
+                node = parent[node]
+            return node
+
+        accepted_edges: list[EventMapStoryEdgeResult] = []
+        for edge in sorted(
+            selected_edges,
+            key=lambda item: (-item.confidence, item.source_group_index, item.target_group_index),
+        ):
+            left = find(edge.source_group_index)
+            right = find(edge.target_group_index)
+            if left != right:
+                if size[left] + size[right] > max_members:
+                    continue
+                if size[left] < size[right]:
+                    left, right = right, left
+                parent[right] = left
+                size[left] += size[right]
+            accepted_edges.append(edge)
+
+        members_by_root: dict[int, set[int]] = defaultdict(set)
+        for node in nodes:
+            members_by_root[find(node)].add(node)
+        for component_members in members_by_root.values():
+            component_edges = [
+                edge
+                for edge in accepted_edges
+                if edge.source_group_index in component_members
+                and edge.target_group_index in component_members
+            ]
+            if not component_edges:
                 continue
-            members = [first_edge.source_group_index]
-            edges: list[EventMapStoryEdgeResult] = []
-            current = first_edge
-            while len(members) < max_members:
-                key = (current.source_group_index, current.target_group_index)
-                if key in visited_edges or current.target_group_index in members:
-                    break
-                visited_edges.add(key)
-                edges.append(current)
-                members.append(current.target_group_index)
-                next_edges = [
-                    edge
-                    for edge in outgoing.get(current.target_group_index, [])
-                    if (edge.source_group_index, edge.target_group_index) not in visited_edges
-                ]
-                if len(next_edges) != 1:
-                    break
-                current = next_edges[0]
-            if len(members) < 2:
-                continue
-            first_record = records[groups[members[0]].representative_index]
-            entity_names = [entity.name for entity in first_record.entities if entity.is_core]
-            stories.append(
-                EventMapStoryResult(
-                    story_index=len(stories),
-                    member_group_indices=tuple(members),
-                    edges=tuple(edges),
-                    label=f"{entity_names[0] if entity_names else first_record.event_type} · 事件进展"[:120],
+            ordered_members = tuple(
+                sorted(
+                    component_members,
+                    key=lambda index: (
+                        profiles[index].start_day,
+                        str(profiles[index].representative.event_id),
+                    ),
                 )
             )
-    return stories
+            ordered_profiles = [profiles[index] for index in ordered_members]
+            ordered_edges = tuple(
+                sorted(
+                    component_edges,
+                    key=lambda edge: (
+                        profiles[edge.source_group_index].start_day,
+                        profiles[edge.target_group_index].start_day,
+                        edge.relation_type,
+                    ),
+                )
+            )
+            source_count = len(set().union(*(profile.source_video_ids for profile in ordered_profiles)))
+            relation_types = {edge.relation_type for edge in ordered_edges}
+            average_confidence = sum(edge.confidence for edge in ordered_edges) / len(ordered_edges)
+            quality_score = min(
+                1.0,
+                0.80 * average_confidence
+                + 0.10 * min(1.0, source_count / 3)
+                + 0.10 * min(1.0, len(relation_types) / 2),
+            )
+            if len(ordered_members) == 2:
+                edge = ordered_edges[0]
+                if edge.relation_type == "continuation":
+                    if edge.confidence < 0.92 or source_count < 2 or not _story_anchor_is_specific(anchor_key):
+                        continue
+                elif edge.confidence < 0.84 or source_count < 2:
+                    continue
+            elif quality_score < 0.76 or source_count < 2:
+                continue
+
+            maturity = (
+                "established"
+                if len(ordered_members) >= 4 and source_count >= 3 and quality_score >= 0.82
+                else "emerging"
+            )
+            label, summary, story_type = _story_label_summary(
+                anchor_key,
+                ordered_profiles,
+                ordered_edges,
+            )
+            built.append(
+                (
+                    anchor_key,
+                    ordered_members,
+                    ordered_edges,
+                    label,
+                    summary,
+                    story_type,
+                    maturity,
+                    round(quality_score, 6),
+                )
+            )
+
+    built.sort(
+        key=lambda item: (
+            profiles[item[1][0]].start_day,
+            item[0],
+            tuple(item[1]),
+        )
+    )
+    return [
+        EventMapStoryResult(
+            story_index=index,
+            member_group_indices=members,
+            edges=edges,
+            label=label,
+            summary=summary,
+            anchor_key=anchor_key,
+            story_type=story_type,
+            maturity=maturity,
+            quality_score=quality_score,
+        )
+        for index, (anchor_key, members, edges, label, summary, story_type, maturity, quality_score) in enumerate(built)
+    ]

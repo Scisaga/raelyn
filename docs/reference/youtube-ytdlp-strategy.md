@@ -143,7 +143,7 @@ yt-dlp 官方 README 把 `curl_cffi` 列为推荐的浏览器 impersonation 支�
 
 ## 本项目当前状态
 
-- 本地 `yt-dlp` 版本已更新到 `2026.07.04`，对应 PyPI 包版本 `2026.7.4`；`yt-dlp-ejs` 当前为 `0.8.0`。
+- 本地 `yt-dlp` 版本已更新到 `2026.08.19`，对应 PyPI 包版本 `2026.8.19`；`yt-dlp-ejs` 当前为 `0.8.0`。
 - 当前配置已有 `YTDLP_REMOTE_COMPONENTS=ejs:github`，用于 YouTube EJS / JS challenge 组件。
 - 当前支持通过 `YTDLP_POT_BGUTIL_BASE_URL` 启用 bgutil PO Token Provider HTTP server。
 - 当前 YouTube 同步 / 下载固定注入已保存的 YouTube cookies；不再提供全局无 cookies 下载开关。

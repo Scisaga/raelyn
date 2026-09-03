@@ -18,6 +18,8 @@ class WorkerRoleTests(unittest.TestCase):
         self.assertEqual(WORKER_ROLE_TYPES["download_youtube"], ["video.download.youtube", "video.backfill_subtitles.youtube"])
         self.assertEqual(WORKER_ROLE_TYPES["download_bilibili"], ["video.download.bilibili", "video.backfill_subtitles.bilibili"])
         self.assertIn("video.enrich_metadata.youtube", WORKER_ROLE_TYPES["sync"])
+        self.assertIn("system.backfill_legacy_usage", WORKER_ROLE_TYPES["sync"])
+        self.assertIn("system.capture_usage_snapshot", WORKER_ROLE_TYPES["sync"])
         self.assertEqual(WORKER_ROLE_TYPES["embedding"], ["event.embed", "event.backfill_embeddings"])
         self.assertEqual(
             WORKER_ROLE_TYPES["analysis"],
@@ -52,6 +54,8 @@ class WorkerRoleTests(unittest.TestCase):
         self.assertEqual(job_type_worker_role("playlist.backfill_events_range"), "ai")
         self.assertEqual(job_type_worker_role("brief.generate_daily"), "ai")
         self.assertEqual(job_type_worker_role("video.enrich_metadata.youtube"), "sync")
+        self.assertEqual(job_type_worker_role("system.backfill_legacy_usage"), "sync")
+        self.assertEqual(job_type_worker_role("system.capture_usage_snapshot"), "sync")
         self.assertEqual(job_type_worker_role("video.backfill_subtitles.youtube"), "download_youtube")
         self.assertEqual(job_type_worker_role("video.backfill_subtitles.bilibili"), "download_bilibili")
 

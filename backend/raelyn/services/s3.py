@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError
 from botocore.config import Config as BotoConfig
 
@@ -15,6 +16,8 @@ from raelyn.config import settings
 
 
 def _client():
+    """创建当前进程内、单次 S3 操作使用的 client；不做模块级或跨进程复用。"""
+
     return boto3.client(
         "s3",
         endpoint_url=settings.s3_endpoint,
@@ -23,6 +26,17 @@ def _client():
         region_name=settings.s3_region,
         use_ssl=settings.s3_use_ssl,
         config=BotoConfig(s3={"addressing_style": "path"}),
+    )
+
+
+def _transfer_config() -> TransferConfig:
+    """统一 upload_file/download_file 的单文件并发与 multipart 粒度。"""
+
+    return TransferConfig(
+        max_concurrency=settings.s3_transfer_max_concurrency,
+        multipart_threshold=settings.s3_transfer_multipart_threshold_bytes,
+        multipart_chunksize=settings.s3_transfer_multipart_chunksize_bytes,
+        use_threads=True,
     )
 
 
@@ -106,7 +120,13 @@ def s3_upload_file(*, local_path: Path, bucket: str, key: str, content_type: str
     extra_args: dict[str, Any] = {}
     if content_type:
         extra_args["ContentType"] = content_type
-    client.upload_file(str(local_path), bucket, key, ExtraArgs=extra_args or None)
+    client.upload_file(
+        str(local_path),
+        bucket,
+        key,
+        ExtraArgs=extra_args or None,
+        Config=_transfer_config(),
+    )
     size = local_path.stat().st_size if local_path.exists() else None
     return UploadResult(bucket=bucket, key=key, size_bytes=size)
 
@@ -114,7 +134,7 @@ def s3_upload_file(*, local_path: Path, bucket: str, key: str, content_type: str
 def s3_download_file(*, bucket: str, key: str, local_path: Path) -> None:
     client = _client()
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    client.download_file(bucket, key, str(local_path))
+    client.download_file(bucket, key, str(local_path), Config=_transfer_config())
 
 
 def s3_presign_get(

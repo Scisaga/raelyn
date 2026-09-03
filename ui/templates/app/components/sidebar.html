@@ -1,21 +1,21 @@
       <!-- Sidebar -->
       <aside
-        class="relative flex flex-col border-r border-slate-800 bg-gradient-to-b from-slate-950 to-slate-900/60 backdrop-blur transition-[width] duration-200 ease-out"
+        class="raelyn-sidebar relative z-30 flex flex-col border-r border-slate-800/90 transition-[width] duration-200 ease-out"
         x-show="!sidebarHidden"
         x-transition.opacity.duration.150ms
-        :class="sidebarCollapsed ? 'w-14' : 'w-48'"
+        :class="domainSwitcherOpen ? (sidebarMobilePortrait ? 'w-full' : 'w-72') : (sidebarCollapsed ? 'w-14' : 'w-48')"
       >
         <div
           class="h-14 flex items-center border-b border-slate-800"
-          :class="sidebarCollapsed ? 'justify-center px-0' : 'justify-between px-3'"
+          :class="sidebarCollapsed && !domainSwitcherOpen ? 'justify-center px-0' : 'justify-between px-3'"
         >
           <div class="flex items-center gap-2 min-w-0">
             <button
               type="button"
               class="shrink-0 rounded-lg flex items-center justify-center overflow-hidden transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/60"
-              :class="sidebarCollapsed ? 'h-9 w-9 p-0.5 hover:bg-slate-800/70 cursor-pointer' : 'h-8 w-8 cursor-default'"
-              :title="sidebarCollapsed ? (sidebarMobilePortrait ? '隐藏菜单' : '展开菜单') : ''"
-              @click="sidebarCollapsed ? toggleSidebar() : null"
+              :class="sidebarCollapsed && !domainSwitcherOpen ? 'h-9 w-9 p-0.5 hover:bg-slate-800/70 cursor-pointer' : 'h-8 w-8 cursor-default'"
+              :title="sidebarCollapsed && !domainSwitcherOpen ? (sidebarMobilePortrait ? '隐藏菜单' : '展开菜单') : ''"
+              @click="sidebarCollapsed && !domainSwitcherOpen ? toggleSidebar() : null"
             >
               <img
                 src="/static/brand/raelyn-event-horizon.svg"
@@ -23,13 +23,13 @@
                 class="h-full w-full shrink-0 rounded-lg"
               />
             </button>
-            <div class="min-w-0" x-show="!sidebarCollapsed" x-transition.opacity.duration.150ms>
+            <div class="min-w-0" x-show="domainSwitcherOpen || !sidebarCollapsed" x-transition.opacity.duration.150ms>
               <div class="font-serif text-sm font-semibold leading-5">RAELYN</div>
             </div>
           </div>
           <button
             class="shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-md hover:bg-slate-800/60 text-slate-300"
-            x-show="!sidebarCollapsed"
+            x-show="!sidebarCollapsed && !domainSwitcherOpen"
             x-transition.opacity.duration.150ms
             @click="toggleSidebar()"
             :title="sidebarCollapsed ? '展开菜单' : '收起菜单'"
@@ -52,37 +52,135 @@
           </button>
         </div>
 
-        <div class="border-b border-slate-800 px-2 py-2" x-show="!sidebarCollapsed" x-transition.opacity.duration.150ms>
-          <label class="block text-[10px] uppercase tracking-[0.16em] text-slate-600" for="raelyn-domain-switcher">观测域</label>
-          <div class="mt-1 flex items-center gap-1.5">
-            <span class="h-2 w-2 shrink-0 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(103,232,249,.55)]"></span>
-            <select
-              id="raelyn-domain-switcher"
-              class="min-w-0 flex-1 appearance-none bg-transparent py-1 text-xs font-medium text-slate-200 outline-none"
-              :value="selectedPlaylistId || ''"
-              @change="selectDomain($event.target.value)"
-              title="切换观测域"
+        <div
+          class="relative flex h-16 shrink-0 flex-col justify-center border-b border-slate-800 px-2"
+          data-domain-context-band
+          @keydown.escape.stop="domainSwitcherOpen && !domainSwitcherSwitching && closeDomainSwitcherMenu()"
+        >
+          <div class="flex h-full w-full flex-col justify-center" x-show="!domainSwitcherOpen">
+            <div class="mb-1 px-1 text-[10px] uppercase tracking-[0.16em] text-slate-600" x-show="!sidebarCollapsed">当前观测域</div>
+            <button
+              x-ref="domainSwitcherTrigger"
+              type="button"
+              class="group flex items-center rounded-md border border-transparent text-left transition hover:border-cyan-400/15 hover:bg-cyan-400/[0.045] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/30"
+              :class="sidebarCollapsed ? 'h-10 w-10 justify-center self-center' : 'h-8 w-full gap-2 px-1.5'"
+              :title="domainSwitcherTriggerLabel()"
+              :aria-expanded="domainSwitcherOpen"
+              aria-controls="raelyn-domain-switcher-page"
+              :disabled="domainSwitcherSwitching"
+              @click="openDomainSwitcherMenu()"
+              @keydown.arrow-down.prevent.stop="openDomainSwitcherMenu()"
             >
-              <option value="" class="bg-slate-950">选择观测域</option>
-              <template x-for="domain in domains" :key="domain.id">
-                <option class="bg-slate-950" :value="domain.id" x-text="domain.name"></option>
-              </template>
-            </select>
-            <button type="button" class="rounded px-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200" @click="switchView('domains')" title="浏览观测域">⋯</button>
-            <button type="button" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-slate-500 hover:bg-slate-800 hover:text-slate-100" @click="openDomainSettings()" title="当前观测域设置" aria-label="当前观测域设置">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1.1 1.6V21h-4v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.8.3l-.1.1-2.8-2.8.1-.1a1.7 1.7 0 0 0 .3-1.8A1.7 1.7 0 0 0 3 14H3v-4h.1a1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1L7 4.2l.1.1a1.7 1.7 0 0 0 1.8.3A1.7 1.7 0 0 0 10 3.1V3h4v.1a1.7 1.7 0 0 0 1.1 1.6 1.7 1.7 0 0 0 1.8-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.8A1.7 1.7 0 0 0 20.9 10h.1v4h-.1a1.7 1.7 0 0 0-1.5 1Z"></path></svg>
+              <span class="inline-flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-700/80 bg-slate-900 text-[9px] font-semibold text-slate-200">
+                <template x-if="currentDomain()?.avatar_asset">
+                  <img class="h-full w-full object-cover" :src="assetContentUrl(currentDomain().avatar_asset)" alt="" loading="lazy" @error="clearAssetRef(currentDomain(), 'avatar_asset')" />
+                </template>
+                <span x-show="!currentDomain()?.avatar_asset" x-text="domainAvatarLabel(currentDomain())"></span>
+              </span>
+              <span class="min-w-0 flex-1 truncate text-xs font-medium text-slate-200" x-show="!sidebarCollapsed" x-text="domainSwitcherTriggerLabel()"></span>
+              <svg class="shrink-0 text-slate-500 transition group-hover:text-slate-300" x-show="!sidebarCollapsed" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"></path></svg>
             </button>
+          </div>
+          <div class="flex h-full w-full items-center gap-2" x-show="domainSwitcherOpen">
+            <button type="button" class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-800/70 hover:text-slate-100 disabled:cursor-wait disabled:text-slate-700" :disabled="domainSwitcherSwitching" @click="closeDomainSwitcherMenu()" aria-label="返回主导航">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>
+            </button>
+            <div class="min-w-0">
+              <div id="raelyn-domain-switcher-title" class="truncate text-sm font-semibold text-slate-100">选择观测域</div>
+              <div class="mt-0.5 truncate text-[10px] text-slate-500">切换整个工作区的数据范围</div>
+            </div>
           </div>
         </div>
 
-        <nav class="flex-1 overflow-y-auto space-y-1 px-2 py-1 raelyn-sidebar-nav">
+          <section
+            id="raelyn-domain-switcher-page"
+            class="flex min-h-0 flex-1 flex-col overflow-hidden"
+            x-show="domainSwitcherOpen"
+            x-cloak
+            aria-labelledby="raelyn-domain-switcher-title"
+            @keydown.escape.prevent.stop="!domainSwitcherSwitching && closeDomainSwitcherMenu()"
+          >
+            <div class="shrink-0 border-b border-slate-800 p-2.5">
+              <label class="sr-only" for="raelyn-domain-search">搜索观测域</label>
+              <div class="flex h-9 items-center gap-2 rounded-md border border-slate-700 bg-slate-950/45 px-2.5 focus-within:border-cyan-400/35 focus-within:ring-2 focus-within:ring-cyan-400/10">
+                <svg class="shrink-0 text-slate-600" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4.2 4.2"></path></svg>
+                <input
+                  x-ref="domainSwitcherSearch"
+                  id="raelyn-domain-search"
+                  type="search"
+                  role="combobox"
+                  class="min-w-0 flex-1 border-0 bg-transparent p-0 text-xs text-slate-200 outline-none placeholder:text-slate-600"
+                  placeholder="搜索观测域"
+                  autocomplete="off"
+                  x-model="domainSwitcherQuery"
+                  aria-autocomplete="list"
+                  aria-controls="raelyn-domain-listbox"
+                  :aria-expanded="domainSwitcherOpen"
+                  :aria-activedescendant="domainSwitcherActiveOptionId() || undefined"
+                  @input="domainSwitcherResetActiveIndex()"
+                  @keydown.arrow-down.prevent.stop="domainSwitcherMove(1)"
+                  @keydown.arrow-up.prevent.stop="domainSwitcherMove(-1)"
+                  @keydown.enter.prevent.stop="domainSwitcherChooseActive()"
+                  @keydown.escape.prevent.stop="!domainSwitcherSwitching && closeDomainSwitcherMenu()"
+                />
+              </div>
+            </div>
+            <div id="raelyn-domain-listbox" class="min-h-0 flex-1 overflow-auto p-1.5 raelyn-scrollbar" role="listbox" aria-label="观测域列表">
+              <div class="px-3 py-6 text-center text-xs text-slate-500" x-show="domainsLoading && !domains.length">正在加载观测域…</div>
+              <div class="px-3 py-5 text-center text-xs leading-5 text-rose-200" x-show="domainSwitcherError && !domainSwitcherSwitching">
+                <div x-text="domainSwitcherError"></div>
+                <button type="button" class="mt-2 rounded-md border border-rose-300/25 px-2.5 py-1 text-[11px] text-rose-100 disabled:cursor-wait disabled:opacity-50" :disabled="domainSwitcherSwitching" @click="retryDomainSwitcherLoad()" x-text="domainSwitcherRetryMode === 'page' ? '重试当前页面' : '重试加载'"></button>
+              </div>
+              <template x-for="(domain,index) in domainSwitcherFilteredDomains()" :key="domain.id">
+                <button
+                  type="button"
+                  class="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition"
+                  :id="'raelyn-domain-option-'+index"
+                  :class="[
+                    String(domain.id)===String(selectedPlaylistId) ? 'bg-cyan-400/8 text-cyan-100' : 'text-slate-300 hover:bg-slate-800/60',
+                    domainSwitcherActiveIndex===index ? 'ring-1 ring-inset ring-cyan-400/20' : ''
+                  ]"
+                  role="option"
+                  tabindex="-1"
+                  :aria-selected="String(domain.id)===String(selectedPlaylistId)"
+                  :disabled="domainSwitcherSwitching"
+                  @mouseenter="domainSwitcherActiveIndex=index"
+                  @click.stop="domainSwitcherChoose(domain.id)"
+                >
+                  <span class="inline-flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-800 bg-slate-900 text-[10px] font-semibold text-slate-200">
+                    <template x-if="domain.avatar_asset">
+                      <img class="h-full w-full object-cover" :src="assetContentUrl(domain.avatar_asset)" alt="" loading="lazy" @error="clearAssetRef(domain, 'avatar_asset')" />
+                    </template>
+                    <span x-show="!domain.avatar_asset" x-text="domainAvatarLabel(domain)"></span>
+                  </span>
+                  <span class="min-w-0 flex-1"><span class="block truncate text-xs font-medium" x-text="domain.name"></span><span class="mt-0.5 block truncate text-[10px] text-slate-500" x-text="domainSwitcherMeta(domain)"></span></span>
+                  <svg class="shrink-0 text-cyan-300" x-show="String(domain.id)===String(selectedPlaylistId)" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"></path></svg>
+                  <svg class="shrink-0 animate-spin text-cyan-300" x-show="domainSwitcherSwitching && String(domain.id)===String(domainSwitcherPendingId)" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-5.5-7.6"></path></svg>
+                </button>
+              </template>
+              <div class="px-3 py-6 text-center text-xs text-slate-500" x-show="!domainsLoading && !domainSwitcherError && !domains.length">还没有观测域</div>
+              <div class="px-3 py-6 text-center text-xs text-slate-500" x-show="!domainsLoading && !domainSwitcherError && domains.length && !domainSwitcherFilteredDomains().length">没有匹配的观测域</div>
+            </div>
+            <div class="grid shrink-0 gap-1 border-t border-slate-800 p-2">
+              <button type="button" class="flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-slate-300 hover:bg-slate-800/60 disabled:cursor-wait disabled:text-slate-700" :disabled="domainSwitcherSwitching" @click="domainSwitcherBrowseAll()">
+                <svg class="shrink-0 text-slate-500" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="12" r="1.5"></circle><circle cx="12" cy="6" r="1.5"></circle><circle cx="19" cy="12" r="1.5"></circle><path d="m6.3 11.2 4.4-4.4m2.6 0 4.4 4.4M6.5 12h11"></path></svg>
+                <span>浏览全部观测域</span>
+              </button>
+              <button type="button" class="flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-cyan-200 hover:bg-cyan-400/8 disabled:cursor-wait disabled:text-slate-700" :disabled="domainSwitcherSwitching" @click="domainSwitcherCreate()">
+                <svg class="shrink-0" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+                <span>新建观测域</span>
+              </button>
+            </div>
+          </section>
+
+        <nav class="flex-1 overflow-y-auto space-y-1 px-2 py-1 raelyn-sidebar-nav" x-show="!domainSwitcherOpen">
           <template x-for="item in navItems.filter(i => !i.hidden)" :key="item.key">
             <div>
               <div class="mx-2 mb-1 mt-3 border-t border-slate-800 pt-2 text-[10px] uppercase tracking-[0.16em] text-slate-600" x-show="item.key==='operations' && !sidebarCollapsed">系统</div>
               <button
                 class="group flex items-center rounded-md text-sm leading-none transition border border-transparent"
                 :class="[(sidebarCollapsed ? 'w-10 justify-center mx-auto my-1' : 'w-full gap-1 my-1'), activeView===item.key ? 'bg-slate-800/70 text-slate-50 border-slate-700/60' : 'text-slate-300 hover:bg-slate-800/40 hover:text-slate-100']"
-                @click="switchView(item.key)"
+                @click="item.key==='library' ? openCurrentDomainLibrary() : switchView(item.key)"
                 :title="sidebarCollapsed ? item.label : ''"
               >
                 <span class="shrink-0 w-10 h-10 flex items-center justify-center" x-html="item.icon"></span>
@@ -92,7 +190,7 @@
           </template>
         </nav>
 
-        <div class="p-3 border-t border-slate-800">
+        <div class="p-3 border-t border-slate-800" x-show="!domainSwitcherOpen">
           <div
             class="flex items-center"
             :class="sidebarCollapsed ? 'justify-center gap-0' : 'justify-between gap-2'"

@@ -1,4 +1,5 @@
 import { wsUrl } from "../services/ws.js";
+import { raelynIcon } from "../shared/icons.js";
 
 export function createJobsViewMethods() {
   return {
@@ -994,6 +995,39 @@ export function createJobsViewMethods() {
       if (value === "running") return "border-sky-500/30 bg-sky-500/10 text-sky-200";
       if (value === "pending") return "border-amber-500/30 bg-amber-500/10 text-amber-200";
       return "border-slate-700 bg-slate-950/30 text-slate-200";
+    },
+
+    jobTypeIcon(job) {
+      const type = String((job && job.type) || "").toLowerCase();
+      if (type.startsWith("video.") && /(asr|subtitle|transcript)/.test(type)) {
+        return raelynIcon('<path d="M4 12h2m2-4v8m2-11v14m2-9v4m2-7v10m2-6v2m2-5v8"/>');
+      }
+      if (type.startsWith("video.")) {
+        return raelynIcon('<rect x="3" y="5" width="18" height="14" rx="3"/><path d="m10 9 5 3-5 3z"/>');
+      }
+      if (type.startsWith("playlist.")) {
+        return raelynIcon('<circle cx="12" cy="12" r="2"/><circle cx="5" cy="8" r="1.25"/><circle cx="19" cy="6" r="1.25"/><circle cx="18" cy="18" r="1.25"/><path d="m6.2 8.6 4 2.3m3.5-.2 4.1-3.8m-4.3 6.5 3.4 3.4"/>');
+      }
+      if (type.startsWith("brief.")) {
+        return raelynIcon('<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5M9 12h6M9 16h6"/>');
+      }
+      if (type.startsWith("media.")) {
+        return raelynIcon('<ellipse cx="12" cy="5.5" rx="7" ry="2.5"/><path d="M5 5.5v6c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-6M5 11.5v6c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-6"/>');
+      }
+      if (type.startsWith("event.")) {
+        return raelynIcon('<circle cx="12" cy="12" r="2"/><path d="M12 3v4m0 10v4M3 12h4m10 0h4M5.6 5.6l2.8 2.8m7.2 7.2 2.8 2.8m0-12.8-2.8 2.8m-7.2 7.2-2.8 2.8"/>');
+      }
+      return raelynIcon('<rect x="4" y="4" width="16" height="16" rx="3"/><path d="m8 12 2.5 2.5L16 9"/>');
+    },
+
+    jobTypeIconClass(job) {
+      const type = String((job && job.type) || "").toLowerCase();
+      if (type.startsWith("video.")) return "border-sky-500/25 bg-sky-500/10 text-sky-300";
+      if (type.startsWith("playlist.")) return "border-violet-500/25 bg-violet-500/10 text-violet-300";
+      if (type.startsWith("brief.")) return "border-amber-500/25 bg-amber-500/10 text-amber-300";
+      if (type.startsWith("media.")) return "border-emerald-500/25 bg-emerald-500/10 text-emerald-300";
+      if (type.startsWith("event.")) return "border-cyan-500/25 bg-cyan-500/10 text-cyan-300";
+      return "border-slate-700 bg-slate-900/50 text-slate-400";
     },
 
     jobStatusLabel(job) {

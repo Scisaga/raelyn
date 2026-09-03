@@ -1,7 +1,7 @@
 		          <!-- Jobs -->
-		          <div x-show="activeView==='jobs' || activeView==='operations'" x-transition.opacity class="h-full">
-		            <div class="bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
-			              <div class="shrink-0 flex flex-wrap items-center justify-between gap-3 bg-slate-950/85 px-4 py-3" x-show="activeView==='operations'">
+		          <div x-show="activeView==='jobs' || activeView==='operations'" x-transition.opacity class="raelyn-view h-full" :class="activeView==='operations' ? 'raelyn-view--operations' : 'raelyn-view--settings'">
+		            <div class="raelyn-surface-base overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
+			              <div class="raelyn-toolbar-band shrink-0 flex flex-wrap items-center justify-between gap-3 px-4 py-3" x-show="activeView==='operations'">
 			                <div class="min-w-0">
 			                  <div class="text-sm font-semibold text-slate-100" x-text="operationsContextTitle()"></div>
 			                  <div class="mt-0.5 truncate text-[11px] text-slate-500" x-text="operationsContextDetail()"></div>
@@ -28,9 +28,9 @@
 			              </div>
 			              <div class="shrink-0 flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-950/65 px-4 py-2" x-show="activeView==='operations'">
 			                <span class="mr-1 text-[10px] text-slate-600">当前观测域维护</span>
-			                <button type="button" class="rounded border border-slate-700 px-2.5 py-1.5 text-[10px] text-slate-300 hover:bg-slate-800 disabled:opacity-50" :disabled="!!operationsActionSubmitting" @click="runDomainOperation('backfill_events')">事件补齐</button>
-			                <button type="button" class="rounded border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[10px] text-amber-200 hover:bg-amber-500/20 disabled:opacity-50" :disabled="!!operationsActionSubmitting" @click="runDomainOperation('force_events')">全部重抽</button>
-			                <button type="button" class="rounded border border-violet-500/30 bg-violet-500/10 px-2.5 py-1.5 text-[10px] text-violet-200 hover:bg-violet-500/20 disabled:opacity-50" :disabled="!!operationsActionSubmitting" @click="runDomainOperation('build_field')">构建星域</button>
+			                <button type="button" class="rounded border border-slate-700 px-2.5 py-1.5 text-[10px] text-slate-300 hover:bg-slate-800 disabled:opacity-50" :disabled="!!operationsActionSubmitting || !domainObservationEnabled()" :title="domainObservationEnabled() ? '' : '请先在观测域设置中启用观测'" @click="runDomainOperation('backfill_events')">事件补齐</button>
+			                <button type="button" class="rounded border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[10px] text-amber-200 hover:bg-amber-500/20 disabled:opacity-50" :disabled="!!operationsActionSubmitting || !domainObservationEnabled()" :title="domainObservationEnabled() ? '' : '请先在观测域设置中启用观测'" @click="runDomainOperation('force_events')">全部重抽</button>
+			                <button type="button" class="rounded border border-violet-500/30 bg-violet-500/10 px-2.5 py-1.5 text-[10px] text-violet-200 hover:bg-violet-500/20 disabled:opacity-50" :disabled="!!operationsActionSubmitting || !domainObservationEnabled()" :title="domainObservationEnabled() ? '' : '请先在观测域设置中启用观测'" @click="runDomainOperation('build_field')">构建星域</button>
 			                <span class="ml-auto text-[10px] text-slate-600">停止任务请在下方运行中任务行操作</span>
 			              </div>
 			              <div class="shrink-0 px-4 py-3 flex flex-col gap-3">
@@ -350,6 +350,12 @@
 		              <div x-show="jobsTab==='active'" class="divide-y divide-slate-800">
 		                <template x-for="j in jobListActive" :key="j.id">
 		                  <div class="p-4 flex items-center justify-between gap-4 hover:bg-slate-900/50">
+	                    <span
+	                      class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
+	                      :class="jobTypeIconClass(j)"
+	                      :title="j.type"
+	                      x-html="jobTypeIcon(j)"
+	                    ></span>
 	                    <div class="min-w-0 flex-1">
 	                      <div class="flex items-start justify-between gap-3">
 	                        <div class="min-w-0">
@@ -421,6 +427,12 @@
 		                <template x-for="j in jobListDone" :key="j.id">
 		                  <div class="hover:bg-slate-900/50">
 		                    <div class="p-4 flex items-center justify-between gap-4">
+		                      <span
+		                        class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border"
+		                        :class="jobTypeIconClass(j)"
+		                        :title="j.type"
+		                        x-html="jobTypeIcon(j)"
+		                      ></span>
 		                      <div class="min-w-0 flex-1">
 		                        <div class="flex items-start justify-between gap-3">
 		                          <div class="min-w-0">

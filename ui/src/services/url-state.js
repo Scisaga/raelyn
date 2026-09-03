@@ -15,6 +15,7 @@ export function createUrlStateMethods({ settingsTabs }) {
       const path = (window.location.pathname || "/").replace(/\/+$/, "") || "/";
       if (path === "/" || path === "") return "field";
       if (/^\/domains\/[^/]+\/playlist$/.test(path)) return "playlist";
+      if (path === "/briefs") return "playlist";
       const key = decodeURIComponent(path.slice(1));
       if (key === "install") return "settings";
       const exists = this.navItems.some((item) => item.key === key);
@@ -23,7 +24,7 @@ export function createUrlStateMethods({ settingsTabs }) {
 
     _applyQueryFromLocation(viewKey) {
       const searchParams = new URLSearchParams(window.location.search || "");
-      if (["field", "domains", "stories", "briefs", "playlist", "library", "operations"].includes(viewKey)) {
+      if (["field", "domains", "stories", "briefs", "playlist", "library", "domain-settings", "operations"].includes(viewKey)) {
         const domainPathMatch = (window.location.pathname || "").match(/^\/domains\/([^/]+)\/playlist\/?$/);
         const domainId = (domainPathMatch ? decodeURIComponent(domainPathMatch[1]) : "") || searchParams.get("domain_id") || this.selectedPlaylistId;
         if (domainId) {
@@ -32,12 +33,13 @@ export function createUrlStateMethods({ settingsTabs }) {
         }
       }
       if (viewKey === "field") {
-        const mode = searchParams.get("mode") || this.fieldMode || "now";
-        this.fieldMode = ["now", "replay", "story", "verify"].includes(mode) ? mode : "now";
+        this.fieldMode = "now";
         this.fieldRequestedCanonicalId = searchParams.get("canonical_id") || "";
         this.fieldRequestedTopicId = searchParams.get("topic_id") || "";
         this.fieldRequestedEvidenceId = searchParams.get("evidence_id") || "";
         this.fieldRequestedSnapshotId = searchParams.get("snapshot_id") || "";
+        this.fieldRequestedWindowStart = searchParams.get("window_start") || "";
+        this.fieldRequestedWindowEnd = searchParams.get("window_end") || "";
         const entityKey = searchParams.get("entity_key") || "";
         this.fieldRequestedEntity = entityKey ? {
           normalized_key: entityKey,
@@ -56,7 +58,8 @@ export function createUrlStateMethods({ settingsTabs }) {
       if (viewKey === "media") {
         this.mediaQuery = searchParams.get("q") || "";
       }
-      if (viewKey === "videos") {
+      const isVideoListing = viewKey === "videos" || (viewKey === "library" && this.libraryTab === "records");
+      if (isVideoListing) {
         this.videoStatus = searchParams.get("status") || "";
         const mediaIn = searchParams.get("media_id_in") || "";
         const mediaOne = searchParams.get("media_id") || "";
@@ -89,9 +92,14 @@ export function createUrlStateMethods({ settingsTabs }) {
         this.selectedPlaylistId = searchParams.get("playlist_id") || this.selectedPlaylistId;
       }
       if (viewKey === "playlist") {
+        const normalizedPath = ((window.location.pathname || "").replace(/\/+$/, "") || "/");
+        const legacyBriefPath = normalizedPath === "/briefs";
         const playlistId = searchParams.get("playlist_id") || this.playlistPageId || this.selectedPlaylistId;
         this.playlistPageId = playlistId || null;
         this.selectedPlaylistId = playlistId || this.selectedPlaylistId;
+        const contentTab = searchParams.get("tab") || (legacyBriefPath ? "brief" : "records");
+        this.playbackContentTab = contentTab === "brief" ? "brief" : "records";
+        this.briefV2SelectedId = this.playbackContentTab === "brief" ? (searchParams.get("brief_id") || "") : "";
         this.playlistSelectedDate = searchParams.get("date") || this.playlistSelectedDate || "";
         if (!this.playlistSelectedDate) this.playlistSelectedDate = todayIsoLocal();
         this.playlistRequestedVideoId = searchParams.get("video_id") || "";
@@ -112,11 +120,10 @@ export function createUrlStateMethods({ settingsTabs }) {
 
     _buildSearchForView(viewKey) {
       const searchParams = new URLSearchParams();
-      if (["field", "domains", "stories", "briefs", "library", "operations"].includes(viewKey) && this.selectedPlaylistId) {
+      if (["field", "domains", "stories", "briefs", "library", "domain-settings", "operations"].includes(viewKey) && this.selectedPlaylistId) {
         searchParams.set("domain_id", String(this.selectedPlaylistId));
       }
       if (viewKey === "field") {
-        searchParams.set("mode", this.fieldMode || "now");
         if (this.playlistEventMapSelectedKind === "canonical" && this.playlistEventMapSelectedId) searchParams.set("canonical_id", String(this.playlistEventMapSelectedId));
         else if (this.fieldRequestedCanonicalId) searchParams.set("canonical_id", String(this.fieldRequestedCanonicalId));
         if (this.playlistEventMapSelectedKind === "topic" && this.playlistEventMapSelectedId) searchParams.set("topic_id", String(this.playlistEventMapSelectedId));
@@ -131,6 +138,8 @@ export function createUrlStateMethods({ settingsTabs }) {
         }
         if (this.storySelectedId && this.fieldMode === "story") searchParams.set("story_id", String(this.storySelectedId));
         if (this.fieldRequestedSnapshotId) searchParams.set("snapshot_id", String(this.fieldRequestedSnapshotId));
+        if (this.playlistEventMapWindowStart) searchParams.set("window_start", String(this.playlistEventMapWindowStart).slice(0, 10));
+        if (this.playlistEventMapWindowEnd) searchParams.set("window_end", String(this.playlistEventMapWindowEnd).slice(0, 10));
       }
       if (viewKey === "stories" && this.storySelectedId) searchParams.set("story_id", String(this.storySelectedId));
       if (viewKey === "briefs" && this.briefV2SelectedId) searchParams.set("brief_id", String(this.briefV2SelectedId));
@@ -139,13 +148,14 @@ export function createUrlStateMethods({ settingsTabs }) {
         searchParams.set("scope", this.libraryScope || "domain");
       }
       if (viewKey === "media" && this.mediaQuery) searchParams.set("q", this.mediaQuery);
-      if (viewKey === "videos" && this.videoStatus) searchParams.set("status", this.videoStatus);
-      if (viewKey === "videos" && Array.isArray(this.videoMediaIds) && this.videoMediaIds.length) {
+      const isVideoListing = viewKey === "videos" || (viewKey === "library" && this.libraryTab === "records");
+      if (isVideoListing && this.videoStatus) searchParams.set("status", this.videoStatus);
+      if (isVideoListing && Array.isArray(this.videoMediaIds) && this.videoMediaIds.length) {
         searchParams.set("media_id_in", this.videoMediaIds.join(","));
       }
-      if (viewKey === "videos" && this.videoQuery) searchParams.set("q", this.videoQuery);
-      if (viewKey === "videos" && this.videoFrom) searchParams.set("from", new Date(this.videoFrom).toISOString());
-      if (viewKey === "videos" && this.videoTo) searchParams.set("to", new Date(this.videoTo).toISOString());
+      if (isVideoListing && this.videoQuery) searchParams.set("q", this.videoQuery);
+      if (isVideoListing && this.videoFrom) searchParams.set("from", new Date(this.videoFrom).toISOString());
+      if (isVideoListing && this.videoTo) searchParams.set("to", new Date(this.videoTo).toISOString());
       if (viewKey === "video" && this.playerPageVideoId) searchParams.set("video_id", String(this.playerPageVideoId));
       if (viewKey === "jobs" || viewKey === "operations") {
         searchParams.set("tab", this.jobsTab || "active");
@@ -160,6 +170,10 @@ export function createUrlStateMethods({ settingsTabs }) {
       if (viewKey === "playlists" && this.selectedPlaylistId) searchParams.set("playlist_id", this.selectedPlaylistId);
       if (viewKey === "playlist") {
         if (this.playlistSelectedDate) searchParams.set("date", String(this.playlistSelectedDate));
+        if (this.playbackContentTab === "brief") {
+          searchParams.set("tab", "brief");
+          if (this.briefV2SelectedId) searchParams.set("brief_id", String(this.briefV2SelectedId));
+        }
         if (this.playlistCurrentVideo?.id) searchParams.set("video_id", String(this.playlistCurrentVideo.id));
         const position = this.playbackPendingSeekSec !== null
           ? Number(this.playbackPendingSeekSec || 0)
@@ -195,6 +209,7 @@ export function createUrlStateMethods({ settingsTabs }) {
       if ((this.activeView === "media" || (this.activeView === "library" && this.libraryTab === "sources")) && key !== "media" && key !== "library") this._teardownMediaIo();
       if ((this.activeView === "videos" || (this.activeView === "library" && this.libraryTab === "records")) && key !== "videos" && key !== "library") this._teardownVideoIo();
       if (this.activeView === "video" && key !== "video" && typeof this.leaveVideoPage === "function") this.leaveVideoPage();
+      if (this.activeView === "usage" && key !== "usage") this.leaveUsagePage();
       if (this.activeView === "playlist" && key !== "playlist" && typeof this.leavePlaybackPage === "function") {
         this.leavePlaybackPage();
       }
@@ -207,6 +222,7 @@ export function createUrlStateMethods({ settingsTabs }) {
       }
       if (key === "videos" || (key === "library" && this.libraryTab === "records")) this._ensureVideoRange();
       this.activeView = key;
+      if (key === "field" && !this.playlistEventMapController?.()) this.playlistEventMapLoading = true;
       this.pageTitle = item ? item.label : key;
       this._syncUrl({ push, stateExtras });
       if (refresh) this.refreshActive();
@@ -225,7 +241,7 @@ export function createUrlStateMethods({ settingsTabs }) {
       this._syncUrl({ push: false });
     },
 
-    async refreshActive() {
+    async refreshActive({ throwOnError = false } = {}) {
       try {
         if (!["jobs", "operations"].includes(this.activeView)) {
           this._disconnectJobsWs();
@@ -234,9 +250,10 @@ export function createUrlStateMethods({ settingsTabs }) {
         if (this.activeView === "field") return await this.loadField();
         if (this.activeView === "domains") return await this.loadDomainDirectory();
         if (this.activeView === "stories") return await this.loadStories();
-        if (this.activeView === "briefs") return await this.loadBriefsV2();
         if (this.activeView === "library") return await this.loadLibrary();
+        if (this.activeView === "domain-settings") return await this.loadDomainSettings();
         if (this.activeView === "operations") return await this.loadOperations();
+        if (this.activeView === "usage") return await this.loadUsage();
         if (this.activeView === "overview") return await this.loadStats();
         if (this.activeView === "media") return await this.loadMedia();
         if (this.activeView === "videos") return await this.loadVideos();
@@ -247,6 +264,7 @@ export function createUrlStateMethods({ settingsTabs }) {
         if (this.activeView === "settings") return await this.loadSettings();
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
+        if (throwOnError) throw e;
       }
     },
   };

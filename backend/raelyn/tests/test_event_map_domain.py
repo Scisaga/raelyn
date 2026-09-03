@@ -15,7 +15,9 @@ if str(_BACKEND_DIR) not in sys.path:
 from raelyn.services.event_map_domain import (
     EventMapCanonicalGroup,
     EventMapEntityRef,
+    EventMapEvidenceRef,
     EventMapRecord,
+    EventMapRelationRef,
     build_event_map_stories,
     build_event_map_topics,
     canonicalize_event_map_records,
@@ -36,7 +38,11 @@ def _record(
     event_type: str = "policy",
     direction: str = "neutral",
     entity: str = "美国",
+    entity_type: str = "country",
+    with_evidence: bool = True,
+    relations: tuple[EventMapRelationRef, ...] = (),
 ) -> EventMapRecord:
+    source_video_id = uuid.UUID(int=2000 + index)
     return EventMapRecord(
         event_id=uuid.UUID(int=index + 1),
         revision_id=uuid.UUID(int=1000 + index),
@@ -48,7 +54,17 @@ def _record(
         start_day=start_day,
         end_day=end_day,
         time_precision=precision,
-        entities=(EventMapEntityRef("country", entity, entity, "actor", 1.0),),
+        source_video_id=source_video_id,
+        entities=(EventMapEntityRef(entity_type, entity, entity, "actor", 1.0),),
+        relations=relations,
+        evidence=(
+            EventMapEvidenceRef(
+                evidence_id=uuid.UUID(int=3000 + index),
+                video_id=source_video_id,
+                evidence_text=title,
+                confidence=1.0,
+            ),
+        ) if with_evidence else (),
     )
 
 
@@ -216,22 +232,85 @@ class EventMapDomainTests(unittest.TestCase):
 
     def test_topics_and_story_are_deterministic(self) -> None:
         records = [
-            _record(0, title="美国宣布并购", event_type="company_action"),
-            _record(1, title="美国批准并购", start_day=20, event_type="company_action"),
-            _record(2, title="中国公布通胀", start_day=30, event_type="macro", entity="中国"),
+            _record(0, title="星河科技宣布收购云图公司", event_type="company_action", entity="星河科技", entity_type="company"),
+            _record(1, title="星河科技收购云图公司获批", start_day=20, event_type="company_action", entity="星河科技", entity_type="company"),
+            _record(2, title="星河科技开始实施云图公司收购", start_day=30, event_type="company_action", entity="星河科技", entity_type="company"),
+            _record(3, title="中国公布通胀", start_day=40, event_type="macro", entity="中国"),
         ]
-        vectors = np.asarray([[1.0, 0.0], [0.99, 0.01], [0.0, 1.0]], dtype=np.float32)
+        vectors = np.asarray(
+            [[1.0, 0.0], [0.995, 0.05], [0.99, 0.08], [0.0, 1.0]],
+            dtype=np.float32,
+        )
         groups = canonicalize_event_map_records(records, vectors)
         topics, topic_by_group = build_event_map_topics(groups, records, vectors)
         stories = build_event_map_stories(groups, records, vectors)
 
-        self.assertEqual(len(topics), 6)
-        self.assertEqual(len(topic_by_group), 3)
-        self.assertTrue(all(topic.parent_topic_index is None for topic in topics[:3]))
-        self.assertTrue(all(topic.parent_topic_index is not None for topic in topics[3:]))
-        self.assertTrue(all(index >= 3 for index in topic_by_group))
+        self.assertEqual(len(topic_by_group), 4)
+        self.assertGreaterEqual(len(topics), 4)
         self.assertEqual(len(stories), 1)
-        self.assertEqual(stories[0].edges[0].relation_type, "continuation")
+        self.assertTrue(all(edge.relation_type == "continuation" for edge in stories[0].edges))
+        self.assertEqual(stories[0].anchor_key, "company:星河科技")
+        self.assertIn("星河科技", stories[0].label)
+        self.assertGreaterEqual(stories[0].quality_score, 0.76)
+
+    def test_semantic_similarity_without_typed_progression_does_not_create_story(self) -> None:
+        records = [
+            _record(0, title="星河科技讨论人工智能战略", entity="星河科技", entity_type="company"),
+            _record(1, title="星河科技发布人工智能研究", start_day=20, entity="星河科技", entity_type="company"),
+        ]
+        vectors = np.asarray([[1.0, 0.0], [0.999, 0.001]], dtype=np.float32)
+        groups = canonicalize_event_map_records(records, vectors)
+
+        self.assertEqual(build_event_map_stories(groups, records, vectors), [])
+
+    def test_story_requires_frozen_evidence_on_both_endpoints(self) -> None:
+        records = [
+            _record(0, title="星河科技宣布收购云图公司", entity="星河科技", entity_type="company"),
+            _record(1, title="星河科技收购云图公司获批", start_day=20, entity="星河科技", entity_type="company", with_evidence=False),
+        ]
+        vectors = np.asarray([[1.0, 0.0], [0.995, 0.05]], dtype=np.float32)
+        groups = canonicalize_event_map_records(records, vectors)
+
+        self.assertEqual(build_event_map_stories(groups, records, vectors), [])
+
+    def test_explicit_claim_bridge_creates_typed_causal_edge(self) -> None:
+        bridge = EventMapRelationRef(
+            relation_type="causes",
+            confidence=0.95,
+            evidence_text="停产导致供应商减产",
+            source_claim="星河科技停产",
+            target_claim="供应商削减产量",
+        )
+        records = [
+            _record(0, title="星河科技宣布工厂停产", start_day=0, end_day=0, entity="星河科技", entity_type="company", relations=(bridge,)),
+            _record(1, title="星河科技供应商削减产量", start_day=5, end_day=5, entity="星河科技", entity_type="company", relations=(bridge,)),
+        ]
+        vectors = np.asarray([[1.0, 0.0], [0.98, 0.15]], dtype=np.float32)
+        groups = canonicalize_event_map_records(records, vectors)
+        stories = build_event_map_stories(groups, records, vectors)
+
+        self.assertEqual(len(stories), 1)
+        self.assertEqual(stories[0].edges[0].relation_type, "causes")
+        self.assertIn("claim_bridge", stories[0].edges[0].evidence)
+
+    def test_story_graph_preserves_a_real_branch(self) -> None:
+        records = [
+            _record(0, title="星河科技宣布收购云图公司", start_day=0, end_day=0, entity="星河科技", entity_type="company"),
+            _record(1, title="星河科技收购云图公司获批", start_day=10, end_day=10, entity="星河科技", entity_type="company"),
+            _record(2, title="星河科技取消收购云图公司", start_day=12, end_day=12, entity="星河科技", entity_type="company"),
+        ]
+        vectors = np.asarray(
+            [[1.0, 0.0], [0.997, 0.03], [0.995, -0.04]],
+            dtype=np.float32,
+        )
+        groups = canonicalize_event_map_records(records, vectors)
+        stories = build_event_map_stories(groups, records, vectors)
+
+        self.assertEqual(len(stories), 1)
+        outgoing_counts: dict[int, int] = {}
+        for edge in stories[0].edges:
+            outgoing_counts[edge.source_group_index] = outgoing_counts.get(edge.source_group_index, 0) + 1
+        self.assertGreaterEqual(max(outgoing_counts.values()), 2)
 
 
 if __name__ == "__main__":

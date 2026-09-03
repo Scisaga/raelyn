@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 import uuid
 from typing import Any, Literal
 
@@ -16,13 +16,16 @@ from raelyn.services.domain_management import (
     detach_domain_source,
     domain_deletion_impact,
 )
+from raelyn.services.domain_observation_control import set_domain_observation_enabled
 from raelyn.services.media_sources import resolve_media_url
 from raelyn.services.v2_observation import (
     canonical_directory,
     canonical_history,
     cursor_payload,
+    domain_bootstrap_directory,
     domain_directory,
     domain_observation,
+    event_highlights,
     evidence_context,
     list_changes,
     object_brief_references,
@@ -30,6 +33,7 @@ from raelyn.services.v2_observation import (
     semantic_search,
     source_semantic_references,
     story_directory,
+    story_edge_support,
     story_history,
     structured_brief,
     topic_detail,
@@ -83,6 +87,15 @@ class DomainDeleteRequest(BaseModel):
     confirm_name: str
 
 
+class DomainObservationUpdate(BaseModel):
+    enabled: bool
+
+
+class DomainIdentityUpdate(BaseModel):
+    name: str
+    description: str | None = None
+
+
 def _source_payload(media: Media) -> dict[str, Any]:
     return {
         "id": str(media.id),
@@ -94,9 +107,36 @@ def _source_payload(media: Media) -> dict[str, Any]:
 
 
 @router.get("/domains")
-def list_domains() -> dict[str, Any]:
+def list_domains(compact: bool = False) -> dict[str, Any]:
     with session_scope() as session:
-        return {"items": domain_directory(session)}
+        return {
+            "items": (
+                domain_bootstrap_directory(session)
+                if compact
+                else domain_directory(session)
+            )
+        }
+
+
+@router.patch("/domains/{playlist_id}")
+def patch_domain_identity(playlist_id: uuid.UUID, payload: DomainIdentityUpdate) -> dict[str, Any]:
+    with session_scope() as session:
+        playlist = session.get(Playlist, playlist_id)
+        if playlist is None:
+            raise HTTPException(status_code=404, detail="domain not found")
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="domain name is required")
+        playlist.name = name
+        playlist.description = (payload.description or "").strip() or None
+        session.flush([playlist])
+        return {
+            "id": str(playlist.id),
+            "name": playlist.name,
+            "description": playlist.description,
+            "observation_enabled": bool(playlist.observation_enabled),
+            "brief_granularity": playlist.brief_granularity or "day",
+        }
 
 
 @router.post("/domains/{playlist_id}/sources")
@@ -140,6 +180,22 @@ def get_domain_deletion_impact(playlist_id: uuid.UUID) -> dict[str, Any]:
     with session_scope() as session:
         try:
             return domain_deletion_impact(session, playlist_id)
+        except LookupError as error:
+            raise _not_found(error) from error
+
+
+@router.put("/domains/{playlist_id}/observation")
+def put_domain_observation_enabled(
+    playlist_id: uuid.UUID,
+    payload: DomainObservationUpdate,
+) -> dict[str, Any]:
+    with session_scope() as session:
+        try:
+            return set_domain_observation_enabled(
+                session,
+                playlist_id=playlist_id,
+                enabled=payload.enabled,
+            )
         except LookupError as error:
             raise _not_found(error) from error
 
@@ -275,12 +331,63 @@ def list_domain_canonicals(
         )
 
 
-@router.get("/domains/{playlist_id}/stories")
-def list_domain_stories(playlist_id: uuid.UUID) -> dict[str, Any]:
+@router.get("/domains/{playlist_id}/event-highlights")
+def get_domain_event_highlights(
+    playlist_id: uuid.UUID,
+    event_date_start: date,
+    event_date_end: date,
+    window_start: date | None = None,
+    window_end: date | None = None,
+    snapshot_id: uuid.UUID | None = None,
+    event_type_code: int | None = None,
+    normalized_key: str | None = None,
+    entity_type: str | None = None,
+    topic_id: uuid.UUID | None = None,
+    limit: int = Query(default=10, ge=1, le=10),
+) -> dict[str, Any]:
     with session_scope() as session:
         if session.get(Playlist, playlist_id) is None:
             raise HTTPException(status_code=404, detail="domain not found")
-        return {"items": story_directory(session, playlist_id)}
+        try:
+            return event_highlights(
+                session,
+                playlist_id,
+                snapshot_id=snapshot_id,
+                event_date_start=event_date_start,
+                event_date_end=event_date_end,
+                window_start=window_start,
+                window_end=window_end,
+                event_type_code=event_type_code,
+                normalized_key=normalized_key,
+                entity_type=entity_type,
+                topic_id=topic_id,
+                limit=limit,
+            )
+        except LookupError as error:
+            raise _not_found(error) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/domains/{playlist_id}/stories")
+def list_domain_stories(
+    playlist_id: uuid.UUID,
+    scope: Literal["all", "attention", "followed", "established", "emerging"] = "all",
+    q: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=80, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    with session_scope() as session:
+        if session.get(Playlist, playlist_id) is None:
+            raise HTTPException(status_code=404, detail="domain not found")
+        return story_directory(
+            session,
+            playlist_id,
+            scope=scope,
+            query=q,
+            limit=limit,
+            offset=offset,
+        )
 
 
 @router.get("/domains/{playlist_id}/topics/{topic_id}")
@@ -309,6 +416,26 @@ def get_story_history(
                 session,
                 playlist_id,
                 story_identity_id,
+                snapshot_id=snapshot_id,
+            )
+        except LookupError as error:
+            raise _not_found(error) from error
+
+
+@router.get("/domains/{playlist_id}/stories/{story_identity_id}/edges/{edge_id}/support")
+def get_story_edge_support(
+    playlist_id: uuid.UUID,
+    story_identity_id: uuid.UUID,
+    edge_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+) -> dict[str, Any]:
+    with session_scope() as session:
+        try:
+            return story_edge_support(
+                session,
+                playlist_id,
+                story_identity_id,
+                edge_id,
                 snapshot_id=snapshot_id,
             )
         except LookupError as error:

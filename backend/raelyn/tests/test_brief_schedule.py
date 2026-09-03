@@ -28,6 +28,38 @@ def _scalars_all(values):
 
 
 class BriefScheduleTests(unittest.TestCase):
+    def test_disabled_observation_does_not_schedule_manual_or_auto_briefs(self) -> None:
+        playlist_id = uuid.uuid4()
+        session = Mock()
+        session.get.return_value = Playlist(
+            id=playlist_id,
+            name="p",
+            brief_granularity="day",
+            observation_enabled=False,
+        )
+
+        with self.assertRaisesRegex(ValueError, "domain observation is disabled"):
+            brief_schedule.schedule_brief_refresh(
+                session,
+                playlist_id=playlist_id,
+                granularity="day",
+                period_start=date(2026, 3, 8),
+                trigger_mode="manual",
+                reason="manual_generate",
+            )
+        with patch("raelyn.services.brief_schedule.settings.auto_generate_briefs", True):
+            result = brief_schedule.schedule_brief_refresh(
+                session,
+                playlist_id=playlist_id,
+                granularity="day",
+                period_start=date(2026, 3, 8),
+                trigger_mode="auto",
+                reason="transcript_ready",
+            )
+
+        self.assertIsNone(result)
+        session.execute.assert_not_called()
+
     def test_desired_schedule_for_auto_uses_latest_period_cooldown(self) -> None:
         now = datetime(2026, 3, 8, 2, 0, tzinfo=timezone.utc)
         last_ready_at = datetime(2026, 3, 8, 1, 0, tzinfo=timezone.utc)

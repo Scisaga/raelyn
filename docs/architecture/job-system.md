@@ -75,6 +75,8 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - 对纯 JSON 语法错误，每个抽取批次在当前任务尝试内最多额外调用一次 LLM 修复语法；修复成功后仍执行完整协议校验，修复失败才进入既有 worker 重试。缺少 `videos[]`、缺少预期 `video_id` 等已能解析但违反协议的响应不会触发修复调用，避免模型借“修复”重新生成业务内容。
 - 事件抽取响应在 JSON 解析失败时会检查 LLM 结束原因与输出 token 数；`done_reason=length` 或输出达到 `num_predict` 表示内容已被截断，不属于可保真修复的 JSON 语法错误。该情况会持久化 failed run 并将当前 job 收口为终止失败，避免相同生成上限下重复修复和重试。
 - `events: []` 是合法的零事件结果，会写入 `succeeded` run；空 `plain` transcript 继续按 `skipped` 成功收口，不强制失败或重试。单条事件字段不合法仍只丢弃该条并记录 warning，不能把内容质量问题扩大成整个响应的结构失败。
+- 事件提示词或模型升级只改变后续抽取的复用口径，不在 API、scheduler 或 worker 启动时隐式扫描并重投全部历史视频。需要迁移历史结果时显式创建 `playlist.backfill_events(force=false)`；其子任务只复用精确匹配当前 `source_hash / prompt_version / extraction_model` 的成功运行，因此旧 v2 结果不会被误算成当前 v4 已完成。
+- `brief.generate_period` 会先估算完整提示词输入；超过 `BRIEF_LLM_MAX_INPUT_TOKENS` 时，在当前 Job 内按来源顺序串行生成有来源链接的事实摘要，必要时执行有限轮次归并，再进行最终简报合成。该流程不创建进程内并发，也不改变原有 period 去重锚点。单个分段若偶发返回空白、过短或缺少真实来源的内容，会把上一次的校验错误显式带入原分段的串行重试；连续无效，或最终输出缺少真实来源、缺少模板规定章节、退化成通用助手回答时，当前 Job 以终止失败收口，不写入新的 `ready` 简报。
 
 ## Worker 角色暂停（Claim Gate）
 
@@ -83,6 +85,13 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - 已经 `running` 的任务保持原样，继续执行到正常结束或走现有协作式取消语义
 - `ALL` worker 也必须遵守角色暂停门控，不能绕过已暂停的具体角色
 - 专属 role worker 在对应角色已暂停时，应在查询 `job` 热表前直接跳过 claim，避免大量 pending 积压时“暂停但空转扫描队列”。
+
+## 观测域持续观测开关
+
+- `playlist.observation_enabled` 是观测域级业务事实，不是 worker role pause，也不改变 worker、连接或已认证会话生命周期。
+- 停用域继续执行来源同步、视频/字幕下载、字幕规范化与 ASR 转写归档；新的转写润色、事件抽取、事件向量、自动简报和星域构建在投递点与 handler 入口共同检查状态。
+- 视频级任务按所有 `PlaylistMedia` 关联判断：至少一个关联域启用时共享任务仍执行一次；简报与星域等域级任务只面向启用域。
+- 已经 `running` 的任务不被强制取消；排队后才遇到停用状态的认知任务以成功 `skipped` 收口。重新启用时投递 `playlist.backfill_events` 和 `playlist.mark_event_map_dirty`，沿用既有去重与租约语义。
 
 ## 幂等策略（At-least-once 友好）
 
@@ -104,6 +113,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - `job_attempt` 仅用于审计和排障，不参与 staging 身份或写入授权，因为 lease 回收和重领未必能靠 attempt 唯一区分。
 - checkpoint、ready finalize 和失败收尾都必须校验领取时捕获的 worker/token。失权执行不得写 snapshot，也不得更新 `event_map_state.last_error` 或 current snapshot 指针。
 - ready 切换后由独立的 `playlist.prune_event_map_snapshots` analysis job 做保留清理；它按播放列表去重、每次只删除一个旧快照并再次投递自己，current、上一版 ready 与所有运行中 staging 始终受保护。清理不进入 API 请求线程，也不扩大 ready 原子切换事务。
+- 快照构建发现同域仍有 `playlist.mark_event_map_dirty` 处于 `pending/running` 时，以 `superseded_by_active_dirty` 收口且不再投递新的构建任务；必须先让 dirty outbox 任务推进 generation 并负责后续构建，避免过期的构建计划时间反复抢占 analysis worker。
 - 应用启动迁移会先查询目录并跳过已经存在的索引和已经生效的表级分析参数；没有旧分析任务时也不会执行空 `UPDATE job`。这样启动进程不会在持有 job 表锁时等待事件地图大表 DDL 锁，避免与正在清理/构建的 analysis worker 形成锁顺序死锁。
 - 启动迁移的 schema 变更与 V2 历史回填使用两个连续事务：schema 先提交并释放关系锁，再从仍保留的 ready 快照幂等写入新增历史表。初始化 advisory lock 在两个事务期间保持，用于阻止多个启动进程重复迁移，但不能以长事务阻塞运行中 worker 对业务表的写入。
 

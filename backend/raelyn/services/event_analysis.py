@@ -49,6 +49,7 @@ from raelyn.services.embeddings import (
     validate_embedding_vector,
 )
 from raelyn.services.inference import get_effective_llm_config
+from raelyn.services.domain_observation_control import video_has_enabled_observation
 from raelyn.services.job_cancellation import JobCancelRequested, raise_if_job_cancel_requested, request_job_cancel
 from raelyn.services.llm import llm_enabled, llm_generate
 from raelyn.services.periods import iter_period_starts, local_date, month_add_one, period_bounds_utc
@@ -422,6 +423,7 @@ def _generate_event_extraction_llm(session: Session, *, prompt: str) -> dict[str
         "think": False,
         "response_format": "json",
         "options": _event_extraction_llm_options(session),
+        "usage_operation": "event_extraction",
     }
     if _effective_llm_is_ollama_generate(session):
         kwargs["stream"] = bool(settings.event_extraction_ollama_stream)
@@ -2017,6 +2019,8 @@ def schedule_video_event_extraction(
         return None
     if not llm_enabled():
         return None
+    if not video_has_enabled_observation(session, video_id):
+        return None
     return enqueue_job(
         session,
         type_="video.extract_events",
@@ -2145,6 +2149,11 @@ def request_playlist_event_backfill(
     force: bool = False,
     priority: int = 0,
 ) -> Job:
+    playlist = session.get(Playlist, playlist_id)
+    if playlist is None:
+        raise ValueError("playlist not found")
+    if playlist.observation_enabled is False:
+        raise ValueError("domain observation is disabled")
     if force:
         cancel_playlist_event_pipeline_jobs(session, playlist_id, reason="playlist_event_force_extract")
     job_id = enqueue_job(
@@ -2182,6 +2191,8 @@ def backfill_playlist_events(session: Session, *, playlist_id: uuid.UUID, force:
     playlist = session.get(Playlist, playlist_id)
     if not playlist:
         return {"skipped": "playlist not found"}
+    if playlist.observation_enabled is False:
+        return {"skipped": "domain observation is disabled"}
     job_id = getattr(job, "id", None) if job else None
     claimed_worker_id = str(getattr(job, "worker_id", "") or "").strip() if job else ""
     claimed_execution_token = getattr(job, "execution_token", None) if job else None
@@ -2253,6 +2264,8 @@ def backfill_playlist_events_range(
     playlist = session.get(Playlist, playlist_id)
     if not playlist:
         return {"skipped": "playlist not found"}
+    if playlist.observation_enabled is False:
+        return {"skipped": "domain observation is disabled"}
     if range_start >= range_end:
         raise ValueError("range_start must be before range_end")
     job_id = getattr(job, "id", None) if job else None
@@ -2501,7 +2514,7 @@ def embed_event(session: Session, *, event_id: uuid.UUID) -> dict[str, Any]:
         and previous_has_vector
     )
     try:
-        vector = embed_text(text)
+        vector = embed_text(text, usage_operation="event_embedding")
         existing.status = "ready"
         existing.vector = vector
         existing.text_checksum = checksum
@@ -2599,7 +2612,11 @@ def schedule_playlists_event_map_dirty_for_video(
     playlist_ids = (
         session.execute(
             select(PlaylistMedia.playlist_id)
-            .where(PlaylistMedia.media_id == video.media_id)
+            .join(Playlist, Playlist.id == PlaylistMedia.playlist_id)
+            .where(
+                PlaylistMedia.media_id == video.media_id,
+                Playlist.observation_enabled.is_(True),
+            )
             .order_by(PlaylistMedia.playlist_id.asc())
         )
         .scalars()
@@ -2672,8 +2689,11 @@ def playlist_event_map_coverage(session: Session, playlist_id: uuid.UUID) -> dic
 
 
 def request_event_map_rebuild(session: Session, playlist_id: uuid.UUID, *, priority: int = 0) -> Job:
-    if session.get(Playlist, playlist_id) is None:
+    playlist = session.get(Playlist, playlist_id)
+    if playlist is None:
         raise ValueError("playlist not found")
+    if playlist.observation_enabled is False:
+        raise ValueError("domain observation is disabled")
     now = utcnow()
     state = ensure_event_map_state(session, playlist_id)
     was_clean = int(state.dirty_generation or 0) <= int(state.built_generation or 0)

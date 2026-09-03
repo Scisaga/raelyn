@@ -3,11 +3,17 @@ import {
   countEventMapVisiblePoints,
   parseEventMapIndices,
   parseEventMapScene,
+  preloadEventMapRenderer,
 } from "./event-map.js";
+import { assetPresignQueryValue } from "../shared/asset-delivery.js";
 
 const MAP_PLAY_INTERVAL_MS = 1000;
 const EVENT_MAP_ACTIVE_POLL_INTERVAL_MS = 1800;
 const EVENT_MAP_IDLE_POLL_INTERVAL_MS = 10000;
+const EVENT_MAP_HIGHLIGHT_REFRESH_INTERVAL_MS = 15000;
+const EVENT_MAP_PREVIEW_LIMIT = 4_096;
+const EVENT_MAP_PREVIEW_REVEAL_TARGET = 0.94;
+const EVENT_MAP_PREVIEW_REVEAL_MS = 4_600;
 
 const EVENT_MAP_LEVELS = {
   overview: { label: "语义星域", hint: "点的疏密表示当前观察窗口的事件聚集程度，颜色表示事件语义；拖动旋转，滚轮缩放。" },
@@ -49,12 +55,34 @@ function localToday() {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
+function localWeekStart(value = localToday()) {
+  const date = new Date(`${value}T12:00:00`);
+  const day = date.getDay() || 7;
+  date.setDate(date.getDate() - day + 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+function snapWindowMonths(value) {
+  const months = Math.max(3, Math.min(12, Number(value || 12)));
+  return [3, 6, 9, 12].reduce((best, item) => (
+    Math.abs(item - months) < Math.abs(best - months) ? item : best
+  ), 3);
+}
 function niceMonthStep(minimum) {
   const value = Math.max(1, Math.ceil(Number(minimum || 1)));
   return [1, 2, 3, 6, 12, 24, 36, 60, 120, 240, 600, 1200].find((item) => item >= value) || Math.ceil(value / 1200) * 1200;
 }
 function primaryPointer(event) { return event && event.isPrimary !== false && (event.pointerType !== "mouse" || Number(event.button || 0) === 0); }
 function abortError(error) { return error && (error.name === "AbortError" || String(error.message || "").includes("aborted")); }
+function eventMapPointIndex(value) {
+  if (value === null || value === undefined || value === "") return NaN;
+  const index = Number(value);
+  return Number.isInteger(index) && index >= 0 ? index : NaN;
+}
+function uniqueEventMapPointIndices(values) {
+  return [...new Set((Array.isArray(values) ? values : [])
+    .map(eventMapPointIndex)
+    .filter(Number.isInteger))];
+}
 function statusJob(manifest) { return manifest?.backfill_job || null; }
 function documentIsHidden() {
   return typeof document !== "undefined" && (document.hidden === true || document.visibilityState === "hidden");
@@ -62,6 +90,23 @@ function documentIsHidden() {
 function rawEventMapController(controller) {
   const unwrap = globalThis.Alpine?.raw;
   return typeof unwrap === "function" ? unwrap(controller) : controller;
+}
+function emptyEventMapScene() {
+  return {
+    count: 0,
+    x: new Float32Array(0),
+    y: new Float32Array(0),
+    z: new Float32Array(0),
+    startDay: new Int32Array(0),
+    endDay: new Int32Array(0),
+    eventType: new Uint8Array(0),
+    timePrecision: new Uint8Array(0),
+    flags: new Uint8Array(0),
+    memberCount: new Uint32Array(0),
+    macroTopicIndex: new Uint32Array(0),
+    localTopicIndex: new Uint32Array(0),
+    canonicalIds: [],
+  };
 }
 function normalizeTimeline(manifest) {
   const source = manifest?.monthly_distribution || manifest?.timeline || manifest?.months || [];
@@ -71,18 +116,55 @@ function normalizeTimeline(manifest) {
 export function createPlaylistEventMapMethods() {
   return {
     playlistEventMapController() { return rawEventMapController(this._playlistEventMapController); },
+    playlistEventMapControllerOptions(target, scene, manifest) {
+      return {
+        target,
+        scene,
+        manifest,
+        onSelect: (index, canonicalId) => this.playlistEventMapSelectCanonical(index, canonicalId),
+        onTopic: (_index, topic) => this.playlistEventMapSelectTopic(topic),
+        onViewport: (summary) => this.playlistEventMapHandleViewportSummary(summary),
+        resolveVideoSource: (video) => this.playlistEventMapResolveVideoSource(video),
+      };
+    },
+    async playlistEventMapResolveVideoSource(video) {
+      const videoId = String(video?.video_id || video?.id || "").trim();
+      if (!videoId) return null;
+      const presign = assetPresignQueryValue(this.assetDelivery);
+      const assets = await this.api(`/videos/${encodeURIComponent(videoId)}/assets?presign=${presign}&download=0&localize_title=0`);
+      const videoAsset = (assets || []).find((asset) => asset?.type === "video");
+      const thumbnailAsset = (assets || []).find((asset) => asset?.type === "thumbnail");
+      const url = videoAsset ? this.assetContentUrl(videoAsset) : "";
+      if (!url) return null;
+      return {
+        url,
+        poster: thumbnailAsset ? this.assetContentUrl(thumbnailAsset) : String(video?.poster_url || video?.thumbnail_url || ""),
+      };
+    },
     playlistEventMapStopLoad() {
       this._playlistEventMapLifecycleGeneration = Number(this._playlistEventMapLifecycleGeneration || 0) + 1;
       this._playlistEventMapRequestToken = Number(this._playlistEventMapRequestToken || 0) + 1;
+      this._playlistEventMapLoadKey = "";
+      this._playlistEventMapSceneLoadingSnapshotId = "";
+      this._playlistEventMapFullScenePromise = null;
+      this._playlistEventMapFullSceneSnapshotId = "";
+      this._playlistEventMapMetadataPromise = null;
+      this._playlistEventMapMetadataSnapshotId = "";
       this._playlistEventMapDetailToken = Number(this._playlistEventMapDetailToken || 0) + 1;
       this._playlistEventMapTopicDetailToken = Number(this._playlistEventMapTopicDetailToken || 0) + 1;
+      this._playlistEventMapSelectionToken = Number(this._playlistEventMapSelectionToken || 0) + 1;
       this._playlistEventMapSearchToken = Number(this._playlistEventMapSearchToken || 0) + 1;
       this._playlistEventMapEntityIndexToken = Number(this._playlistEventMapEntityIndexToken || 0) + 1;
+      this._abortCtrl("_playlistEventMapStagedAbortCtrl");
       this._abortCtrl("_playlistEventMapAbortCtrl");
+      this._abortCtrl("_playlistEventMapSceneAbortCtrl");
+      this._abortCtrl("_playlistEventMapMetadataAbortCtrl");
+      this._abortCtrl("_playlistEventMapCoverageAbortCtrl");
       this._abortCtrl("_playlistEventMapEntityAbortCtrl");
       this._abortCtrl("_playlistEventMapEntityIndexAbortCtrl");
       this._abortCtrl("_playlistEventMapSearchAbortCtrl");
       this._abortCtrl("_playlistEventMapDetailAbortCtrl");
+      this._abortCtrl("_playlistEventMapHighlightsAbortCtrl");
       this._abortCtrl("_playlistEventMapTopicDetailAbortCtrl");
       clearTimeout(this._playlistEventMapEntitiesTimer); clearTimeout(this._playlistEventMapSearchTimer);
       this._playlistEventMapEntitiesTimer = null; this._playlistEventMapSearchTimer = null;
@@ -130,10 +212,20 @@ export function createPlaylistEventMapMethods() {
       Object.assign(this, {
         playlistEventMapManifest: null, playlistEventMapScene: null, playlistEventMapStatus: null, playlistEventMapStatusLoading: false, playlistEventMapStatusError: "", playlistEventMapLoading: false, playlistEventMapError: "", playlistEventMapSnapshotId: "",
         playlistEventMapEntities: [], playlistEventMapEntitiesLoading: false, playlistEventMapEntityQuery: "", playlistEventMapEntityFilter: null, playlistEventMapEntityIndices: new Set(), playlistEventMapSelectedIndex: null, playlistEventMapSelectedKind: "", playlistEventMapSelectedId: "", playlistEventMapSelectedDetail: null, playlistEventMapDetailLoading: false, playlistEventMapDetailTab: "overview", playlistEventMapTopicFocus: null, playlistEventMapTopicDetail: null, playlistEventMapTopicDetailLoading: false, playlistEventMapVisibleCount: 0,
-        playlistEventMapViewportSummary: { sceneLevel: "overview", viewportCanonicalCount: 0, renderedTopicLabelCount: 0, ready: false }, playlistEventMapObjectGuideOpen: false, playlistEventMapSearchOpen: false, playlistEventMapFiltersOpen: false, playlistEventMapWindowStart: "", playlistEventMapWindowEnd: "", playlistEventMapTimelineScope: "normal", playlistEventMapTimelineMonths: [], playlistEventMapWindowMonths: 12, playlistEventMapWindowPreviewStartIndex: null, playlistEventMapWindowPreviewEndIndex: null, playlistEventMapTimelineWindowDragging: false, playlistEventMapTimelineWindowPointerId: null, playlistEventMapTimelineTrackWidth: 0, playlistEventMapTypeFilter: "", playlistEventMapSearchQuery: "", playlistEventMapSearchResults: [], playlistEventMapSearchLoading: false, playlistEventMapSearchActiveIndex: -1,
+        playlistEventMapViewportSummary: { sceneLevel: "overview", viewportCanonicalCount: 0, renderedTopicLabelCount: 0, ready: false }, playlistEventMapObjectGuideOpen: false, playlistEventMapSearchOpen: false, playlistEventMapFiltersOpen: false, playlistEventMapWindowStart: "", playlistEventMapWindowEnd: "", playlistEventMapTimelineScope: "normal", playlistEventMapTimelineMonths: [], playlistEventMapWindowMonths: 12, playlistEventMapWindowPreviewStartIndex: null, playlistEventMapWindowPreviewEndIndex: null, playlistEventMapTimelineWindowDragging: false, playlistEventMapTimelineWindowPointerId: null, playlistEventMapTimelineWindowResizeEdge: "", playlistEventMapTimelineTrackWidth: 0, playlistEventMapTimeFocusScope: "today", playlistEventMapTodayHighlights: null, playlistEventMapWeekHighlights: null, playlistEventMapHighlightsLoading: false, playlistEventMapHighlightsError: "", playlistEventMapTypeFilter: "", playlistEventMapSearchQuery: "", playlistEventMapSearchResults: [], playlistEventMapSearchLoading: false, playlistEventMapSearchActiveIndex: -1,
       });
+      clearTimeout(this._playlistEventMapHighlightsTimer); this._playlistEventMapHighlightsTimer = null;
       this._playlistEventMapTimelineItemsCache = null; this._playlistEventMapTimelineMaxCache = null;
+      this._playlistEventMapSceneComplete = false; this._playlistEventMapSceneLoadingSnapshotId = "";
+      this._playlistEventMapFullScenePromise = null; this._playlistEventMapFullSceneSnapshotId = "";
+      this._playlistEventMapMetadataPromise = null; this._playlistEventMapMetadataSnapshotId = ""; this._playlistEventMapMetadataComplete = false;
+      this._playlistEventMapLoadKey = "";
       this._playlistEventMapPlaylistId = "";
+      this._playlistEventMapHighlightsKey = "";
+      this._playlistEventMapHighlightsPendingKey = "";
+      this._playlistEventMapHighlightsForceRefresh = false;
+      this._playlistEventMapHighlightsLastRequestAt = 0;
+      this._playlistEventMapHighlightsToken = Number(this._playlistEventMapHighlightsToken || 0) + 1;
     },
     playlistEventMapStableEntityFilter() {
       const filter = this.playlistEventMapEntityFilter;
@@ -144,13 +236,27 @@ export function createPlaylistEventMapMethods() {
         name: String(filter.name || filter.normalized_key),
       };
     },
-    playlistEventMapResetSnapshotPinnedState(stableEntityFilter = null) {
+    playlistEventMapResetSnapshotPinnedState(stableEntityFilter = null, { selectionToken = null } = {}) {
+      const suppliedSelectionToken = Number(selectionToken);
+      const preservesSelection = Number.isInteger(suppliedSelectionToken) && suppliedSelectionToken > 0;
+      if (preservesSelection && Number(this._playlistEventMapSelectionToken || 0) !== suppliedSelectionToken) return false;
       this._playlistEventMapEntityIndexToken = Number(this._playlistEventMapEntityIndexToken || 0) + 1;
       this._abortCtrl("_playlistEventMapEntityAbortCtrl"); this._abortCtrl("_playlistEventMapEntityIndexAbortCtrl");
+      this._abortCtrl("_playlistEventMapHighlightsAbortCtrl");
+      clearTimeout(this._playlistEventMapHighlightsTimer); this._playlistEventMapHighlightsTimer = null;
+      this._playlistEventMapHighlightsForceRefresh = false;
+      this._playlistEventMapHighlightsToken = Number(this._playlistEventMapHighlightsToken || 0) + 1;
+      this._playlistEventMapHighlightsKey = "";
+      this._playlistEventMapHighlightsPendingKey = "";
+      this._playlistEventMapHighlightsLastRequestAt = 0;
+      this.playlistEventMapTodayHighlights = null; this.playlistEventMapWeekHighlights = null;
+      this.playlistEventMapHighlightsLoading = false; this.playlistEventMapHighlightsError = "";
+      this.playlistEventMapController()?.setTimeHighlights?.({ point_indices: [], items: [], scope: this.playlistEventMapTimeFocusScope });
       this._playlistEventMapEntityInFlight = false; this._playlistEventMapEntityPending = false;
       this.playlistEventMapEntities = []; this.playlistEventMapEntityIndices = new Set(); this.playlistEventMapEntityFilter = stableEntityFilter;
-      this.playlistEventMapClearSearch(); this.playlistEventMapClearSelection({ update: false });
+      this.playlistEventMapClearSearch(); this.playlistEventMapClearSelection({ update: false, preserveRequest: true, selectionToken: preservesSelection ? suppliedSelectionToken : null });
       this.playlistEventMapTopicFocus = null; this.playlistEventMapTopicDetail = null; this.playlistEventMapTopicDetailLoading = false;
+      return true;
     },
 
     async playlistEventMapFetchBinary(path, options = {}) {
@@ -163,28 +269,34 @@ export function createPlaylistEventMapMethods() {
       }
       return response.arrayBuffer();
     },
-    async playlistEventMapLoadManifest({ silent = false, compact = false, signal = null } = {}) {
+    async playlistEventMapLoadManifest({ silent = false, compact = false, includeCoverage = null, snapshotId = "", signal = null, commitGuard = null, commitStatus = true } = {}) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim(); if (!pid) return null;
       const lifecycleGeneration = Number(this._playlistEventMapLifecycleGeneration || 0);
       if (!silent) this.playlistEventMapStatusLoading = true;
       try {
         const params = new URLSearchParams();
         if (compact) params.set("compact", "true");
-        if (this.activeView === "field" && this.fieldRequestedSnapshotId) {
-          params.set("snapshot_id", String(this.fieldRequestedSnapshotId));
-        }
+        if (includeCoverage !== null) params.set("include_coverage", includeCoverage ? "true" : "false");
+        const pinnedSnapshotId = String(snapshotId || (this.activeView === "field" && this.fieldRequestedSnapshotId) || "");
+        if (pinnedSnapshotId) params.set("snapshot_id", pinnedSnapshotId);
         const manifest = await this.api(
           `/playlists/${encodeURIComponent(pid)}/events/map/manifest${params.size ? `?${params}` : ""}`,
           { signal, cache: "no-store" }
         );
         const currentPid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
-        if (signal?.aborted || currentPid !== pid || Number(this._playlistEventMapLifecycleGeneration || 0) !== lifecycleGeneration) return null;
-        this.playlistEventMapStatus = compact ? { ...(this.playlistEventMapStatus || {}), ...(manifest || {}) } : manifest || null;
-        this.playlistEventMapStatusError = "";
-        if (manifest && Object.prototype.hasOwnProperty.call(manifest, "backfill_job")) this.playlistEventMapBackfillJob = statusJob(manifest);
+        if (signal?.aborted || currentPid !== pid || Number(this._playlistEventMapLifecycleGeneration || 0) !== lifecycleGeneration || (commitGuard && !commitGuard())) return null;
+        if (commitStatus) {
+          const currentStatus = this.playlistEventMapStatus || {};
+          const sameSnapshot = String(currentStatus.snapshot_id || "") === String(manifest?.snapshot_id || "");
+          this.playlistEventMapStatus = (compact || includeCoverage === false) && sameSnapshot
+            ? { ...currentStatus, ...(manifest || {}) }
+            : manifest || null;
+          this.playlistEventMapStatusError = "";
+          if (manifest && Object.prototype.hasOwnProperty.call(manifest, "backfill_job")) this.playlistEventMapBackfillJob = statusJob(manifest);
+        }
         return manifest || null;
       } catch (error) {
-        if (!abortError(error) && Number(this._playlistEventMapLifecycleGeneration || 0) === lifecycleGeneration) {
+        if (!abortError(error) && Number(this._playlistEventMapLifecycleGeneration || 0) === lifecycleGeneration && (!commitGuard || commitGuard())) {
           this.playlistEventMapStatusError = error?.message || String(error);
         }
         if (!silent && !abortError(error)) throw error;
@@ -195,67 +307,486 @@ export function createPlaylistEventMapMethods() {
       }
     },
 
+    playlistEventMapLoadDeferredCoverage({ pid, snapshotId, requestToken, lifecycleGeneration } = {}) {
+      this._abortCtrl("_playlistEventMapCoverageAbortCtrl");
+      const coverageController = new AbortController();
+      this._playlistEventMapCoverageAbortCtrl = coverageController;
+      void this.playlistEventMapLoadManifest({
+        silent: true,
+        compact: true,
+        includeCoverage: true,
+        snapshotId,
+        signal: coverageController.signal,
+      }).then((coverage) => {
+        if (
+          !coverage
+          || coverageController.signal.aborted
+          || Number(this._playlistEventMapRequestToken || 0) !== requestToken
+          || Number(this._playlistEventMapLifecycleGeneration || 0) !== lifecycleGeneration
+          || String(this.playlistPageId || this.selectedPlaylistId || "") !== pid
+          || String(this.playlistEventMapSnapshotId || "") !== snapshotId
+        ) return;
+        this.playlistEventMapManifest = { ...(this.playlistEventMapManifest || {}), ...coverage };
+      }).finally(() => {
+        if (this._playlistEventMapCoverageAbortCtrl === coverageController) this._playlistEventMapCoverageAbortCtrl = null;
+      });
+    },
+
     playlistEventMapInitializeWindow() {
       const bounds = this.playlistEventMapTimelineBounds(); const items = this.playlistEventMapTimelineItems();
       if (!bounds.start || !bounds.end || !items.length) return;
       const currentStart = String(this.playlistEventMapWindowStart || "").slice(0, 10); const currentEnd = String(this.playlistEventMapWindowEnd || "").slice(0, 10);
       if (currentStart && currentEnd && currentStart <= currentEnd && currentStart >= bounds.start && currentEnd <= bounds.end) return;
-      const populated = items.filter((item) => Number(item.record_count || 0) > 0);
-      const anchor = populated.length ? populated.at(-1).index : items.length - 1;
-      this.playlistEventMapSetWindowEndIndex(anchor, { update: false, pause: false });
+      this.playlistEventMapSetWindowEndIndex(items.length - 1, { update: false, pause: false });
     },
 
-    async playlistEventMapLoadView({ silent = false, schedulePolling = true } = {}) {
+    playlistEventMapPreloadRenderer() {
+      return preloadEventMapRenderer();
+    },
+
+    async playlistEventMapWaitForCompleteScene({ includeMetadata = false } = {}) {
+      const snapshotId = String(this.playlistEventMapSnapshotId || "");
+      if (!this._playlistEventMapSceneComplete) {
+        const request = this._playlistEventMapFullScenePromise;
+        if (!request || String(this._playlistEventMapFullSceneSnapshotId || "") !== snapshotId) {
+          throw new Error("完整事件星域尚未就绪");
+        }
+        await request;
+      }
+      if (!this._playlistEventMapSceneComplete || String(this.playlistEventMapSnapshotId || "") !== snapshotId) {
+        throw new Error("完整事件星域加载已中断");
+      }
+      if (includeMetadata && !this._playlistEventMapMetadataComplete) {
+        const metadataRequest = this._playlistEventMapMetadataPromise;
+        if (!metadataRequest || String(this._playlistEventMapMetadataSnapshotId || "") !== snapshotId) {
+          throw new Error("事件星域标签元数据尚未就绪");
+        }
+        await metadataRequest;
+      }
+      if (
+        String(this.playlistEventMapSnapshotId || "") !== snapshotId
+        || !this._playlistEventMapSceneComplete
+        || (includeMetadata && !this._playlistEventMapMetadataComplete)
+      ) {
+        throw new Error("完整事件星域加载已中断");
+      }
+      return this.playlistEventMapScene;
+    },
+
+    async playlistEventMapLoadView(options = {}) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      if (!pid) return;
+      if (this._playlistEventMapPlaylistId && String(this._playlistEventMapPlaylistId) !== pid) {
+        this.playlistEventMapReset();
+      }
+      const requestedSnapshotId = String(
+        (this.activeView === "field" && this.fieldRequestedSnapshotId) || ""
+      );
+      const suppliedSelectionToken = Number(options.selectionToken);
+      const selectionMode = Number.isInteger(suppliedSelectionToken) && suppliedSelectionToken > 0
+        ? `selection-${suppliedSelectionToken}`
+        : "reset-selection";
+      const snapshotMode = options.forceLatest === true ? "latest" : "pinned";
+      const requestKey = `${pid}|${requestedSnapshotId}|${snapshotMode}|${selectionMode}|${Number(this._playlistEventMapLifecycleGeneration || 0)}`;
+      if (
+        this._playlistEventMapLoadPromise
+        && String(this._playlistEventMapLoadKey || "") === requestKey
+      ) {
+        return await this._playlistEventMapLoadPromise;
+      }
+      const request = this._playlistEventMapLoadViewRequest(options);
+      this._playlistEventMapLoadPromise = request;
+      this._playlistEventMapLoadKey = requestKey;
+      try {
+        return await request;
+      } finally {
+        if (this._playlistEventMapLoadPromise === request) {
+          this._playlistEventMapLoadPromise = null;
+          this._playlistEventMapLoadKey = "";
+        }
+      }
+    },
+
+    async _playlistEventMapLoadViewRequest({ silent = false, schedulePolling = true, selectionToken = null, forceLatest = false, initialCursor = null } = {}) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim(); if (!pid) return;
-      if (this._playlistEventMapPlaylistId && String(this._playlistEventMapPlaylistId) !== pid) this.playlistEventMapReset();
+      const suppliedSelectionToken = Number(selectionToken);
+      const selectionIntentToken = Number.isInteger(suppliedSelectionToken) && suppliedSelectionToken > 0
+        ? suppliedSelectionToken
+        : null;
+      const selectionIntentStillCurrent = () => (
+        selectionIntentToken === null
+        || Number(this._playlistEventMapSelectionToken || 0) === selectionIntentToken
+      );
+      if (!selectionIntentStillCurrent()) return;
       this._playlistEventMapPlaylistId = pid;
       this.playlistEventMapObserveVisibility();
       if (documentIsHidden()) { this.playlistEventMapStopLoad(); return; }
-      this.playlistEventMapObserveTimelineTrack(); const token = Number(this._playlistEventMapRequestToken || 0) + 1; this._playlistEventMapRequestToken = token; this._abortCtrl("_playlistEventMapAbortCtrl"); const requestController = new AbortController(); this._playlistEventMapAbortCtrl = requestController;
+      const requestedSnapshotId = String(
+        (this.activeView === "field" && this.fieldRequestedSnapshotId) || ""
+      );
+      const requestedSnapshotIdAtStart = requestedSnapshotId;
+      const currentSnapshotId = String(this.playlistEventMapSnapshotId || "");
+      const deferManifestStatus = forceLatest || (
+        selectionIntentToken !== null
+        && Boolean(requestedSnapshotId)
+        && requestedSnapshotId !== currentSnapshotId
+      );
+      const preserveCurrentSceneBackground = (deferManifestStatus || forceLatest)
+        && Boolean(this.playlistEventMapController())
+        && this._playlistEventMapSceneComplete === false;
+      const preserveCurrentMetadataBackground = (deferManifestStatus || forceLatest)
+        && Boolean(this.playlistEventMapController())
+        && this._playlistEventMapMetadataComplete === false;
+      const sceneLoadInFlight = (
+        this.playlistEventMapController()
+        && !this._playlistEventMapSceneComplete
+        && String(this._playlistEventMapSceneLoadingSnapshotId || "") === currentSnapshotId
+      );
+      const metadataLoadInFlight = (
+        this._playlistEventMapMetadataPromise
+        && String(this._playlistEventMapMetadataSnapshotId || "") === String(this.playlistEventMapSnapshotId || "")
+      );
+      if (
+        !forceLatest
+        && sceneLoadInFlight
+        && (!requestedSnapshotId || requestedSnapshotId === currentSnapshotId)
+        && (this._playlistEventMapMetadataComplete || metadataLoadInFlight)
+      ) {
+        if (schedulePolling && this.playlistSubview === "analysis") this.playlistEventMapSchedulePoll();
+        return;
+      }
+      this.playlistEventMapObserveTimelineTrack();
+      const token = Number(this._playlistEventMapRequestToken || 0) + 1;
+      this._playlistEventMapRequestToken = token;
+      this._abortCtrl("_playlistEventMapStagedAbortCtrl");
+      this._abortCtrl("_playlistEventMapAbortCtrl");
+      if (!preserveCurrentSceneBackground) {
+        this._abortCtrl("_playlistEventMapSceneAbortCtrl");
+      }
+      if (!preserveCurrentMetadataBackground) {
+        this._abortCtrl("_playlistEventMapMetadataAbortCtrl");
+        this._playlistEventMapMetadataPromise = null;
+        this._playlistEventMapMetadataSnapshotId = "";
+      }
+      this._abortCtrl("_playlistEventMapCoverageAbortCtrl");
+      const requestController = new AbortController();
+      const sceneController = new AbortController();
+      this._playlistEventMapAbortCtrl = requestController;
+      if (!preserveCurrentSceneBackground) this._playlistEventMapSceneAbortCtrl = sceneController;
       if (!silent) this.playlistEventMapLoading = true; this.playlistEventMapError = "";
-      let pendingMount = null; let pendingController = null;
+      const lifecycleGeneration = Number(this._playlistEventMapLifecycleGeneration || 0);
+      const snapshotCommitStillCurrent = () => (
+        Number(this._playlistEventMapRequestToken || 0) === token
+        && Number(this._playlistEventMapLifecycleGeneration || 0) === lifecycleGeneration
+        && String(this.playlistPageId || this.selectedPlaylistId || "").trim() === pid
+        && (
+          this.activeView !== "field"
+          || String(this.fieldRequestedSnapshotId || "") === requestedSnapshotIdAtStart
+        )
+        && selectionIntentStillCurrent()
+      );
+      let pendingMount = null; let pendingController = null; let metadataController = null; let backgroundLoadDetached = false;
+      const stagedController = deferManifestStatus ? new AbortController() : null;
+      if (stagedController) {
+        this._playlistEventMapStagedAbortCtrl = stagedController;
+        stagedController.signal.addEventListener("abort", () => {
+          requestController.abort();
+          sceneController.abort();
+          metadataController?.abort();
+        }, { once: true });
+      }
       try {
+        const rendererPromise = this.playlistEventMapPreloadRenderer();
+        // compact manifest 未就绪时也先下载 Three.js；真正创建网格时仍会感知导入失败。
+        rendererPromise.catch(() => {});
         const anticipatedSnapshotId = String(
-          (this.activeView === "field" && this.fieldRequestedSnapshotId)
+          (forceLatest ? "" : requestedSnapshotId)
           || this.playlistEventMapStatus?.snapshot_id
           || this.currentDomain?.()?.snapshot?.id
           || ""
         );
-        const shouldPrefetchScene = anticipatedSnapshotId
-          && (!this.playlistEventMapScene || String(this.playlistEventMapSnapshotId || "") !== anticipatedSnapshotId);
-        const anticipatedScene = shouldPrefetchScene
-          ? this.playlistEventMapFetchBinary(
-            `/playlists/${encodeURIComponent(pid)}/events/map/scene?${new URLSearchParams({ snapshot_id: anticipatedSnapshotId })}`,
-            { signal: requestController.signal, cache: "force-cache" }
-          ).then((buffer) => ({ buffer, error: null })).catch((error) => ({ buffer: null, error }))
-          : null;
-        const manifest = await this.playlistEventMapLoadManifest({ silent: true, signal: requestController.signal }); if (Number(this._playlistEventMapRequestToken || 0) !== token) return;
-        if (!manifest) return;
-        const snapshotId = String(manifest?.snapshot_id || "");
-        if (!snapshotId || manifest?.status !== "ready") { this.playlistEventMapDestroy(); this.playlistEventMapManifest = manifest || null; this.playlistEventMapTimelineMonths = normalizeTimeline(manifest); this.playlistEventMapScene = null; this.playlistEventMapSnapshotId = ""; return; }
-        if (snapshotId === this.playlistEventMapSnapshotId && this.playlistEventMapScene && this.playlistEventMapController()) { this.playlistEventMapManifest = manifest; this.playlistEventMapTimelineMonths = normalizeTimeline(manifest); this.playlistEventMapInitializeWindow(); this.playlistEventMapUpdateLayers(); return; }
-        const prefetched = anticipatedScene && anticipatedSnapshotId === snapshotId ? await anticipatedScene : null;
-        if (prefetched?.error) throw prefetched.error;
-        const buffer = prefetched?.buffer || await this.playlistEventMapFetchBinary(
-          `/playlists/${encodeURIComponent(pid)}/events/map/scene?${new URLSearchParams({ snapshot_id: snapshotId })}`,
-          { signal: requestController.signal, cache: "force-cache" }
-        );
-        if (Number(this._playlistEventMapRequestToken || 0) !== token) return;
-        if (Number(manifest.dimension || 0) !== 3 || Number(manifest.scene_record_size || 0) !== 56) throw new Error("事件语义星域快照不是三维 v2 协议，请先完成星域重建");
-        const scene = parseEventMapScene(buffer, Number(manifest.canonical_count || 0)); const target = this.$refs?.playlistEventMap; if (!target) throw new Error("事件语义星域容器尚未就绪");
-        pendingMount = document.createElement("div"); pendingMount.style.cssText = "position:absolute;inset:0;width:100%;height:100%;visibility:hidden"; target.appendChild(pendingMount);
-        pendingController = await EventMapController.create({ target: pendingMount, scene, manifest, onSelect: (index, canonicalId) => this.playlistEventMapSelectCanonical(index, canonicalId), onTopic: (_index, topic) => this.playlistEventMapSelectTopic(topic), onViewport: (summary) => this.playlistEventMapHandleViewportSummary(summary) });
-        if (Number(this._playlistEventMapRequestToken || 0) !== token) { pendingController.destroy(); pendingMount.remove(); return; }
+        const existingController = this.playlistEventMapController();
+        const bootManifest = await this.playlistEventMapLoadManifest({ silent: true, compact: true, snapshotId: forceLatest ? "" : anticipatedSnapshotId, signal: requestController.signal, commitGuard: snapshotCommitStillCurrent, commitStatus: !deferManifestStatus }); if (!snapshotCommitStillCurrent()) return;
+        if (!bootManifest) return;
+        const snapshotId = String(bootManifest?.snapshot_id || "");
+        if (!snapshotId || bootManifest?.status !== "ready") {
+          if (!snapshotCommitStillCurrent()) return;
+          // 历史星域仍可浏览时，最新快照暂缺或仍在构建不能销毁当前画布。
+          if (existingController && deferManifestStatus) return null;
+          this.playlistEventMapDestroy();
+          this.playlistEventMapStatus = bootManifest || null;
+          this.playlistEventMapStatusError = "";
+          if (bootManifest && Object.prototype.hasOwnProperty.call(bootManifest, "backfill_job")) {
+            this.playlistEventMapBackfillJob = statusJob(bootManifest);
+          }
+          this.playlistEventMapManifest = bootManifest || null;
+          this.playlistEventMapTimelineMonths = normalizeTimeline(bootManifest);
+          this.playlistEventMapScene = null;
+          this.playlistEventMapSnapshotId = "";
+          return { confirmed: true, ready: false, snapshotId };
+        }
+        if (
+          forceLatest
+          && snapshotId === currentSnapshotId
+          && this.playlistEventMapScene
+          && this.playlistEventMapController() === existingController
+          && !this._playlistEventMapSceneComplete
+          && sceneLoadInFlight
+          && (this._playlistEventMapMetadataComplete || metadataLoadInFlight)
+        ) return { confirmed: true, ready: true, snapshotId };
+        if (snapshotId === this.playlistEventMapSnapshotId && this.playlistEventMapScene && this.playlistEventMapController() && this._playlistEventMapSceneComplete) {
+          if (!snapshotCommitStillCurrent()) return;
+          const mountedController = this.playlistEventMapController();
+          this.playlistEventMapManifest = { ...(this.playlistEventMapManifest || {}), ...bootManifest };
+          if (!this._playlistEventMapMetadataComplete) {
+            let metadataLoad = (
+              this._playlistEventMapMetadataPromise
+              && String(this._playlistEventMapMetadataSnapshotId || "") === snapshotId
+            ) ? this._playlistEventMapMetadataPromise : null;
+            let ownsMetadataLoad = false;
+            if (!metadataLoad) {
+              metadataController = new AbortController();
+              this._playlistEventMapMetadataAbortCtrl = metadataController;
+              metadataLoad = (async () => {
+                const fullManifest = await this.playlistEventMapLoadManifest({
+                  silent: true,
+                  includeCoverage: false,
+                  snapshotId,
+                  signal: metadataController.signal,
+                });
+                if (!fullManifest) throw new Error("事件语义星域主题元数据加载失败");
+                if (
+                  metadataController.signal.aborted
+                  || Number(this._playlistEventMapRequestToken || 0) !== token
+                  || Number(this._playlistEventMapLifecycleGeneration || 0) !== lifecycleGeneration
+                  || String(this.playlistPageId || this.selectedPlaylistId || "") !== pid
+                  || String(this.playlistEventMapSnapshotId || "") !== snapshotId
+                  || this.playlistEventMapController() !== mountedController
+                ) throw new DOMException("事件星域标签元数据加载已中断", "AbortError");
+                this.playlistEventMapManifest = fullManifest;
+                this.playlistEventMapTimelineMonths = normalizeTimeline(fullManifest);
+                this.playlistEventMapInitializeWindow();
+                mountedController.updateManifest(fullManifest);
+                this.playlistEventMapUpdateLayers();
+                this._playlistEventMapMetadataComplete = true;
+                mountedController.finishInitialHydration?.();
+                return fullManifest;
+              })();
+              ownsMetadataLoad = true;
+              this._playlistEventMapMetadataPromise = metadataLoad;
+              this._playlistEventMapMetadataSnapshotId = snapshotId;
+            }
+            try {
+              await metadataLoad;
+            } finally {
+              if (ownsMetadataLoad && this._playlistEventMapMetadataPromise === metadataLoad) {
+                this._playlistEventMapMetadataPromise = null;
+                this._playlistEventMapMetadataSnapshotId = "";
+              }
+            }
+          }
+          this.playlistEventMapUpdateLayers();
+          return { confirmed: true, ready: true, snapshotId };
+        }
+        if (Number(bootManifest.dimension || 0) !== 3 || Number(bootManifest.scene_record_size || 0) !== 56) throw new Error("事件语义星域快照不是三维 v2 协议，请先完成星域重建");
+        const previousController = existingController; const previousMount = this._playlistEventMapMount;
         const stableEntityFilter = this.playlistEventMapStableEntityFilter();
-        const previousController = this.playlistEventMapController(); const previousMount = this._playlistEventMapMount; this._playlistEventMapController = pendingController; this._playlistEventMapMount = pendingMount; pendingController = null; pendingMount = null;
-        this.playlistEventMapManifest = manifest; this.playlistEventMapTimelineMonths = normalizeTimeline(manifest); this.playlistEventMapScene = scene; this.playlistEventMapSnapshotId = snapshotId;
-        this.playlistEventMapResetSnapshotPinnedState(stableEntityFilter);
-        this.playlistEventMapInitializeWindow(); previousController?.destroy(); previousMount?.remove(); if (!this._playlistEventMapMount.isConnected) target.appendChild(this._playlistEventMapMount); this._playlistEventMapMount.style.visibility = "visible"; this.playlistEventMapUpdateLayers(); this.playlistEventMapController().fitActiveWindow();
-        this.playlistEventMapLoadEntities({ silent: true });
-        if (stableEntityFilter && Number(this._playlistEventMapRequestToken || 0) === token) await this.playlistEventMapApplyEntityFilter(stableEntityFilter, { resume: true });
-      } catch (error) { pendingController?.destroy(); pendingMount?.remove(); if (!abortError(error) && Number(this._playlistEventMapRequestToken || 0) === token) this.playlistEventMapError = error?.message || String(error); }
+
+        if (previousController) {
+          metadataController = new AbortController();
+          if (stagedController?.signal.aborted) metadataController.abort();
+          if (!preserveCurrentMetadataBackground) this._playlistEventMapMetadataAbortCtrl = metadataController;
+          const metadataPromise = this.playlistEventMapLoadManifest({ silent: true, includeCoverage: false, snapshotId, signal: metadataController.signal, commitGuard: snapshotCommitStillCurrent, commitStatus: !deferManifestStatus });
+          const fullScenePromise = this.playlistEventMapFetchBinary(
+            `/playlists/${encodeURIComponent(pid)}/events/map/scene?${new URLSearchParams({ snapshot_id: snapshotId })}`,
+            { signal: sceneController.signal, cache: "force-cache" }
+          );
+          const [fullBuffer, fullManifest] = await Promise.all([fullScenePromise, metadataPromise, rendererPromise]);
+          if (!fullManifest) throw new Error("事件语义星域主题元数据加载失败");
+          if (!snapshotCommitStillCurrent()) return;
+          const fullScene = parseEventMapScene(fullBuffer, Number(bootManifest.canonical_count || 0));
+          const target = this.$refs?.playlistEventMap; if (!target) throw new Error("事件语义星域容器尚未就绪");
+          pendingMount = document.createElement("div"); pendingMount.style.cssText = "position:absolute;inset:0;width:100%;height:100%;visibility:hidden"; target.appendChild(pendingMount);
+          pendingController = await EventMapController.create(this.playlistEventMapControllerOptions(pendingMount, fullScene, fullManifest));
+          if (!snapshotCommitStillCurrent()) { pendingController.destroy(); pendingMount.remove(); return; }
+          await pendingController.whenFirstFrame();
+          if (!snapshotCommitStillCurrent()) { pendingController.destroy(); pendingMount.remove(); return; }
+          if (preserveCurrentSceneBackground) {
+            this._abortCtrl("_playlistEventMapSceneAbortCtrl");
+          }
+          if (preserveCurrentMetadataBackground) {
+            this._abortCtrl("_playlistEventMapMetadataAbortCtrl");
+            this._playlistEventMapMetadataPromise = null;
+            this._playlistEventMapMetadataSnapshotId = "";
+          }
+          if (!this.playlistEventMapResetSnapshotPinnedState(stableEntityFilter, { selectionToken: selectionIntentToken })) { pendingController.destroy(); pendingMount.remove(); return; }
+          this.playlistEventMapStatus = fullManifest;
+          this.playlistEventMapStatusError = "";
+          if (Object.prototype.hasOwnProperty.call(fullManifest, "backfill_job")) this.playlistEventMapBackfillJob = statusJob(fullManifest);
+          this.playlistEventMapManifest = fullManifest; this.playlistEventMapTimelineMonths = normalizeTimeline(fullManifest); this.playlistEventMapScene = fullScene; this.playlistEventMapSnapshotId = snapshotId;
+          this._playlistEventMapSceneComplete = true;
+          this._playlistEventMapMetadataComplete = true;
+          this.playlistEventMapInitializeWindow();
+          pendingController.updateLayers({ windowStart: this.playlistEventMapWindowStart, windowEnd: this.playlistEventMapWindowEnd, typeFilter: this.playlistEventMapTypeFilter, entityIndices: this.playlistEventMapEntityIndices, playing: this.playlistEventMapPlaying, topicIndex: null });
+          this.playlistEventMapVisibleCount = countEventMapVisiblePoints(fullScene, this.playlistEventMapWindowStart, this.playlistEventMapWindowEnd, this.playlistEventMapTypeFilter);
+          pendingController.fitActiveWindow();
+          previousController.destroy(); previousMount?.remove();
+          this._playlistEventMapController = pendingController; this._playlistEventMapMount = pendingMount; pendingController = null; pendingMount = null;
+          this._playlistEventMapMount.style.visibility = "visible"; this.playlistEventMapController().updateLabels();
+          this.playlistEventMapScheduleHighlights({ delay: 0 });
+          this.playlistEventMapLoadDeferredCoverage({ pid, snapshotId, requestToken: token, lifecycleGeneration });
+          this.playlistEventMapLoadEntities({ silent: true });
+          if (stableEntityFilter && Number(this._playlistEventMapRequestToken || 0) === token) await this.playlistEventMapApplyEntityFilter(stableEntityFilter, { resume: true });
+          return { confirmed: true, ready: true, snapshotId };
+        }
+
+        await rendererPromise;
+        if (!snapshotCommitStillCurrent()) return;
+        const target = this.$refs?.playlistEventMap; if (!target) throw new Error("事件语义星域容器尚未就绪");
+        pendingMount = document.createElement("div"); pendingMount.style.cssText = "position:absolute;inset:0;width:100%;height:100%;visibility:hidden"; target.appendChild(pendingMount);
+        const emptyScene = emptyEventMapScene();
+        pendingController = await EventMapController.create(this.playlistEventMapControllerOptions(pendingMount, emptyScene, bootManifest));
+        if (!snapshotCommitStillCurrent()) { pendingController.destroy(); pendingMount.remove(); return; }
+        pendingController.setSceneInteractive(false);
+        const cursor = typeof initialCursor === "function" ? initialCursor() : null;
+        const cursorCompatible = this.fieldCameraStateCompatible?.(cursor?.camera_state, {
+          controller: pendingController,
+          snapshotId,
+          windowStart: this.playlistEventMapWindowStart,
+          windowEnd: this.playlistEventMapWindowEnd,
+        });
+        if (cursorCompatible) pendingController.restoreCameraState(cursor.camera_state);
+        await pendingController.whenFirstFrame();
+        if (!snapshotCommitStillCurrent()) { pendingController.destroy(); pendingMount.remove(); return; }
+        if (!this.playlistEventMapResetSnapshotPinnedState(stableEntityFilter, { selectionToken: selectionIntentToken })) { pendingController.destroy(); pendingMount.remove(); return; }
+        this.playlistEventMapStatus = bootManifest;
+        this.playlistEventMapStatusError = "";
+        if (Object.prototype.hasOwnProperty.call(bootManifest, "backfill_job")) this.playlistEventMapBackfillJob = statusJob(bootManifest);
+        this.playlistEventMapManifest = bootManifest; this.playlistEventMapTimelineMonths = normalizeTimeline(bootManifest); this.playlistEventMapScene = emptyScene; this.playlistEventMapSnapshotId = snapshotId;
+        this._playlistEventMapSceneComplete = false;
+        this._playlistEventMapMetadataComplete = false;
+        this.playlistEventMapInitializeWindow();
+        pendingController.updateLayers({ windowStart: this.playlistEventMapWindowStart, windowEnd: this.playlistEventMapWindowEnd, typeFilter: this.playlistEventMapTypeFilter, entityIndices: this.playlistEventMapEntityIndices, playing: this.playlistEventMapPlaying, topicIndex: null });
+        this.playlistEventMapVisibleCount = 0;
+        this._playlistEventMapController = pendingController; this._playlistEventMapMount = pendingMount; pendingController = null; pendingMount = null;
+        this._playlistEventMapMount.style.visibility = "visible";
+        const mountedController = this.playlistEventMapController();
+        this._playlistEventMapSceneLoadingSnapshotId = snapshotId;
+        const previewBuffer = await this.playlistEventMapFetchBinary(
+          `/playlists/${encodeURIComponent(pid)}/events/map/scene?${new URLSearchParams({ snapshot_id: snapshotId, preview_limit: String(EVENT_MAP_PREVIEW_LIMIT) })}`,
+          { signal: sceneController.signal, cache: "force-cache" }
+        );
+        if (
+          sceneController.signal.aborted
+          || Number(this._playlistEventMapRequestToken || 0) !== token
+          || this.playlistEventMapController() !== mountedController
+        ) return;
+        const previewScene = parseEventMapScene(previewBuffer);
+        this.playlistEventMapScene = previewScene;
+        mountedController.replaceScene(previewScene);
+        const revealPrepared = mountedController.prepareProgressiveReveal();
+        this.playlistEventMapUpdateLayers();
+        if (revealPrepared) mountedController.startProgressiveReveal({
+          target: EVENT_MAP_PREVIEW_REVEAL_TARGET,
+          duration: EVENT_MAP_PREVIEW_REVEAL_MS,
+          complete: false,
+        });
+
+        // 首帧网格和预览点都已落下后，才让完整点集与标签元数据占用数据库和网络。
+        metadataController = new AbortController(); this._playlistEventMapMetadataAbortCtrl = metadataController;
+        const metadataPromise = this.playlistEventMapLoadManifest({ silent: true, includeCoverage: false, snapshotId, signal: metadataController.signal });
+        const fullScenePromise = this.playlistEventMapFetchBinary(
+          `/playlists/${encodeURIComponent(pid)}/events/map/scene?${new URLSearchParams({ snapshot_id: snapshotId })}`,
+          { signal: sceneController.signal, cache: "force-cache" }
+        );
+        backgroundLoadDetached = true;
+        const assertCurrentBackgroundLoad = (controller) => {
+          if (
+            controller.signal.aborted
+            || Number(this._playlistEventMapLifecycleGeneration || 0) !== lifecycleGeneration
+            || String(this.playlistPageId || this.selectedPlaylistId || "") !== pid
+            || String(this.playlistEventMapSnapshotId || "") !== snapshotId
+            || this.playlistEventMapController() !== mountedController
+          ) throw new DOMException("事件星域加载已中断", "AbortError");
+        };
+        const fullSceneLoad = fullScenePromise.then((fullBuffer) => {
+          assertCurrentBackgroundLoad(sceneController);
+          const fullScene = parseEventMapScene(fullBuffer, Number(bootManifest.canonical_count || 0));
+          this.playlistEventMapScene = fullScene;
+          this.playlistEventMapInitializeWindow();
+          mountedController.replaceScene(fullScene, { preserveRevealCount: revealPrepared });
+          mountedController.setSceneInteractive(true);
+          this._playlistEventMapSceneComplete = true;
+          this.playlistEventMapUpdateLayers();
+          if (this._playlistEventMapMetadataComplete) mountedController.finishInitialHydration();
+          mountedController.startProgressiveReveal({ target: 1, duration: 1250, complete: true });
+          this.playlistEventMapLoadDeferredCoverage({ pid, snapshotId, requestToken: token, lifecycleGeneration });
+          this.playlistEventMapLoadEntities({ silent: true });
+          if (stableEntityFilter && Number(this._playlistEventMapRequestToken || 0) === token) void this.playlistEventMapApplyEntityFilter(stableEntityFilter, { resume: true });
+          return fullScene;
+        });
+        const metadataLoad = metadataPromise.then((fullManifest) => {
+          assertCurrentBackgroundLoad(metadataController);
+          if (!fullManifest) throw new Error("事件语义星域主题元数据加载失败");
+          this.playlistEventMapManifest = fullManifest;
+          this.playlistEventMapTimelineMonths = normalizeTimeline(fullManifest);
+          this.playlistEventMapInitializeWindow();
+          mountedController.updateManifest(fullManifest);
+          this.playlistEventMapUpdateLayers();
+          this._playlistEventMapMetadataComplete = true;
+          if (this._playlistEventMapSceneComplete) mountedController.finishInitialHydration();
+          return fullManifest;
+        });
+        this._playlistEventMapFullScenePromise = fullSceneLoad;
+        this._playlistEventMapFullSceneSnapshotId = snapshotId;
+        this._playlistEventMapMetadataPromise = metadataLoad;
+        this._playlistEventMapMetadataSnapshotId = snapshotId;
+        void fullSceneLoad.catch((error) => {
+          if (!abortError(error) && Number(this._playlistEventMapRequestToken || 0) === token) this.playlistEventMapError = error?.message || String(error);
+        });
+        void metadataLoad.catch((error) => {
+          if (!abortError(error) && Number(this._playlistEventMapRequestToken || 0) === token) this.playlistEventMapError = error?.message || String(error);
+        });
+        const clearFullSceneLoad = () => {
+          const ownsFullSceneLoad = this._playlistEventMapFullScenePromise === fullSceneLoad;
+          if (ownsFullSceneLoad) {
+            this._playlistEventMapFullScenePromise = null;
+            this._playlistEventMapFullSceneSnapshotId = "";
+            if (String(this._playlistEventMapSceneLoadingSnapshotId || "") === snapshotId) {
+              this._playlistEventMapSceneLoadingSnapshotId = "";
+            }
+          }
+          if (this._playlistEventMapSceneAbortCtrl === sceneController) {
+            this._playlistEventMapSceneAbortCtrl = null;
+          }
+        };
+        const clearMetadataLoad = () => {
+          if (this._playlistEventMapMetadataPromise === metadataLoad) {
+            this._playlistEventMapMetadataPromise = null;
+            this._playlistEventMapMetadataSnapshotId = "";
+          }
+          if (this._playlistEventMapMetadataAbortCtrl === metadataController) {
+            this._playlistEventMapMetadataAbortCtrl = null;
+          }
+        };
+        void fullSceneLoad.then(clearFullSceneLoad, clearFullSceneLoad);
+        void metadataLoad.then(clearMetadataLoad, clearMetadataLoad);
+        return { confirmed: true, ready: true, snapshotId, initialCameraApplied: true };
+      } catch (error) { pendingController?.destroy(); pendingMount?.remove(); if (!abortError(error) && snapshotCommitStillCurrent()) this.playlistEventMapError = error?.message || String(error); return null; }
       finally {
+        if (this._playlistEventMapStagedAbortCtrl === stagedController) {
+          this._playlistEventMapStagedAbortCtrl = null;
+        }
+        if (!backgroundLoadDetached && metadataController) {
+          metadataController.abort();
+          if (this._playlistEventMapMetadataAbortCtrl === metadataController) this._playlistEventMapMetadataAbortCtrl = null;
+        }
+        if (!backgroundLoadDetached) {
+          sceneController.abort();
+          if (this._playlistEventMapSceneAbortCtrl === sceneController) this._playlistEventMapSceneAbortCtrl = null;
+        }
         if (Number(this._playlistEventMapRequestToken || 0) === token) {
+          if (!backgroundLoadDetached && !preserveCurrentSceneBackground) this._playlistEventMapSceneLoadingSnapshotId = "";
           this._playlistEventMapAbortCtrl = null; this.playlistEventMapLoading = false;
           if (schedulePolling && this.playlistSubview === "analysis") this.playlistEventMapSchedulePoll();
         }
@@ -268,6 +799,266 @@ export function createPlaylistEventMapMethods() {
       this.playlistEventMapVisibleCount = countEventMapVisiblePoints(scene, this.playlistEventMapWindowStart, this.playlistEventMapWindowEnd, this.playlistEventMapTypeFilter);
       if (this.playlistEventMapSelectedKind === "canonical" && !controller.isActiveIndex(this.playlistEventMapSelectedIndex)) this.playlistEventMapClearSelection({ update: false });
       if (this.playlistEventMapSelectedKind === "topic" && !controller.hasActiveTopic(this.playlistEventMapTopicFocus?.topic_index)) this.playlistEventMapClearTopicFocus({ update: false });
+      this.playlistEventMapScheduleHighlights();
+    },
+    playlistEventMapHighlightRange(scope) {
+      const today = localToday();
+      const start = scope === "week" ? localWeekStart(today) : today;
+      const windowStart = String(this.playlistEventMapWindowStart || "").slice(0, 10);
+      const windowEnd = String(this.playlistEventMapWindowEnd || "").slice(0, 10);
+      if (!windowStart || !windowEnd || windowStart > today || windowEnd < start) return null;
+      return { start: windowStart > start ? windowStart : start, end: windowEnd < today ? windowEnd : today };
+    },
+    playlistEventMapHighlightAvailable(scope) { return Boolean(this.playlistEventMapHighlightRange(scope)); },
+    playlistEventMapHighlightsRequestKey() {
+      return JSON.stringify({
+        domainId: String(this.playlistPageId || this.selectedPlaylistId || "").trim(),
+        snapshotId: String(this.playlistEventMapSnapshotId || "").trim(),
+        todayRange: this.playlistEventMapHighlightRange("today"),
+        weekRange: this.playlistEventMapHighlightRange("week"),
+        windowStart: this.playlistEventMapWindowStart,
+        windowEnd: this.playlistEventMapWindowEnd,
+        type: this.playlistEventMapTypeFilter || "",
+        entity: this.playlistEventMapEntityFilter?.normalized_key || "",
+        entityType: this.playlistEventMapEntityFilter?.entity_type || "",
+        topic: this.playlistEventMapTopicFocus?.topic_id || "",
+      });
+    },
+    playlistEventMapHighlightData(scope = this.playlistEventMapTimeFocusScope) {
+      return scope === "week" ? this.playlistEventMapWeekHighlights : this.playlistEventMapTodayHighlights;
+    },
+    playlistEventMapHighlightCount(scope) {
+      const data = this.playlistEventMapHighlightData(scope);
+      if (!data) return 0;
+      return Math.max(0, Number(data.shown_total ?? data.items?.length ?? data.point_indices?.length ?? 0));
+    },
+    playlistEventMapHighlightTotal(scope) {
+      const data = this.playlistEventMapHighlightData(scope);
+      if (!data) return 0;
+      return Math.max(0, Number(data.total ?? data.playable_event_total ?? data.items?.length ?? 0));
+    },
+    playlistEventMapHighlightVideoCount(scope) {
+      const data = this.playlistEventMapHighlightData(scope);
+      if (!data) return 0;
+      return Math.max(0, Number(data.video_total ?? data.items?.length ?? 0));
+    },
+    playlistEventMapHighlightProcessing(scope) {
+      return Boolean(this.playlistEventMapHighlightData(scope)) && this.playlistEventMapPollIsActive();
+    },
+    playlistEventMapHighlightStatusLabel(scope) {
+      const data = this.playlistEventMapHighlightData(scope);
+      if (!data && this.playlistEventMapHighlightsLoading) return "…";
+      const shown = this.playlistEventMapHighlightCount(scope);
+      const total = this.playlistEventMapHighlightTotal(scope);
+      return total > shown
+        ? `${this.formatInteger(shown)}/${this.formatInteger(total)}`
+        : this.formatInteger(shown);
+    },
+    playlistEventMapHighlightStatusHint(scope) {
+      const label = scope === "week" ? "本周" : "今日";
+      const data = this.playlistEventMapHighlightData(scope);
+      const shown = this.formatInteger(this.playlistEventMapHighlightCount(scope));
+      const total = this.formatInteger(this.playlistEventMapHighlightTotal(scope));
+      const videos = this.formatInteger(this.playlistEventMapHighlightVideoCount(scope));
+      const matched = Math.max(0, Number(data?.matched_event_total ?? data?.total ?? 0));
+      const unavailable = Math.max(0, matched - Number(data?.total ?? 0));
+      const imprecise = Math.max(0, Number(data?.excluded_imprecise_total || 0));
+      const missingVideo = unavailable ? `；${this.formatInteger(unavailable)} 个事件没有可播放关联视频` : "";
+      const precision = imprecise ? `；已排除 ${this.formatInteger(imprecise)} 个只有月/年级日期的模糊事件` : "";
+      const active = this.playlistEventMapHighlightProcessing(scope) ? "；星域后台任务正在运行" : "";
+      return `${label}按事件发生日期筛选，按多信源佐证强度排序，每个媒体最多 2 个视频；同一视频只显示一张卡片并连接全部入选事件；显示 ${shown}/${total} 个事件，关联 ${videos} 个视频${missingVideo}${precision}${active}`;
+    },
+    playlistEventMapNormalizeHighlightData(payload) {
+      const value = payload && typeof payload === "object" ? payload : {};
+      const items = [];
+      const cardsByVideo = new Map();
+      const mediaCardCounts = new Map();
+      const selectedEventKeys = new Set();
+      let selectedEventCount = 0;
+      for (const [index, item] of (Array.isArray(value.items) ? value.items : []).entries()) {
+        if (selectedEventCount >= 10) break;
+        const video = item?.primary_video || null;
+        const videoKey = video?.video_id
+          ? `id:${video.video_id}`
+          : `event:${item?.canonical_id || index}`;
+        let card = cardsByVideo.get(videoKey);
+        const mediaKey = video?.media_id
+          ? `id:${video.media_id}`
+          : (video?.media_name
+            ? `name:${video.media_name}`
+            : videoKey);
+        if (!card && Number(mediaCardCounts.get(mediaKey) || 0) >= 2) continue;
+        const pointIndices = uniqueEventMapPointIndices([
+          item?.point_index,
+          ...(Array.isArray(item?.point_indices) ? item.point_indices : []),
+        ]);
+        const eventKey = String(item?.canonical_id || `point:${pointIndices.join(",") || index}`);
+        if (selectedEventKeys.has(eventKey)) continue;
+        const posterUrl = video?.thumbnail_asset
+          ? this.assetContentUrl(video.thumbnail_asset)
+          : String(video?.thumbnail_url || "");
+        const mediaAvatarUrl = video?.media_avatar_asset
+          ? this.assetContentUrl(video.media_avatar_asset)
+          : String(video?.media_avatar_url || "");
+        if (!card) {
+          card = {
+            ...item,
+            point_index: pointIndices[0],
+            point_indices: [],
+            canonical_ids: [],
+            linked_events: [],
+            linked_event_count: 0,
+            ...(video ? { primary_video: { ...video, poster_url: posterUrl, media_avatar_url: mediaAvatarUrl } } : {}),
+          };
+          cardsByVideo.set(videoKey, card);
+          items.push(card);
+          mediaCardCounts.set(mediaKey, Number(mediaCardCounts.get(mediaKey) || 0) + 1);
+        }
+        card.point_indices = uniqueEventMapPointIndices([...card.point_indices, ...pointIndices]);
+        if (!Number.isInteger(eventMapPointIndex(card.point_index))) card.point_index = card.point_indices[0];
+        if (item?.canonical_id) card.canonical_ids.push(String(item.canonical_id));
+        card.linked_events.push({
+          canonical_id: String(item?.canonical_id || ""),
+          point_indices: pointIndices,
+          title: String(item?.title || "未命名事件"),
+          summary: String(item?.summary || ""),
+          event_time_start: String(item?.event_time_start || ""),
+          representative_rank: Number(item?.representative_rank || index + 1),
+        });
+        card.linked_event_count = card.linked_events.length;
+        selectedEventKeys.add(eventKey);
+        selectedEventCount += 1;
+      }
+      const pointIndices = uniqueEventMapPointIndices([
+        ...(Array.isArray(value.point_indices) ? value.point_indices : []),
+        ...items.flatMap((item) => item.point_indices),
+      ]);
+      return {
+        ...value,
+        point_indices: pointIndices,
+        total: Math.max(0, Number(value.total ?? value.playable_event_total ?? items.length)),
+        shown_total: selectedEventCount,
+        video_total: items.length,
+        max_cards_per_media: 2,
+        items,
+      };
+    },
+    playlistEventMapApplyTimeHighlights() {
+      const available = this.playlistEventMapHighlightAvailable(this.playlistEventMapTimeFocusScope);
+      const payload = available ? this.playlistEventMapHighlightData() : null;
+      this.playlistEventMapController()?.setTimeHighlights?.({
+        ...(payload || { point_indices: [], items: [] }),
+        scope: this.playlistEventMapTimeFocusScope,
+      });
+    },
+    playlistEventMapSetTimeFocusScope(scope) {
+      const normalized = scope === "week" ? "week" : "today";
+      if (!this.playlistEventMapHighlightAvailable(normalized)) return;
+      this.playlistEventMapTimeFocusScope = normalized;
+      this.playlistEventMapApplyTimeHighlights();
+    },
+    playlistEventMapScheduleHighlights({ delay = 140, force = false } = {}) {
+      if (typeof this.playlistEventMapController()?.setTimeHighlights !== "function") return;
+      if (!this._playlistEventMapSceneComplete) {
+        this.playlistEventMapController()?.setTimeHighlights?.({ point_indices: [], items: [], scope: this.playlistEventMapTimeFocusScope });
+        return;
+      }
+      if (!force) {
+        const nextKey = this.playlistEventMapHighlightsRequestKey();
+        const knownKeys = [this._playlistEventMapHighlightsKey, this._playlistEventMapHighlightsPendingKey].filter(Boolean);
+        if (!knownKeys.includes(nextKey)) {
+          this._abortCtrl("_playlistEventMapHighlightsAbortCtrl");
+          this._playlistEventMapHighlightsToken = Number(this._playlistEventMapHighlightsToken || 0) + 1;
+          this._playlistEventMapHighlightsPendingKey = "";
+          this._playlistEventMapHighlightsKey = "";
+          this.playlistEventMapTodayHighlights = null;
+          this.playlistEventMapWeekHighlights = null;
+          this.playlistEventMapHighlightsLoading = false;
+          this.playlistEventMapHighlightsError = "";
+          this.playlistEventMapController()?.setTimeHighlights?.({ point_indices: [], items: [], scope: this.playlistEventMapTimeFocusScope });
+        }
+      }
+      if (force) this._playlistEventMapHighlightsForceRefresh = true;
+      clearTimeout(this._playlistEventMapHighlightsTimer);
+      this._playlistEventMapHighlightsTimer = setTimeout(() => {
+        this._playlistEventMapHighlightsTimer = null;
+        const forceRefresh = Boolean(this._playlistEventMapHighlightsForceRefresh);
+        this._playlistEventMapHighlightsForceRefresh = false;
+        void this.playlistEventMapLoadHighlights({ force: forceRefresh });
+      }, Math.max(0, Number(delay || 0)));
+    },
+    async playlistEventMapLoadHighlights({ force = false } = {}) {
+      const domainId = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+      const snapshotId = String(this.playlistEventMapSnapshotId || "").trim();
+      const todayRange = this.playlistEventMapHighlightRange("today");
+      const weekRange = this.playlistEventMapHighlightRange("week");
+      if (!domainId || !snapshotId || (!todayRange && !weekRange)) {
+        this.playlistEventMapTodayHighlights = null;
+        this.playlistEventMapWeekHighlights = null;
+        this.playlistEventMapApplyTimeHighlights();
+        return;
+      }
+      const key = this.playlistEventMapHighlightsRequestKey();
+      if (!force && key === this._playlistEventMapHighlightsKey) {
+        this.playlistEventMapApplyTimeHighlights();
+        return;
+      }
+      this._playlistEventMapHighlightsLastRequestAt = Date.now();
+      this._abortCtrl("_playlistEventMapHighlightsAbortCtrl");
+      const controller = new AbortController();
+      this._playlistEventMapHighlightsAbortCtrl = controller;
+      const token = Number(this._playlistEventMapHighlightsToken || 0) + 1;
+      this._playlistEventMapHighlightsToken = token;
+      this._playlistEventMapHighlightsPendingKey = key;
+      this.playlistEventMapHighlightsLoading = true;
+      this.playlistEventMapHighlightsError = "";
+      const request = async (range) => {
+        if (!range) return null;
+        const params = new URLSearchParams({
+          snapshot_id: snapshotId,
+          event_date_start: range.start,
+          event_date_end: range.end,
+          window_start: String(this.playlistEventMapWindowStart || "").slice(0, 10),
+          window_end: String(this.playlistEventMapWindowEnd || "").slice(0, 10),
+          limit: "10",
+        });
+        if (this.playlistEventMapTypeFilter) params.set("event_type_code", String(this.playlistEventMapTypeFilter));
+        if (this.playlistEventMapEntityFilter?.normalized_key) {
+          params.set("normalized_key", String(this.playlistEventMapEntityFilter.normalized_key));
+          if (this.playlistEventMapEntityFilter.entity_type) params.set("entity_type", String(this.playlistEventMapEntityFilter.entity_type));
+        }
+        if (this.playlistEventMapTopicFocus?.topic_id) {
+          params.set("topic_id", String(this.playlistEventMapTopicFocus.topic_id));
+        }
+        return this.api(`/domains/${encodeURIComponent(domainId)}/event-highlights?${params}`, { signal: controller.signal });
+      };
+      try {
+        const [today, week] = await Promise.all([request(todayRange), request(weekRange)]);
+        if (
+          controller.signal.aborted
+          || token !== Number(this._playlistEventMapHighlightsToken || 0)
+          || key !== this.playlistEventMapHighlightsRequestKey()
+        ) return;
+        this.playlistEventMapTodayHighlights = today ? this.playlistEventMapNormalizeHighlightData(today) : null;
+        this.playlistEventMapWeekHighlights = week ? this.playlistEventMapNormalizeHighlightData(week) : null;
+        this._playlistEventMapHighlightsKey = key;
+        this.playlistEventMapApplyTimeHighlights();
+      } catch (error) {
+        if (!abortError(error) && token === Number(this._playlistEventMapHighlightsToken || 0)) {
+          this.playlistEventMapHighlightsError = error?.message || String(error);
+          this.playlistEventMapTodayHighlights = null;
+          this.playlistEventMapWeekHighlights = null;
+          this._playlistEventMapHighlightsKey = "";
+          this._playlistEventMapHighlightsPendingKey = "";
+          this.playlistEventMapController()?.setTimeHighlights?.({ point_indices: [], items: [], scope: this.playlistEventMapTimeFocusScope });
+        }
+      } finally {
+        if (this._playlistEventMapHighlightsAbortCtrl === controller) {
+          this._playlistEventMapHighlightsAbortCtrl = null;
+          this._playlistEventMapHighlightsPendingKey = "";
+        }
+        if (token === Number(this._playlistEventMapHighlightsToken || 0)) this.playlistEventMapHighlightsLoading = false;
+      }
     },
     playlistEventMapHandleViewportSummary(summary) {
       const value = summary && typeof summary === "object" ? summary : {}; const level = String(value.sceneLevel || value.level || "overview");
@@ -307,6 +1098,7 @@ export function createPlaylistEventMapMethods() {
 
     async playlistEventMapApplyEntityFilter(entity, { resume = false, focus = !resume } = {}) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim(); const snapshotId = String(this.playlistEventMapSnapshotId || ""); const normalizedKey = String(entity?.normalized_key || "").trim(); if (!pid || !snapshotId || !normalizedKey || this.playlistEventMapPlaying) return;
+      if (!resume && this.activeView === "field") this.fieldCancelPendingSnapshotNavigation?.();
       if (!resume) this.playlistEventMapStopPlayback(); this.playlistEventMapEntityFilter = entity; this.fieldRequestedEntity = entity; if (this.activeView === "field") this._syncUrl({ push: false }); if (this.fieldLinearView) void this.fieldLoadLinearItems?.();
       const params = new URLSearchParams({ snapshot_id: snapshotId, normalized_key: normalizedKey }); if (entity?.entity_type) params.set("entity_type", String(entity.entity_type)); if (this.playlistEventMapWindowStart) params.set("start_date", this.playlistEventMapWindowStart); if (this.playlistEventMapWindowEnd) params.set("end_date", this.playlistEventMapWindowEnd);
       const token = Number(this._playlistEventMapEntityIndexToken || 0) + 1; this._playlistEventMapEntityIndexToken = token;
@@ -322,31 +1114,52 @@ export function createPlaylistEventMapMethods() {
       catch (error) { if (!abortError(error) && Number(this._playlistEventMapEntityIndexToken || 0) === token) this.playlistEventMapError = error?.message || String(error); }
       finally { if (this._playlistEventMapEntityIndexAbortCtrl === requestController) this._playlistEventMapEntityIndexAbortCtrl = null; }
     },
-    playlistEventMapClearEntityFilter({ refreshList = true } = {}) { this._playlistEventMapEntityIndexToken = Number(this._playlistEventMapEntityIndexToken || 0) + 1; this._abortCtrl("_playlistEventMapEntityIndexAbortCtrl"); this.playlistEventMapEntityFilter = null; this.fieldRequestedEntity = null; this.playlistEventMapEntityIndices = new Set(); this.playlistEventMapUpdateLayers(); if (this.activeView === "field") this._syncUrl({ push: false }); if (refreshList && this.fieldLinearView) void this.fieldLoadLinearItems?.(); },
+    playlistEventMapClearEntityFilter({ refreshList = true } = {}) { if (this.activeView === "field") this.fieldCancelPendingSnapshotNavigation?.(); this._playlistEventMapEntityIndexToken = Number(this._playlistEventMapEntityIndexToken || 0) + 1; this._abortCtrl("_playlistEventMapEntityIndexAbortCtrl"); this.playlistEventMapEntityFilter = null; this.fieldRequestedEntity = null; this.playlistEventMapEntityIndices = new Set(); this.playlistEventMapUpdateLayers(); if (this.activeView === "field") this._syncUrl({ push: false }); if (refreshList && this.fieldLinearView) void this.fieldLoadLinearItems?.(); },
     playlistEventMapFitIndices(indices) {
       const scene = this.playlistEventMapScene; if (!scene || !indices) return; let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity; let minZ = Infinity; let maxZ = -Infinity;
       const controller = this.playlistEventMapController();
       for (const raw of indices) { const index = Number(raw); if (!controller?.isActiveIndex(index)) continue; minX = Math.min(minX, scene.x[index]); maxX = Math.max(maxX, scene.x[index]); minY = Math.min(minY, scene.y[index]); maxY = Math.max(maxY, scene.y[index]); minZ = Math.min(minZ, scene.z[index]); maxZ = Math.max(maxZ, scene.z[index]); }
+      if (![minX, maxX, minY, maxY, minZ, maxZ].every(Number.isFinite)) return;
       controller?.fitBounds({ minX, maxX, minY, maxY, minZ, maxZ });
     },
 
-    async playlistEventMapSelectCanonical(index, canonicalId) {
-      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim(); const snapshotId = String(this.playlistEventMapSnapshotId || "").trim(); const pointIndex = Number(index); const id = String(canonicalId || "").trim();
-      const controller = this.playlistEventMapController(); if (!pid || !snapshotId || !id || !Number.isInteger(pointIndex) || !controller?.isActiveIndex(pointIndex)) return;
+    async playlistEventMapSelectCanonical(index, canonicalId, { selectionToken = null } = {}) {
+      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim(); const snapshotId = String(this.playlistEventMapSnapshotId || "").trim(); const pointIndex = eventMapPointIndex(index); const id = String(canonicalId || "").trim();
+      const controller = this.playlistEventMapController();
+      if (!pid || !snapshotId || !id || !Number.isInteger(pointIndex) || !controller?.isActiveIndex(pointIndex)) return false;
+      if (this.activeView === "field") this.fieldCancelPendingSnapshotNavigation?.();
+      const suppliedSelectionToken = Number(selectionToken);
+      const currentSelectionToken = Number.isInteger(suppliedSelectionToken) && suppliedSelectionToken > 0
+        ? suppliedSelectionToken
+        : Number(this._playlistEventMapSelectionToken || 0) + 1;
+      if (!(Number.isInteger(suppliedSelectionToken) && suppliedSelectionToken > 0)) {
+        this._playlistEventMapSelectionToken = currentSelectionToken;
+      }
+      if (Number(this._playlistEventMapSelectionToken || 0) !== currentSelectionToken) return false;
+      this._playlistEventMapTopicDetailToken = Number(this._playlistEventMapTopicDetailToken || 0) + 1;
+      this._abortCtrl("_playlistEventMapTopicDetailAbortCtrl");
       this.fieldSelectedChange = null; this.playlistEventMapStopPlayback(); const token = Number(this._playlistEventMapDetailToken || 0) + 1; this._playlistEventMapDetailToken = token; this.playlistEventMapSelectedIndex = pointIndex; this.playlistEventMapSelectedKind = "canonical"; this.playlistEventMapSelectedId = id; this.fieldRequestedCanonicalId = id; this.fieldRequestedTopicId = ""; this.fieldRequestedEvidenceId = ""; this.fieldEvidenceDetail = null; this.playlistEventMapSelectedDetail = null; this.playlistEventMapDetailLoading = true; this.playlistEventMapDetailTab = "overview"; controller.setSelection(pointIndex, null); this.playlistEventMapUpdateLayers();
       if (this.activeView === "field") this._syncUrl({ push: false });
       this._abortCtrl("_playlistEventMapDetailAbortCtrl"); const requestController = new AbortController(); this._playlistEventMapDetailAbortCtrl = requestController;
+      const selectionStillCurrent = () => (
+        Number(this._playlistEventMapSelectionToken || 0) === currentSelectionToken
+        && Number(this._playlistEventMapDetailToken || 0) === token
+        && String(this.playlistPageId || this.selectedPlaylistId || "").trim() === pid
+        && String(this.playlistEventMapSnapshotId || "") === snapshotId
+        && this.playlistEventMapSelectedKind === "canonical"
+        && String(this.playlistEventMapSelectedId || "") === id
+      );
       try {
         const detail = await this.api(
           `/playlists/${encodeURIComponent(pid)}/events/map/canonical/${encodeURIComponent(id)}?${new URLSearchParams({ snapshot_id: snapshotId })}`,
           { signal: requestController.signal, cache: "no-store" }
         );
-        if (requestController.signal.aborted || Number(this._playlistEventMapDetailToken || 0) !== token || String(this.playlistEventMapSnapshotId || "") !== snapshotId) return;
+        if (requestController.signal.aborted || !selectionStillCurrent()) return false;
         const references = await this.api(
           `/domains/${encodeURIComponent(pid)}/objects/canonical/${encodeURIComponent(id)}/brief-references`,
           { signal: requestController.signal, cache: "no-store" }
         );
-        if (requestController.signal.aborted || Number(this._playlistEventMapDetailToken || 0) !== token || String(this.playlistEventMapSnapshotId || "") !== snapshotId) return;
+        if (requestController.signal.aborted || !selectionStillCurrent()) return false;
         this.playlistEventMapSelectedDetail = detail ? { ...detail, brief_references: references?.items || [] } : null; this.playlistEventMapApplyDetailOverlay();
       }
       catch (error) { if (!abortError(error) && Number(this._playlistEventMapDetailToken || 0) === token) this.playlistEventMapError = error?.message || String(error); }
@@ -354,11 +1167,17 @@ export function createPlaylistEventMapMethods() {
         if (this._playlistEventMapDetailAbortCtrl === requestController) this._playlistEventMapDetailAbortCtrl = null;
         if (Number(this._playlistEventMapDetailToken || 0) === token) this.playlistEventMapDetailLoading = false;
       }
+      return selectionStillCurrent();
     },
-    playlistEventMapClearSelection({ update = true } = {}) {
+    playlistEventMapClearSelection({ update = true, preserveRequest = false, selectionToken = null } = {}) {
+      const suppliedSelectionToken = Number(selectionToken);
+      const preservesSelection = Number.isInteger(suppliedSelectionToken) && suppliedSelectionToken > 0
+        && Number(this._playlistEventMapSelectionToken || 0) === suppliedSelectionToken;
+      if (!preservesSelection && this.activeView === "field") this.fieldCancelPendingSnapshotNavigation?.();
+      if (!preservesSelection) this._playlistEventMapSelectionToken = Number(this._playlistEventMapSelectionToken || 0) + 1;
       this._playlistEventMapDetailToken = Number(this._playlistEventMapDetailToken || 0) + 1; this._abortCtrl("_playlistEventMapDetailAbortCtrl"); if (this.playlistEventMapSelectedKind === "topic") this.playlistEventMapTopicFocus = null;
-      this.playlistEventMapSelectedIndex = null; this.playlistEventMapSelectedKind = ""; this.playlistEventMapSelectedId = ""; this.fieldRequestedCanonicalId = ""; this.fieldSelectedChange = null; this.playlistEventMapSelectedDetail = null; this.playlistEventMapDetailLoading = false; this.playlistEventMapDetailTab = "overview"; this.playlistEventMapController()?.setSelection(null, null); if (update) this.playlistEventMapUpdateLayers();
-      if (this.activeView === "field") this._syncUrl({ push: false });
+      this.playlistEventMapSelectedIndex = null; this.playlistEventMapSelectedKind = ""; this.playlistEventMapSelectedId = ""; if (!preserveRequest) this.fieldRequestedCanonicalId = ""; this.fieldSelectedChange = null; this.playlistEventMapSelectedDetail = null; this.playlistEventMapDetailLoading = false; this.playlistEventMapDetailTab = "overview"; this.playlistEventMapController()?.setSelection(null, null); if (update) this.playlistEventMapUpdateLayers();
+      if (this.activeView === "field" && !preserveRequest) this._syncUrl({ push: false });
     },
     playlistEventMapDetailTabs() { const detail = this.playlistEventMapSelectedDetail || {}; return [{ key: "overview", label: "概览", count: null }, { key: "records", label: "记录", count: Array.isArray(detail.members) ? detail.members.length : 0 }, { key: "entities", label: "实体", count: Array.isArray(detail.entities) ? detail.entities.length : 0 }, { key: "story", label: "故事", count: Array.isArray(detail.story_edges) ? detail.story_edges.length : 0 }, { key: "evidence", label: "证据", count: Array.isArray(detail.evidence) ? detail.evidence.length : 0 }, { key: "briefs", label: "简报", count: Array.isArray(detail.brief_references) ? detail.brief_references.length : 0 }]; },
     playlistEventMapSetDetailTab(tab) { this.playlistEventMapDetailTab = new Set(["overview", "records", "entities", "story", "evidence", "briefs"]).has(String(tab)) ? String(tab) : "overview"; this.playlistEventMapApplyDetailOverlay(); },
@@ -396,7 +1215,15 @@ export function createPlaylistEventMapMethods() {
     async playlistEventMapLoadTopicDetail(topic = this.playlistEventMapSelectedDetail) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim(); const snapshotId = String(this.playlistEventMapSnapshotId || "").trim(); const topicId = String(topic?.topic_id || "").trim();
       if (!pid || !snapshotId || !topicId) return null;
+      const selectionToken = Number(this._playlistEventMapSelectionToken || 0);
       const token = Number(this._playlistEventMapTopicDetailToken || 0) + 1; this._playlistEventMapTopicDetailToken = token; this.playlistEventMapTopicDetailLoading = true;
+      const topicRequestStillCurrent = () => (
+        Number(this._playlistEventMapTopicDetailToken || 0) === token
+        && Number(this._playlistEventMapSelectionToken || 0) === selectionToken
+        && String(this.playlistEventMapSnapshotId || "") === snapshotId
+        && this.playlistEventMapSelectedKind === "topic"
+        && String(this.playlistEventMapSelectedId || "") === topicId
+      );
       const params = new URLSearchParams({ snapshot_id: snapshotId, limit: "20" });
       if (this.playlistEventMapWindowStart) params.set("start_date", this.playlistEventMapWindowStart);
       if (this.playlistEventMapWindowEnd) params.set("end_date", this.playlistEventMapWindowEnd);
@@ -413,11 +1240,11 @@ export function createPlaylistEventMapMethods() {
             { signal: requestController.signal, cache: "no-store" }
           ),
         ]);
-        if (requestController.signal.aborted || Number(this._playlistEventMapTopicDetailToken || 0) !== token || String(this.playlistEventMapSnapshotId || "") !== snapshotId || this.playlistEventMapSelectedKind !== "topic" || String(this.playlistEventMapSelectedId || "") !== topicId) return null;
+        if (requestController.signal.aborted || !topicRequestStillCurrent()) return null;
         this.playlistEventMapTopicDetail = detail ? { ...detail, brief_references: briefReferences?.items || [] } : null;
         return this.playlistEventMapTopicDetail;
       } catch (error) {
-        if (!abortError(error) && Number(this._playlistEventMapTopicDetailToken || 0) === token) this.playlistEventMapError = error?.message || String(error);
+        if (!abortError(error) && topicRequestStillCurrent()) this.playlistEventMapError = error?.message || String(error);
         return null;
       } finally {
         if (this._playlistEventMapTopicDetailAbortCtrl === requestController) this._playlistEventMapTopicDetailAbortCtrl = null;
@@ -425,12 +1252,14 @@ export function createPlaylistEventMapMethods() {
       }
     },
     playlistEventMapSelectTopicRepresentative(item) {
-      if (!Number.isInteger(Number(item?.point_index))) return;
-      this.playlistEventMapSelectCanonical(Number(item.point_index), item.canonical_id);
+      const pointIndex = eventMapPointIndex(item?.point_index);
+      if (!Number.isInteger(pointIndex)) return;
+      this.playlistEventMapSelectCanonical(pointIndex, item.canonical_id);
     },
     playlistEventMapFocusSelectedCanonical() {
       if (this.playlistEventMapSelectedKind !== "canonical") return;
-      this.playlistEventMapController()?.focusPoint(Number(this.playlistEventMapSelectedIndex));
+      const pointIndex = eventMapPointIndex(this.playlistEventMapSelectedIndex);
+      if (Number.isInteger(pointIndex)) this.playlistEventMapController()?.focusPoint(pointIndex);
     },
     playlistEventMapRefreshTopicDetail() {
       if (this.playlistEventMapSelectedKind !== "topic") return;
@@ -456,9 +1285,32 @@ export function createPlaylistEventMapMethods() {
         if (Number(this._playlistEventMapSearchToken || 0) === token) this.playlistEventMapSearchLoading = false;
       }
     },
-    playlistEventMapSelectSearchResult(item) {
+    async playlistEventMapSelectSearchResult(item) {
+      const snapshotId = String(this.playlistEventMapSnapshotId || "");
+      const selectionToken = Number(this._playlistEventMapSelectionToken || 0);
+      const searchToken = Number(this._playlistEventMapSearchToken || 0) + 1;
+      this._playlistEventMapSearchToken = searchToken;
+      clearTimeout(this._playlistEventMapSearchTimer); this._playlistEventMapSearchTimer = null;
+      this._abortCtrl("_playlistEventMapSearchAbortCtrl"); this.playlistEventMapSearchLoading = false;
+      try {
+        await this.playlistEventMapWaitForCompleteScene({ includeMetadata: item?.kind === "topic" });
+      } catch (error) {
+        if (
+          !abortError(error)
+          && String(this.playlistEventMapSnapshotId || "") === snapshotId
+          && Number(this._playlistEventMapSearchToken || 0) === searchToken
+          && Number(this._playlistEventMapSelectionToken || 0) === selectionToken
+        ) this.playlistEventMapError = error?.message || String(error);
+        return;
+      }
+      if (
+        String(this.playlistEventMapSnapshotId || "") !== snapshotId
+        || Number(this._playlistEventMapSearchToken || 0) !== searchToken
+        || Number(this._playlistEventMapSelectionToken || 0) !== selectionToken
+      ) return;
+      const pointIndex = eventMapPointIndex(item?.point_index);
       if (this.activeView === "field") { this.fieldLinearView = false; this.fieldObservationRailOpen = false; }
-      if (item?.kind === "canonical" && Number.isInteger(Number(item.point_index))) { this.playlistEventMapController()?.focusPoint(Number(item.point_index)); this.playlistEventMapSelectCanonical(Number(item.point_index), item.id || item.canonical_id); }
+      if (item?.kind === "canonical" && Number.isInteger(pointIndex)) { this.playlistEventMapController()?.focusPoint(pointIndex); this.playlistEventMapSelectCanonical(pointIndex, item.id || item.canonical_id); }
       else if (item?.kind === "topic") this.playlistEventMapSelectTopic(item, { focus: true });
       else if (item?.kind === "entity") this.playlistEventMapApplyEntityFilter(item);
       this.playlistEventMapCloseSearch();
@@ -473,13 +1325,15 @@ export function createPlaylistEventMapMethods() {
     playlistEventMapSelectTopic(item, { focus = false } = {}) {
       const controller = this.playlistEventMapController(); const topics = Array.isArray(this.playlistEventMapManifest?.topics) ? this.playlistEventMapManifest.topics : []; const id = String(item?.id || item?.topic_id || ""); const index = Number.isInteger(Number(item?.topic_index)) ? Number(item.topic_index) : Number(topics.find((topic) => String(topic.topic_id || "") === id)?.topic_index); if (!Number.isInteger(index) || index < 0 || !controller?.hasActiveTopic(index)) return;
       if (!focus && this.playlistEventMapSelectedKind === "topic" && Number(this.playlistEventMapTopicFocus?.topic_index) === index) { this.playlistEventMapClearTopicFocus(); return; }
+      if (this.activeView === "field") this.fieldCancelPendingSnapshotNavigation?.();
+      this._playlistEventMapSelectionToken = Number(this._playlistEventMapSelectionToken || 0) + 1; this._playlistEventMapDetailToken = Number(this._playlistEventMapDetailToken || 0) + 1; this._abortCtrl("_playlistEventMapDetailAbortCtrl");
       const topic = { ...(topics.find((entry, fallback) => Number(entry?.topic_index ?? fallback) === index) || {}), ...item, topic_index: index }; this.fieldSelectedChange = null; this.playlistEventMapStopPlayback(); this.playlistEventMapTopicFocus = topic; this.playlistEventMapSelectedIndex = null; this.playlistEventMapSelectedKind = "topic"; this.playlistEventMapSelectedId = String(topic.topic_id || id); this.fieldRequestedCanonicalId = ""; this.fieldRequestedTopicId = this.playlistEventMapSelectedId; this.fieldRequestedEvidenceId = ""; this.fieldEvidenceDetail = null; this.playlistEventMapSelectedDetail = topic; this.playlistEventMapTopicDetail = null; this.playlistEventMapTopicDetailLoading = true; this.playlistEventMapDetailLoading = false; controller.setSelection(null, null); this.playlistEventMapUpdateLayers(); if (focus) controller.focusTopic(index); void this.playlistEventMapLoadTopicDetail(topic);
       if (this.activeView === "field") this._syncUrl({ push: false });
     },
-    playlistEventMapClearTopicFocus({ update = true } = {}) { const wasSelected = this.playlistEventMapSelectedKind === "topic"; this._playlistEventMapTopicDetailToken = Number(this._playlistEventMapTopicDetailToken || 0) + 1; this._abortCtrl("_playlistEventMapTopicDetailAbortCtrl"); this.playlistEventMapTopicFocus = null; this.playlistEventMapTopicDetail = null; this.playlistEventMapTopicDetailLoading = false; this.fieldRequestedTopicId = ""; this.playlistEventMapController()?.clearTopicFocus(); if (wasSelected) { this.playlistEventMapSelectedKind = ""; this.playlistEventMapSelectedId = ""; this.playlistEventMapSelectedDetail = null; } if (update) this.playlistEventMapUpdateLayers(); if (this.activeView === "field") this._syncUrl({ push: false }); },
+    playlistEventMapClearTopicFocus({ update = true } = {}) { if (this.activeView === "field") this.fieldCancelPendingSnapshotNavigation?.(); const wasSelected = this.playlistEventMapSelectedKind === "topic"; this._playlistEventMapSelectionToken = Number(this._playlistEventMapSelectionToken || 0) + 1; this._playlistEventMapDetailToken = Number(this._playlistEventMapDetailToken || 0) + 1; this._playlistEventMapTopicDetailToken = Number(this._playlistEventMapTopicDetailToken || 0) + 1; this._abortCtrl("_playlistEventMapDetailAbortCtrl"); this._abortCtrl("_playlistEventMapTopicDetailAbortCtrl"); this.playlistEventMapTopicFocus = null; this.playlistEventMapTopicDetail = null; this.playlistEventMapTopicDetailLoading = false; this.fieldRequestedTopicId = ""; this.playlistEventMapController()?.clearTopicFocus(); if (wasSelected) { this.playlistEventMapSelectedKind = ""; this.playlistEventMapSelectedId = ""; this.playlistEventMapSelectedDetail = null; } if (update) this.playlistEventMapUpdateLayers(); if (this.activeView === "field") this._syncUrl({ push: false }); },
 
     playlistEventMapFullBounds() { const manifest = this.playlistEventMapManifest || {}; const bounds = manifest.time_bounds || {}; const months = this.playlistEventMapTimelineMonths || []; const start = String(bounds.start || (months[0] && `${months[0].month}-01`) || "").slice(0, 10); const end = String(bounds.end || (months.at(-1) && monthEnd(months.at(-1).month)) || "").slice(0, 10); return start && end && start <= end ? { start, end } : { start: "", end: "" }; },
-    playlistEventMapNormalBounds() { const full = this.playlistEventMapFullBounds(); if (!full.start || !full.end) return full; const contentStart = String(this.playlistDetail?.earliest_date || "").slice(0, 10); const today = String(typeof this._todayIsoLocal === "function" ? this._todayIsoLocal() : localToday()).slice(0, 10); return contentStart && today && contentStart <= today ? { start: contentStart, end: today } : full; },
+    playlistEventMapNormalBounds() { const full = this.playlistEventMapFullBounds(); if (!full.start || !full.end) return full; const contentStart = String(this.playlistDetail?.earliest_date || full.start || "").slice(0, 10); const today = String(typeof this._todayIsoLocal === "function" ? this._todayIsoLocal() : localToday()).slice(0, 10); return contentStart && today && contentStart <= today ? { start: contentStart, end: today } : full; },
     playlistEventMapTimelineBounds() { return this.playlistEventMapTimelineScope === "full" ? this.playlistEventMapFullBounds() : this.playlistEventMapNormalBounds(); },
     playlistEventMapHasExtendedRange() { const full = this.playlistEventMapFullBounds(); const normal = this.playlistEventMapNormalBounds(); return full.start < normal.start || full.end > normal.end; },
     playlistEventMapSetTimelineScope(scope) { const normalized = scope === "full" ? "full" : "normal"; if (this.playlistEventMapTimelineScope === normalized) return; this.playlistEventMapStopPlayback({ refresh: false, loadEntities: false }); this.playlistEventMapTimelineScope = normalized; this._playlistEventMapTimelineItemsCache = null; this.playlistEventMapInitializeWindow(); this.playlistEventMapUpdateLayers(); this.playlistEventMapRefreshTopicDetail(); this.playlistEventMapScheduleEntities(); },
@@ -506,17 +1360,70 @@ export function createPlaylistEventMapMethods() {
       const max = this.playlistEventMapTimelineItems().length - 1; if (max < 0) return; this.playlistEventMapWindowPreviewStartIndex = Math.max(0, Math.min(max, Math.round(start))); this.playlistEventMapWindowPreviewEndIndex = Math.max(this.playlistEventMapWindowPreviewStartIndex, Math.min(max, Math.round(end))); const dates = this.playlistEventMapWindowDisplayDates(); this.playlistEventMapController()?.previewWindow({ windowStart: dates.start, windowEnd: dates.end });
     },
     playlistEventMapClearWindowPreview() { this.playlistEventMapWindowPreviewStartIndex = null; this.playlistEventMapWindowPreviewEndIndex = null; },
-    playlistEventMapSetWindowEndIndex(value, { update = true, pause = true } = {}) {
-      const items = this.playlistEventMapTimelineItems(); const bounds = this.playlistEventMapTimelineBounds(); if (!items.length) return false; if (pause) this.playlistEventMapStopPlayback({ refresh: false, loadEntities: false }); const length = Math.max(1, Math.min(items.length, Number(this.playlistEventMapWindowMonths || 12))); const end = Math.max(length - 1, Math.min(items.length - 1, Math.round(Number(value)))); const start = Math.max(0, end - length + 1); const nextStart = monthStart(items[start].month) < bounds.start ? bounds.start : monthStart(items[start].month); const nextEnd = monthEnd(items[end].month) > bounds.end ? bounds.end : monthEnd(items[end].month); const changed = nextStart !== this.playlistEventMapWindowStart || nextEnd !== this.playlistEventMapWindowEnd; this.playlistEventMapWindowStart = nextStart; this.playlistEventMapWindowEnd = nextEnd; this.playlistEventMapClearWindowPreview(); if (update && changed) { this.playlistEventMapEntityIndices = new Set(); this.playlistEventMapEntityFilter = null; this.playlistEventMapUpdateLayers(); this.playlistEventMapRefreshTopicDetail(); if (!this.playlistEventMapPlaying) this.playlistEventMapScheduleEntities(); if (this.fieldLinearView) void this.fieldLoadLinearItems?.(); } return changed;
+    playlistEventMapCommitWindowIndices(start, end, { update = true, pause = true } = {}) {
+      const items = this.playlistEventMapTimelineItems(); const bounds = this.playlistEventMapTimelineBounds(); if (!items.length) return false;
+      if (pause) this.playlistEventMapStopPlayback({ refresh: false, loadEntities: false });
+      const maximum = items.length - 1;
+      const nextStartIndex = Math.max(0, Math.min(maximum, Math.round(Number(start))));
+      const nextEndIndex = Math.max(nextStartIndex, Math.min(maximum, Math.round(Number(end))));
+      const nextStart = monthStart(items[nextStartIndex].month) < bounds.start ? bounds.start : monthStart(items[nextStartIndex].month);
+      const nextEnd = monthEnd(items[nextEndIndex].month) > bounds.end ? bounds.end : monthEnd(items[nextEndIndex].month);
+      const changed = nextStart !== this.playlistEventMapWindowStart || nextEnd !== this.playlistEventMapWindowEnd;
+      this.playlistEventMapWindowMonths = snapWindowMonths(nextEndIndex - nextStartIndex + 1);
+      this.playlistEventMapWindowStart = nextStart;
+      this.playlistEventMapWindowEnd = nextEnd;
+      this.playlistEventMapClearWindowPreview();
+      if (update && changed) {
+        this.playlistEventMapEntityIndices = new Set();
+        this.playlistEventMapEntityFilter = null;
+        this.playlistEventMapUpdateLayers();
+        this.playlistEventMapRefreshTopicDetail();
+        if (!this.playlistEventMapPlaying) this.playlistEventMapScheduleEntities();
+        if (this.fieldLinearView) void this.fieldLoadLinearItems?.();
+        if (this.activeView === "field") {
+          this.fieldRequestedWindowStart = this.playlistEventMapWindowStart;
+          this.fieldRequestedWindowEnd = this.playlistEventMapWindowEnd;
+          this._syncUrl?.({ push: false });
+        }
+      }
+      return changed;
     },
-    playlistEventMapSetWindowMonths(value) { const months = Math.max(1, Math.min(12, Number(value || 12))); if (months === this.playlistEventMapWindowMonths) return; this.playlistEventMapWindowMonths = months; this.playlistEventMapSetWindowEndIndex(this.playlistEventMapWindowIndices().end, { update: true, pause: true }); },
+    playlistEventMapSetWindowEndIndex(value, { update = true, pause = true } = {}) {
+      const items = this.playlistEventMapTimelineItems(); if (!items.length) return false;
+      const length = Math.max(1, Math.min(items.length, snapWindowMonths(this.playlistEventMapWindowMonths)));
+      const end = Math.max(length - 1, Math.min(items.length - 1, Math.round(Number(value))));
+      return this.playlistEventMapCommitWindowIndices(end - length + 1, end, { update, pause });
+    },
+    playlistEventMapSetWindowMonths(value) { const months = snapWindowMonths(value); if (months === this.playlistEventMapWindowMonths) return; this.playlistEventMapWindowMonths = months; this.playlistEventMapSetWindowEndIndex(this.playlistEventMapWindowIndices().end, { update: true, pause: true }); },
+    playlistEventMapReturnToToday() { const items = this.playlistEventMapTimelineItems(); if (!items.length) return; this.playlistEventMapSetWindowEndIndex(items.length - 1); },
     playlistEventMapSelectTimelineWindowEnd(event) { if (!primaryPointer(event)) return; const index = this.playlistEventMapTimelineIndexFromClientX(event.clientX); if (index !== null) this.playlistEventMapSetWindowEndIndex(index); },
     playlistEventMapSelectionStyle() { const items = this.playlistEventMapTimelineItems(); if (!items.length) return "display:none"; const range = this.playlistEventMapWindowDisplayIndices(); return `left:${(range.start / items.length * 100).toFixed(4)}%;right:${(100 - (range.end + 1) / items.length * 100).toFixed(4)}%`; },
     playlistEventMapTimelineIndexFromClientX(clientX) { const items = this.playlistEventMapTimelineItems(); const track = this.$refs?.playlistEventMapTimelineTrack; const rect = track?.getBoundingClientRect?.(); const width = Number(rect?.width || track?.clientWidth || 0); if (!items.length || !Number.isFinite(Number(clientX)) || width <= 0) return null; return Math.max(0, Math.min(items.length - 1, Math.floor(Math.max(0, Math.min(.999999, (Number(clientX) - Number(rect?.left || 0)) / width)) * items.length))); },
-    playlistEventMapStartTimelineWindowDrag(event) { if (!primaryPointer(event) || !this.playlistEventMapTimelineItems().length) return; this.playlistEventMapStopPlayback({ refresh: false, loadEntities: false }); const range = this.playlistEventMapWindowIndices(); const pointerIndex = this.playlistEventMapTimelineIndexFromClientX(event.clientX); this.playlistEventMapTimelineWindowDragging = true; this.playlistEventMapTimelineWindowPointerId = event.pointerId; this._playlistEventMapTimelineWindowOffset = pointerIndex === null ? 0 : range.start - pointerIndex; this.playlistEventMapSetWindowPreview(range.start, range.end); event.currentTarget?.setPointerCapture?.(event.pointerId); event.preventDefault(); event.stopPropagation(); },
-    playlistEventMapMoveTimelineWindowDrag(event) { if (!this.playlistEventMapTimelineWindowDragging || event.pointerId !== this.playlistEventMapTimelineWindowPointerId) return; const index = this.playlistEventMapTimelineIndexFromClientX(event.clientX); if (index === null) return; const range = this.playlistEventMapWindowIndices(); const length = range.length; const start = Math.max(0, Math.min(range.max - length + 1, index + Number(this._playlistEventMapTimelineWindowOffset || 0))); this.playlistEventMapSetWindowPreview(start, start + length - 1); event.preventDefault(); },
-    playlistEventMapEndTimelineWindowDrag(event) { if (!this.playlistEventMapTimelineWindowDragging || event.pointerId !== this.playlistEventMapTimelineWindowPointerId) return; this.playlistEventMapMoveTimelineWindowDrag(event); const range = this.playlistEventMapWindowDisplayIndices(); this.playlistEventMapReleaseTimelineWindowDrag({ restore: false }); this.playlistEventMapSetWindowEndIndex(range.end); },
-    playlistEventMapReleaseTimelineWindowDrag({ restore = true } = {}) { this.playlistEventMapTimelineWindowDragging = false; this.playlistEventMapTimelineWindowPointerId = null; this._playlistEventMapTimelineWindowOffset = null; this.playlistEventMapClearWindowPreview(); if (restore) this.playlistEventMapController()?.cancelWindowPreview(); },
+    playlistEventMapStartTimelineWindowDrag(event) { if (!primaryPointer(event) || !this.playlistEventMapTimelineItems().length) return; this.playlistEventMapStopPlayback({ refresh: false, loadEntities: false }); this.playlistEventMapController()?.collapseMediaCard(); const range = this.playlistEventMapWindowIndices(); const pointerIndex = this.playlistEventMapTimelineIndexFromClientX(event.clientX); this.playlistEventMapTimelineWindowDragging = true; this.playlistEventMapTimelineWindowPointerId = event.pointerId; this.playlistEventMapTimelineWindowResizeEdge = ""; this._playlistEventMapTimelineWindowOffset = pointerIndex === null ? 0 : range.start - pointerIndex; this.playlistEventMapSetWindowPreview(range.start, range.end); event.currentTarget?.setPointerCapture?.(event.pointerId); event.preventDefault(); event.stopPropagation(); },
+    playlistEventMapStartTimelineWindowResize(event, edge) { if (!primaryPointer(event) || !["start", "end"].includes(edge)) return; this.playlistEventMapStopPlayback({ refresh: false, loadEntities: false }); this.playlistEventMapController()?.collapseMediaCard(); const range = this.playlistEventMapWindowIndices(); this.playlistEventMapTimelineWindowDragging = true; this.playlistEventMapTimelineWindowPointerId = event.pointerId; this.playlistEventMapTimelineWindowResizeEdge = edge; this._playlistEventMapTimelineWindowOffset = null; this.playlistEventMapSetWindowPreview(range.start, range.end); event.currentTarget?.setPointerCapture?.(event.pointerId); event.preventDefault(); event.stopPropagation(); },
+    playlistEventMapMoveTimelineWindowDrag(event) {
+      if (!this.playlistEventMapTimelineWindowDragging || event.pointerId !== this.playlistEventMapTimelineWindowPointerId) return;
+      const index = this.playlistEventMapTimelineIndexFromClientX(event.clientX); if (index === null) return;
+      const range = this.playlistEventMapWindowIndices(); const edge = this.playlistEventMapTimelineWindowResizeEdge;
+      if (edge) {
+        const rawLength = edge === "start" ? range.end - index + 1 : index - range.start + 1;
+        const maximumLength = edge === "start" ? range.end + 1 : range.max - range.start + 1;
+        const choices = [3, 6, 9, 12].filter((months) => months <= maximumLength);
+        const length = choices.length
+          ? choices.reduce((best, months) => Math.abs(months - rawLength) < Math.abs(best - rawLength) ? months : best, choices[0])
+          : Math.max(1, maximumLength);
+        const start = edge === "start" ? range.end - length + 1 : range.start;
+        const end = edge === "end" ? range.start + length - 1 : range.end;
+        this.playlistEventMapSetWindowPreview(start, end);
+      } else {
+        const length = range.length;
+        const start = Math.max(0, Math.min(range.max - length + 1, index + Number(this._playlistEventMapTimelineWindowOffset || 0)));
+        this.playlistEventMapSetWindowPreview(start, start + length - 1);
+      }
+      event.preventDefault();
+    },
+    playlistEventMapEndTimelineWindowDrag(event) { if (!this.playlistEventMapTimelineWindowDragging || event.pointerId !== this.playlistEventMapTimelineWindowPointerId) return; this.playlistEventMapMoveTimelineWindowDrag(event); const range = this.playlistEventMapWindowDisplayIndices(); this.playlistEventMapReleaseTimelineWindowDrag({ restore: false }); this.playlistEventMapCommitWindowIndices(range.start, range.end); },
+    playlistEventMapReleaseTimelineWindowDrag({ restore = true } = {}) { this.playlistEventMapTimelineWindowDragging = false; this.playlistEventMapTimelineWindowPointerId = null; this.playlistEventMapTimelineWindowResizeEdge = ""; this._playlistEventMapTimelineWindowOffset = null; this.playlistEventMapClearWindowPreview(); if (restore) this.playlistEventMapController()?.cancelWindowPreview(); },
     playlistEventMapTimelineWindowKeydown(event) { const key = String(event?.key || ""); const range = this.playlistEventMapWindowIndices(); const delta = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1, PageDown: range.length, PageUp: -range.length }[key]; if (key === "Home") this.playlistEventMapSetWindowEndIndex(range.length - 1); else if (key === "End") this.playlistEventMapSetWindowEndIndex(range.max); else if (delta) this.playlistEventMapSetWindowEndIndex(range.end + delta); else return; event.preventDefault(); event.stopPropagation(); },
     playlistEventMapShiftWindow(delta = 1, { playback = false } = {}) { const range = this.playlistEventMapWindowIndices(); const next = range.end + Number(delta || 0); if (next < range.length - 1 || next > range.max) return false; this.playlistEventMapSetWindowEndIndex(next, { update: true, pause: !playback }); return true; },
     playlistEventMapTogglePlayback() {
@@ -643,9 +1550,30 @@ export function createPlaylistEventMapMethods() {
         const snapshotChanged = String(manifest?.snapshot_id || "") !== String(this.playlistEventMapSnapshotId || "");
         const snapshotMissingLocally = Boolean(manifest?.snapshot_id) &&
           (!this.playlistEventMapScene || !this.playlistEventMapController());
-        if (subview === "analysis" && manifest && (snapshotChanged || snapshotMissingLocally)) {
+        const snapshotIncomplete = Boolean(manifest?.snapshot_id)
+          && String(manifest.snapshot_id) === String(this.playlistEventMapSnapshotId || "")
+          && Boolean(this.playlistEventMapController())
+          && this._playlistEventMapSceneComplete === false
+          && !this._playlistEventMapSceneLoadingSnapshotId;
+        const snapshotMetadataIncomplete = Boolean(manifest?.snapshot_id)
+          && String(manifest.snapshot_id) === String(this.playlistEventMapSnapshotId || "")
+          && Boolean(this.playlistEventMapController())
+          && this._playlistEventMapMetadataComplete === false
+          && !(
+            this._playlistEventMapMetadataPromise
+            && String(this._playlistEventMapMetadataSnapshotId || "") === String(manifest.snapshot_id)
+          );
+        if (subview === "analysis" && manifest && (snapshotChanged || snapshotMissingLocally || snapshotIncomplete || snapshotMetadataIncomplete)) {
           await this.playlistEventMapLoadView({ silent: true, schedulePolling: false });
           if (!stillCurrent()) return;
+        }
+        const highlightRefreshDue = Date.now() - Number(this._playlistEventMapHighlightsLastRequestAt || 0)
+          >= EVENT_MAP_HIGHLIGHT_REFRESH_INTERVAL_MS;
+        if (
+          isField && subview === "analysis" && this._playlistEventMapSceneComplete && highlightRefreshDue
+          && !snapshotChanged && !snapshotMissingLocally && !snapshotIncomplete && !snapshotMetadataIncomplete
+        ) {
+          this.playlistEventMapScheduleHighlights({ delay: 0, force: true });
         }
         const active = this.playlistEventMapPollIsActive(manifest || this.playlistEventMapStatus || {});
         if (subview === "settings" && !active) {

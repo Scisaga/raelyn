@@ -1,5 +1,5 @@
-    <div x-data="appShell()" x-init="init()" x-cloak class="relative min-h-screen bg-slate-950" :class="startupGateVisible ? 'overflow-hidden' : ''">
-      <div class="raelyn-startup-shell min-h-screen flex" :class="startupGateVisible ? 'opacity-0 pointer-events-none select-none' : 'opacity-100'" :aria-hidden="startupGateVisible ? 'true' : 'false'">
+    <div x-data="appShell()" x-init="init()" x-cloak class="raelyn-app-environment relative min-h-screen" :class="startupGateVisible ? 'overflow-hidden' : ''">
+      <div class="raelyn-startup-shell raelyn-app-shell min-h-screen flex" :class="startupGateVisible ? 'opacity-0 pointer-events-none select-none' : 'opacity-100'" :aria-hidden="startupGateVisible ? 'true' : 'false'">
 <!-- @include ../components/sidebar.html -->
 
 <!-- @include main.html -->

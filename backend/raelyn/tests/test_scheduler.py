@@ -103,6 +103,23 @@ class SchedulerSyncJitterTests(unittest.TestCase):
             self.assertFalse(scheduler._is_sync_due(media, now))
             self.assertTrue(scheduler._is_sync_due(media, now + timedelta(minutes=60)))
 
+    def test_resource_usage_snapshot_is_due_hourly(self) -> None:
+        now = datetime(2026, 4, 26, 1, 0, tzinfo=timezone.utc)
+
+        self.assertTrue(scheduler._resource_usage_snapshot_due_at(None, now))
+        self.assertFalse(
+            scheduler._resource_usage_snapshot_due_at(
+                now - timedelta(minutes=59, seconds=59),
+                now,
+            )
+        )
+        self.assertTrue(
+            scheduler._resource_usage_snapshot_due_at(
+                now - timedelta(hours=1),
+                now,
+            )
+        )
+
     def test_tick_enqueues_public_discovery_when_provider_pause_allows_it(self) -> None:
         media = Media(
             id=uuid.uuid4(),

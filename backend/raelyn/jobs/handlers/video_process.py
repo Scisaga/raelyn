@@ -17,6 +17,7 @@ from raelyn.jobs.registry import registry
 from raelyn.jobs.reschedule import JobReschedule, JobTerminalFailure
 from raelyn.models import Asset, Job, Video
 from raelyn.services.assets import ensure_asset
+from raelyn.services.domain_observation_control import video_has_enabled_observation
 from raelyn.services.asr import (
     asr_enabled,
     asr_transcribe,
@@ -259,7 +260,7 @@ def video_normalize_subtitle(session: Session, job: Job) -> dict | None:
         parent_job_id=str(job.id),
     )
     _enqueue_brief_for_video_playlists(session, video=video)
-    if llm_enabled():
+    if llm_enabled() and video_has_enabled_observation(session, video.id):
         enqueue_job(
             session,
             type_="video.polish_transcript",
@@ -361,6 +362,7 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
                 media_duration_seconds=video.duration_sec,
                 config=asr_config,
                 timeout_seconds=request_timeout_seconds,
+                usage_operation="video_transcription",
             )
         except httpx.ReadTimeout as exc:
             request_elapsed_seconds = time.monotonic() - request_started_at
@@ -451,7 +453,11 @@ def video_asr_transcribe(session: Session, job: Job) -> dict | None:
         parent_job_id=str(job.id),
     )
     _enqueue_brief_for_video_playlists(session, video=video)
-    if llm_enabled() and transcript_language == "zh":
+    if (
+        llm_enabled()
+        and transcript_language == "zh"
+        and video_has_enabled_observation(session, video.id)
+    ):
         enqueue_job(
             session,
             type_="video.polish_transcript",

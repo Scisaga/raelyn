@@ -16,6 +16,24 @@ from raelyn.models import Job
 
 
 class EnqueueDedupeTests(unittest.TestCase):
+    def test_legacy_usage_backfill_dedupe_key_uses_version(self) -> None:
+        dedupe_key, params = _normalize_dedupe_key_and_params(
+            "system.backfill_legacy_usage",
+            {"version": 1},
+        )
+
+        self.assertEqual(dedupe_key, "system_usage_legacy_backfill:v1")
+        self.assertEqual(params, {"version": 1})
+
+    def test_usage_snapshot_dedupe_key_uses_local_day(self) -> None:
+        dedupe_key, params = _normalize_dedupe_key_and_params(
+            "system.capture_usage_snapshot",
+            {"date": "2026-09-03"},
+        )
+
+        self.assertEqual(dedupe_key, "system_usage_snapshot:2026-09-03")
+        self.assertEqual(params, {"date": "2026-09-03"})
+
     def test_event_embedding_backfill_uses_migration_dedupe_key_and_fixed_batch(self) -> None:
         dedupe_key, params = _normalize_dedupe_key_and_params(
             "event.backfill_embeddings",

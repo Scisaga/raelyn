@@ -61,6 +61,7 @@ from raelyn.services.event_map_domain import (
     EVENT_MAP_STORY_VERSION,
     EVENT_MAP_TOPIC_VERSION,
     EventMapEntityRef,
+    EventMapEvidenceRef,
     EventMapRecord,
     EventMapRelationRef,
     build_event_map_stories,
@@ -97,6 +98,23 @@ _CANONICAL_NAMESPACE = uuid.UUID("0953638d-05dd-42a3-a3a0-a7649b36e7e3")
 _STORY_IDENTITY_NAMESPACE = uuid.UUID("f339dbbc-c4d2-4635-811a-9a53644145e4")
 _CHANGE_NAMESPACE = uuid.UUID("195f0e28-5b28-4f49-9d40-ec6ae6b384db")
 _HISTORY_NAMESPACE = uuid.UUID("e2a889f7-89e6-4438-aae2-1bf3a2992df5")
+STORY_MATERIAL_CHANGE_TYPES = frozenset(
+    {
+        "story_added",
+        "story_members_changed",
+        "story_relations_changed",
+        "story_evidence_changed",
+        "story_correction_added",
+        "story_maturity_changed",
+    }
+)
+_STORY_RELATION_METRIC_KEYS = frozenset(
+    {
+        "cosine",
+        "claim_overlap",
+        "supporting_revision_ids",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -486,6 +504,7 @@ def _children_for_batch(
             MarketEventRelation.magnitude,
             MarketEventRelation.confidence,
             MarketEventRelation.evidence_text,
+            MarketEventRelation.raw_payload,
         )
         .where(MarketEventRelation.event_id.in_(event_ids))
         .order_by(MarketEventRelation.event_id.asc(), MarketEventRelation.id.asc())
@@ -599,13 +618,39 @@ def _stage_inputs(
                         )
                         for entity in entity_rows
                     )
+                    entity_key_by_id = {
+                        str(entity.get("id")): value.canonical_key
+                        for entity, value in zip(entity_rows, entities, strict=True)
+                    }
                     relations = tuple(
                         EventMapRelationRef(
-                            str(relation.get("relation_type") or "mentions"),
-                            float(relation["confidence"]) if relation.get("confidence") is not None else None,
-                            str(relation.get("evidence_text") or "") or None,
+                            relation_type=str(relation.get("relation_type") or "mentions"),
+                            confidence=(
+                                float(relation["confidence"])
+                                if relation.get("confidence") is not None
+                                else None
+                            ),
+                            evidence_text=str(relation.get("evidence_text") or "") or None,
+                            source_claim=str((relation.get("raw_payload") or {}).get("cause") or "") or None,
+                            target_claim=str((relation.get("raw_payload") or {}).get("effect") or "") or None,
+                            source_entity_key=entity_key_by_id.get(str(relation.get("source_entity_id"))),
+                            target_entity_key=entity_key_by_id.get(str(relation.get("target_entity_id"))),
                         )
                         for relation in relation_rows
+                    )
+                    evidence = tuple(
+                        EventMapEvidenceRef(
+                            evidence_id=uuid.UUID(str(item["id"])),
+                            video_id=uuid.UUID(str(item["video_id"])),
+                            evidence_text=str(item.get("evidence_text") or ""),
+                            confidence=(
+                                float(item["confidence"])
+                                if item.get("confidence") is not None
+                                else None
+                            ),
+                        )
+                        for item in evidence_rows
+                        if item.get("id") and item.get("video_id") and str(item.get("evidence_text") or "").strip()
                     )
                     records.append(
                         EventMapRecord(
@@ -619,8 +664,10 @@ def _stage_inputs(
                             start_day=start_day,
                             end_day=end_day,
                             time_precision=str(row["time_precision"] or "unknown").strip().lower(),
+                            source_video_id=uuid.UUID(str(row["source_video_id"])),
                             entities=entities,
                             relations=relations,
+                            evidence=evidence,
                         )
                     )
                     input_hash.update(f"{event_id}:{content_hash}:{embedding_checksum}\n".encode("utf-8"))
@@ -820,7 +867,6 @@ def _snapshot_is_incremental_compatible(previous: PreviousEventMapSnapshot, mode
         and snapshot.embedding_model == model
         and snapshot.embedding_dim == dimension
         and snapshot.canonical_algorithm_version == EVENT_MAP_CANONICAL_VERSION
-        and snapshot.story_algorithm_version == EVENT_MAP_STORY_VERSION
         and snapshot.topic_algorithm_version == EVENT_MAP_TOPIC_VERSION
         and snapshot.layout_algorithm_version == EVENT_MAP_LAYOUT_VERSION
         and len(previous.anchor_vectors) > 0
@@ -1133,7 +1179,7 @@ def _assign_story_identities(
     stories: Sequence[Any],
     canonical_ids: Sequence[uuid.UUID],
 ) -> tuple[list[uuid.UUID], list[str]]:
-    """以保守的一对一成员重叠延续故事身份，避免视觉连续性制造事实串联。"""
+    """只在同一算法版本、同一叙事锚点内延续故事身份。"""
 
     current_members = [
         frozenset(canonical_ids[index] for index in story.member_group_indices)
@@ -1144,11 +1190,18 @@ def _assign_story_identities(
             [uuid.uuid5(_STORY_IDENTITY_NAMESPACE, f"{snapshot_id}:{index}") for index in range(len(stories))],
             ["new"] * len(stories),
         )
+    parent_snapshot = session.get(EventMapSnapshot, parent_snapshot_id)
+    if parent_snapshot is None or parent_snapshot.story_algorithm_version != EVENT_MAP_STORY_VERSION:
+        return (
+            [uuid.uuid5(_STORY_IDENTITY_NAMESPACE, f"{snapshot_id}:{index}") for index in range(len(stories))],
+            ["new"] * len(stories),
+        )
 
     rows = session.execute(
         select(
             EventMapStory.story_id,
             EventMapStory.story_identity_id,
+            EventMapStory.anchor_key,
             EventMapStoryMember.canonical_id,
         )
         .join(
@@ -1161,17 +1214,23 @@ def _assign_story_identities(
         .where(EventMapStory.snapshot_id == parent_snapshot_id)
     ).all()
     previous_members: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
-    for story_id, identity_id, canonical_id in rows:
-        previous_members[identity_id or story_id].add(canonical_id)
+    previous_anchors: dict[uuid.UUID, str] = {}
+    for story_id, identity_id, anchor_key, canonical_id in rows:
+        stable_id = identity_id or story_id
+        previous_members[stable_id].add(canonical_id)
+        previous_anchors[stable_id] = str(anchor_key or "")
 
     candidates: list[tuple[float, int, str, int, uuid.UUID]] = []
     for current_index, members in enumerate(current_members):
         for identity_id, old_members in previous_members.items():
+            if previous_anchors.get(identity_id) != str(stories[current_index].anchor_key or ""):
+                continue
             overlap = len(members & old_members)
             union = len(members | old_members)
-            score = overlap / union if union else 0.0
-            exact_singleton = len(members) == len(old_members) == overlap == 1
-            if not exact_singleton and (overlap < 2 or score < 0.6):
+            jaccard = overlap / union if union else 0.0
+            containment = overlap / max(1, min(len(members), len(old_members)))
+            score = max(jaccard, containment)
+            if overlap == 0 or score < 0.5:
                 continue
             candidates.append((score, overlap, str(identity_id), current_index, identity_id))
 
@@ -1482,12 +1541,18 @@ def _build_snapshot_rows(
         story_id = uuid.uuid5(snapshot.id, f"story:{story.story_index}")
         story_identity_id = story_identity_ids[story.story_index]
         if story_identity_states[story.story_index] == "new":
+            stable_title = str(story.label or "").strip()
+            if not stable_title:
+                raise JobTerminalFailure("new story identity is missing its stable title")
             story_identity_rows.append(
                 {
                     "id": story_identity_id,
                     "playlist_id": playlist_id,
                     "status": "active",
+                    "stable_title": stable_title,
                     "created_snapshot_id": snapshot.id,
+                    "last_material_snapshot_id": snapshot.id,
+                    "last_material_changed_at": snapshot.created_at,
                 }
             )
         story_records = [records[groups[index].representative_index] for index in story.member_group_indices]
@@ -1497,8 +1562,11 @@ def _build_snapshot_rows(
                 "story_id": story_id,
                 "story_identity_id": story_identity_id,
                 "title": story.label,
-                "summary": "按发生时间排列的有证据事件进展；不表示市场因果。",
-                "story_type": "sequence",
+                "summary": story.summary,
+                "story_type": story.story_type,
+                "anchor_key": story.anchor_key,
+                "maturity": story.maturity,
+                "quality_score": story.quality_score,
                 "event_time_start": _day_datetime(min(record.start_day for record in story_records)),
                 "event_time_end": _day_datetime(max(record.end_day for record in story_records), end=True),
                 "canonical_count": len(story.member_group_indices),
@@ -1514,8 +1582,10 @@ def _build_snapshot_rows(
                 }
             )
         for edge in story.edges:
-            source_revision = records[groups[edge.source_group_index].representative_index].revision_id
-            target_revision = records[groups[edge.target_group_index].representative_index].revision_id
+            evidence_revision_ids = [
+                str(value)
+                for value in edge.evidence.get("supporting_revision_ids", [])
+            ]
             story_edge_rows.append(
                 {
                     "snapshot_id": snapshot.id,
@@ -1530,7 +1600,8 @@ def _build_snapshot_rows(
                     "direction": "forward",
                     "score": edge.confidence,
                     "status": "automatic",
-                    "evidence_revision_ids": [str(source_revision), str(target_revision)],
+                    "evidence_revision_ids": evidence_revision_ids,
+                    "evidence_json": edge.evidence,
                     "method_version": EVENT_MAP_STORY_VERSION,
                 }
             )
@@ -1699,6 +1770,9 @@ def _story_revision_payloads(
             "title": row.title,
             "summary": row.summary,
             "story_type": row.story_type,
+            "anchor_key": row.anchor_key,
+            "maturity": row.maturity,
+            "quality_score": row.quality_score,
             "event_time_start": _json_value(row.event_time_start),
             "event_time_end": _json_value(row.event_time_end),
             "member_ids": [],
@@ -1737,6 +1811,7 @@ def _story_revision_payloads(
                 "score": row.score,
                 "status": row.status,
                 "evidence_revision_ids": evidence_ids,
+                "evidence": dict(row.evidence_json or {}),
             }
         )
         payloads[identity_id]["evidence_revision_ids"].extend(evidence_ids)
@@ -1775,6 +1850,9 @@ def _archive_payloads(
                 "title": row.title,
                 "summary": row.summary,
                 "story_type": row.story_type,
+                "anchor_key": row.anchor_key,
+                "maturity": row.maturity,
+                "quality_score": row.quality_score,
                 "event_time_start": _json_value(row.event_time_start),
                 "event_time_end": _json_value(row.event_time_end),
                 "member_ids": list(row.member_ids or []),
@@ -1915,6 +1993,89 @@ def _story_has_new_correction(
     )
 
 
+def _story_relation_material_projection(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """只比较关系事实与判定依据，排除可重复计算的分数和支持记录集合。"""
+
+    projected: list[dict[str, Any]] = []
+    for raw_edge in payload.get("edges") or []:
+        edge = dict(raw_edge)
+        evidence = {
+            str(key): value
+            for key, value in dict(edge.get("evidence") or {}).items()
+            if str(key) not in _STORY_RELATION_METRIC_KEYS
+        }
+        projected.append(
+            {
+                "source_canonical_id": str(edge.get("source_canonical_id") or ""),
+                "target_canonical_id": str(edge.get("target_canonical_id") or ""),
+                "relation_type": str(edge.get("relation_type") or ""),
+                "direction": str(edge.get("direction") or ""),
+                "status": str(edge.get("status") or ""),
+                "evidence": evidence,
+            }
+        )
+    return sorted(
+        projected,
+        key=lambda edge: (
+            edge["source_canonical_id"],
+            edge["target_canonical_id"],
+            edge["relation_type"],
+            edge["direction"],
+            edge["status"],
+            json.dumps(edge["evidence"], ensure_ascii=False, sort_keys=True),
+        ),
+    )
+
+
+def _story_support_material_projection(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """按关系保留支持记录集合，避免相同并集在关系间移动时被误判为无变化。"""
+
+    projected = [
+        {
+            "source_canonical_id": str(edge.get("source_canonical_id") or ""),
+            "target_canonical_id": str(edge.get("target_canonical_id") or ""),
+            "relation_type": str(edge.get("relation_type") or ""),
+            "evidence_revision_ids": sorted(
+                {str(value) for value in (edge.get("evidence_revision_ids") or [])}
+            ),
+        }
+        for edge in (payload.get("edges") or [])
+    ]
+    return sorted(
+        projected,
+        key=lambda edge: (
+            edge["source_canonical_id"],
+            edge["target_canonical_id"],
+            edge["relation_type"],
+        ),
+    )
+
+
+def _story_change_types(
+    before: dict[str, Any] | None,
+    after: dict[str, Any],
+) -> list[str]:
+    """区分会恢复未读的事实变化与只供审计的文案变化。"""
+
+    if before is None:
+        return ["story_added"]
+
+    change_types: list[str] = []
+    if list(before.get("member_ids") or []) != list(after.get("member_ids") or []):
+        change_types.append("story_members_changed")
+    if _story_relation_material_projection(before) != _story_relation_material_projection(after):
+        change_types.append("story_relations_changed")
+        if _story_has_new_correction(before, after):
+            change_types.append("story_correction_added")
+    if _story_support_material_projection(before) != _story_support_material_projection(after):
+        change_types.append("story_evidence_changed")
+    if str(before.get("maturity") or "") != str(after.get("maturity") or ""):
+        change_types.append("story_maturity_changed")
+    if before.get("summary") != after.get("summary") or before.get("title") != after.get("title"):
+        change_types.append("story_summary_changed")
+    return change_types
+
+
 def _persist_v2_history_and_changes(
     session: Session,
     *,
@@ -2027,7 +2188,10 @@ def _persist_v2_history_and_changes(
                 "story_id": uuid.UUID(payload["story_id"]),
                 "title": payload["title"],
                 "summary": payload.get("summary"),
-                "story_type": payload.get("story_type") or "sequence",
+                "story_type": payload.get("story_type") or "trajectory",
+                "anchor_key": payload.get("anchor_key"),
+                "maturity": payload.get("maturity") or "emerging",
+                "quality_score": payload.get("quality_score"),
                 "event_time_start": _parse_payload_datetime(payload, "event_time_start"),
                 "event_time_end": _parse_payload_datetime(payload, "event_time_end"),
                 "member_ids": list(payload.get("member_ids") or []),
@@ -2039,22 +2203,19 @@ def _persist_v2_history_and_changes(
         )
         before = previous_stories.get(identity_id)
         occurred_at = _parse_payload_datetime(payload, "event_time_end")
-        if before is None:
-            change_types = ["story_added"]
-        else:
-            change_types = []
-            if list(before.get("member_ids") or []) != list(payload.get("member_ids") or []):
-                change_types.append("story_members_changed")
-            if list(before.get("edges") or []) != list(payload.get("edges") or []):
-                change_types.append("story_relations_changed")
-                if _story_has_new_correction(before, payload):
-                    change_types.append("story_correction_added")
-            if set(before.get("evidence_revision_ids") or []) != set(evidence_ids):
-                change_types.append("story_evidence_changed")
-            if before.get("summary") != payload.get("summary") or before.get("title") != payload.get("title"):
-                change_types.append("story_summary_changed")
+        change_types = _story_change_types(before, payload)
         for change_type in change_types:
             changes.append(_change_row(playlist_id=playlist_id, from_snapshot_id=parent_snapshot_id, to_snapshot_id=snapshot_id, object_type="story", object_id=identity_id, change_type=change_type, occurred_at=occurred_at, observed_at=observed_at, before=before, after=payload))
+        if any(change_type in STORY_MATERIAL_CHANGE_TYPES for change_type in change_types):
+            session.execute(
+                update(EventMapStoryIdentity)
+                .where(EventMapStoryIdentity.id == identity_id)
+                .values(
+                    last_material_snapshot_id=snapshot_id,
+                    last_material_changed_at=observed_at,
+                    updated_at=observed_at,
+                )
+            )
     _insert_ignore_batched(session, EventMapStoryHistoryRevision, story_history_rows)
     _insert_ignore_batched(
         session,

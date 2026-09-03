@@ -8,6 +8,25 @@ const TOPIC_ZOOM_EXIT = 1.45;
 const EVENT_ZOOM_ENTER = 4.8;
 const EVENT_ZOOM_EXIT = 4.2;
 const WINDOW_TRANSITION_MS = 220;
+const SEMANTIC_MEMBRANE_TRANSITION_MS = 360;
+const PROGRESSIVE_REVEAL_MS = 1100;
+const HORIZON_GRID_RADIUS = 120;
+const EVENT_MAP_HOME_CAMERA_SCALE = 0.7;
+const EVENT_MAP_MEDIA_CARD_LIMIT = 10;
+const EVENT_MAP_MEDIA_SAFE_INSET = 56;
+const EVENT_MAP_MEDIA_COLLISION_GAP = 10;
+const EVENT_MAP_MEDIA_SAFE_TOP = 58;
+const EVENT_MAP_MEDIA_SAFE_BOTTOM = 64;
+const EVENT_MAP_MEDIA_CARD_WIDTH = 216;
+const EVENT_MAP_MEDIA_CARD_HEIGHT = 84;
+const EVENT_MAP_MEDIA_MINI_WIDTH = 84;
+const EVENT_MAP_MEDIA_MINI_HEIGHT = 48;
+const EVENT_MAP_MEDIA_MAX_CONNECTOR = 300;
+const EVENT_MAP_MEDIA_SIDE_BAND_RATIO = 0.36;
+const EVENT_MAP_MEDIA_HOVER_OPEN_MS = 180;
+const EVENT_MAP_MEDIA_HOVER_CLOSE_MS = 220;
+const EVENT_MAP_MEDIA_RING_GAPS = [28, 72, 120, 168, 216, 252, 284, 298];
+const EVENT_MAP_MEDIA_ANGLE_OFFSETS = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8, 9, -9, 10, -10, 11, -11, 12];
 const THREE_MODULE_URL = "/static/vendor/event-map-three.js";
 const DEFAULT_SEMANTIC_FAMILY = {
   code: "other",
@@ -21,6 +40,10 @@ let threeModulePromise = null;
 function loadThreeModule() {
   if (!threeModulePromise) threeModulePromise = import(THREE_MODULE_URL);
   return threeModulePromise;
+}
+
+export function preloadEventMapRenderer() {
+  return loadThreeModule();
 }
 
 function uuidFromBytes(bytes) {
@@ -108,6 +131,252 @@ export function isoDateToEventMapDay(value, fallback) {
 function eventMapDayToIso(value) {
   const day = Number(value);
   return Number.isFinite(day) ? new Date(day * DAY_MS).toISOString().slice(0, 10) : "";
+}
+
+function clampNumber(value, minimum, maximum) {
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+function eventMapNearestCardEdge(anchorX, anchorY, cardRect) {
+  const right = cardRect.left + cardRect.width;
+  const bottom = cardRect.top + cardRect.height;
+  let x = clampNumber(anchorX, cardRect.left, right);
+  let y = clampNumber(anchorY, cardRect.top, bottom);
+  if (anchorX >= cardRect.left && anchorX <= right && anchorY >= cardRect.top && anchorY <= bottom) {
+    const edges = [
+      { distance: anchorX - cardRect.left, x: cardRect.left, y: anchorY },
+      { distance: right - anchorX, x: right, y: anchorY },
+      { distance: anchorY - cardRect.top, x: anchorX, y: cardRect.top },
+      { distance: bottom - anchorY, x: anchorX, y: bottom },
+    ].sort((left, rightEdge) => left.distance - rightEdge.distance);
+    ({ x, y } = edges[0]);
+  }
+  return { x, y, distance: Math.hypot(x - anchorX, y - anchorY) };
+}
+
+export function eventMapMediaConnectorPath(anchorX, anchorY, cardRect) {
+  const edge = eventMapNearestCardEdge(anchorX, anchorY, cardRect);
+  return `M ${anchorX.toFixed(2)} ${anchorY.toFixed(2)} L ${edge.x.toFixed(2)} ${edge.y.toFixed(2)}`;
+}
+
+export function eventMapMediaItemKey(item, fallback = "") {
+  return String(item?.primary_video?.video_id || item?.video_id || item?.canonical_id || fallback);
+}
+
+function eventMapCompactDateLabel(value) {
+  const normalized = String(value || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized.slice(5).replace("-", "/") : "";
+}
+
+function eventMapEventDateLabel(item) {
+  return eventMapCompactDateLabel(item?.event_time_start);
+}
+
+function normalizeEventMapAngle(value) {
+  let angle = Number(value || 0) % (Math.PI * 2);
+  if (angle > Math.PI) angle -= Math.PI * 2;
+  if (angle <= -Math.PI) angle += Math.PI * 2;
+  return angle;
+}
+
+function eventMapMediaCardRect(point, angle, radialGap, width, height) {
+  const cosine = Math.cos(angle);
+  const sine = Math.sin(angle);
+  // 将矩形在候选方向上的支撑半径加到间距中，使锚点始终位于卡片外。
+  const support = Math.abs(cosine) * width / 2 + Math.abs(sine) * height / 2;
+  const centerDistance = support + radialGap;
+  return {
+    left: point.x + cosine * centerDistance - width / 2,
+    top: point.y + sine * centerDistance - height / 2,
+    width,
+    height,
+  };
+}
+
+function eventMapMediaRectFits(rect, bounds) {
+  return rect.left >= bounds.left
+    && rect.top >= bounds.top
+    && rect.left + rect.width <= bounds.right
+    && rect.top + rect.height <= bounds.bottom;
+}
+
+function eventMapMediaRectFitsSideBand(rect, viewportWidth, sideBandRatio) {
+  const leftBoundary = viewportWidth * sideBandRatio;
+  const rightBoundary = viewportWidth * (1 - sideBandRatio);
+  return rect.left + rect.width <= leftBoundary || rect.left >= rightBoundary;
+}
+
+function eventMapMediaRectsOverlap(left, right, gap) {
+  return left.left < right.left + right.width + gap
+    && left.left + left.width + gap > right.left
+    && left.top < right.top + right.height + gap
+    && left.top + left.height + gap > right.top;
+}
+
+function eventMapMediaPlacementCandidates(point, viewportWidth, viewportHeight, mini) {
+  const preferred = point.preferredPlacement;
+  const candidates = [];
+  const seen = new Set();
+  const append = (angle, radialGap, preferredCandidate = false) => {
+    const normalizedAngle = normalizeEventMapAngle(angle);
+    const normalizedGap = clampNumber(Number(radialGap || 0), 0, EVENT_MAP_MEDIA_MAX_CONNECTOR);
+    const key = `${normalizedAngle.toFixed(6)}:${normalizedGap.toFixed(2)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({ angle: normalizedAngle, radialGap: normalizedGap, preferredCandidate });
+  };
+
+  if (preferred && Boolean(preferred.mini) === mini && Number.isFinite(preferred.angle)) {
+    append(preferred.angle, preferred.radialGap, true);
+  }
+  const outwardX = point.x - viewportWidth / 2;
+  const outwardY = point.y - viewportHeight / 2;
+  const outwardDistance = Math.hypot(outwardX, outwardY);
+  const deterministicCenterAngle = normalizeEventMapAngle((point.rank + 1) * 2.399963229728653);
+  const baseAngle = Number.isFinite(preferred?.angle)
+    ? preferred.angle
+    : (outwardDistance > 24 ? Math.atan2(outwardY, outwardX) : deterministicCenterAngle);
+  for (const radialGap of EVENT_MAP_MEDIA_RING_GAPS) {
+    for (const offset of EVENT_MAP_MEDIA_ANGLE_OFFSETS) {
+      append(baseAngle + offset * Math.PI / 12, radialGap);
+    }
+  }
+  return candidates;
+}
+
+/**
+ * 将视频卡完整约束在画布左右两条内缩侧带，中央星云只保留事件与标签。
+ * 卡片不是贴边轨道，仍会在侧带内跟随事件投影，并以有限连线保持空间关系。
+ * 输入顺序就是优先级；空间不足时先缩成缩略图，仍无法消除碰撞时才隐藏。
+ */
+export function layoutEventMapMediaCards(points, {
+  width,
+  height,
+  inset = EVENT_MAP_MEDIA_SAFE_INSET,
+  gap = EVENT_MAP_MEDIA_COLLISION_GAP,
+  topInset = EVENT_MAP_MEDIA_SAFE_TOP,
+  bottomInset = EVENT_MAP_MEDIA_SAFE_BOTTOM,
+  maximum = EVENT_MAP_MEDIA_CARD_LIMIT,
+  maximumConnector = EVENT_MAP_MEDIA_MAX_CONNECTOR,
+  sideBandRatio = EVENT_MAP_MEDIA_SIDE_BAND_RATIO,
+  preservePlacement = false,
+} = {}) {
+  const viewportWidth = Math.max(1, Number(width || 1));
+  const viewportHeight = Math.max(1, Number(height || 1));
+  const bounds = {
+    left: Math.max(0, Number(inset || 0)),
+    top: Math.max(0, Number(topInset || 0)),
+    right: viewportWidth - Math.max(0, Number(inset || 0)),
+    bottom: viewportHeight - Math.max(0, Number(bottomInset || 0)),
+  };
+  const candidates = (Array.isArray(points) ? points : [])
+    .filter((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y))
+    .slice(0, Math.max(0, Number(maximum || 0)))
+    .map((point, rank) => ({ ...point, rank }));
+
+  const layouts = [];
+  const occupied = [];
+  const ordered = candidates.slice().sort((left, right) => Number(right.expanded) - Number(left.expanded) || left.rank - right.rank);
+  for (const point of ordered) {
+    const regularWidth = Math.max(1, Number(point.width || EVENT_MAP_MEDIA_CARD_WIDTH));
+    const regularHeight = Math.max(1, Number(point.height || EVENT_MAP_MEDIA_CARD_HEIGHT));
+    const modes = point.expanded
+      ? [{ mini: false, width: regularWidth, height: regularHeight }]
+      : [
+        { mini: false, width: regularWidth, height: regularHeight },
+        {
+          mini: true,
+          width: Math.max(1, Number(point.miniWidth || EVENT_MAP_MEDIA_MINI_WIDTH)),
+          height: Math.max(1, Number(point.miniHeight || EVENT_MAP_MEDIA_MINI_HEIGHT)),
+        },
+      ];
+    if (preservePlacement && point.preferredPlacement?.mini && !point.expanded) modes.reverse();
+    let selected = null;
+    for (const mode of modes) {
+      const placements = eventMapMediaPlacementCandidates(point, viewportWidth, viewportHeight, mode.mini);
+      for (const placement of placements) {
+        const cardRect = eventMapMediaCardRect(
+          point,
+          placement.angle,
+          placement.radialGap,
+          mode.width,
+          mode.height,
+        );
+        if (!eventMapMediaRectFits(cardRect, bounds)) continue;
+        if (!eventMapMediaRectFitsSideBand(cardRect, viewportWidth, sideBandRatio)) continue;
+        const edge = eventMapNearestCardEdge(point.x, point.y, cardRect);
+        if (edge.distance > maximumConnector + 0.01) continue;
+        const keepDuringInteraction = preservePlacement && placement.preferredCandidate;
+        if (!keepDuringInteraction && occupied.some((rect) => eventMapMediaRectsOverlap(cardRect, rect, gap))) continue;
+        const side = cardRect.left + cardRect.width / 2 < point.x ? "left" : "right";
+        selected = {
+          ...point,
+          ...cardRect,
+          side,
+          mini: mode.mini,
+          connectorEndX: edge.x,
+          connectorEndY: edge.y,
+          connectorLength: edge.distance,
+          connectorPath: eventMapMediaConnectorPath(point.x, point.y, cardRect),
+          placement: {
+            angle: placement.angle,
+            radialGap: placement.radialGap,
+            mini: mode.mini,
+          },
+        };
+        break;
+      }
+      if (selected) break;
+    }
+    if (!selected) continue;
+    layouts.push(selected);
+    occupied.push(selected);
+  }
+  return layouts.sort((left, right) => left.rank - right.rank);
+}
+
+/**
+ * 播放卡片展开时冻结既有排布，避免宽度变化触发全量碰撞重排。
+ * 左侧卡保留原右边界、右侧卡保留原左边界，因此折叠态命中区域始终包含在展开卡中。
+ */
+export function layoutFrozenEventMapMediaCards(points, frozenCards, {
+  width,
+  height,
+  inset = EVENT_MAP_MEDIA_SAFE_INSET,
+  topInset = EVENT_MAP_MEDIA_SAFE_TOP,
+  bottomInset = EVENT_MAP_MEDIA_SAFE_BOTTOM,
+} = {}) {
+  const viewportWidth = Math.max(1, Number(width || 1));
+  const viewportHeight = Math.max(1, Number(height || 1));
+  const leftBound = Math.max(0, Number(inset || 0));
+  const topBound = Math.max(0, Number(topInset || 0));
+  const rightBound = viewportWidth - leftBound;
+  const bottomBound = viewportHeight - Math.max(0, Number(bottomInset || 0));
+  const frozen = frozenCards instanceof Map ? frozenCards : new Map();
+  const layouts = [];
+  for (const point of Array.isArray(points) ? points : []) {
+    const state = frozen.get(point?.entry?.key);
+    if (!state?.visible) continue;
+    const expanded = Boolean(point.expanded);
+    const cardWidth = Math.max(1, Number(expanded ? point.width : state.width));
+    const cardHeight = Math.max(1, Number(expanded ? point.height : state.height));
+    let left = Number(state.left || 0);
+    let top = Number(state.top || 0);
+    if (expanded && state.side === "left") left += Number(state.width || 0) - cardWidth;
+    left = clampNumber(left, leftBound, Math.max(leftBound, rightBound - cardWidth));
+    top = clampNumber(top, topBound, Math.max(topBound, bottomBound - cardHeight));
+    layouts.push({
+      ...point,
+      left,
+      top,
+      width: cardWidth,
+      height: cardHeight,
+      side: state.side === "left" ? "left" : "right",
+      mini: expanded ? false : Boolean(state.mini),
+      placement: point.preferredPlacement || null,
+    });
+  }
+  return layouts;
 }
 
 /** 镜头距离决定语义层级，并通过迟滞避免标签层闪烁。 */
@@ -236,6 +505,23 @@ function finiteBounds(values) {
   return Number.isFinite(minimum) ? { minimum, maximum } : { minimum: -1, maximum: 1 };
 }
 
+function eventMapSceneBounds(manifest, scene) {
+  const source = manifest?.bounds || {};
+  const axisBounds = (axis, values) => {
+    const pair = Array.isArray(source[axis]) ? source[axis] : [];
+    const minimum = Number(source[`min_${axis}`] ?? pair[0]);
+    const maximum = Number(source[`max_${axis}`] ?? pair[1]);
+    return Number.isFinite(minimum) && Number.isFinite(maximum) && maximum >= minimum
+      ? { minimum, maximum }
+      : finiteBounds(values);
+  };
+  return {
+    xBounds: axisBounds("x", scene.x),
+    yBounds: axisBounds("y", scene.y),
+    zBounds: axisBounds("z", scene.z),
+  };
+}
+
 function rectangleOverlaps(left, right, padding = 4) {
   return !(
     left.right + padding < right.left
@@ -339,6 +625,12 @@ function hexColorToRgb(value) {
   ];
 }
 
+function eventMapRevealOrder(index) {
+  let hash = Math.imul(Number(index) + 1, 0x9e3779b1) >>> 0;
+  hash ^= hash >>> 16;
+  return 1 + (hash % 65_534);
+}
+
 export function eventMapSemanticPalette(manifest = {}) {
   const families = new Map(
     (Array.isArray(manifest.semantic_families) ? manifest.semantic_families : [])
@@ -383,6 +675,10 @@ function createParticleMaterial(THREE, { size, alpha }) {
       uWindowStartDay: { value: -1_000_000_000 },
       uWindowEndDay: { value: 1_000_000_000 },
       uWindowMix: { value: 1 },
+      uRevealProgress: { value: 1 },
+      uHydrationActive: { value: 0 },
+      uHydrationTime: { value: 0 },
+      uHasTopicFocus: { value: 0 },
     },
     vertexShader: `
       uniform float uSize;
@@ -392,32 +688,57 @@ function createParticleMaterial(THREE, { size, alpha }) {
       uniform float uWindowStartDay;
       uniform float uWindowEndDay;
       uniform float uWindowMix;
+      uniform float uRevealProgress;
+      uniform float uHydrationActive;
+      uniform float uHydrationTime;
+      uniform float uHasTopicFocus;
       attribute float aOpacity;
+      attribute float aRevealOrder;
       attribute float aTopicFocus;
+      attribute float aTimeFocus;
       attribute float aSelected;
       attribute vec3 aColor;
       attribute float aStartDay;
       attribute float aEndDay;
       varying float vOpacity;
       varying float vTopicFocus;
+      varying float vTimeFocus;
       varying float vSelected;
+      varying float vHydrationGlint;
       varying vec3 vColor;
       void main() {
         float previousActive = step(aStartDay, uPreviousWindowEndDay) * step(uPreviousWindowStartDay, aEndDay);
         float currentActive = step(aStartDay, uWindowEndDay) * step(uWindowStartDay, aEndDay);
-        vOpacity = aOpacity * mix(previousActive, currentActive, clamp(uWindowMix, 0.0, 1.0));
+        float revealed = smoothstep(aRevealOrder, min(1.0, aRevealOrder + 0.075), clamp(uRevealProgress, 0.0, 1.0));
+        float hydrationPhase = fract(uHydrationTime * 0.14);
+        float hydrationDistance = abs(aRevealOrder - hydrationPhase);
+        hydrationDistance = min(hydrationDistance, 1.0 - hydrationDistance);
+        float hydrationGlint = uHydrationActive * (1.0 - smoothstep(0.025, 0.105, hydrationDistance)) * revealed;
+        float activeWindow = mix(previousActive, currentActive, clamp(uWindowMix, 0.0, 1.0));
+        float ageDays = max(0.0, uWindowEndDay - min(aEndDay, uWindowEndDay));
+        float timeOpacity = mix(1.0, 0.22, smoothstep(30.0, 365.0, ageDays));
+        float composedOpacity = aOpacity * timeOpacity;
+        composedOpacity = max(composedOpacity, aTopicFocus * 0.65);
+        float allowedTimeFocus = aTimeFocus * mix(1.0, mix(0.36, 1.0, aTopicFocus), uHasTopicFocus);
+        composedOpacity = max(composedOpacity, allowedTimeFocus * 0.92);
+        composedOpacity = max(composedOpacity, aSelected);
+        vOpacity = composedOpacity * activeWindow * revealed * (1.0 + hydrationGlint * 0.30);
         vTopicFocus = aTopicFocus;
+        vTimeFocus = allowedTimeFocus;
         vSelected = aSelected;
+        vHydrationGlint = hydrationGlint;
         vColor = aColor;
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = uSize * uPixelRatio * (1.0 + 0.42 * aTopicFocus + 0.92 * aSelected) * clamp(7.0 / max(1.0, -mvPosition.z), 0.55, 2.8);
+        gl_PointSize = uSize * uPixelRatio * (1.0 + 0.42 * aTopicFocus + 0.55 * allowedTimeFocus + 0.92 * aSelected) * (1.0 + hydrationGlint * 0.32) * clamp(7.0 / max(1.0, -mvPosition.z), 0.55, 2.8);
         gl_Position = projectionMatrix * mvPosition;
       }
     `,
     fragmentShader: `
       varying float vOpacity;
       varying float vTopicFocus;
+      varying float vTimeFocus;
       varying float vSelected;
+      varying float vHydrationGlint;
       varying vec3 vColor;
       uniform float uAlpha;
       void main() {
@@ -426,12 +747,15 @@ function createParticleMaterial(THREE, { size, alpha }) {
         if (radius > 1.0 || vOpacity <= 0.001) discard;
         float core = 1.0 - smoothstep(0.72, 1.0, radius);
         float focusRing = vTopicFocus * smoothstep(0.64, 0.78, radius) * (1.0 - smoothstep(0.86, 0.98, radius));
+        float timeRing = vTimeFocus * smoothstep(0.54, 0.68, radius) * (1.0 - smoothstep(0.88, 0.98, radius));
         float selectedRing = vSelected * smoothstep(0.46, 0.60, radius) * (1.0 - smoothstep(0.78, 0.94, radius));
         float selectedCore = vSelected * (1.0 - smoothstep(0.16, 0.38, radius));
-        float opacity = max(core, max(focusRing, max(selectedRing, selectedCore)));
+        float opacity = max(core, max(timeRing, max(focusRing, max(selectedRing, selectedCore))));
         vec3 color = mix(vColor, vec3(1.0, 0.73, 0.12), focusRing * 0.88);
+        color = mix(color, vec3(0.40, 0.94, 1.0), timeRing * (1.0 - vSelected));
         color = mix(color, vec3(1.0, 0.73, 0.12), selectedRing);
         color = mix(color, vec3(1.0), selectedCore);
+        color = mix(color, vec3(0.48, 0.95, 1.0), vHydrationGlint * 0.42);
         gl_FragColor = vec4(color, opacity * vOpacity * uAlpha);
       }
     `,
@@ -449,12 +773,15 @@ function createPickMaterial(THREE) {
       uWindowStartDay: { value: -1_000_000_000 },
       uWindowEndDay: { value: 1_000_000_000 },
       uPixelRatio: { value: 1 },
+      uRevealProgress: { value: 1 },
     },
     vertexShader: `
       uniform float uWindowStartDay;
       uniform float uWindowEndDay;
       uniform float uPixelRatio;
+      uniform float uRevealProgress;
       attribute float aPickable;
+      attribute float aRevealOrder;
       attribute vec3 aPickColor;
       attribute float aStartDay;
       attribute float aEndDay;
@@ -462,7 +789,8 @@ function createPickMaterial(THREE) {
       varying vec3 vPickColor;
       void main() {
         float eventActive = step(aStartDay, uWindowEndDay) * step(uWindowStartDay, aEndDay);
-        vOpacity = aPickable * eventActive;
+        float revealed = step(aRevealOrder, uRevealProgress);
+        vOpacity = aPickable * eventActive * revealed;
         vPickColor = aPickColor;
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
         // 拾取半径以 CSS 像素计，不能因高 DPR 屏幕缩小到难以点中。
@@ -485,6 +813,75 @@ function createPickMaterial(THREE) {
   });
 }
 
+/**
+ * 远场坐标穹幕跟随镜头位置但保持世界朝向，因此平移和缩放不会露底，
+ * 旋转时仍能看到稳定的空间方向变化，而不是贴在屏幕上的二维背景。
+ */
+function createEventMapHorizonGrid(THREE) {
+  const geometry = new THREE.SphereGeometry(HORIZON_GRID_RADIUS, 64, 32);
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      uBaseColor: { value: new THREE.Color(0x0ea5e9) },
+      uMajorColor: { value: new THREE.Color(0x6366f1) },
+      uOpacity: { value: 0.16 },
+      uHydrationActive: { value: 0 },
+      uHydrationTime: { value: 0 },
+    },
+    vertexShader: `
+      varying vec3 vDirection;
+      void main() {
+        vDirection = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uBaseColor;
+      uniform vec3 uMajorColor;
+      uniform float uOpacity;
+      uniform float uHydrationActive;
+      uniform float uHydrationTime;
+      varying vec3 vDirection;
+      const float PI = 3.141592653589793;
+
+      float gridLine(float coordinate, float widthScale) {
+        float distanceToLine = abs(fract(coordinate - 0.5) - 0.5);
+        float pixelWidth = max(fwidth(coordinate), 0.0002) * widthScale;
+        return 1.0 - smoothstep(pixelWidth * 0.55, pixelWidth * 1.55, distanceToLine);
+      }
+
+      void main() {
+        vec3 direction = normalize(vDirection);
+        float longitude = atan(direction.z, direction.x);
+        float latitude = asin(clamp(direction.y, -1.0, 1.0));
+        float longitudeCoordinate = longitude / (PI / 12.0);
+        float latitudeCoordinate = latitude / (PI / 12.0);
+        float minor = max(gridLine(longitudeCoordinate, 0.82), gridLine(latitudeCoordinate, 0.82));
+        float major = max(gridLine(longitudeCoordinate / 4.0, 1.05), gridLine(latitudeCoordinate / 4.0, 1.05));
+        float poleStability = mix(0.72, 1.0, smoothstep(0.02, 0.26, 1.0 - abs(direction.y)));
+        float strength = max(minor * 0.42, major * 0.92) * poleStability;
+        float sweepCoordinate = fract(longitude / (2.0 * PI) - uHydrationTime * 0.055);
+        float sweepDistance = min(sweepCoordinate, 1.0 - sweepCoordinate);
+        float hydrationSweep = uHydrationActive * (1.0 - smoothstep(0.015, 0.115, sweepDistance));
+        strength *= 1.0 + hydrationSweep * 0.68;
+        if (strength <= 0.002) discard;
+        vec3 color = mix(uBaseColor, uMajorColor, major * 0.34 + (direction.y * 0.5 + 0.5) * 0.12);
+        color = mix(color, vec3(0.40, 0.94, 1.0), hydrationSweep * 0.42);
+        gl_FragColor = vec4(color, uOpacity * strength);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    side: THREE.BackSide,
+    blending: THREE.NormalBlending,
+    toneMapped: false,
+  });
+  const grid = new THREE.Mesh(geometry, material);
+  grid.frustumCulled = false;
+  grid.renderOrder = -30;
+  return grid;
+}
+
 function topicIndexOf(topic, fallback) {
   const value = Number(topic?.topic_index);
   return Number.isInteger(value) && value >= 0 ? value : fallback;
@@ -492,8 +889,17 @@ function topicIndexOf(topic, fallback) {
 
 export class EventMapController {
   static async create(options) {
-    if (!(await eventMapGpuAvailable())) throw new Error("当前浏览器不支持 WebGL2，无法显示三维事件星图。");
-    return new EventMapController(options, await loadThreeModule());
+    const modules = await loadThreeModule();
+    try {
+      // WebGLRenderer 本身就是最终能力检查；预先创建并主动丢失一个 WebGL2
+      // 上下文会让部分驱动重复冷启动，反而延迟真实网格首帧。
+      return new EventMapController(options, modules);
+    } catch (error) {
+      if (/webgl/i.test(String(error?.message || error))) {
+        throw new Error("当前浏览器不支持 WebGL2，无法显示三维事件星图。", { cause: error });
+      }
+      throw error;
+    }
   }
 
   constructor(
@@ -504,6 +910,7 @@ export class EventMapController {
       onSelect = null,
       onTopic = null,
       onViewport = null,
+      resolveVideoSource = null,
     },
     modules
   ) {
@@ -514,6 +921,7 @@ export class EventMapController {
     this.onSelect = onSelect;
     this.onTopic = onTopic;
     this.onViewport = onViewport;
+    this.resolveVideoSource = resolveVideoSource;
     this.modules = modules;
     this.THREE = modules.THREE;
     this.destroyed = false;
@@ -521,40 +929,74 @@ export class EventMapController {
     this.selectedDetail = null;
     this.topicFocusIndex = null;
     this.currentLevel = "overview";
-    this.activeMask = new Uint8Array(scene.count);
-    this.pointVisibility = new Float32Array(scene.count);
-    this.pointVisibility.fill(1);
-    this.renderOpacity = new Float32Array(scene.count);
-    this.renderOpacity.fill(1);
-    this.topicFocusMask = new Float32Array(scene.count);
-    this.selectedMask = new Float32Array(scene.count);
-    this.entityMask = new Uint8Array(scene.count);
+    this.initializePointState(scene);
     this.topicCounts = new Map();
     this.topicFamilyCounts = new Map();
-    this.layerOptions = { typeFilter: "", entityIndices: new Set() };
+    this.layerOptions = {
+      windowStart: "",
+      windowEnd: "",
+      typeFilter: "",
+      entityIndices: new Set(),
+      playing: false,
+      topicIndex: null,
+    };
     this.transitionStartedAt = 0;
+    this.semanticMembraneTransitionStartedAt = 0;
+    this.semanticMembraneDensityKey = "";
     this.committedWindowStartDay = -1_000_000_000;
     this.committedWindowEndDay = 1_000_000_000;
     this.hasCommittedWindow = false;
     this.previewWindowStartDay = null;
     this.previewWindowEndDay = null;
     this.animationFrame = null;
+    this.firstFrameRendered = false;
+    this.firstFramePromise = new Promise((resolve) => { this.resolveFirstFrame = resolve; });
+    this.progressiveRevealPrepared = false;
+    this.progressiveRevealActive = false;
+    this.progressiveRevealStartedAt = 0;
+    this.progressiveRevealFrom = 0;
+    this.progressiveRevealTarget = 1;
+    this.progressiveRevealDuration = PROGRESSIVE_REVEAL_MS;
+    this.progressiveRevealCompletes = true;
+    this.progressiveRevealComplete = true;
+    this.hydrationAnimationActive = false;
+    this.hydrationAnimationStartedAt = 0;
     this.introStartedAt = 0;
     this.introActive = false;
     this.pointerDown = null;
     this.frameSamples = [];
     this.reducedQuality = false;
     this.pixelRatioLimit = scene.count > 100_000 ? 1.25 : 1.5;
+    this.sceneInteractive = true;
+    this.deferMembraneDensity = false;
     this.topics = Array.isArray(manifest.topics) ? manifest.topics : [];
+    this.membraneTopics = Array.isArray(manifest.topic_geometry)
+      ? manifest.topic_geometry
+      : this.topics;
+    this.labelMetadataReady = Array.isArray(manifest.topics);
     this.topicByIndex = new Map(this.topics.map((topic, index) => [topicIndexOf(topic, index), topic]));
     this.semanticPalette = eventMapSemanticPalette(manifest);
     this.setupDom();
     this.setupScene();
     this.setupInteractions();
     this.resize();
-    this.resetCamera({ animate: this.shouldPlayIntro() });
+    // 加载动画只交给真实点和标签；镜头从第一帧起保持稳定，避免网格看起来被替换。
+    this.resetCamera({ animate: false });
     this.updateLabels();
     this.invalidate();
+  }
+
+  initializePointState(scene) {
+    this.sceneData = scene;
+    this.activeMask = new Uint8Array(scene.count);
+    this.pointVisibility = new Float32Array(scene.count);
+    this.pointVisibility.fill(1);
+    this.renderOpacity = new Float32Array(scene.count);
+    this.renderOpacity.fill(1);
+    this.topicFocusMask = new Float32Array(scene.count);
+    this.timeFocusMask = new Float32Array(scene.count);
+    this.selectedMask = new Float32Array(scene.count);
+    this.entityMask = new Uint8Array(scene.count);
   }
 
   setupDom() {
@@ -563,9 +1005,28 @@ export class EventMapController {
     this.target.style.inset = "0";
     this.target.style.overflow = "hidden";
     this.labelsRoot = document.createElement("div");
-    this.labelsRoot.className = "absolute inset-0 z-10 overflow-hidden pointer-events-none";
+    this.labelsRoot.className = "event-map-label-layer absolute inset-0 z-10 overflow-hidden pointer-events-none";
     this.labelsRoot.setAttribute("aria-hidden", "false");
     this.target.appendChild(this.labelsRoot);
+    this.mediaRoot = document.createElement("div");
+    this.mediaRoot.className = "event-map-media-layer absolute inset-0 z-20 overflow-hidden pointer-events-none";
+    this.mediaRoot.setAttribute("aria-label", "今日与本周事件视频");
+    this.mediaConnectors = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    this.mediaConnectors.classList.add("event-map-media-connectors");
+    this.mediaConnectors.setAttribute("aria-hidden", "true");
+    this.mediaCardsRoot = document.createElement("div");
+    this.mediaCardsRoot.className = "event-map-media-cards absolute inset-0 pointer-events-none";
+    this.mediaRoot.append(this.mediaConnectors, this.mediaCardsRoot);
+    this.target.appendChild(this.mediaRoot);
+    this.timeHighlightData = { point_indices: [], items: [] };
+    this.mediaCardEntries = [];
+    this.expandedMediaItemKey = "";
+    this.expandedMediaTrigger = "";
+    this.expandedMediaLayout = null;
+    this.focusedMediaItemKey = "";
+    this.mediaCardHoverTimer = null;
+    this.mediaCardLeaveTimer = null;
+    this.mediaCardsInteracting = false;
     this.labelMeasure = document.createElement("span");
     this.labelMeasure.className = "absolute invisible whitespace-nowrap text-[10px] font-medium tracking-wide";
     this.labelMeasure.setAttribute("aria-hidden", "true");
@@ -577,38 +1038,13 @@ export class EventMapController {
     this.target.appendChild(this.errorOverlay);
   }
 
-  setupScene() {
-    const { THREE, OrbitControls } = this.modules;
-    this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x01040b);
-    this.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(Math.min(this.pixelRatioLimit, Number(globalThis.devicePixelRatio || 1)));
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.9;
-    this.renderer.domElement.className = "absolute inset-0 h-full w-full";
-    this.renderer.domElement.style.touchAction = "none";
-    this.target.insertBefore(this.renderer.domElement, this.labelsRoot);
-
-    const xBounds = finiteBounds(this.sceneData.x);
-    const yBounds = finiteBounds(this.sceneData.y);
-    const zBounds = finiteBounds(this.sceneData.z);
-    this.rawCenter = {
-      x: (xBounds.minimum + xBounds.maximum) / 2,
-      y: (yBounds.minimum + yBounds.maximum) / 2,
-      z: (zBounds.minimum + zBounds.maximum) / 2,
-    };
-    const extent = Math.max(
-      xBounds.maximum - xBounds.minimum,
-      yBounds.maximum - yBounds.minimum,
-      zBounds.maximum - zBounds.minimum,
-      1e-6
-    );
-    this.worldScale = 13 / extent;
+  createPointGeometry() {
+    const { THREE } = this;
     const positions = new Float32Array(this.sceneData.count * 3);
     const colors = new Float32Array(this.sceneData.count * 3);
     const semanticColors = new Float32Array(this.sceneData.count * 3);
     const pickColors = new Float32Array(this.sceneData.count * 3);
+    const revealOrder = new Uint16Array(this.sceneData.count);
     for (let index = 0; index < this.sceneData.count; index += 1) {
       const offset = index * 3;
       positions[offset] = (this.sceneData.x[index] - this.rawCenter.x) * this.worldScale;
@@ -626,27 +1062,61 @@ export class EventMapController {
       pickColors[offset] = (encoded & 255) / 255;
       pickColors[offset + 1] = ((encoded >> 8) & 255) / 255;
       pickColors[offset + 2] = ((encoded >> 16) & 255) / 255;
+      revealOrder[index] = eventMapRevealOrder(index);
     }
     this.worldPositions = positions;
     this.colors = colors;
     this.semanticColors = semanticColors;
-    this.geometry = new THREE.BufferGeometry();
-    this.geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    this.geometry.setAttribute("aColor", new THREE.BufferAttribute(colors, 3));
-    this.geometry.setAttribute("aOpacity", new THREE.BufferAttribute(this.renderOpacity, 1));
-    this.geometry.setAttribute("aPickable", new THREE.BufferAttribute(this.pointVisibility, 1));
-    this.geometry.setAttribute("aTopicFocus", new THREE.BufferAttribute(this.topicFocusMask, 1));
-    this.geometry.setAttribute("aSelected", new THREE.BufferAttribute(this.selectedMask, 1));
-    this.geometry.setAttribute("aStartDay", new THREE.BufferAttribute(new Float32Array(this.sceneData.startDay), 1));
-    this.geometry.setAttribute("aEndDay", new THREE.BufferAttribute(new Float32Array(this.sceneData.endDay), 1));
-    this.geometry.setAttribute("aPickColor", new THREE.BufferAttribute(pickColors, 3));
-    this.geometry.computeBoundingSphere();
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("aColor", new THREE.BufferAttribute(colors, 3));
+    geometry.setAttribute("aOpacity", new THREE.BufferAttribute(this.renderOpacity, 1));
+    geometry.setAttribute("aPickable", new THREE.BufferAttribute(this.pointVisibility, 1));
+    geometry.setAttribute("aTopicFocus", new THREE.BufferAttribute(this.topicFocusMask, 1));
+    geometry.setAttribute("aTimeFocus", new THREE.BufferAttribute(this.timeFocusMask, 1));
+    geometry.setAttribute("aSelected", new THREE.BufferAttribute(this.selectedMask, 1));
+    geometry.setAttribute("aStartDay", new THREE.BufferAttribute(new Float32Array(this.sceneData.startDay), 1));
+    geometry.setAttribute("aEndDay", new THREE.BufferAttribute(new Float32Array(this.sceneData.endDay), 1));
+    geometry.setAttribute("aPickColor", new THREE.BufferAttribute(pickColors, 3));
+    geometry.setAttribute("aRevealOrder", new THREE.BufferAttribute(revealOrder, 1, true));
+    if (this.sceneData.count) geometry.computeBoundingSphere();
+    return geometry;
+  }
+
+  setupScene() {
+    const { THREE, OrbitControls } = this.modules;
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0x01040b);
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: "high-performance" });
+    this.renderer.setPixelRatio(Math.min(this.pixelRatioLimit, Number(globalThis.devicePixelRatio || 1)));
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 0.9;
+    this.renderer.domElement.className = "absolute inset-0 h-full w-full";
+    this.renderer.domElement.style.touchAction = "none";
+    this.target.insertBefore(this.renderer.domElement, this.labelsRoot);
+
+    const { xBounds, yBounds, zBounds } = eventMapSceneBounds(this.manifest, this.sceneData);
+    this.rawBounds = { xBounds, yBounds, zBounds };
+    this.rawCenter = {
+      x: (xBounds.minimum + xBounds.maximum) / 2,
+      y: (yBounds.minimum + yBounds.maximum) / 2,
+      z: (zBounds.minimum + zBounds.maximum) / 2,
+    };
+    const extent = Math.max(
+      xBounds.maximum - xBounds.minimum,
+      yBounds.maximum - yBounds.minimum,
+      zBounds.maximum - zBounds.minimum,
+      1e-6
+    );
+    this.worldScale = 13 / extent;
+    this.geometry = this.createPointGeometry();
 
     this.coreMaterial = createParticleMaterial(THREE, { size: 3.0, alpha: 0.94 });
     this.corePoints = new THREE.Points(this.geometry, this.coreMaterial);
     this.corePoints.frustumCulled = false;
     this.scene.add(this.corePoints);
-    this.setupSpacetimeGrid({ xBounds, yBounds, zBounds });
+    this.setupSemanticMembrane(this.rawBounds);
 
     this.camera = new THREE.PerspectiveCamera(42, 1, 0.02, 160);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -656,6 +1126,8 @@ export class EventMapController {
     this.controls.minDistance = 1.3;
     this.controls.maxDistance = 70;
     this.controls.target.set(0, 0, 0);
+    this.horizonGrid = createEventMapHorizonGrid(THREE);
+    this.scene.add(this.horizonGrid);
 
     this.pickScene = new THREE.Scene();
     this.pickMaterial = createPickMaterial(THREE);
@@ -677,7 +1149,7 @@ export class EventMapController {
     this.homeDistance = 21;
   }
 
-  setupSpacetimeGrid({ xBounds, yBounds, zBounds }) {
+  setupSemanticMembrane({ xBounds, yBounds, zBounds }) {
     const { THREE } = this;
     const homeNormal = new THREE.Vector3(13.5, 10.5, 15.5).normalize();
     const tiltAxis = new THREE.Vector3(0, 1, 0).cross(homeNormal).normalize();
@@ -696,52 +1168,60 @@ export class EventMapController {
         }
       }
     }
-    const macroTopics = this.topics
-      .filter((topic) => Number(topic?.level || 0) === 0)
-      .filter((topic) => [topic?.center_x, topic?.center_y, topic?.center_z].every(Number.isFinite))
-      .sort((left, right) => Number(right?.canonical_count || 0) - Number(left?.canonical_count || 0))
+    const macroTopics = this.membraneTopics
+      .map((topic, index) => ({ topic, index: topicIndexOf(topic, index) }))
+      .filter(({ topic }) => Number(topic?.level || 0) === 0)
+      .filter(({ topic }) => [topic?.center_x, topic?.center_y, topic?.center_z].every(Number.isFinite))
+      .sort((left, right) => Number(right.topic?.canonical_count || 0) - Number(left.topic?.canonical_count || 0))
       .slice(0, 9);
-    const maximumCount = Math.max(1, ...macroTopics.map((topic) => Number(topic?.canonical_count || 0)));
-    const wells = [
-      { x: 0, y: 0, strength: 0.3, radius: 6.5 },
-      ...macroTopics.map((topic) => {
-        const center = this.rawToWorld(topic.center_x, topic.center_y, topic.center_z);
-        const weight = Math.sqrt(Math.max(0, Number(topic.canonical_count || 0)) / maximumCount);
-        return {
-          x: center.dot(right),
-          y: center.dot(gridUp),
-          strength: 0.5 + 0.72 * weight,
-          radius: 1.55 + 1.05 * weight,
-        };
-      }),
-    ];
     const halfSpan = Math.max(...corners.flatMap((corner) => [
       Math.abs(corner.dot(right)),
       Math.abs(corner.dot(gridUp)),
     ]));
-    const gridData = buildEventMapSpacetimeGrid({
+    this.semanticMembraneConfig = {
       extent: Math.max(15, halfSpan * 2.1),
-      wells,
-    });
+      macroTopics,
+      right,
+      gridUp,
+      canonicalMaximum: Math.max(1, ...macroTopics.map(({ topic }) => Number(topic?.canonical_count || 0))),
+    };
+    const { gridData, densityKey } = this.semanticMembraneGridData({ useActiveCounts: false });
+    const planarPositions = new Float32Array(gridData.positions);
+    const depths = new Float32Array(planarPositions.length / 3);
+    for (let vertex = 0; vertex < depths.length; vertex += 1) {
+      depths[vertex] = planarPositions[vertex * 3 + 2];
+      planarPositions[vertex * 3 + 2] = 0;
+    }
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.BufferAttribute(gridData.positions, 3));
+    geometry.setAttribute("position", new THREE.BufferAttribute(planarPositions, 3));
     geometry.setAttribute("aFade", new THREE.BufferAttribute(gridData.fades, 1));
-    geometry.setAttribute("aCurvature", new THREE.BufferAttribute(gridData.curvatures, 1));
+    geometry.setAttribute("aPreviousDepth", new THREE.BufferAttribute(new Float32Array(depths), 1));
+    geometry.setAttribute("aCurrentDepth", new THREE.BufferAttribute(new Float32Array(depths), 1));
+    geometry.setAttribute("aPreviousCurvature", new THREE.BufferAttribute(new Float32Array(gridData.curvatures), 1));
+    geometry.setAttribute("aCurrentCurvature", new THREE.BufferAttribute(new Float32Array(gridData.curvatures), 1));
     const material = new THREE.ShaderMaterial({
       uniforms: {
         uBaseColor: { value: new THREE.Color(0x38bdf8) },
         uWarpColor: { value: new THREE.Color(0x8b5cf6) },
         uOpacity: { value: 0.24 },
+        uFieldMix: { value: 1 },
       },
       vertexShader: `
         attribute float aFade;
-        attribute float aCurvature;
+        attribute float aPreviousDepth;
+        attribute float aCurrentDepth;
+        attribute float aPreviousCurvature;
+        attribute float aCurrentCurvature;
+        uniform float uFieldMix;
         varying float vFade;
         varying float vCurvature;
         void main() {
           vFade = aFade;
-          vCurvature = aCurvature;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          float fieldMix = clamp(uFieldMix, 0.0, 1.0);
+          vCurvature = mix(aPreviousCurvature, aCurrentCurvature, fieldMix);
+          vec3 membranePosition = position;
+          membranePosition.z = mix(aPreviousDepth, aCurrentDepth, fieldMix);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(membranePosition, 1.0);
         }
       `,
       fragmentShader: `
@@ -762,24 +1242,111 @@ export class EventMapController {
       blending: THREE.NormalBlending,
       toneMapped: false,
     });
-    this.spacetimeGrid = new THREE.LineSegments(geometry, material);
+    this.semanticMembrane = new THREE.LineSegments(geometry, material);
     const basis = new THREE.Matrix4().makeBasis(right, gridUp, normal);
     const minimumProjection = Math.min(...corners.map((corner) => corner.dot(normal)));
-    this.spacetimeGrid.quaternion.setFromRotationMatrix(basis);
-    this.spacetimeGrid.position.copy(normal).multiplyScalar(minimumProjection - 2.6);
-    this.spacetimeGrid.frustumCulled = false;
-    this.spacetimeGrid.renderOrder = -20;
-    this.scene.add(this.spacetimeGrid);
+    this.semanticMembrane.quaternion.setFromRotationMatrix(basis);
+    this.semanticMembrane.position.copy(normal).multiplyScalar(minimumProjection - 2.6);
+    this.semanticMembrane.frustumCulled = false;
+    this.semanticMembrane.renderOrder = -20;
+    this.semanticMembraneDensityKey = densityKey;
+    this.scene.add(this.semanticMembrane);
+  }
+
+  semanticMembraneGridData({ useActiveCounts = true } = {}) {
+    const config = this.semanticMembraneConfig;
+    const densities = config.macroTopics.map(({ topic, index }) => (
+      useActiveCounts
+        ? Math.max(0, Number(this.topicCounts.get(index) || 0))
+        : Math.max(0, Number(topic?.canonical_count || 0))
+    ));
+    const currentMaximum = Math.max(0, ...densities);
+    const activityScale = useActiveCounts
+      ? Math.max(0.34, Math.min(1, Math.sqrt(currentMaximum / config.canonicalMaximum)))
+      : 1;
+    const wells = [
+      { x: 0, y: 0, strength: 0.18 + 0.12 * activityScale, radius: 6.5 },
+      ...config.macroTopics.flatMap(({ topic }, position) => {
+        const density = densities[position];
+        if (density <= 0) return [];
+        const center = this.rawToWorld(topic.center_x, topic.center_y, topic.center_z);
+        const relativeWeight = Math.sqrt(density / Math.max(1, currentMaximum));
+        return [{
+          x: center.dot(config.right),
+          y: center.dot(config.gridUp),
+          strength: (0.38 + 0.84 * relativeWeight) * activityScale,
+          radius: 1.45 + 1.12 * relativeWeight,
+        }];
+      }),
+    ];
+    return {
+      densityKey: `${useActiveCounts ? "window" : "canonical"}:${densities.join(":")}`,
+      gridData: buildEventMapSpacetimeGrid({ extent: config.extent, wells }),
+    };
+  }
+
+  updateSemanticMembraneDensity({ animate = true } = {}) {
+    if (!this.semanticMembrane?.geometry || !this.semanticMembraneConfig) return;
+    if (this.deferMembraneDensity) return;
+    const { gridData, densityKey } = this.semanticMembraneGridData({ useActiveCounts: this.hasCommittedWindow });
+    if (densityKey === this.semanticMembraneDensityKey) return;
+    const geometry = this.semanticMembrane.geometry;
+    const previousDepth = geometry.getAttribute("aPreviousDepth");
+    const currentDepth = geometry.getAttribute("aCurrentDepth");
+    const previousCurvature = geometry.getAttribute("aPreviousCurvature");
+    const currentCurvature = geometry.getAttribute("aCurrentCurvature");
+    const fieldMix = Number(this.semanticMembrane.material.uniforms.uFieldMix.value || 0);
+    for (let vertex = 0; vertex < currentDepth.count; vertex += 1) {
+      previousDepth.array[vertex] += (currentDepth.array[vertex] - previousDepth.array[vertex]) * fieldMix;
+      currentDepth.array[vertex] = gridData.positions[vertex * 3 + 2];
+      previousCurvature.array[vertex] += (
+        currentCurvature.array[vertex] - previousCurvature.array[vertex]
+      ) * fieldMix;
+      currentCurvature.array[vertex] = gridData.curvatures[vertex];
+    }
+    previousDepth.needsUpdate = true;
+    currentDepth.needsUpdate = true;
+    previousCurvature.needsUpdate = true;
+    currentCurvature.needsUpdate = true;
+    this.semanticMembraneDensityKey = densityKey;
+    this.semanticMembrane.material.uniforms.uFieldMix.value = animate ? 0 : 1;
+    this.semanticMembraneTransitionStartedAt = animate ? performance.now() : 0;
+    this.invalidate();
+  }
+
+  updateSemanticMembraneTransition(now) {
+    if (!this.semanticMembraneTransitionStartedAt || !this.semanticMembrane?.material) return false;
+    const progress = Math.min(1, Math.max(0, (
+      now - this.semanticMembraneTransitionStartedAt
+    ) / SEMANTIC_MEMBRANE_TRANSITION_MS));
+    const eased = progress * progress * (3 - 2 * progress);
+    this.semanticMembrane.material.uniforms.uFieldMix.value = eased;
+    if (progress >= 1) this.semanticMembraneTransitionStartedAt = 0;
+    return progress < 1;
+  }
+
+  updateHorizonGrid() {
+    if (!this.horizonGrid || !this.camera || !this.controls) return;
+    this.horizonGrid.position.copy(this.camera.position);
+    const closeDetail = Math.max(0, Math.min(1, (this.semanticZoom() - 1) / 4));
+    this.horizonGrid.material.uniforms.uOpacity.value = 0.16 - closeDetail * 0.055;
   }
 
   setupInteractions() {
     this.handleControlsStart = () => {
       this.introActive = false;
+      this.mediaCardsInteracting = true;
+      this.collapseMediaCard();
       this.invalidate();
     };
     this.handleControlsChange = () => {
       this.updateLabels();
       this.updateSemanticLevel();
+      this.invalidate();
+    };
+    this.handleControlsEnd = () => {
+      this.mediaCardsInteracting = false;
+      this.updateMediaCards();
       this.invalidate();
     };
     this.handlePointerDown = (event) => {
@@ -808,6 +1375,7 @@ export class EventMapController {
     };
     this.controls.addEventListener("start", this.handleControlsStart);
     this.controls.addEventListener("change", this.handleControlsChange);
+    this.controls.addEventListener("end", this.handleControlsEnd);
     this.renderer.domElement.addEventListener("pointerdown", this.handlePointerDown);
     this.renderer.domElement.addEventListener("pointerup", this.handlePointerUp);
     this.renderer.domElement.addEventListener("dblclick", this.handleDoubleClick);
@@ -815,6 +1383,444 @@ export class EventMapController {
     this.renderer.domElement.addEventListener("webglcontextrestored", this.handleContextRestored);
     this.resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => this.resize()) : null;
     this.resizeObserver?.observe(this.target);
+  }
+
+  applyTimeHighlightMask() {
+    this.timeFocusMask.fill(0);
+    for (const rawIndex of this.timeHighlightData?.point_indices || []) {
+      const index = Number(rawIndex);
+      if (Number.isInteger(index) && index >= 0 && index < this.sceneData.count) this.timeFocusMask[index] = 1;
+    }
+    const attribute = this.geometry?.getAttribute?.("aTimeFocus");
+    if (attribute) attribute.needsUpdate = true;
+  }
+
+  setTimeHighlights(payload = {}) {
+    this.collapseMediaCard();
+    this.timeHighlightData = {
+      point_indices: Array.isArray(payload?.point_indices) ? payload.point_indices : [],
+      items: Array.isArray(payload?.items) ? payload.items.slice(0, EVENT_MAP_MEDIA_CARD_LIMIT) : [],
+      scope: payload?.scope === "week" ? "week" : "today",
+    };
+    this.applyTimeHighlightMask();
+    this.rebuildMediaCards();
+    this.updateMediaCards();
+    this.invalidate();
+  }
+
+  rebuildMediaCards() {
+    if (!this.mediaRoot || !this.mediaConnectors || !this.mediaCardsRoot) return;
+    const previousPlacements = new Map((this.mediaCardEntries || []).map((entry) => [entry.key, entry.placement]));
+    this.mediaConnectors.replaceChildren();
+    this.mediaCardsRoot.replaceChildren();
+    this.mediaCardEntries = [];
+    for (const [position, item] of (this.timeHighlightData?.items || []).entries()) {
+      const pointIndices = [...new Set([
+        item?.point_index,
+        ...(Array.isArray(item?.point_indices) ? item.point_indices : []),
+      ].map(Number).filter((pointIndex) => (
+        Number.isInteger(pointIndex) && pointIndex >= 0 && pointIndex < this.sceneData.count
+      )))];
+      if (!pointIndices.length) continue;
+      const key = eventMapMediaItemKey(item, `item-${position}`);
+      const connectorGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      connectorGroup.classList.add("event-map-video-connector");
+      const connectors = pointIndices.map((pointIndex) => {
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        const anchor = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        anchor.setAttribute("r", "3");
+        connectorGroup.append(path, anchor);
+        return { pointIndex, path, anchor };
+      });
+      this.mediaConnectors.appendChild(connectorGroup);
+
+      const card = document.createElement("article");
+      card.className = "event-map-video-card pointer-events-auto";
+      const canonicalIds = Array.isArray(item?.canonical_ids)
+        ? item.canonical_ids.map(String).filter(Boolean)
+        : [String(item?.canonical_id || "")].filter(Boolean);
+      card.dataset.canonicalId = canonicalIds[0] || "";
+      card.dataset.canonicalIds = canonicalIds.join(",");
+      card.dataset.videoId = String(item?.primary_video?.video_id || item?.video_id || "");
+      card.tabIndex = 0;
+      card.setAttribute("role", "group");
+      const linkedEventCount = Math.max(1, Number(item?.linked_event_count || item?.linked_events?.length || 1));
+      card.setAttribute(
+        "aria-label",
+        `${linkedEventCount}个事件共用视频${String(item?.primary_video?.title || "")}; 代表事件${String(item?.title || "")}`,
+      );
+
+      const preview = document.createElement("button");
+      preview.type = "button";
+      preview.className = "event-map-video-card__preview";
+      preview.title = "悬停静音预览；点击固定并播放";
+      const posterUrl = String(item?.primary_video?.poster_url || item?.primary_video?.thumbnail_url || "");
+      if (posterUrl) {
+        const image = document.createElement("img");
+        image.src = posterUrl;
+        image.alt = "";
+        image.loading = "lazy";
+        image.className = "event-map-video-card__poster";
+        preview.appendChild(image);
+      }
+      const play = document.createElement("span");
+      play.className = "event-map-video-card__play";
+      play.textContent = "▶";
+      const rank = document.createElement("span");
+      rank.className = "event-map-video-card__rank";
+      rank.textContent = String(Number(item?.representative_rank || position + 1));
+      preview.append(play, rank);
+      card.appendChild(preview);
+
+      const copy = document.createElement("div");
+      copy.className = "event-map-video-card__copy";
+      const scope = document.createElement("span");
+      scope.className = "event-map-video-card__scope";
+      const scopeLabel = this.timeHighlightData.scope === "week" ? "本周事件" : "今日事件";
+      const representativeRank = Number(item?.representative_rank || position + 1);
+      const mediaName = String(item?.primary_video?.media_name || "未知来源");
+      const eventDate = eventMapEventDateLabel(item);
+      const eventScope = linkedEventCount > 1
+        ? ` · ${linkedEventCount}个事件`
+        : (eventDate ? ` · ${eventDate}` : "");
+      scope.textContent = `${scopeLabel}${eventScope} · #${representativeRank}`;
+      scope.title = "按事件证据强度排序：跨媒体、跨视频佐证优先；不代表市场影响大小";
+      const title = document.createElement("div");
+      title.className = "event-map-video-card__title";
+      title.textContent = String(item?.title || "未命名事件");
+      const linkedEventTitles = (Array.isArray(item?.linked_events) ? item.linked_events : [])
+        .map((eventItem) => String(eventItem?.title || "").trim())
+        .filter(Boolean);
+      title.title = linkedEventTitles.length > 1
+        ? linkedEventTitles.join("\n")
+        : String(item?.summary || item?.title || "");
+      const source = document.createElement("div");
+      source.className = "event-map-video-card__source";
+      source.title = `关联视频：${String(item?.primary_video?.title || "")} · 媒体：${mediaName}`;
+      const mediaIcon = document.createElement("span");
+      mediaIcon.className = "event-map-video-card__media-icon";
+      const mediaAvatarUrl = String(item?.primary_video?.media_avatar_url || "");
+      if (mediaAvatarUrl) {
+        const image = document.createElement("img");
+        image.src = mediaAvatarUrl;
+        image.alt = "";
+        image.loading = "lazy";
+        mediaIcon.appendChild(image);
+      } else {
+        mediaIcon.textContent = mediaName.slice(0, 1) || "媒";
+      }
+      const sourceText = document.createElement("span");
+      sourceText.className = "event-map-video-card__source-text";
+      sourceText.textContent = `${mediaName} · ${String(item?.primary_video?.title || "未命名视频")}`;
+      source.append(mediaIcon, sourceText);
+      copy.append(scope, title, source);
+      card.appendChild(copy);
+
+      const stop = (event) => event.stopPropagation();
+      card.addEventListener("pointerdown", stop);
+      card.addEventListener("pointerup", stop);
+      card.addEventListener("wheel", stop, { passive: true });
+      card.addEventListener("pointerenter", () => {
+        this.setMediaConnectorFocus(key);
+        this.scheduleMediaCardHover(item, card, preview);
+      });
+      card.addEventListener("pointerleave", () => {
+        this.setMediaConnectorFocus("");
+        this.scheduleMediaCardHoverCollapse(item);
+      });
+      card.addEventListener("focusin", () => this.setMediaConnectorFocus(key));
+      card.addEventListener("focusout", (event) => {
+        if (!card.contains(event.relatedTarget)) this.setMediaConnectorFocus("");
+      });
+      preview.addEventListener("click", (event) => {
+        if (event.target.closest("video")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void this.toggleMediaCard(item, card, preview, { trigger: "click" });
+      });
+      card.addEventListener("click", (event) => {
+        if (event.target.closest("button, video")) return;
+        void this.toggleMediaCard(item, card, preview, { trigger: "click" });
+      });
+      card.addEventListener("keydown", (event) => {
+        if (event.target !== card || !["Enter", " "].includes(event.key)) return;
+        event.preventDefault();
+        void this.toggleMediaCard(item, card, preview, { trigger: "click" });
+      });
+      this.mediaCardsRoot.appendChild(card);
+      this.mediaCardEntries.push({
+        key,
+        item,
+        pointIndex: pointIndices[0],
+        pointIndices,
+        card,
+        preview,
+        connectorGroup,
+        connectors,
+        placement: previousPlacements.get(key) || null,
+      });
+    }
+  }
+
+  supportsMediaCardHover() {
+    return Boolean(globalThis.matchMedia?.("(hover: hover) and (pointer: fine)")?.matches);
+  }
+
+  clearMediaCardHoverTimers() {
+    if (this.mediaCardHoverTimer !== null) clearTimeout(this.mediaCardHoverTimer);
+    if (this.mediaCardLeaveTimer !== null) clearTimeout(this.mediaCardLeaveTimer);
+    this.mediaCardHoverTimer = null;
+    this.mediaCardLeaveTimer = null;
+  }
+
+  setMediaConnectorFocus(itemKey = "") {
+    this.focusedMediaItemKey = String(itemKey || "");
+    this.syncMediaConnectorFocus();
+  }
+
+  syncMediaConnectorFocus() {
+    if (!this.mediaConnectors) return;
+    const activeKey = this.focusedMediaItemKey || this.expandedMediaItemKey;
+    this.mediaConnectors.classList.toggle("event-map-media-connectors--focused", Boolean(activeKey));
+    for (const entry of this.mediaCardEntries || []) {
+      entry.connectorGroup.classList.toggle("event-map-video-connector--focused", entry.key === activeKey);
+    }
+  }
+
+  scheduleMediaCardHover(item, card, preview) {
+    if (!this.supportsMediaCardHover() || this.mediaCardsInteracting || this.destroyed) return;
+    if (this.mediaCardLeaveTimer !== null) clearTimeout(this.mediaCardLeaveTimer);
+    this.mediaCardLeaveTimer = null;
+    const itemKey = eventMapMediaItemKey(item);
+    if (itemKey && itemKey === this.expandedMediaItemKey) return;
+    if (this.mediaCardHoverTimer !== null) clearTimeout(this.mediaCardHoverTimer);
+    this.mediaCardHoverTimer = setTimeout(() => {
+      this.mediaCardHoverTimer = null;
+      if (this.destroyed || this.mediaCardsInteracting || !card.isConnected) return;
+      void this.toggleMediaCard(item, card, preview, { trigger: "hover" });
+    }, EVENT_MAP_MEDIA_HOVER_OPEN_MS);
+  }
+
+  scheduleMediaCardHoverCollapse(item) {
+    if (!this.supportsMediaCardHover()) return;
+    if (this.mediaCardHoverTimer !== null) clearTimeout(this.mediaCardHoverTimer);
+    this.mediaCardHoverTimer = null;
+    const itemKey = eventMapMediaItemKey(item);
+    if (!itemKey || itemKey !== this.expandedMediaItemKey || this.expandedMediaTrigger !== "hover") return;
+    if (this.mediaCardLeaveTimer !== null) clearTimeout(this.mediaCardLeaveTimer);
+    this.mediaCardLeaveTimer = setTimeout(() => {
+      this.mediaCardLeaveTimer = null;
+      if (this.expandedMediaItemKey === itemKey && this.expandedMediaTrigger === "hover") this.collapseMediaCard();
+    }, EVENT_MAP_MEDIA_HOVER_CLOSE_MS);
+  }
+
+  captureMediaCardLayout(itemKey) {
+    const cards = new Map();
+    for (const entry of this.mediaCardEntries || []) {
+      const left = Number.parseFloat(entry.card.style.left);
+      const top = Number.parseFloat(entry.card.style.top);
+      const mini = entry.card.classList.contains("event-map-video-card--mini");
+      cards.set(entry.key, {
+        visible: !entry.card.hidden && Number.isFinite(left) && Number.isFinite(top),
+        left: Number.isFinite(left) ? left : 0,
+        top: Number.isFinite(top) ? top : 0,
+        width: entry.card.offsetWidth || (mini ? EVENT_MAP_MEDIA_MINI_WIDTH : EVENT_MAP_MEDIA_CARD_WIDTH),
+        height: entry.card.offsetHeight || (mini ? EVENT_MAP_MEDIA_MINI_HEIGHT : EVENT_MAP_MEDIA_CARD_HEIGHT),
+        side: entry.card.dataset.side === "left" ? "left" : "right",
+        mini,
+      });
+    }
+    return { itemKey, cards };
+  }
+
+  async toggleMediaCard(item, card, preview, { trigger = "click" } = {}) {
+    const playbackTrigger = trigger === "hover" ? "hover" : "click";
+    this.clearMediaCardHoverTimers();
+    const itemKey = eventMapMediaItemKey(item);
+    if (itemKey && itemKey === this.expandedMediaItemKey) {
+      if (playbackTrigger === "hover") return;
+      if (this.expandedMediaTrigger === "hover") {
+        this.expandedMediaTrigger = "click";
+        card.dataset.playbackTrigger = "click";
+        const video = card.querySelector("video");
+        if (video) {
+          video.defaultMuted = false;
+          video.muted = false;
+          video.removeAttribute("muted");
+          try { await video.play(); } catch { /* 保留原生播放控件供用户继续操作。 */ }
+        }
+        return;
+      }
+      this.collapseMediaCard();
+      return;
+    }
+    this.collapseMediaCard();
+    const currentEntry = this.mediaCardEntries.find((entry) => entry.key === itemKey);
+    if (currentEntry) {
+      card = currentEntry.card;
+      preview = currentEntry.preview;
+    }
+    this.expandedMediaLayout = this.captureMediaCardLayout(itemKey);
+    this.expandedMediaItemKey = itemKey;
+    this.expandedMediaTrigger = playbackTrigger;
+    card.classList.remove("event-map-video-card--mini");
+    card.classList.add("event-map-video-card--expanded");
+    card.dataset.playbackTrigger = playbackTrigger;
+    card.dataset.loading = "true";
+    this.updateMediaCards();
+    let source = null;
+    try {
+      source = await this.resolveVideoSource?.(item?.primary_video || {});
+    } catch {
+      if (this.expandedMediaItemKey === itemKey && card.isConnected) {
+        card.dataset.loading = "false";
+        card.dataset.error = "true";
+      }
+      return;
+    }
+    if (this.destroyed || this.expandedMediaItemKey !== itemKey || !card.isConnected) return;
+    card.dataset.loading = "false";
+    if (!source?.url) {
+      card.dataset.error = "true";
+      return;
+    }
+    const video = document.createElement("video");
+    video.className = "event-map-video-card__video";
+    video.controls = true;
+    video.playsInline = true;
+    video.autoplay = true;
+    video.preload = "metadata";
+    // 视频地址可能在悬停后异步返回；期间若用户已点击固定，应采用最新交互状态。
+    const hoverPreview = this.expandedMediaTrigger === "hover";
+    video.defaultMuted = hoverPreview;
+    video.muted = hoverPreview;
+    if (hoverPreview) video.setAttribute("muted", "");
+    video.src = source.url;
+    if (source.poster) video.poster = source.poster;
+    const playback = Number(item?.primary_video?.playback_position_seconds || 0);
+    if (playback > 0) video.addEventListener("loadedmetadata", () => { video.currentTime = playback; }, { once: true });
+    video.addEventListener("pointerdown", () => {
+      if (this.expandedMediaItemKey !== itemKey || this.expandedMediaTrigger !== "hover") return;
+      this.expandedMediaTrigger = "click";
+      card.dataset.playbackTrigger = "click";
+      video.defaultMuted = false;
+      video.muted = false;
+      video.removeAttribute("muted");
+    });
+    preview.replaceChildren(video);
+    try { await video.play(); } catch { /* 浏览器可能要求再次点击播放。 */ }
+  }
+
+  collapseMediaCard() {
+    this.clearMediaCardHoverTimers();
+    this.focusedMediaItemKey = "";
+    if (!this.expandedMediaItemKey && !(this.mediaRoot?.querySelector("video"))) {
+      this.syncMediaConnectorFocus();
+      return;
+    }
+    for (const entry of this.mediaCardEntries || []) {
+      entry.card.classList.remove("event-map-video-card--expanded");
+      entry.card.dataset.loading = "false";
+      entry.card.dataset.error = "false";
+      const video = entry.card.querySelector("video");
+      if (video) {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+      }
+    }
+    this.expandedMediaItemKey = "";
+    this.expandedMediaTrigger = "";
+    this.expandedMediaLayout = null;
+    this.rebuildMediaCards();
+    this.updateMediaCards();
+  }
+
+  updateMediaCards() {
+    if (!this.camera || !this.target || !this.mediaCardEntries?.length) return;
+    const width = Math.max(1, this.target.clientWidth || 1);
+    const height = Math.max(1, this.target.clientHeight || 1);
+    this.camera.updateMatrixWorld?.(true);
+    this.mediaConnectors?.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    const projectedEntries = [];
+    for (const entry of this.mediaCardEntries) {
+      const projectedAnchors = [];
+      for (const connector of entry.connectors) {
+        const pointIndex = connector.pointIndex;
+        if (!this.activeMask[pointIndex] || !this.pointVisibility[pointIndex]) continue;
+        const point = this.worldPoint(pointIndex);
+        const projected = point?.clone().project(this.camera);
+        if (!projected || projected.z < -1 || projected.z > 1 || Math.abs(projected.x) > 1 || Math.abs(projected.y) > 1) continue;
+        projectedAnchors.push({
+          connector,
+          x: (projected.x * 0.5 + 0.5) * width,
+          y: (-projected.y * 0.5 + 0.5) * height,
+        });
+      }
+      if (!projectedAnchors.length) {
+        entry.card.hidden = true;
+        entry.connectorGroup.style.display = "none";
+        continue;
+      }
+      entry.card.hidden = false;
+      const x = projectedAnchors.reduce((sum, anchor) => sum + anchor.x, 0) / projectedAnchors.length;
+      const y = projectedAnchors.reduce((sum, anchor) => sum + anchor.y, 0) / projectedAnchors.length;
+      const expanded = entry.card.classList.contains("event-map-video-card--expanded");
+      projectedEntries.push({
+        entry,
+        projectedAnchors,
+        x,
+        y,
+        preferredPlacement: entry.placement,
+        width: expanded ? (entry.card.offsetWidth || 400) : EVENT_MAP_MEDIA_CARD_WIDTH,
+        height: expanded ? (entry.card.offsetHeight || 128) : EVENT_MAP_MEDIA_CARD_HEIGHT,
+        miniWidth: EVENT_MAP_MEDIA_MINI_WIDTH,
+        miniHeight: EVENT_MAP_MEDIA_MINI_HEIGHT,
+        expanded,
+      });
+    }
+    const frozenCards = this.expandedMediaLayout?.itemKey === this.expandedMediaItemKey
+      ? this.expandedMediaLayout.cards
+      : null;
+    const layouts = frozenCards
+      ? layoutFrozenEventMapMediaCards(projectedEntries, frozenCards, { width, height })
+      : layoutEventMapMediaCards(projectedEntries, {
+        width,
+        height,
+        preservePlacement: this.mediaCardsInteracting,
+      });
+    const visibleEntries = new Set(layouts.map((layout) => layout.entry));
+    for (const entry of this.mediaCardEntries) {
+      if (visibleEntries.has(entry)) continue;
+      entry.card.hidden = true;
+      entry.connectorGroup.style.display = "none";
+    }
+    for (const layout of layouts) {
+      const { entry } = layout;
+      entry.placement = layout.placement;
+      entry.card.hidden = false;
+      entry.card.dataset.side = layout.side;
+      entry.card.classList.toggle("event-map-video-card--mini", layout.mini);
+      entry.card.style.left = `${layout.left}px`;
+      entry.card.style.top = `${layout.top}px`;
+      entry.connectorGroup.style.display = "";
+      entry.connectorGroup.classList.toggle("event-map-video-connector--expanded", layout.expanded);
+      const visibleConnectors = new Set(layout.projectedAnchors.map((anchor) => anchor.connector));
+      for (const connector of entry.connectors) {
+        if (!visibleConnectors.has(connector)) {
+          connector.path.style.display = "none";
+          connector.anchor.style.display = "none";
+          continue;
+        }
+        const projectedAnchor = layout.projectedAnchors.find((anchor) => anchor.connector === connector);
+        connector.path.style.display = "";
+        connector.anchor.style.display = "";
+        connector.path.setAttribute("d", eventMapMediaConnectorPath(projectedAnchor.x, projectedAnchor.y, layout));
+        connector.anchor.setAttribute("cx", projectedAnchor.x.toFixed(2));
+        connector.anchor.setAttribute("cy", projectedAnchor.y.toFixed(2));
+      }
+    }
+    this.syncMediaConnectorFocus();
   }
 
   shouldPlayIntro() {
@@ -827,6 +1833,174 @@ export class EventMapController {
     } catch {
       return false;
     }
+    return true;
+  }
+
+  prepareProgressiveReveal() {
+    if (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) return false;
+    this.introActive = false;
+    this.progressiveRevealPrepared = true;
+    this.progressiveRevealActive = false;
+    this.progressiveRevealStartedAt = 0;
+    this.progressiveRevealComplete = false;
+    this.coreMaterial.uniforms.uRevealProgress.value = 0;
+    this.pickMaterial.uniforms.uRevealProgress.value = 0;
+    this.labelsRoot.classList.add("event-map-label-layer--loading");
+    this.invalidate();
+    return true;
+  }
+
+  revealLabelsIfReady() {
+    if (!this.labelMetadataReady || !this.progressiveRevealComplete || !this.labelsRoot) return false;
+    if (!this.labelsRoot.classList.contains("event-map-label-layer--loading")) return true;
+    void this.labelsRoot.offsetWidth;
+    this.labelsRoot.classList.remove("event-map-label-layer--loading");
+    return true;
+  }
+
+  updateManifest(manifest = {}, { refresh = true } = {}) {
+    if (this.destroyed) return;
+    const hadMembraneTopics = Array.isArray(this.membraneTopics) && this.membraneTopics.length > 0;
+    this.manifest = manifest;
+    this.topics = Array.isArray(manifest.topics) ? manifest.topics : [];
+    this.membraneTopics = Array.isArray(manifest.topic_geometry)
+      ? manifest.topic_geometry
+      : this.topics;
+    this.topicByIndex = new Map(this.topics.map((topic, index) => [topicIndexOf(topic, index), topic]));
+    this.semanticPalette = eventMapSemanticPalette(manifest);
+    this.labelMetadataReady = Array.isArray(manifest.topics);
+    for (let index = 0; index < this.sceneData.count; index += 1) {
+      const semantic = this.semanticPalette.byTypeCode[this.sceneData.eventType[index]]
+        || this.semanticPalette.fallback;
+      const offset = index * 3;
+      this.semanticColors[offset] = semantic.rgb[0];
+      this.semanticColors[offset + 1] = semantic.rgb[1];
+      this.semanticColors[offset + 2] = semantic.rgb[2];
+    }
+    // compact manifest 已携带最终主题几何时，保留同一个网格对象，避免点集
+    // 补齐时背景重新定形。仅兼容旧快照缺少轻量主题几何的情况。
+    if (!hadMembraneTopics && this.membraneTopics.length) {
+      this.semanticMembraneTransitionStartedAt = 0;
+      this.scene.remove(this.semanticMembrane);
+      this.semanticMembrane?.geometry?.dispose();
+      this.semanticMembrane?.material?.dispose();
+      this.setupSemanticMembrane(this.rawBounds);
+    }
+    if (refresh) {
+      this.updateTopicActivity();
+      this.updateSemanticMembraneDensity({ animate: false });
+      this.updateColors();
+      this.updateLabels();
+      this.revealLabelsIfReady();
+    }
+    this.invalidate();
+  }
+
+  replaceScene(scene, { preserveRevealCount = false } = {}) {
+    if (this.destroyed || !scene) return false;
+    const previousCount = this.sceneData.count;
+    const previousRevealProgress = Number(this.coreMaterial.uniforms.uRevealProgress.value || 0);
+    const revealProgress = preserveRevealCount
+      ? Math.min(1, previousRevealProgress * previousCount / Math.max(1, scene.count))
+      : previousRevealProgress;
+    this.scene.remove(this.corePoints);
+    this.pickScene.remove(this.pickPoints);
+    this.geometry.dispose();
+    this.selectedIndex = null;
+    this.selectedDetail = null;
+    this.topicFocusIndex = null;
+    this.initializePointState(scene);
+    this.geometry = this.createPointGeometry();
+    this.applyTimeHighlightMask();
+    this.corePoints = new this.THREE.Points(this.geometry, this.coreMaterial);
+    this.corePoints.frustumCulled = false;
+    this.scene.add(this.corePoints);
+    this.pickPoints = new this.THREE.Points(this.geometry, this.pickMaterial);
+    this.pickPoints.frustumCulled = false;
+    this.pickScene.add(this.pickPoints);
+    this.coreMaterial.uniforms.uRevealProgress.value = revealProgress;
+    this.pickMaterial.uniforms.uRevealProgress.value = revealProgress;
+    this.pixelRatioLimit = scene.count > 100_000 ? 1.25 : 1.5;
+    this.updateLayers(this.layerOptions);
+    this.rebuildMediaCards();
+    this.resize();
+    this.invalidate();
+    return true;
+  }
+
+  setSceneInteractive(value) {
+    const interactive = Boolean(value);
+    if (!interactive) this.deferMembraneDensity = true;
+    this.sceneInteractive = interactive;
+    const reducedMotion = Boolean(globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+    const hydrationActive = !interactive && !reducedMotion;
+    if (hydrationActive && !this.hydrationAnimationActive) {
+      this.hydrationAnimationStartedAt = performance.now();
+    }
+    this.hydrationAnimationActive = hydrationActive;
+    const pointUniforms = this.coreMaterial?.uniforms;
+    const gridUniforms = this.horizonGrid?.material?.uniforms;
+    if (pointUniforms?.uHydrationActive) pointUniforms.uHydrationActive.value = hydrationActive ? 1 : 0;
+    if (gridUniforms?.uHydrationActive) gridUniforms.uHydrationActive.value = hydrationActive ? 1 : 0;
+    if (!hydrationActive) {
+      this.hydrationAnimationStartedAt = 0;
+      if (pointUniforms?.uHydrationTime) pointUniforms.uHydrationTime.value = 0;
+      if (gridUniforms?.uHydrationTime) gridUniforms.uHydrationTime.value = 0;
+    }
+    this.invalidate?.();
+  }
+
+  finishInitialHydration() {
+    // compact manifest 已经生成首帧最终网格。完整点集和标签无论谁先返回，
+    // 都只补数据，不重算背景；下一次真实窗口交互才恢复密度变化。
+    this.deferMembraneDensity = false;
+  }
+
+  startProgressiveReveal({
+    target = 1,
+    duration = PROGRESSIVE_REVEAL_MS,
+    complete = true,
+  } = {}) {
+    if (!this.progressiveRevealPrepared || this.destroyed) return false;
+    this.progressiveRevealFrom = Number(this.coreMaterial.uniforms.uRevealProgress.value || 0);
+    this.progressiveRevealTarget = Math.max(this.progressiveRevealFrom, Math.min(1, Number(target || 0)));
+    this.progressiveRevealDuration = Math.max(1, Number(duration || PROGRESSIVE_REVEAL_MS));
+    this.progressiveRevealCompletes = Boolean(complete);
+    this.progressiveRevealActive = true;
+    this.progressiveRevealStartedAt = performance.now();
+    this.invalidate();
+    return true;
+  }
+
+  updateProgressiveReveal(now) {
+    if (!this.progressiveRevealActive) return false;
+    const duration = Math.max(1, Number(this.progressiveRevealDuration || PROGRESSIVE_REVEAL_MS));
+    const progress = Math.min(1, Math.max(0, (now - this.progressiveRevealStartedAt) / duration));
+    const eased = 1 - Math.pow(1 - progress, 2.4);
+    const revealFrom = Number(this.progressiveRevealFrom || 0);
+    const revealTarget = Number.isFinite(Number(this.progressiveRevealTarget))
+      ? Number(this.progressiveRevealTarget)
+      : 1;
+    const revealProgress = revealFrom + (revealTarget - revealFrom) * eased;
+    this.coreMaterial.uniforms.uRevealProgress.value = revealProgress;
+    this.pickMaterial.uniforms.uRevealProgress.value = revealProgress;
+    if (progress < 1) return true;
+    this.progressiveRevealActive = false;
+    if (this.progressiveRevealCompletes !== false) {
+      this.progressiveRevealPrepared = false;
+      this.progressiveRevealComplete = true;
+      this.revealLabelsIfReady();
+    }
+    return false;
+  }
+
+  updateHydrationAnimation(now) {
+    if (!this.hydrationAnimationActive) return false;
+    const elapsedSeconds = Math.max(0, (now - this.hydrationAnimationStartedAt) / 1000);
+    const pointUniforms = this.coreMaterial?.uniforms;
+    const gridUniforms = this.horizonGrid?.material?.uniforms;
+    if (pointUniforms?.uHydrationTime) pointUniforms.uHydrationTime.value = elapsedSeconds;
+    if (gridUniforms?.uHydrationTime) gridUniforms.uHydrationTime.value = elapsedSeconds;
     return true;
   }
 
@@ -934,16 +2108,25 @@ export class EventMapController {
   updateLayers(options = {}) {
     if (this.destroyed) return;
     this.layerOptions = {
+      windowStart: String(options.windowStart || ""),
+      windowEnd: String(options.windowEnd || ""),
       typeFilter: String(options.typeFilter || ""),
       entityIndices: options.entityIndices instanceof Set ? options.entityIndices : new Set(options.entityIndices || []),
+      playing: Boolean(options.playing),
+      topicIndex: options.topicIndex !== null
+        && options.topicIndex !== undefined
+        && Number.isInteger(Number(options.topicIndex))
+        ? Number(options.topicIndex)
+        : null,
     };
+    this.coreMaterial.uniforms.uHasTopicFocus.value = this.layerOptions.topicIndex === null ? 0 : 1;
     const normalizedType = this.layerOptions.typeFilter;
     for (let index = 0; index < this.sceneData.count; index += 1) {
       this.pointVisibility[index] = (!normalizedType || String(this.sceneData.eventType[index]) === normalizedType) ? 1 : 0;
     }
     this.geometry.getAttribute("aPickable").needsUpdate = true;
-    this.commitWindow(options.windowStart, options.windowEnd);
-    this.applyActiveWindow(options.windowStart, options.windowEnd);
+    this.commitWindow(this.layerOptions.windowStart, this.layerOptions.windowEnd);
+    this.applyActiveWindow(this.layerOptions.windowStart, this.layerOptions.windowEnd);
     this.invalidate();
   }
 
@@ -957,6 +2140,7 @@ export class EventMapController {
     this.activeMask = state.activeMask;
     this.entityMask = state.entityMask;
     this.updateTopicActivity();
+    this.updateSemanticMembraneDensity();
     this.updateTopicFocusStyles();
     this.updateColors();
     this.updateStoryLines();
@@ -997,7 +2181,7 @@ export class EventMapController {
         && this.isTopicMember(pointIndex, topicIndex);
       this.topicFocusMask[pointIndex] = focused ? 1 : 0;
       this.renderOpacity[pointIndex] = this.pointVisibility[pointIndex]
-        ? (hasFocus ? (focused ? 1 : 0.48) : 1)
+        ? (hasFocus ? (focused ? 1 : 0.22) : 1)
         : 0;
     }
     this.geometry.getAttribute("aOpacity").needsUpdate = true;
@@ -1454,6 +2638,7 @@ export class EventMapController {
       }
       this.labelsRoot.appendChild(element);
     }
+    this.updateMediaCards();
     const viewportCanonicalCount = this.countViewportEvents();
     this.onViewport?.({
       sceneLevel: this.currentLevel,
@@ -1475,7 +2660,7 @@ export class EventMapController {
   }
 
   pick(clientX, clientY) {
-    if (this.destroyed || !this.renderer || !this.camera) return null;
+    if (!this.sceneInteractive || this.destroyed || !this.renderer || !this.camera) return null;
     const rect = this.renderer.domElement.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
     const ratio = this.renderer.getPixelRatio();
@@ -1580,7 +2765,7 @@ export class EventMapController {
 
   resetCamera({ animate = false } = {}) {
     this.controls.target.set(0, 0, 0);
-    this.camera.position.set(13.5, 10.5, 15.5);
+    this.camera.position.set(13.5, 10.5, 15.5).multiplyScalar(EVENT_MAP_HOME_CAMERA_SCALE);
     if (animate) {
       this.introFinalPosition = this.camera.position.clone();
       this.camera.position.multiplyScalar(1.45).applyAxisAngle(new this.THREE.Vector3(0, 1, 0), -0.24);
@@ -1657,17 +2842,30 @@ export class EventMapController {
     this.animationFrame = requestAnimationFrame((now) => this.renderFrame(now));
   }
 
+  whenFirstFrame() {
+    return this.firstFrameRendered ? Promise.resolve() : this.firstFramePromise;
+  }
+
   renderFrame(now) {
     this.animationFrame = null;
     if (this.destroyed) return;
     const transitioning = this.updateTransition(now);
+    const membraneTransitioning = this.updateSemanticMembraneTransition(now);
     const introducing = this.updateIntro(now);
     const storyAnimating = this.updateStoryAnimation(now);
+    const revealing = this.updateProgressiveReveal(now);
+    const hydrating = this.updateHydrationAnimation(now);
     const moving = this.controls.update();
-    if (transitioning || introducing || storyAnimating || moving) this.updateLabels();
+    this.updateHorizonGrid();
+    if (transitioning || membraneTransitioning || introducing || storyAnimating || moving) this.updateLabels();
     this.renderer.render(this.scene, this.camera);
+    if (!this.firstFrameRendered) {
+      this.firstFrameRendered = true;
+      this.resolveFirstFrame?.();
+      this.resolveFirstFrame = null;
+    }
     this.monitorFrameRate(now);
-    if (transitioning || introducing || storyAnimating || moving) this.invalidate();
+    if (transitioning || membraneTransitioning || introducing || storyAnimating || revealing || hydrating || moving) this.invalidate();
   }
 
   showError(message) {
@@ -1679,10 +2877,18 @@ export class EventMapController {
   destroy() {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.clearMediaCardHoverTimers();
+    for (const video of this.mediaRoot?.querySelectorAll?.("video") || []) {
+      video.pause();
+      video.removeAttribute("src");
+    }
+    this.resolveFirstFrame?.();
+    this.resolveFirstFrame = null;
     if (this.animationFrame !== null) cancelAnimationFrame(this.animationFrame);
     this.resizeObserver?.disconnect();
     this.controls?.removeEventListener("start", this.handleControlsStart);
     this.controls?.removeEventListener("change", this.handleControlsChange);
+    this.controls?.removeEventListener("end", this.handleControlsEnd);
     this.controls?.dispose();
     this.renderer?.domElement.removeEventListener("pointerdown", this.handlePointerDown);
     this.renderer?.domElement.removeEventListener("pointerup", this.handlePointerUp);
@@ -1693,8 +2899,10 @@ export class EventMapController {
       child.geometry?.dispose();
       child.material?.dispose();
     }
-    this.spacetimeGrid?.geometry?.dispose();
-    this.spacetimeGrid?.material?.dispose();
+    this.horizonGrid?.geometry?.dispose();
+    this.horizonGrid?.material?.dispose();
+    this.semanticMembrane?.geometry?.dispose();
+    this.semanticMembrane?.material?.dispose();
     this.geometry?.dispose();
     this.coreMaterial?.dispose();
     this.pickMaterial?.dispose();

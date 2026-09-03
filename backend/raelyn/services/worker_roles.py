@@ -29,7 +29,14 @@ WORKER_ROLE_TYPES: dict[str, list[str]] = {
     "audio": ["video.extract_audio"],
     "process": ["video.normalize_subtitle"],
     "asr": ["video.asr_transcribe"],
-    "sync": ["media.sync_profile", "media.sync_videos", "media.delete", "video.enrich_metadata.youtube"],
+    "sync": [
+        "media.sync_profile",
+        "media.sync_videos",
+        "media.delete",
+        "video.enrich_metadata.youtube",
+        "system.backfill_legacy_usage",
+        "system.capture_usage_snapshot",
+    ],
     "embedding": ["event.embed", "event.backfill_embeddings"],
     "analysis": list(ANALYSIS_JOB_TYPES),
     "ai": [

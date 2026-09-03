@@ -24,6 +24,8 @@ import { createV2Module } from "./modules/v2.js";
 import { createV2ViewMethods } from "../views/v2-model.js";
 import { createPlaybackModule } from "./modules/playback.js";
 import { createPlaybackViewMethods } from "../views/playback-model.js";
+import { createUsageModule } from "./modules/usage.js";
+import { createUsageViewMethods } from "../views/usage-model.js";
 
 const SIDEBAR_COLLAPSED_KEY = "raelyn.ui.sidebarCollapsed";
 const SIDEBAR_HIDDEN_KEY = "raelyn.ui.sidebarHidden";
@@ -52,6 +54,7 @@ export function createAppModel() {
     { name: "mediaSession", value: createMediaSessionModule() },
     { name: "v2", value: createV2Module() },
     { name: "playback", value: createPlaybackModule() },
+    { name: "usage", value: createUsageModule() },
     { name: "api", value: createApiMethods() },
     { name: "shared", value: createCommonViewMethods() },
     { name: "urlState", value: createUrlStateMethods({ settingsTabs: SETTINGS_TABS }) },
@@ -70,6 +73,7 @@ export function createAppModel() {
     { name: "playlistView", value: createPlaylistViewMethods() },
     { name: "v2View", value: createV2ViewMethods() },
     { name: "playbackView", value: createPlaybackViewMethods() },
+    { name: "usageView", value: createUsageViewMethods() },
     { name: "init", value: createAppInitMethods() }
   );
 }

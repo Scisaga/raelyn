@@ -8,6 +8,21 @@ export function createVideosViewMethods() {
       if (!this.videoTo) this.videoTo = this._toLocalInputValue(now);
     },
 
+    _videoListParams(offset = 0) {
+      const qs = new URLSearchParams();
+      qs.set("limit", String(this.videoLimit || 20));
+      qs.set("offset", String(offset || 0));
+      if (this.activeView === "library" && this.libraryScope === "domain" && this.selectedPlaylistId) {
+        qs.set("domain_id", String(this.selectedPlaylistId));
+      }
+      if (this.videoStatus) qs.set("status", this.videoStatus);
+      if (Array.isArray(this.videoMediaIds) && this.videoMediaIds.length) qs.set("media_id_in", this.videoMediaIds.join(","));
+      if (this.videoQuery) qs.set("q", this.videoQuery);
+      if (this.videoFrom) qs.set("published_since", new Date(this.videoFrom).toISOString());
+      if (this.videoTo) qs.set("published_until", new Date(this.videoTo).toISOString());
+      return qs;
+    },
+
     async loadVideos() {
       try {
         this.videoLoadingList = true;
@@ -23,14 +38,7 @@ export function createVideosViewMethods() {
         this.videoHasMore = true;
         this.videoLoadingMore = false;
 
-        const qs = new URLSearchParams();
-        qs.set("limit", String(this.videoLimit || 20));
-        qs.set("offset", "0");
-        if (this.videoStatus) qs.set("status", this.videoStatus);
-        if (Array.isArray(this.videoMediaIds) && this.videoMediaIds.length) qs.set("media_id_in", this.videoMediaIds.join(","));
-        if (this.videoQuery) qs.set("q", this.videoQuery);
-        if (this.videoFrom) qs.set("published_since", new Date(this.videoFrom).toISOString());
-        if (this.videoTo) qs.set("published_until", new Date(this.videoTo).toISOString());
+        const qs = this._videoListParams(0);
 
         const items = await this.api(`/videos?${qs.toString()}`);
         this.videoList = Array.isArray(items) ? items : [];
@@ -78,14 +86,7 @@ export function createVideosViewMethods() {
 
       try {
         this.videoLoadingMore = true;
-        const qs = new URLSearchParams();
-        qs.set("limit", String(this.videoLimit || 20));
-        qs.set("offset", String(this.videoOffset || 0));
-        if (this.videoStatus) qs.set("status", this.videoStatus);
-        if (Array.isArray(this.videoMediaIds) && this.videoMediaIds.length) qs.set("media_id_in", this.videoMediaIds.join(","));
-        if (this.videoQuery) qs.set("q", this.videoQuery);
-        if (this.videoFrom) qs.set("published_since", new Date(this.videoFrom).toISOString());
-        if (this.videoTo) qs.set("published_until", new Date(this.videoTo).toISOString());
+        const qs = this._videoListParams(this.videoOffset || 0);
 
         const items = await this.api(`/videos?${qs.toString()}`);
         const nextItems = Array.isArray(items) ? items : [];

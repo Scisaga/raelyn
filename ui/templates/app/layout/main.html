@@ -1,7 +1,7 @@
       <!-- Main -->
-      <main class="min-w-0 flex-1">
+      <main x-ref="mainStage" tabindex="-1" class="raelyn-main-stage min-w-0 flex-1 outline-none">
         <header
-          class="sticky top-0 z-10 h-14 border-b border-slate-800 bg-slate-950/70 backdrop-blur flex items-center justify-between px-4"
+          class="raelyn-main-header sticky top-0 z-10 h-14 border-b border-slate-800/90 backdrop-blur flex items-center justify-between px-4"
         >
           <div class="flex items-center gap-3 min-w-0">
             <button
@@ -106,7 +106,7 @@
                 @keydown.escape="semanticSearchOpen=false"
               />
               <svg class="pointer-events-none absolute right-2.5 top-2 text-slate-600" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
-              <div class="absolute right-0 top-10 z-50 max-h-[70vh] w-[28rem] overflow-auto rounded-xl border border-slate-800 bg-slate-950/98 p-2 shadow-2xl raelyn-scrollbar" x-show="semanticSearchOpen" x-transition.opacity>
+              <div class="raelyn-modal-surface absolute right-0 top-10 z-50 max-h-[70vh] w-[28rem] overflow-auto rounded-xl border border-slate-800 p-2 raelyn-scrollbar" x-show="semanticSearchOpen" x-transition.opacity>
                 <div class="px-2 py-2 text-xs text-slate-500" x-show="semanticSearchLoading">正在检索语义对象…</div>
                 <template x-for="group in semanticSearchGroupList()" :key="group.key">
                   <div class="mb-2">
@@ -130,9 +130,9 @@
         </header>
 
         <section
-          class="min-h-0"
-          :class="['overview','field','domains','stories','briefs','library','operations','settings','playlist','playlists','videos','video','media','jobs','mcp-guide'].includes(activeView) ? 'relative p-0 sm:p-0 space-y-0 overflow-hidden' : 'p-4 sm:p-5 space-y-4'"
-          :style="['overview','field','domains','stories','briefs','library','operations','settings','playlist','playlists','videos','video','media','jobs','mcp-guide'].includes(activeView) ? 'height: calc(100vh - 3.5rem);' : ''"
+          class="raelyn-view-stage min-h-0"
+          :class="['overview','field','domains','stories','library','domain-settings','operations','usage','settings','playlist','playlists','videos','video','media','jobs','mcp-guide'].includes(activeView) ? 'relative p-0 sm:p-0 space-y-0 overflow-hidden' : 'p-4 sm:p-5 space-y-4'"
+          :style="['overview','field','domains','stories','library','domain-settings','operations','usage','settings','playlist','playlists','videos','video','media','jobs','mcp-guide'].includes(activeView) ? 'height: calc(100vh - 3.5rem);' : ''"
         >
 <!-- @include ../views/overview.html -->
 
@@ -144,6 +144,8 @@
 
 <!-- @include ../views/jobs.html -->
 
+<!-- @include ../views/usage.html -->
+
 <!-- @include ../views/playlists.html -->
 
 <!-- @include ../views/field-v2.html -->
@@ -154,9 +156,9 @@
 
 <!-- @include ../views/stories.html -->
 
-<!-- @include ../views/briefs-v2.html -->
-
 <!-- @include ../views/library-toolbar.html -->
+
+<!-- @include ../views/domain-settings.html -->
 
 <!-- @include ../views/v2-modals.html -->
 
@@ -171,7 +173,7 @@
           x-transition.opacity.duration.150ms
           x-cloak
         >
-          <div class="rounded-2xl border border-emerald-500/20 bg-slate-950/95 shadow-[0_14px_34px_rgba(0,0,0,0.45)] backdrop-blur">
+          <div class="raelyn-modal-surface rounded-2xl border border-emerald-500/20 backdrop-blur">
             <div class="flex items-start gap-3 px-4 py-3">
               <div class="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-400"></div>
               <div class="min-w-0 flex-1">
@@ -216,7 +218,7 @@
           x-transition.opacity.duration.150ms
           x-cloak
         >
-          <div class="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
+          <div class="raelyn-modal-surface w-full max-w-md rounded-2xl border border-slate-800">
             <div class="flex items-start justify-between gap-3 border-b border-slate-800 px-5 py-4">
               <div>
                 <div class="text-sm font-semibold text-slate-100" x-text="pwaCardTitle()"></div>

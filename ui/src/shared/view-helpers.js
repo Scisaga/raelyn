@@ -82,36 +82,133 @@ export function createCommonViewMethods() {
       return resolveMediaItemsByIds(this.mediaIndex, this.videoMediaIds);
     },
 
+    videoMediaOptionIndex() {
+      const items = Array.isArray(this.mediaIndex) ? this.mediaIndex : [];
+      const isDomainLibrary = this.activeView === "library" && this.libraryScope === "domain";
+      if (!isDomainLibrary) return items;
+      const allowed = new Set((this.libraryDomainMediaIds || []).map((id) => String(id)));
+      return items.filter((media) => allowed.has(String(media?.id || "")));
+    },
+
     videoFilteredMediaOptions() {
-      return filterUnselectedMediaOptions({
-        index: this.mediaIndex,
-        selectedIds: this.videoMediaIds,
-        query: this.videoMediaTagQuery,
-        displayName: (media) => this.mediaDisplayName(media),
-      });
+      const needle = String(this.videoMediaTagQuery || "").trim().toLowerCase();
+      return this.videoMediaOptionIndex()
+        .filter((media) => {
+          if (!needle) return true;
+          const text = [this.mediaDisplayName(media), media?.provider, media?.url]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+          return text.includes(needle);
+        })
+        .slice(0, 200);
     },
 
-    videoAddMediaTag(mediaId) {
-      this.videoMediaIds = addUniqueMediaId(this.videoMediaIds, mediaId);
+    videoMediaFilterLabel() {
+      const selected = this.videoSelectedMedia();
+      if (!this.videoMediaIds?.length) return `全部媒体（${this.videoMediaOptionIndex().length}）`;
+      if (this.videoMediaIds.length === 1) {
+        return selected[0] ? this.mediaDisplayName(selected[0]) : "已选 1 个媒体";
+      }
+      return `已选 ${this.videoMediaIds.length} 个媒体`;
+    },
+
+    videoOpenMediaFilter() {
+      this.videoMediaDraftIds = [...new Set((this.videoMediaIds || []).map((id) => String(id)))];
       this.videoMediaTagQuery = "";
+      this.videoMediaTagOpen = true;
+    },
+
+    videoMediaDraftSelected(mediaId) {
+      return (this.videoMediaDraftIds || []).map((id) => String(id)).includes(String(mediaId || ""));
+    },
+
+    videoToggleMediaDraft(mediaId) {
+      const id = String(mediaId || "").trim();
+      if (!id) return;
+      if (this.videoMediaDraftSelected(id)) {
+        this.videoMediaDraftIds = (this.videoMediaDraftIds || []).filter((item) => String(item) !== id);
+      } else {
+        this.videoMediaDraftIds = [...(this.videoMediaDraftIds || []), id];
+      }
+    },
+
+    videoClearMediaDraft() {
+      this.videoMediaDraftIds = [];
+    },
+
+    videoApplyMediaFilter() {
+      this.videoMediaIds = [...new Set((this.videoMediaDraftIds || []).map((id) => String(id)).filter(Boolean))];
       this.videoMediaTagOpen = false;
       this.loadVideos();
     },
 
-    videoAddFirstFilteredMediaTag() {
-      const items = this.videoFilteredMediaOptions();
-      if (items.length) this.videoAddMediaTag(items[0].id);
+    videoOpenTimeFilter() {
+      this.videoTimeDraftFrom = this.videoFrom || "";
+      this.videoTimeDraftTo = this.videoTo || "";
+      this.videoTimeFilterOpen = true;
     },
 
-    videoRemoveMediaTag(mediaId) {
-      this.videoMediaIds = removeMediaId(this.videoMediaIds, mediaId);
+    videoTimeFilterLabel() {
+      if (!this.videoFrom && !this.videoTo) return "全部时间";
+      const from = this.videoFrom ? new Date(this.videoFrom) : null;
+      const to = this.videoTo ? new Date(this.videoTo) : null;
+      if (from && to && Number.isFinite(from.getTime()) && Number.isFinite(to.getTime())) {
+        const hours = (to.getTime() - from.getTime()) / 3600000;
+        if (Math.abs(hours - 24) < 0.1) return "最近 24 小时";
+        if (Math.abs(hours - 168) < 0.1) return "最近 7 天";
+        if (Math.abs(hours - 720) < 0.1) return "最近 30 天";
+      }
+      const format = (value) => {
+        if (!value) return "不限";
+        const date = new Date(value);
+        if (!Number.isFinite(date.getTime())) return "不限";
+        return date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
+      };
+      return `${format(this.videoFrom)} 至 ${format(this.videoTo)}`;
+    },
+
+    videoSetTimePreset(hours) {
+      if (!hours) {
+        this.videoFrom = "";
+        this.videoTo = "";
+      } else {
+        const now = new Date();
+        this.videoFrom = this._toLocalInputValue(new Date(now.getTime() - Number(hours) * 3600000));
+        this.videoTo = this._toLocalInputValue(now);
+      }
+      this.videoTimeDraftFrom = this.videoFrom;
+      this.videoTimeDraftTo = this.videoTo;
+      this.videoTimeFilterOpen = false;
       this.loadVideos();
     },
 
-    videoClearMediaTags() {
+    videoApplyTimeFilter() {
+      const from = this.videoTimeDraftFrom ? new Date(this.videoTimeDraftFrom) : null;
+      const to = this.videoTimeDraftTo ? new Date(this.videoTimeDraftTo) : null;
+      if (from && to && from.getTime() >= to.getTime()) {
+        this.globalStatus = "error: 起始时间必须早于结束时间";
+        return;
+      }
+      this.videoFrom = this.videoTimeDraftFrom || "";
+      this.videoTo = this.videoTimeDraftTo || "";
+      this.videoTimeFilterOpen = false;
+      this.loadVideos();
+    },
+
+    videoResetFilters() {
       this.videoMediaIds = [];
+      this.videoMediaDraftIds = [];
+      this.videoStatus = "";
+      this.videoQuery = "";
       this.videoMediaTagQuery = "";
       this.videoMediaTagOpen = false;
+      this.videoTimeFilterOpen = false;
+      const now = new Date();
+      this.videoFrom = this._toLocalInputValue(new Date(now.getTime() - 24 * 3600000));
+      this.videoTo = this._toLocalInputValue(now);
+      this.videoTimeDraftFrom = this.videoFrom;
+      this.videoTimeDraftTo = this.videoTo;
       this.loadVideos();
     },
 
@@ -122,6 +219,7 @@ export function createCommonViewMethods() {
       this.videoMediaIds = [id];
       this.videoStatus = "";
       this.videoQuery = "";
+      this.videoMediaDraftIds = [id];
       this.videoMediaTagQuery = "";
       this.videoMediaTagOpen = false;
 

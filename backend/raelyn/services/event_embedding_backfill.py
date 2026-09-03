@@ -563,7 +563,10 @@ def backfill_event_embeddings(session: Session, *, job: Job) -> dict[str, Any]:
             continue
 
         try:
-            vectors = embed_texts([candidate.text for candidate in candidates])
+            vectors = embed_texts(
+                [candidate.text for candidate in candidates],
+                usage_operation="event_embedding_backfill",
+            )
             vectors = validate_embedding_batch(
                 vectors,
                 expected_count=len(candidates),

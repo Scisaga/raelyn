@@ -39,6 +39,8 @@ class JobRegistryImportTests(unittest.TestCase):
             "playlist.prune_event_map_snapshots",
             "brief.generate_period",
             "brief.generate_daily",
+            "system.backfill_legacy_usage",
+            "system.capture_usage_snapshot",
         }
         for job_type in expected:
             self.assertIsNotNone(registry.get(job_type), job_type)

@@ -91,6 +91,7 @@
 - `/api/workers` 返回 worker 在线情况、角色分布、最后心跳时间，以及 worker 角色暂停状态。
 - `/api/workers/roles/{role}/pause|resume` 支持人工暂停 / 恢复具体 worker 角色继续领取新任务。
 - `/api/stats` 返回概览页统计、最近媒体 / 视频 / 播放列表，以及 ASR / LLM 使用量。
+- `/api/usage` 为独立资源用量页返回实时当前摘要、7 / 30 / 90 天日趋势、外部服务与逻辑资产构成，以及采集覆盖状态。
 - `/api/jobs` 与 `/api/ws/*` 提供任务列表、事件、时序统计和实时刷新能力。
 - `/api/cleanup/stale-videos` 用于扫描 / 清理“已停用监控、仍处于 discovered、且没有有效下载任务或视频资产”的遗留视频记录。
 
@@ -98,5 +99,10 @@
 
 - worker 启动时会写入心跳，并回收孤儿 `running` 任务。
 - worker 角色暂停只影响后续 claim，不影响已经 `running` 的任务，也不代替进程启停。
+- LLM、ASR 与 Embedding 客户端在真实外部调用边界记录 `ExternalServiceUsageDaily`；成功、失败、耗时和可用 token 以 `Asia/Shanghai` 日桶原子累加，不记录站内 HTTP 请求或敏感请求正文。统计写入使用独立短事务，统计失败不会改变外部调用本身的业务结果。
+- Scheduler 在 `usage.legacy_llm_backfill` 标记版本过旧时幂等投递一次 `system.backfill_legacy_usage`，由 `sync` worker 从终态 Job 结果精确重建 `legacy.*` LLM 日聚合，并从带任务尝试号的 ASR 请求事件重建可核验的 `legacy.video_transcription` 日聚合。没有请求事件的旧 ASR 任务不会被推算为调用；事件抽取运行表也不参与迁移，避免与 Job 结果重复。
+- Scheduler 每小时检查资源快照是否到期，只幂等投递低优先级 `system.capture_usage_snapshot`，不在 scheduler 进程扫描 `video` / `asset` 或调用 `pg_database_size`。该任务归属 `sync` worker，由 worker 实时计算仍存在的视频数、逻辑资产量和数据库规模，并以当日较新的 `captured_at` 幂等更新 `ResourceUsageDaily`。
+- `/api/usage` 保持只读：已下载视频库存按现存 `Asset(type=video)` 的去重 `video_id` 计算，每日实际下载量按成功结束且未跳过、未重排队的 `video.download*` 任务完成时间统计；来源记录发现和批量迁移不进入下载趋势。调用趋势合并实时行与独立的历史迁移行，历史逻辑资产与数据库趋势只读快照。采集启用前或采样缺失的资源日桶返回 `null`，当天数据允许是部分采样；非 PostgreSQL 数据库规模为 `null`。
+- 对象存储统计只表达 `Asset.size_bytes` 逻辑量。当前没有跨本机、容器与远端对象存储可靠成立的物理磁盘容量来源，因此不提供磁盘总量、余量或占用率。
 - 主站 API Bearer Token 开启后，`/api/*` 需要 `Authorization` 或 `raelyn_api_token` cookie，`/api/ws/*` 需要 query `token`。
 - 系统 / provider 暂停主要用于 Cookies 失效、平台风控或人工运维时的保护性停机。

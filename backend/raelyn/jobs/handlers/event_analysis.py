@@ -23,6 +23,11 @@ from raelyn.services.event_analysis import (
 )
 from raelyn.services.event_map_retention import prune_event_map_snapshots
 from raelyn.services.event_embedding_backfill import backfill_event_embeddings
+from raelyn.services.domain_observation_control import (
+    enabled_observation_video_ids,
+    event_has_enabled_observation,
+    video_has_enabled_observation,
+)
 from raelyn.timeutil import utcnow
 
 
@@ -115,6 +120,8 @@ def video_extract_events(session: Session, job: Job) -> dict | None:
     video = session.get(Video, video_id)
     if not video:
         return {"skipped": "video not found"}
+    if not video_has_enabled_observation(session, video_id):
+        return {"skipped": "domain observation is disabled"}
     return extract_video_events(session, video_id=video_id, force=bool(job.params.get("force", False)), job=job)
 
 
@@ -131,6 +138,10 @@ def video_extract_events_batch(session: Session, job: Job) -> dict | None:
             continue
     if not video_ids:
         return {"skipped": "no valid video ids"}
+    enabled_ids = enabled_observation_video_ids(session, video_ids)
+    video_ids = [video_id for video_id in video_ids if video_id in enabled_ids]
+    if not video_ids:
+        return {"skipped": "domain observation is disabled"}
     return extract_video_events_batch(
         session,
         video_ids=video_ids,
@@ -172,6 +183,8 @@ def playlist_backfill_events_range(session: Session, job: Job) -> dict | None:
 @registry.register("event.embed")
 def event_embed(session: Session, job: Job) -> dict | None:
     event_id = uuid.UUID(str(job.params["event_id"]))
+    if not event_has_enabled_observation(session, event_id):
+        return {"skipped": "domain observation is disabled"}
     return embed_event(session, event_id=event_id)
 
 
@@ -195,6 +208,12 @@ def playlist_mark_event_map_dirty(session: Session, job: Job) -> dict | None:
     state.last_dirty_at = now
     state.last_requested_at = now
     state.last_error = None
+    if playlist.observation_enabled is False:
+        return {
+            "dirty_generation": int(state.dirty_generation),
+            "build_job_id": None,
+            "outcome": "observation_disabled",
+        }
     build_job_id = _enqueue_dirty_event_map_build(
         session,
         playlist_id=playlist_id,
@@ -215,6 +234,16 @@ def playlist_build_event_map_snapshot(session: Session, job: Job) -> dict | None
     if not playlist:
         return {"skipped": "playlist not found"}
     state = _locked_event_map_state(session, playlist_id)
+    if playlist.observation_enabled is False:
+        if state.active_job_id == job.id:
+            state.active_job_id = None
+        return {
+            "ok": True,
+            "outcome": "observation_disabled",
+            "playlist_id": str(playlist_id),
+            "dirty_generation": int(state.dirty_generation or 0),
+            "built_generation": int(state.built_generation or 0),
+        }
     trigger = str((job.params or {}).get("trigger") or "dirty").strip().lower()
     requested_generation = int((job.params or {}).get("requested_generation") or 0)
     if trigger != "manual" and int(state.dirty_generation or 0) <= int(state.built_generation or 0):
@@ -268,7 +297,7 @@ def playlist_build_event_map_snapshot(session: Session, job: Job) -> dict | None
     if int(state.dirty_generation or 0) <= int(state.built_generation or 0):
         state.first_dirty_at = None
         state.last_dirty_at = None
-    else:
+    elif result.get("outcome") != "superseded_by_active_dirty":
         _enqueue_dirty_event_map_build(
             session,
             playlist_id=playlist_id,

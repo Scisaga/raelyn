@@ -15,13 +15,16 @@ from raelyn.timeutil import utcnow
 
 
 def _default_max_attempts(type_: str) -> int | None:
-    # Keep retries low for provider-facing jobs to avoid hammering platforms when blocked (e.g. 352/412).
+    # 第三方平台任务保持低重试次数，避免受限时持续冲击上游；周期资源快照也只重试一次，
+    # 后续由 Scheduler 再次按时投递。
     # "1 retry" => max_attempts=2 (first try + one retry).
     if type_ in {
         "media.sync_profile",
         "media.sync_videos",
         "media.delete",
         "video.enrich_metadata.youtube",
+        "system.backfill_legacy_usage",
+        "system.capture_usage_snapshot",
         "video.download",
         "video.backfill_subtitles",
         "video.backfill_subtitles.youtube",
@@ -62,6 +65,29 @@ def _brief_period_start(d: date, granularity: str) -> date:
 
 
 def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+    if type_ == "system.backfill_legacy_usage":
+        if not isinstance(params, dict):
+            return None, params
+        params2 = dict(params)
+        try:
+            version = int(params2.get("version") or 0)
+        except (TypeError, ValueError):
+            return None, params2
+        if version != 1:
+            return None, params2
+        params2["version"] = version
+        return f"system_usage_legacy_backfill:v{version}", params2
+
+    if type_ == "system.capture_usage_snapshot":
+        if not isinstance(params, dict):
+            return None, params
+        params2 = dict(params)
+        snapshot_date = _parse_iso_date(params2.get("date"))
+        if snapshot_date is None:
+            return None, params2
+        params2["date"] = snapshot_date.isoformat()
+        return f"system_usage_snapshot:{snapshot_date.isoformat()}", params2
+
     if type_ in {"media.sync_profile", "media.sync_videos"}:
         if not isinstance(params, dict):
             return None, params

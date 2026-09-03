@@ -137,9 +137,12 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
 
     _applySidebarMode() {
       const mobilePortrait = this._isMobilePortrait();
+      if (mobilePortrait !== this.sidebarMobilePortrait && this.domainSwitcherOpen && !this.domainSwitcherSwitching) {
+        this.closeDomainSwitcherMenu?.({ restoreFocus: false });
+      }
 
       if (mobilePortrait) {
-        if (!this.sidebarMobilePortrait) this.sidebarHidden = true;
+        if (!this.sidebarMobilePortrait && !this.domainSwitcherSwitching) this.sidebarHidden = true;
         this.sidebarCollapsed = true;
       } else {
         this.sidebarHidden = false;
@@ -156,7 +159,11 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
     },
 
     toggleSidebar() {
+      if (this.domainSwitcherSwitching) return;
       if (this.sidebarMobilePortrait) {
+        if (!this.sidebarHidden && this.domainSwitcherOpen) {
+          this.closeDomainSwitcherMenu?.({ restoreFocus: false });
+        }
         this.sidebarHidden = !this.sidebarHidden;
         try {
           localStorage.setItem(sidebarHiddenKey, this.sidebarHidden ? "1" : "0");
@@ -166,6 +173,7 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
         return;
       }
 
+      if (this.domainSwitcherOpen) this.closeDomainSwitcherMenu?.({ restoreFocus: false });
       this.sidebarCollapsed = !this.sidebarCollapsed;
       try {
         localStorage.setItem(sidebarCollapsedKey, this.sidebarCollapsed ? "1" : "0");

@@ -168,6 +168,12 @@ class PlaylistApiTests(unittest.TestCase):
             member_count=18,
             input_record_count=18,
             skipped_reason_counts={"missing_event_time": 2},
+            bounds={"x": [-1.0, 1.0], "y": [-1.0, 1.0], "z": [-1.0, 1.0]},
+            type_categories=[{"code": 4, "label": "政策"}],
+            monthly_distribution=[
+                {"month": "2026-07", "canonical_count": 4, "record_count": 6},
+                {"month": "2026-08", "canonical_count": 8, "record_count": 12},
+            ],
         )
         session = Mock()
 
@@ -183,17 +189,119 @@ class PlaylistApiTests(unittest.TestCase):
         session.get.side_effect = get
         with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
             with patch("raelyn.api.playlists._active_event_map_build_job", return_value=None):
-                with patch("raelyn.api.playlists._active_playlist_event_backfill_job", return_value=None):
+                with patch(
+                    "raelyn.api.playlists._active_playlist_event_backfill_job",
+                    side_effect=AssertionError("compact manifest 不应扫描完整 backfill 任务树"),
+                ):
                     with patch("raelyn.api.playlists.playlist_event_map_coverage") as coverage:
-                        result = get_playlist_event_map_manifest(playlist_id, compact=True)
+                        with patch(
+                            "raelyn.api.playlists._compact_playlist_event_backfill_job_payload",
+                            return_value=None,
+                        ):
+                            with patch(
+                                "raelyn.api.playlists._compact_event_map_topic_geometry",
+                                return_value=[
+                                    {
+                                        "topic_index": 0,
+                                        "level": 0,
+                                        "center_x": 0.25,
+                                        "center_y": -0.5,
+                                        "center_z": 0.75,
+                                        "radius": 1.5,
+                                        "canonical_count": 9,
+                                    }
+                                ],
+                            ):
+                                result = get_playlist_event_map_manifest(playlist_id, compact=True)
 
         coverage.assert_not_called()
         session.execute.assert_not_called()
         self.assertEqual(result["snapshot_id"], str(snapshot_id))
         self.assertEqual(result["canonical_count"], 12)
         self.assertEqual(result["record_count"], 18)
+        self.assertEqual(result["dimension"], 3)
+        self.assertEqual(result["scene_record_size"], _EVENT_MAP_SCENE_RECORD.size)
+        self.assertEqual(result["bounds"]["x"], [-1.0, 1.0])
+        self.assertTrue(result["semantic_families"])
+        self.assertEqual(result["type_categories"][0]["code"], 4)
+        self.assertEqual(result["monthly_distribution"], snapshot.monthly_distribution)
+        self.assertEqual(result["topic_geometry"][0]["canonical_count"], 9)
+        self.assertNotIn("label", result["topic_geometry"][0])
         self.assertNotIn("topics", result)
-        self.assertNotIn("topics", result)
+
+    def test_compact_event_map_manifest_returns_only_lightweight_backfill_status(self) -> None:
+        playlist_id = uuid.uuid4()
+        compact_job = {
+            "job_id": str(uuid.uuid4()),
+            "status": "running",
+            "progress_current": 3,
+            "progress_total": 10,
+            "created_at": datetime.now(timezone.utc),
+            "started_at": datetime.now(timezone.utc),
+            "cancel_requested_at": None,
+        }
+        session = Mock()
+
+        def get(model, _key):
+            if model is Playlist:
+                return object()
+            return None
+
+        session.get.side_effect = get
+        with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
+            with patch("raelyn.api.playlists._active_event_map_build_job", return_value=None):
+                with patch(
+                    "raelyn.api.playlists._active_playlist_event_backfill_job",
+                    side_effect=AssertionError("compact manifest 不应扫描完整 backfill 任务树"),
+                ):
+                    with patch(
+                        "raelyn.api.playlists._playlist_event_backfill_job_out",
+                        side_effect=AssertionError("compact manifest 不应汇总 backfill 子任务"),
+                    ):
+                        with patch(
+                            "raelyn.api.playlists._compact_playlist_event_backfill_job_payload",
+                            return_value=compact_job,
+                        ):
+                            result = get_playlist_event_map_manifest(playlist_id, compact=True)
+
+        self.assertEqual(result["backfill_job"], compact_job)
+        self.assertNotIn("range_finished", result["backfill_job"])
+        self.assertNotIn("video_total", result["backfill_job"])
+
+    def test_full_event_map_manifest_keeps_detailed_backfill_aggregation(self) -> None:
+        playlist_id = uuid.uuid4()
+        backfill_job = object()
+        detailed_job = {"status": "running", "range_finished": 2, "video_total": 11}
+        detailed_out = Mock()
+        detailed_out.model_dump.return_value = detailed_job
+        session = Mock()
+
+        def get(model, _key):
+            if model is Playlist:
+                return object()
+            return None
+
+        session.get.side_effect = get
+        with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
+            with patch("raelyn.api.playlists._active_event_map_build_job", return_value=None):
+                with patch(
+                    "raelyn.api.playlists._active_playlist_event_backfill_job",
+                    return_value=backfill_job,
+                ) as active_backfill:
+                    with patch(
+                        "raelyn.api.playlists._playlist_event_backfill_job_out",
+                        return_value=detailed_out,
+                    ) as aggregate_backfill:
+                        with patch(
+                            "raelyn.api.playlists.playlist_event_map_coverage",
+                            return_value={"event_total": 7},
+                        ):
+                            result = get_playlist_event_map_manifest(playlist_id)
+
+        active_backfill.assert_called_once_with(session, playlist_id)
+        aggregate_backfill.assert_called_once_with(session, backfill_job)
+        self.assertEqual(result["backfill_job"], detailed_job)
+        self.assertEqual(result["event_total"], 7)
 
     def test_event_map_manifest_can_pin_an_available_historical_snapshot(self) -> None:
         playlist_id = uuid.uuid4()
@@ -217,6 +325,9 @@ class PlaylistApiTests(unittest.TestCase):
             member_count=9,
             input_record_count=9,
             skipped_reason_counts={},
+            bounds={},
+            type_categories=[],
+            monthly_distribution=[],
         )
         session = Mock()
 
@@ -232,12 +343,13 @@ class PlaylistApiTests(unittest.TestCase):
         session.get.side_effect = get
         with patch("raelyn.api.playlists.session_scope", lambda: _fake_session_scope(session)):
             with patch("raelyn.api.playlists._active_event_map_build_job", return_value=None):
-                with patch("raelyn.api.playlists._active_playlist_event_backfill_job", return_value=None):
-                    result = get_playlist_event_map_manifest(
-                        playlist_id,
-                        compact=True,
-                        snapshot_id=historical_id,
-                    )
+                with patch("raelyn.api.playlists._compact_playlist_event_backfill_job_payload", return_value=None):
+                    with patch("raelyn.api.playlists._compact_event_map_topic_geometry", return_value=[]):
+                        result = get_playlist_event_map_manifest(
+                            playlist_id,
+                            compact=True,
+                            snapshot_id=historical_id,
+                        )
 
         self.assertEqual(result["snapshot_id"], str(historical_id))
         self.assertFalse(result["is_current"])
@@ -343,6 +455,17 @@ class PlaylistApiTests(unittest.TestCase):
         self.assertNotIn("event_map_canonical.time_basis", compiled)
         self.assertNotIn("event_map_canonical.reason_codes", compiled)
 
+    def test_event_map_scene_preview_query_samples_by_stride_and_limits_rows(self) -> None:
+        statement = _event_map_scene_statement(
+            snapshot_id=uuid.uuid4(),
+            point_stride=15,
+            limit=12_000,
+        )
+
+        compiled = str(statement.compile(dialect=postgresql.dialect())).lower()
+        self.assertIn("point_index %", compiled)
+        self.assertIn("limit", compiled)
+
     def test_event_map_scene_batches_binary_records_into_one_chunk(self) -> None:
         topic_id = uuid.uuid4()
         canonical_ids = [uuid.uuid4(), uuid.uuid4()]
@@ -385,6 +508,42 @@ class PlaylistApiTests(unittest.TestCase):
         self.assertEqual(first[11:], (3, 4, 4))
         self.assertEqual(second[0], 1)
         self.assertEqual(second[9], 2)
+
+    def test_event_map_scene_preview_reindexes_sampled_rows_for_client_protocol(self) -> None:
+        canonical_ids = [uuid.uuid4(), uuid.uuid4()]
+        rows = [
+            (
+                point_index,
+                canonical_id,
+                float(point_index),
+                0.0,
+                0.0,
+                10,
+                11,
+                2,
+                1,
+                False,
+                0,
+                1,
+                None,
+                None,
+            )
+            for point_index, canonical_id in zip((0, 15), canonical_ids, strict=True)
+        ]
+
+        body = b"".join(
+            _event_map_scene_chunks(
+                rows,
+                canonical_count=2,
+                topic_order={},
+                reindex=True,
+            )
+        )
+
+        first = _EVENT_MAP_SCENE_RECORD.unpack_from(body, 0)
+        second = _EVENT_MAP_SCENE_RECORD.unpack_from(body, _EVENT_MAP_SCENE_RECORD.size)
+        self.assertEqual((first[0], second[0]), (0, 1))
+        self.assertEqual(uuid.UUID(bytes=second[1]), canonical_ids[1])
 
     def test_event_map_topic_search_returns_anchor_location(self) -> None:
         playlist_id = uuid.uuid4()

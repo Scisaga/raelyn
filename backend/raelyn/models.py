@@ -91,7 +91,10 @@ class Video(Base):
     assets: Mapped[list["Asset"]] = relationship(back_populates="video", cascade="all, delete-orphan")
     time_evidence: Mapped[list["VideoTimeEvidence"]] = relationship(back_populates="video", cascade="all, delete-orphan")
 
-    __table_args__ = (UniqueConstraint("provider", "provider_video_id", name="video_provider_video_id_ux"),)
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_video_id", name="video_provider_video_id_ux"),
+        Index("video_created_at_idx", "created_at"),
+    )
 
 
 class VideoTimeEvidence(Base):
@@ -181,6 +184,7 @@ class Playlist(Base):
     background_s3_key: Mapped[str | None] = mapped_column(String, nullable=True)
     avatar_asset_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("asset.id"), nullable=True)
     background_asset_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("asset.id"), nullable=True)
+    observation_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     brief_granularity: Mapped[str] = mapped_column(String, nullable=False, default="day")
     brief_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
@@ -874,13 +878,22 @@ class EventMapStoryIdentity(Base):
         nullable=False,
     )
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    stable_title: Mapped[str] = mapped_column(String, nullable=False)
     created_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     retired_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    last_material_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    last_material_changed_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
     __table_args__ = (
         Index("event_map_story_identity_playlist_idx", "playlist_id", "status", "created_at"),
+        Index(
+            "event_map_story_identity_material_idx",
+            "playlist_id",
+            "status",
+            "last_material_changed_at",
+        ),
     )
 
 
@@ -900,7 +913,10 @@ class EventMapStory(Base):
     )
     title: Mapped[str] = mapped_column(String, nullable=False)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    story_type: Mapped[str] = mapped_column(String, nullable=False, default="sequence")
+    story_type: Mapped[str] = mapped_column(String, nullable=False, default="trajectory")
+    anchor_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    maturity: Mapped[str] = mapped_column(String, nullable=False, default="emerging")
+    quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     event_time_start: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
     event_time_end: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
     canonical_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -909,6 +925,7 @@ class EventMapStory(Base):
     __table_args__ = (
         UniqueConstraint("snapshot_id", "story_identity_id", name="event_map_story_snapshot_identity_ux"),
         Index("event_map_story_identity_idx", "story_identity_id", "snapshot_id"),
+        Index("event_map_story_quality_idx", "snapshot_id", "maturity", "quality_score"),
     )
 
 
@@ -949,7 +966,8 @@ class EventMapStoryEdge(Base):
     score: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="automatic")
     evidence_revision_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
-    method_version: Mapped[str] = mapped_column(String, nullable=False, default="story-v1")
+    evidence_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    method_version: Mapped[str] = mapped_column(String, nullable=False, default="story-v2")
     created_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
     __table_args__ = (
@@ -1000,7 +1018,10 @@ class EventMapStoryHistoryRevision(Base):
     story_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     title: Mapped[str] = mapped_column(String, nullable=False)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    story_type: Mapped[str] = mapped_column(String, nullable=False, default="sequence")
+    story_type: Mapped[str] = mapped_column(String, nullable=False, default="trajectory")
+    anchor_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    maturity: Mapped[str] = mapped_column(String, nullable=False, default="emerging")
+    quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     event_time_start: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
     event_time_end: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
     member_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
@@ -1234,3 +1255,35 @@ class AppConfig(Base):
     key: Mapped[str] = mapped_column(String, primary_key=True)
     value: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     updated_at: Mapped[Any] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class ExternalServiceUsageDaily(Base):
+    __tablename__ = "external_service_usage_daily"
+
+    day: Mapped[Any] = mapped_column(Date, primary_key=True)
+    service: Mapped[str] = mapped_column(String, primary_key=True)
+    operation: Mapped[str] = mapped_column(String, primary_key=True)
+    provider: Mapped[str] = mapped_column(String, primary_key=True, default="")
+    model: Mapped[str] = mapped_column(String, primary_key=True, default="")
+
+    call_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    success_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    failure_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    total_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    duration_ms: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    usage_missing_calls: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    last_called_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ResourceUsageDaily(Base):
+    __tablename__ = "resource_usage_daily"
+
+    day: Mapped[Any] = mapped_column(Date, primary_key=True)
+    captured_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=False)
+    video_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    asset_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    asset_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    asset_missing_size_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    database_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

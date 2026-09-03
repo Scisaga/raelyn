@@ -245,7 +245,7 @@ export function createPlaylistViewMethods() {
     },
 
     playlistCalendarResolvedAnchor(rawAnchor = null) {
-      const g = this.playlistGranularity();
+      const g = this.playlistCalendarGranularity();
       const rawStart = String(this.playlistTimelineStart || "").trim();
       const rawEnd = String(this.playlistTimelineEnd || "").trim();
       const start = this._periodStartIso(rawStart, g);
@@ -402,7 +402,7 @@ export function createPlaylistViewMethods() {
 
     playlistCalendarCommitSettledStep(step) {
       const delta = Number(step || 0);
-      const g = this.playlistGranularity();
+      const g = this.playlistCalendarGranularity();
       const start = String(this.playlistTimelineStart || "").trim();
       const end = String(this.playlistTimelineEnd || "").trim();
       const selected = this._periodStartIso(String(this.playlistSelectedDate || "").trim(), g);
@@ -449,7 +449,7 @@ export function createPlaylistViewMethods() {
     },
 
     playlistCalendarCanJump(deltaPeriods) {
-      const g = this.playlistGranularity();
+      const g = this.playlistCalendarGranularity();
       const start = String(this.playlistTimelineStart || "").trim();
       const end = String(this.playlistTimelineEnd || "").trim();
       const selected = String(this.playlistSelectedDate || "").trim();
@@ -944,13 +944,16 @@ export function createPlaylistViewMethods() {
 
     playlistGranularity() {
       try {
-        if (this.activeView === "playlist") return "day";
         const detailGranularity = this.playlistDetail && this.playlistDetail.brief_granularity ? String(this.playlistDetail.brief_granularity) : "";
         const next = (detailGranularity || this.playlistSettingsGranularityDraft || "day").trim().toLowerCase();
         return ["day", "week", "month"].includes(next) ? next : "day";
       } catch {
         return "day";
       }
+    },
+
+    playlistCalendarGranularity() {
+      return this.playlistGranularity();
     },
 
     playlistBriefTitle() {
@@ -1347,7 +1350,7 @@ export function createPlaylistViewMethods() {
     },
 
     playlistPeriodUnitZh() {
-      const g = this.playlistGranularity();
+      const g = this.playlistCalendarGranularity();
       if (g === "week") return "周";
       if (g === "month") return "月";
       return "天";
@@ -1362,7 +1365,7 @@ export function createPlaylistViewMethods() {
     },
 
     playlistJumpDelta(kind) {
-      const g = this.playlistGranularity();
+      const g = this.playlistCalendarGranularity();
       const k = String(kind || "").trim();
       if (g === "day") {
         if (k === "back_big") return -30;
@@ -1387,7 +1390,7 @@ export function createPlaylistViewMethods() {
     },
 
     playlistJumpTitle(kind) {
-      const g = this.playlistGranularity();
+      const g = this.playlistCalendarGranularity();
       const k = String(kind || "").trim();
       if (g === "day") {
         if (k === "back_big") return "-1月";
@@ -1411,7 +1414,7 @@ export function createPlaylistViewMethods() {
     },
 
     playlistCalendarEnsureVisible() {
-      const g = this.playlistGranularity();
+      const g = this.playlistCalendarGranularity();
       const rawStart = String(this.playlistTimelineStart || "").trim();
       const rawEnd = String(this.playlistTimelineEnd || "").trim();
       const start = this._periodStartIso(rawStart, g);
@@ -1441,7 +1444,7 @@ export function createPlaylistViewMethods() {
     },
 
     playlistCalendarVisibleEnabledRange() {
-      const g = this.playlistGranularity();
+      const g = this.playlistCalendarGranularity();
       const rawStart = String(this.playlistTimelineStart || "").trim();
       const rawEnd = String(this.playlistTimelineEnd || "").trim();
       const start = this._periodStartIso(rawStart, g);
@@ -1463,7 +1466,7 @@ export function createPlaylistViewMethods() {
     },
 
     playlistCalendarCountsRange() {
-      const g = this.playlistGranularity();
+      const g = this.playlistCalendarGranularity();
       const rawStart = String(this.playlistTimelineStart || "").trim();
       const rawEnd = String(this.playlistTimelineEnd || "").trim();
       const start = this._periodStartIso(rawStart, g);
@@ -1488,7 +1491,7 @@ export function createPlaylistViewMethods() {
     async playlistPrefetchCalendarCounts() {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       if (!pid) return;
-      const g = this.playlistGranularity();
+      const g = this.playlistCalendarGranularity();
       const r = this.playlistCalendarCountsRange();
       if (!r || !r.start || !r.end) return;
 
@@ -1539,7 +1542,7 @@ export function createPlaylistViewMethods() {
 
     playlistCalendarDotCount(periodStartIso) {
       try {
-        const g = this.playlistGranularity();
+        const g = this.playlistCalendarGranularity();
         const iso = this._periodStartIso(String(periodStartIso || "").trim(), g);
         if (!iso) return 0;
         const map = this.playlistPeriodCounts;
@@ -1567,7 +1570,7 @@ export function createPlaylistViewMethods() {
     },
 
     playlistCalendarItemsForAnchor(rawAnchor = null) {
-      const g = this.playlistGranularity();
+      const g = this.playlistCalendarGranularity();
       const rawStart = String(this.playlistTimelineStart || "").trim();
       const rawEnd = String(this.playlistTimelineEnd || "").trim();
       const start = this._periodStartIso(rawStart, g);
@@ -1611,7 +1614,7 @@ export function createPlaylistViewMethods() {
     playlistCalendarPreviewItems() {
       const step = this.playlistCalendarPreviewStep();
       if (!step) return [];
-      const g = this.playlistGranularity();
+      const g = this.playlistCalendarGranularity();
       const anchor = this.playlistCalendarResolvedAnchor();
       if (!anchor) return [];
       return this.playlistCalendarItemsForAnchor(this._periodAddIso(anchor, g, step));
@@ -1622,7 +1625,7 @@ export function createPlaylistViewMethods() {
     },
 
     playlistTimelineApply() {
-      const g = this.playlistGranularity();
+      const g = this.playlistCalendarGranularity();
       const start = String(this.playlistTimelineStart || "").trim();
       const end = String(this.playlistTimelineEnd || "").trim();
       if (!start || !end) return;
@@ -1639,7 +1642,7 @@ export function createPlaylistViewMethods() {
       if (this.playlistBriefDragPointerId !== null || this.playlistBriefSettling) this.playlistBriefResetSwipeState();
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
       if (!pid) return;
-      const g = this.playlistGranularity();
+      const g = this.playlistCalendarGranularity();
       const next = this._periodStartIso(String(iso || "").trim(), g);
       if (!next || next === this.playlistSelectedDate) return;
       const start = String(this.playlistTimelineStart || "").trim();
@@ -1867,9 +1870,7 @@ export function createPlaylistViewMethods() {
             fallbackVideos: autoPlay ? this.playlistDayVideos : null,
           })
         : Promise.resolve();
-      const briefPromise = this.activeView === "playlist"
-        ? Promise.resolve()
-        : this.playlistLoadBrief(day, { loadToken });
+      const briefPromise = this.playlistLoadBrief(day, { loadToken });
       try {
         await Promise.allSettled([selectPromise, briefPromise]);
       } catch {
@@ -2953,12 +2954,21 @@ export function createPlaylistViewMethods() {
       const src = String(md || "");
       const lines = src.split(/\r?\n/);
       const out = [];
-      let inList = false;
+      let listType = "";
 
       const flushList = () => {
-        if (!inList) return;
-        out.push("</ul>");
-        inList = false;
+        if (!listType) return;
+        out.push(`</${listType}>`);
+        listType = "";
+      };
+
+      const openList = (type) => {
+        if (listType === type) return;
+        flushList();
+        listType = type;
+        out.push(type === "ol"
+          ? '<ol class="list-decimal pl-5 space-y-2 leading-relaxed">'
+          : '<ul class="list-disc pl-5 space-y-2 leading-relaxed">');
       };
 
       const formatInlineEsc = (escaped) => {
@@ -2967,6 +2977,11 @@ export function createPlaylistViewMethods() {
         s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
         return s;
       };
+
+      const formatInlineRaw = (raw) => String(raw || "")
+        .split(/(<br\s*\/?>)/gi)
+        .map((part) => /^<br\s*\/?>$/i.test(part) ? "<br>" : formatInlineEsc(this._escapeHtml(part)))
+        .join("");
 
       const BRIEF_REF_MAX_UNITS = 10;
       const briefRefCharUnits = (ch) => {
@@ -3002,6 +3017,45 @@ export function createPlaylistViewMethods() {
       };
 
       const briefLooksLikeUrl = (value) => /^https?:\/\//i.test(String(value || "").trim());
+
+      const splitTableRow = (raw) => {
+        let value = String(raw || "").trim();
+        if (value.startsWith("|")) value = value.slice(1);
+        if (value.endsWith("|") && !value.endsWith("\\|")) value = value.slice(0, -1);
+        const cells = [];
+        let cell = "";
+        let inCode = false;
+        for (let index = 0; index < value.length; index += 1) {
+          const char = value[index];
+          if (char === "\\" && value[index + 1] === "|") {
+            cell += "|";
+            index += 1;
+            continue;
+          }
+          if (char === "`") inCode = !inCode;
+          if (char === "|" && !inCode) {
+            cells.push(cell.trim());
+            cell = "";
+            continue;
+          }
+          cell += char;
+        }
+        cells.push(cell.trim());
+        return cells;
+      };
+
+      const tableAlignment = (cell) => {
+        const value = String(cell || "").trim();
+        if (!/^:?-{3,}:?$/.test(value)) return "";
+        if (value.startsWith(":") && value.endsWith(":")) return "center";
+        if (value.endsWith(":")) return "right";
+        return "left";
+      };
+
+      const isTableDelimiter = (raw, expectedCells) => {
+        const cells = splitTableRow(raw);
+        return cells.length === expectedCells && cells.length > 1 && cells.every((cell) => Boolean(tableAlignment(cell)));
+      };
 
       const briefRefPill = ({ label, url }) => {
         const u = String(url || "").trim();
@@ -3046,7 +3100,7 @@ export function createPlaylistViewMethods() {
             const t = String(beforeOut || "").trim();
             if (t === "，" || t === "," || t === "、" || t === ";" || t === "；") beforeOut = "";
           }
-          html += formatInlineEsc(this._escapeHtml(beforeOut));
+          html += formatInlineRaw(beforeOut);
 
           if (m[1] && m[2]) html += briefRefPill({ label: m[1], url: m[2] });
           else if (m[3]) html += briefRefPill({ label: "", url: m[3] });
@@ -3062,12 +3116,13 @@ export function createPlaylistViewMethods() {
           }
           last = nextLast;
         }
-        html += formatInlineEsc(this._escapeHtml(raw.slice(last)));
+        html += formatInlineRaw(raw.slice(last));
         briefSourceCarry = inSourceGroup;
         return html;
       };
 
-      for (const rawLine of lines) {
+      for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+        const rawLine = lines[lineIndex];
         let line = rawLine || "";
         let trimmed = line.trim();
         if (/(?:[（(]\s*)?来源\s*[:：]\s*$/u.test(trimmed)) {
@@ -3083,6 +3138,32 @@ export function createPlaylistViewMethods() {
         if (!trimmed) {
           flushList();
           out.push("<div class=\"h-2\"></div>");
+          continue;
+        }
+        const headerCells = splitTableRow(trimmed);
+        if (trimmed.includes("|") && isTableDelimiter(lines[lineIndex + 1] || "", headerCells.length)) {
+          flushList();
+          const alignments = splitTableRow(lines[lineIndex + 1]).map(tableAlignment);
+          const rows = [];
+          lineIndex += 2;
+          while (lineIndex < lines.length && String(lines[lineIndex] || "").trim().includes("|")) {
+            rows.push(splitTableRow(lines[lineIndex]));
+            lineIndex += 1;
+          }
+          lineIndex -= 1;
+          out.push('<div class="raelyn-brief-table-wrap"><table><thead><tr>');
+          headerCells.forEach((cell, index) => {
+            out.push(`<th scope="col" data-align="${alignments[index] || "left"}">${linkifyAndFormat(cell)}</th>`);
+          });
+          out.push("</tr></thead><tbody>");
+          rows.forEach((row) => {
+            out.push("<tr>");
+            headerCells.forEach((_, index) => {
+              out.push(`<td data-align="${alignments[index] || "left"}">${linkifyAndFormat(row[index] || "")}</td>`);
+            });
+            out.push("</tr>");
+          });
+          out.push("</tbody></table></div>");
           continue;
         }
         const structuredAnchor = trimmed.match(/^<a id="(field-ref-\d+)"><\/a>\s*(.*)$/);
@@ -3103,23 +3184,20 @@ export function createPlaylistViewMethods() {
         }
         const m2 = trimmed.match(/^\d+[\).]\s+(.*)$/);
         if (m2) {
-          flushList();
+          openList("ol");
           const body = linkifyAndFormat(m2[1] || "");
-          out.push(`<h3 class="mt-3">${body}</h3>`);
+          out.push(`<li>${body}</li>`);
           continue;
         }
         if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-	          if (!inList) {
-	            out.push('<ul class="list-disc pl-5 space-y-2 leading-relaxed">');
-	            inList = true;
-	          }
-	          const body = linkifyAndFormat(trimmed.slice(2));
-	          out.push(`<li>${body}</li>`);
-	          continue;
-	        }
-	        flushList();
-	        out.push(`<p class="my-2 leading-relaxed">${linkifyAndFormat(line)}</p>`);
-	      }
+          openList("ul");
+          const body = linkifyAndFormat(trimmed.slice(2));
+          out.push(`<li>${body}</li>`);
+          continue;
+        }
+        flushList();
+        out.push(`<p class="my-2 leading-relaxed">${linkifyAndFormat(line)}</p>`);
+      }
       flushList();
       return out.join("");
     },
@@ -3267,16 +3345,53 @@ export function createPlaylistViewMethods() {
       }
     },
 
-	    playlistSelectVideoByUrl(url) {
+	    async playlistSelectVideoByUrl(url) {
 	      const u = String(url || "").trim();
 	      if (!u) return;
-      const items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
-      const found = items.find((v) => v && String(v.url || "").trim() === u);
-      if (found) {
+      let items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
+      let found = items.find((video) => video && String(video.url || "").trim() === u);
+      if (!found && this.activeView === "playlist" && this.playbackContentTab === "brief") {
+        const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
+        const granularity = this.playlistGranularity();
+        const date = String(this.playlistSelectedDate || "").trim();
+        if (pid && date) {
+          try {
+            const periodVideos = await this.api(
+              `/playlists/${encodeURIComponent(pid)}/videos_by_period?granularity=${encodeURIComponent(granularity)}&date=${encodeURIComponent(date)}&limit=500&time_basis=content`
+            );
+            items = Array.isArray(periodVideos) ? periodVideos : [];
+            found = items.find((video) => video && String(video.url || "").trim() === u);
+          } catch (error) {
+            this.globalStatus = `无法读取引用记录：${error?.message || String(error)}`;
+            return;
+          }
+        }
+      }
+      if (!found) {
+        this.globalStatus = "该链接不在本周期视频列表中";
+        return;
+      }
+      if (this.activeView !== "playlist") {
         this.playlistSelectVideo(found, { autoPlay: true });
         return;
       }
-      this.globalStatus = "该链接不在本周期视频列表中";
+
+	      const granularity = this.playlistGranularity();
+	      const targetDate = this._periodStartIso(
+	        String(this.playlistVideoTimelineAt(found) || "").slice(0, 10) || String(this.playlistSelectedDate || ""),
+	        granularity
+	      );
+	      this.briefV2SelectedId = "";
+	      this.playbackMobileTab = "transcript";
+	      this.playlistStopBriefSpeech({ clearError: true });
+	      if (targetDate && targetDate !== this.playlistSelectedDate) {
+	        await this.playbackSetDate(targetDate);
+	      } else if (!(this.playlistDayVideos || []).some((video) => video && String(video.id) === String(found.id))) {
+	        await this.playlistLoadDay(targetDate, { autoPlay: false, preferredVideoId: String(found.id || "") });
+	      }
+      const selected = (this.playlistDayVideos || []).find((video) => video && String(video.id) === String(found.id));
+      if (selected) await this.playbackSelectVideo(selected, { autoPlay: true });
+      this._syncUrl({ push: false });
     },
 
     async playlistLoadBrief(day, { loadToken = null } = {}) {

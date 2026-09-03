@@ -37,6 +37,21 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
     s3_bucket: str = "raelyn"
     s3_use_ssl: bool = False
+    s3_transfer_max_concurrency: int = Field(
+        default=2,
+        ge=1,
+        validation_alias=AliasChoices("S3_TRANSFER_MAX_CONCURRENCY"),
+    )
+    s3_transfer_multipart_threshold_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        ge=1,
+        validation_alias=AliasChoices("S3_TRANSFER_MULTIPART_THRESHOLD_BYTES"),
+    )
+    s3_transfer_multipart_chunksize_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        ge=5 * 1024 * 1024,
+        validation_alias=AliasChoices("S3_TRANSFER_MULTIPART_CHUNKSIZE_BYTES"),
+    )
     asset_direct_probe_url: str = ""
     asset_direct_probe_timeout_ms: int = 1000
     asset_proxy_base_path: str = "/api/assets"
@@ -137,6 +152,12 @@ class Settings(BaseSettings):
     llm_ollama_num_ctx: int = Field(
         default=32768,
         validation_alias=AliasChoices("LLM_OLLAMA_NUM_CTX", "EVENT_EXTRACTION_OLLAMA_NUM_CTX"),
+    )
+    # 简报最终提示词与每个分段摘要请求的输入预算；Ollama 还会限制为全局上下文的 70%。
+    brief_llm_max_input_tokens: int = Field(
+        default=24000,
+        ge=2048,
+        validation_alias=AliasChoices("BRIEF_LLM_MAX_INPUT_TOKENS"),
     )
 
     # --- Event extraction / event graph semantic analysis ---

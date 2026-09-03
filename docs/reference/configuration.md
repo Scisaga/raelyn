@@ -43,11 +43,20 @@
 - `S3_BUCKET`
   - 应与 `asset.s3_bucket` 中的实际 bucket 保持一致；`/api/stats` 会在检测到配置 bucket 与唯一实际 bucket 不一致时回退统计实际 bucket，并返回 mismatch 标记。
 - `S3_USE_SSL`
+- `S3_TRANSFER_MAX_CONCURRENCY`
+  - 单个 `upload_file` / `download_file` 传输允许的分片并发数，默认 `2`。该值是“每个文件、每个进程”的上限，不是所有 worker 的全局上限。
+- `S3_TRANSFER_MULTIPART_THRESHOLD_BYTES`
+  - 文件达到该大小后使用 multipart 传输，默认 `67108864`（64 MiB）。
+- `S3_TRANSFER_MULTIPART_CHUNKSIZE_BYTES`
+  - multipart 分片大小，默认 `67108864`（64 MiB），不得小于 5 MiB。
 
 说明：
 
 - 连接池配置只影响非 SQLite 数据库；SQLite 会继续使用 SQLAlchemy 对应 URL 的默认池实现。
 - 当前运行形态会启动 API、scheduler 和多个角色 worker，DB 连接上限约为 `进程数 * (DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW)`。默认值用于单用户部署，避免每个进程沿用 SQLAlchemy 默认连接池后保留过多 PostgreSQL backend。
+- S3 传输配置只作用于落盘文件的 `upload_file` / `download_file`；代理流式读取和小对象 `get_object` 不启用 multipart 线程。
+- 当前 4 块 HDD 的生产默认值采用单文件并发 `2` 与 64 MiB 分片，避免一个大文件独占过多磁盘寻道和连接。若同时运行多个 download/process worker，总并发仍会按活跃传输数叠加，调大前应同时观察磁盘等待与 MinIO 负载。
+- S3 client 在调用它的 API 或 worker 进程内按操作创建，不放入模块级全局缓存，也不会跨 fork/进程共享已建立的连接或认证状态。修改上述环境变量后需要重启对应进程才会生效。
 
 ### 资产分发策略
 
@@ -122,6 +131,9 @@
 - `AUTO_GENERATE_BRIEFS`
   - 是否在 transcript 就绪、媒体变更或媒体删除后自动投递 `brief.generate_period`，默认 `false`。
   - 关闭时不会删除已有 `brief` / `daily_brief` 数据，也不影响手动 `POST /api/briefs/generate` 和 `POST /api/briefs/generate_range`。
+- `BRIEF_LLM_MAX_INPUT_TOKENS`
+  - 简报最终合成与每次分段摘要的输入预算，默认 `24000`。输入超过预算时，`brief.generate_period` 会在同一个 Job 内按来源顺序执行有界、串行的事实摘要，再合成最终简报；不在单个任务内增加 LLM 并发。
+  - 使用 Ollama `/api/generate` 时，实际预算还会限制为 `LLM_OLLAMA_NUM_CTX` 的 70%，为最终输出预留上下文。分段摘要或最终正文缺少真实来源、缺少提示词规定的章节，或退化成通用助手回答时，任务会明确失败，不再把内容标记为 `ready`。
 - `STATS_CACHE_TTL_SECONDS`
   - `/api/stats` 的进程内缓存 TTL，默认 `60` 秒；设置为 `0` 可关闭缓存。
 - `YOUTUBE_SYNC_CONCURRENCY`

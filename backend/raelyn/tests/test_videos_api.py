@@ -19,7 +19,7 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from raelyn import config
-from raelyn.api.videos import _video_list_timeline_columns
+from raelyn.api.videos import _video_domain_scope_condition, _video_list_timeline_columns
 from raelyn.models import Media, Video
 
 
@@ -41,6 +41,15 @@ def _load_app(stack: ExitStack):
 
 
 class VideosApiTests(unittest.IsolatedAsyncioTestCase):
+    def test_video_domain_scope_uses_playlist_media_membership(self) -> None:
+        domain_id = uuid.UUID("11111111-1111-1111-1111-111111111111")
+        stmt = select(Video.id).where(_video_domain_scope_condition(domain_id))
+        compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
+
+        self.assertIn("playlist_media.media_id", compiled)
+        self.assertIn("playlist_media.playlist_id", compiled)
+        self.assertIn(str(domain_id), compiled)
+
     def test_video_list_content_timeline_uses_set_based_join(self) -> None:
         selected_time, content_ts, timeline_ts, time_source, time_status, time_confidence = (
             _video_list_timeline_columns("content")

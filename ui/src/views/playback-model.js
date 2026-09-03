@@ -93,20 +93,30 @@ export function createPlaybackViewMethods() {
         this.playlistDetail = detail || null;
         this.pageTitle = `${detail?.name || "当前观测域"} · 播放列表`;
 
+        const granularity = this.playlistGranularity();
         const today = todayIsoLocal();
-        const start = String(detail?.earliest_date || today);
-        const end = today;
+        const start = this._periodStartIso(String(detail?.earliest_date || today), granularity);
+        const end = this._periodStartIso(today, granularity);
         this.playlistTimelineStart = start;
         this.playlistTimelineEnd = end;
-        this.playlistTimelineMax = Math.max(0, periodDiff(start, end, "day"));
+        this.playlistTimelineMax = Math.max(0, periodDiff(start, end, granularity));
 
         const localState = this.playbackReadState(domainId);
-        const requestedDate = playbackQueryValue("date") || localState.last_date || end;
-        const date = periodClampIso(requestedDate, start, end);
+        let requestedBrief = null;
+        const requestedBriefId = this.playbackContentTab === "brief" ? String(this.briefV2SelectedId || "").trim() : "";
+        if (requestedBriefId) {
+          requestedBrief = await this.api(`/briefs/${encodeURIComponent(requestedBriefId)}/structured`);
+          if (this.activeView !== "playlist" || Number(this.playlistLoadToken || 0) !== token) return;
+          if (String(requestedBrief?.playlist_id || "") !== String(domainId)) throw new Error("简报不属于当前观测域");
+          if (String(requestedBrief?.granularity || "day").toLowerCase() !== granularity) requestedBrief = null;
+          else this.briefV2Detail = requestedBrief;
+        }
+        const requestedDate = String(requestedBrief?.period_start || playbackQueryValue("date") || localState.last_date || end);
+        const date = periodClampIso(this._periodStartIso(requestedDate, granularity), start, end);
         this.playlistSelectedDate = date;
-        this.playlistTimelineValue = Math.max(0, periodDiff(start, date, "day"));
+        this.playlistTimelineValue = Math.max(0, periodDiff(start, date, granularity));
         this.playlistCalendarAnchor = periodClampIso(
-          periodAddIso(date, "day", -(Number(this.playlistCalendarCount || 14) - 1)),
+          periodAddIso(date, granularity, -(Number(this.playlistCalendarCount || 14) - 1)),
           start,
           end
         );
@@ -114,15 +124,18 @@ export function createPlaybackViewMethods() {
         this.playlistCalendarEnsureVisible();
         this.playlistPrefetchCalendarCounts();
 
-        const localDay = localState.dates?.[date] || {};
-        const requestedVideoId = playbackQueryValue("video_id") || String(localDay.video_id || "");
-        const requestedPosition = numericPosition(playbackQueryValue("t") || localDay.t || 0);
+        const localPeriod = localState.dates?.[date] || {};
+        const requestedVideoId = playbackQueryValue("video_id") || String(localPeriod.video_id || "");
+        const requestedPosition = numericPosition(playbackQueryValue("t") || localPeriod.t || 0);
         this.playbackPendingSeekSec = requestedPosition;
         await this.playlistLoadDay(date, {
           autoPlay: false,
           preferredVideoId: requestedVideoId,
         });
         if (this.activeView !== "playlist") return;
+        if (requestedBrief?.status === "ready" && requestedBrief?.markdown_url) {
+          await this.playbackApplyStructuredBrief(requestedBrief, { loadToken: this.playlistLoadToken });
+        }
         this.playbackDayTruncated = this.playlistDayVideos.length >= 500;
         this.playbackRememberPosition({ syncUrl: true });
         this.api(`/domains/${encodeURIComponent(domainId)}/observation/cursor`, {
@@ -136,8 +149,9 @@ export function createPlaybackViewMethods() {
     },
 
     async playbackSetDate(date) {
+      const granularity = this.playlistGranularity();
       const next = periodClampIso(
-        String(date || ""),
+        this._periodStartIso(String(date || ""), granularity),
         String(this.playlistTimelineStart || ""),
         String(this.playlistTimelineEnd || "")
       );
@@ -145,9 +159,10 @@ export function createPlaybackViewMethods() {
       this.playbackRememberPosition({ syncUrl: false });
       this.playlistMediaPause();
       this.playlistSelectedDate = next;
+      this.briefV2SelectedId = "";
       this.playlistTimelineValue = Math.max(
         0,
-        periodDiff(String(this.playlistTimelineStart || next), next, "day")
+        periodDiff(String(this.playlistTimelineStart || next), next, granularity)
       );
       this.playlistCalendarEnsureVisible();
       this.playlistPrefetchCalendarCounts();
@@ -164,15 +179,16 @@ export function createPlaybackViewMethods() {
     async playbackJumpDays(delta) {
       const amount = Number(delta || 0);
       if (!Number.isFinite(amount) || !amount) return;
+      const granularity = this.playlistGranularity();
       const current = String(this.playlistSelectedDate || this.playlistTimelineEnd || "");
       const next = periodClampIso(
-        periodAddIso(current, "day", amount),
+        periodAddIso(current, granularity, amount),
         String(this.playlistTimelineStart || current),
         String(this.playlistTimelineEnd || current)
       );
       if (next === current) return;
       this.playlistCalendarAnchor = periodClampIso(
-        periodAddIso(String(this.playlistCalendarAnchor || current), "day", amount),
+        periodAddIso(String(this.playlistCalendarAnchor || current), granularity, amount),
         String(this.playlistTimelineStart || current),
         String(this.playlistTimelineEnd || current)
       );
@@ -182,6 +198,7 @@ export function createPlaybackViewMethods() {
     async playbackSelectVideo(video, { autoPlay = true } = {}) {
       if (!video?.id) return;
       this.playbackPendingSeekSec = 0;
+      this.playlistStopBriefSpeech({ clearError: true });
       await this.playlistSelectVideo(video, { autoPlay });
       this.playbackMobileTab = "transcript";
     },
@@ -228,16 +245,81 @@ export function createPlaybackViewMethods() {
       this.playbackMobileTab = tab === "transcript" ? "transcript" : "records";
     },
 
+    playbackBriefPeriodLabel() {
+      const granularity = this.playlistGranularity();
+      const selected = String(this.playlistSelectedDate || "");
+      if (!selected) return "选择日期";
+      const start = this._periodStartIso(selected, granularity);
+      const end = this._periodEndIso(start, granularity);
+      return granularity === "day" ? start : `${start} ~ ${end}`;
+    },
+
+    async playbackApplyStructuredBrief(detail, { loadToken = null } = {}) {
+      const token = Number(loadToken || this.playlistLoadToken || 0);
+      this.playlistBriefLoading = true;
+      this.playlistBriefError = "";
+      this.playlistBriefHtml = "";
+      this.playlistBriefMarkdown = "";
+      this.playlistBriefSpeechText = "";
+      try {
+        this._abortCtrl("_playlistBriefMdAbortCtrl");
+        const ctrl = new AbortController();
+        this._playlistBriefMdAbortCtrl = ctrl;
+        const response = await this.fetchWithApiAuth(String(detail.markdown_url), { signal: ctrl.signal });
+        if (response.status === 401) this.handleApiUnauthorized({});
+        if (!response.ok) throw new Error(`${response.status}: brief markdown fetch failed`);
+        const markdown = await response.text();
+        if (Number(this.playlistLoadToken || 0) !== token) return;
+        this.briefV2Detail = detail;
+        this.briefV2Markdown = markdown;
+        this.briefV2Html = this._briefToHtml(markdown);
+        this.playlistBriefMarkdown = markdown;
+        this.playlistBriefSpeechText = this._briefToSpeechText(markdown);
+        this.playlistBriefHtml = this.briefV2Html;
+        this._playlistSetBriefSourceState("ready", "");
+        const anchor = String(this.briefV2RequestedAnchor || "");
+        if (anchor && typeof requestAnimationFrame === "function") {
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          document.getElementById(anchor)?.scrollIntoView({ block: "center", behavior: "smooth" });
+          this.briefV2RequestedAnchor = "";
+        }
+      } catch (error) {
+        if (Number(this.playlistLoadToken || 0) !== token || this._isAbortError(error)) return;
+        this.playlistBriefError = error?.message || String(error);
+      } finally {
+        if (Number(this.playlistLoadToken || 0) === token) this.playlistBriefLoading = false;
+      }
+    },
+
+    async playbackSetContentTab(tab) {
+      const next = tab === "brief" ? "brief" : "records";
+      if (next === this.playbackContentTab) return;
+      this.playbackRememberPosition({ syncUrl: false });
+      this.playbackContentTab = next;
+      this.briefV2SelectedId = "";
+      this.playbackMobileTab = "records";
+      this._syncUrl({ push: false });
+    },
+
+    openPlaybackBriefs() {
+      this.playbackContentTab = "brief";
+      this.briefV2SelectedId = "";
+      this.switchView("playlist");
+    },
+
     leavePlaybackPage() {
       this.playbackRememberPosition({ syncUrl: false });
       this.playlistLoadToken = Number(this.playlistLoadToken || 0) + 1;
       this.playlistPeriodCountsToken = Number(this.playlistPeriodCountsToken || 0) + 1;
       this._abortCtrl("_playlistCountsAbortCtrl");
       this._abortCtrl("_playlistDayAbortCtrl");
+      this._abortCtrl("_playlistBriefAbortCtrl");
+      this._abortCtrl("_playlistBriefMdAbortCtrl");
       this._abortCtrl("_playlistPlayableProbeAbortCtrl");
       this._abortCtrl("_playlistSelectAbortCtrl");
       this._abortCtrl("_playlistTranscriptVariantAbortCtrl");
       this.playlistPendingAutoPlayId = "";
+      this.playlistStopBriefSpeech({ clearError: true });
       this.playlistMediaPause();
       this.playlistResetMediaElements({ cancelAutoPlay: true });
       this.playlistPlayerVideoUrl = "";

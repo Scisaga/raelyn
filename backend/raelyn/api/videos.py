@@ -11,7 +11,7 @@ from sqlalchemy import case, func, literal, select
 from raelyn.api.asset_refs import AssetRef, build_asset_ref
 from raelyn.api.orm import OrmModel
 from raelyn.db import session_scope
-from raelyn.models import Asset, Media, Video
+from raelyn.models import Asset, Media, Playlist, PlaylistMedia, Video
 from raelyn.services.downloads import build_download_filename, content_disposition_attachment
 from raelyn.services.transcripts import TRANSCRIPT_VARIANT_SET, build_transcript_payload
 from raelyn.services.video_actions import schedule_video_download, schedule_video_retranscribe
@@ -94,6 +94,13 @@ def _video_list_timeline_columns(time_basis: str):
     return selected_time, content_ts_expr, timeline_ts_expr, time_source, time_status, time_confidence
 
 
+def _video_domain_scope_condition(domain_id: uuid.UUID):
+    """将视频查询限制在观测域关联的媒体集合内。"""
+    return Video.media_id.in_(
+        select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == domain_id)
+    )
+
+
 def _latest_video_asset_map(session, video_ids: list[uuid.UUID]) -> dict[tuple[uuid.UUID, str], Asset]:
     if not video_ids:
         return {}
@@ -135,6 +142,7 @@ def _content_published_at_by_video_id(session, video_ids: list[uuid.UUID]) -> di
 @router.get("/videos", response_model=list[VideoListOut])
 def list_videos(
     provider: str | None = None,
+    domain_id: uuid.UUID | None = None,
     media_id: uuid.UUID | None = None,
     media_id_in: str | None = None,
     status: str | None = None,
@@ -151,6 +159,9 @@ def list_videos(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     with session_scope() as session:
+        if domain_id is not None and session.get(Playlist, domain_id) is None:
+            raise HTTPException(status_code=404, detail="domain not found")
+
         global _PUBLISHED_AT_BACKFILLED  # noqa: PLW0603
         if (published_since or published_until) and not _PUBLISHED_AT_BACKFILLED:
             # Older rows may have `raw_info.timestamp/upload_date` but `published_at` was never populated,
@@ -172,6 +183,8 @@ def list_videos(
             )
         if provider:
             stmt = stmt.where(Video.provider == provider)
+        if domain_id is not None:
+            stmt = stmt.where(_video_domain_scope_condition(domain_id))
         media_ids: list[uuid.UUID] = []
         if media_id:
             media_ids.append(media_id)

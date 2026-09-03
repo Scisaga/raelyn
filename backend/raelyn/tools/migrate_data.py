@@ -43,6 +43,193 @@ def _uuid_column_sql(dialect_name: str) -> str:
     return "uuid" if dialect_name == "postgresql" else "varchar(36)"
 
 
+def _timestamp_column_sql(dialect_name: str) -> str:
+    return "timestamptz" if dialect_name == "postgresql" else "datetime"
+
+
+_STORY_MATERIAL_CHANGE_TYPES = (
+    "story_added",
+    "story_members_changed",
+    "story_relations_changed",
+    "story_evidence_changed",
+    "story_correction_added",
+    "story_maturity_changed",
+)
+
+
+def _first_row_by_partition(
+    conn,
+    *,
+    table_name: str,
+    partition_column: str,
+    selected_columns: tuple[str, ...],
+    order_by: str,
+    where: str = "",
+) -> dict[str, dict[str, Any]]:
+    columns = ", ".join((partition_column, *selected_columns))
+    where_sql = f"where {where}" if where else ""
+    rows = conn.execute(
+        text(
+            f"""
+select {columns}
+from (
+    select {columns},
+           row_number() over (partition by {partition_column} order by {order_by}) as row_rank
+    from {table_name}
+    {where_sql}
+) ranked
+where row_rank = 1
+"""
+        )
+    ).mappings()
+    return {str(row[partition_column]): dict(row) for row in rows}
+
+
+def _backfill_story_identity_reading_metadata(conn, *, tables: set[str]) -> None:
+    identity_columns = {
+        column.get("name") for column in inspect(conn).get_columns("event_map_story_identity")
+    }
+    required_columns = {
+        "stable_title",
+        "last_material_snapshot_id",
+        "last_material_changed_at",
+    }
+    if not required_columns.issubset(identity_columns):
+        return
+
+    history_by_identity: dict[str, dict[str, Any]] = {}
+    if "event_map_story_history_revision" in tables:
+        history_columns = {
+            column.get("name")
+            for column in inspect(conn).get_columns("event_map_story_history_revision")
+        }
+        if {
+            "story_identity_id",
+            "title",
+            "snapshot_id",
+            "observed_at",
+            "id",
+        }.issubset(history_columns):
+            history_by_identity = _first_row_by_partition(
+                conn,
+                table_name="event_map_story_history_revision",
+                partition_column="story_identity_id",
+                selected_columns=("title", "snapshot_id", "observed_at"),
+                order_by="observed_at asc, id asc",
+            )
+
+    story_by_identity: dict[str, dict[str, Any]] = {}
+    if "event_map_story" in tables:
+        story_columns = {
+            column.get("name") for column in inspect(conn).get_columns("event_map_story")
+        }
+        if {
+            "story_identity_id",
+            "title",
+            "snapshot_id",
+            "created_at",
+            "story_id",
+        }.issubset(story_columns):
+            story_by_identity = _first_row_by_partition(
+                conn,
+                table_name="event_map_story",
+                partition_column="story_identity_id",
+                selected_columns=("title", "snapshot_id", "created_at"),
+                order_by="created_at asc, snapshot_id asc, story_id asc",
+                where="story_identity_id is not null",
+            )
+
+    material_by_identity: dict[str, dict[str, Any]] = {}
+    if "event_map_change" in tables:
+        change_columns = {
+            column.get("name") for column in inspect(conn).get_columns("event_map_change")
+        }
+        if {
+            "object_id",
+            "object_type",
+            "change_type",
+            "to_snapshot_id",
+            "observed_at",
+            "id",
+        }.issubset(change_columns):
+            quoted_types = ", ".join(f"'{value}'" for value in _STORY_MATERIAL_CHANGE_TYPES)
+            material_by_identity = _first_row_by_partition(
+                conn,
+                table_name="event_map_change",
+                partition_column="object_id",
+                selected_columns=("to_snapshot_id", "observed_at"),
+                order_by="observed_at desc, to_snapshot_id desc, id desc",
+                where=f"object_type = 'story' and change_type in ({quoted_types})",
+            )
+
+    missing_active_titles: list[str] = []
+    missing_other_titles: list[str] = []
+    identity_rows = conn.execute(
+        text(
+            "select id, status, stable_title, created_snapshot_id, "
+            "last_material_snapshot_id, last_material_changed_at, created_at "
+            "from event_map_story_identity"
+        )
+    ).mappings()
+    for identity in identity_rows:
+        identity_key = str(identity["id"])
+        first_history = history_by_identity.get(identity_key)
+        first_story = story_by_identity.get(identity_key)
+        stable_title = str(identity.get("stable_title") or "").strip()
+        if not stable_title:
+            source = first_history if first_history is not None else first_story
+            stable_title = str((source or {}).get("title") or "").strip()
+        if not stable_title:
+            if str(identity.get("status") or "") == "active":
+                missing_active_titles.append(identity_key)
+            else:
+                missing_other_titles.append(identity_key)
+            continue
+
+        material = material_by_identity.get(identity_key)
+        formed = first_history if first_history is not None else first_story
+        material_snapshot_id = identity.get("last_material_snapshot_id")
+        material_changed_at = identity.get("last_material_changed_at")
+        if material is not None:
+            material_snapshot_id = material.get("to_snapshot_id")
+            material_changed_at = material.get("observed_at")
+        else:
+            material_snapshot_id = material_snapshot_id or (formed or {}).get("snapshot_id")
+            material_snapshot_id = material_snapshot_id or identity.get("created_snapshot_id")
+            material_changed_at = material_changed_at or (formed or {}).get("observed_at")
+            material_changed_at = material_changed_at or (formed or {}).get("created_at")
+            material_changed_at = material_changed_at or identity.get("created_at")
+
+        conn.execute(
+            text(
+                "update event_map_story_identity "
+                "set stable_title = :stable_title, "
+                "last_material_snapshot_id = :last_material_snapshot_id, "
+                "last_material_changed_at = :last_material_changed_at "
+                "where id = :identity_id"
+            ),
+            {
+                "identity_id": identity["id"],
+                "stable_title": stable_title,
+                "last_material_snapshot_id": material_snapshot_id,
+                "last_material_changed_at": material_changed_at,
+            },
+        )
+
+    if missing_active_titles:
+        sample = ", ".join(missing_active_titles[:10])
+        raise RuntimeError(
+            "active story identities cannot backfill stable_title; "
+            f"missing earliest history/story title for: {sample}"
+        )
+    if missing_other_titles:
+        sample = ", ".join(missing_other_titles[:10])
+        raise RuntimeError(
+            "story identities cannot satisfy non-null stable_title; "
+            f"missing earliest history/story title for: {sample}"
+        )
+
+
 def _execute_best_effort_ddl(conn, statement: str) -> None:
     """历史地图清理不能因等待 PostgreSQL 表锁而阻塞维护或启动。"""
     try:
@@ -389,6 +576,8 @@ def _create_event_analysis_indexes(conn) -> None:
         "create index if not exists event_map_story_edge_source_idx on event_map_story_edge(snapshot_id, source_canonical_id)",
         "create index if not exists event_map_story_edge_target_idx on event_map_story_edge(snapshot_id, target_canonical_id)",
         "create index if not exists event_map_story_edge_story_idx on event_map_story_edge(snapshot_id, story_id)",
+        "create index if not exists event_map_story_identity_material_idx on event_map_story_identity(playlist_id, status, last_material_changed_at)",
+        "create index if not exists event_map_story_quality_idx on event_map_story(snapshot_id, maturity, quality_score)",
     ]
     if conn.dialect.name == "postgresql":
         statements.extend(
@@ -404,7 +593,10 @@ def _create_event_analysis_indexes(conn) -> None:
             pass
 def _migrate_schema(conn) -> None:
     """
-    Copied from backend/raelyn/db.py::_migrate_schema to avoid importing raelyn.db (which binds to .env at import).
+    复制 runtime migration 中目标库需要的结构变更，避免导入会绑定 .env 的 raelyn.db。
+
+    数据迁移会在 COPY 前准备并清空目标表；旧源库的 story identity 首次关联仍由
+    runtime migration 负责，因此这里不复制 db.py 中的 identity seed/relink 步骤。
     """
     insp = inspect(conn)
     tables = set(insp.get_table_names())
@@ -481,6 +673,78 @@ def _migrate_schema(conn) -> None:
                 "alter table event_map_snapshot drop column lod_node_count",
             )
 
+    if "event_map_story" in tables:
+        cols = {c.get("name") for c in insp.get_columns("event_map_story")}
+        if "anchor_key" not in cols:
+            conn.execute(text("alter table event_map_story add column anchor_key varchar"))
+        if "maturity" not in cols:
+            conn.execute(
+                text("alter table event_map_story add column maturity varchar not null default 'legacy'")
+            )
+        if "quality_score" not in cols:
+            conn.execute(text("alter table event_map_story add column quality_score real"))
+
+    if "event_map_story_edge" in tables:
+        cols = {c.get("name") for c in insp.get_columns("event_map_story_edge")}
+        if "evidence_json" not in cols:
+            column_type = "jsonb" if conn.dialect.name == "postgresql" else "json"
+            conn.execute(text(f"alter table event_map_story_edge add column evidence_json {column_type}"))
+
+    if "event_map_story_history_revision" in tables:
+        cols = {c.get("name") for c in insp.get_columns("event_map_story_history_revision")}
+        if "anchor_key" not in cols:
+            conn.execute(text("alter table event_map_story_history_revision add column anchor_key varchar"))
+        if "maturity" not in cols:
+            conn.execute(
+                text(
+                    "alter table event_map_story_history_revision "
+                    "add column maturity varchar not null default 'legacy'"
+                )
+            )
+        if "quality_score" not in cols:
+            conn.execute(text("alter table event_map_story_history_revision add column quality_score real"))
+
+    if "event_map_story_identity" in tables:
+        cols = {
+            column.get("name")
+            for column in inspect(conn).get_columns("event_map_story_identity")
+        }
+        if "stable_title" not in cols:
+            conn.execute(text("alter table event_map_story_identity add column stable_title varchar"))
+        if "last_material_snapshot_id" not in cols:
+            conn.execute(
+                text(
+                    "alter table event_map_story_identity add column last_material_snapshot_id "
+                    f"{_uuid_column_sql(conn.dialect.name)}"
+                )
+            )
+        if "last_material_changed_at" not in cols:
+            conn.execute(
+                text(
+                    "alter table event_map_story_identity add column last_material_changed_at "
+                    f"{_timestamp_column_sql(conn.dialect.name)}"
+                )
+            )
+        _backfill_story_identity_reading_metadata(conn, tables=tables)
+        if conn.dialect.name == "postgresql":
+            conn.execute(
+                text(
+                    "alter table event_map_story_identity "
+                    "alter column stable_title set not null"
+                )
+            )
+            conn.execute(
+                text(
+                    "alter table event_map_story_identity "
+                    "alter column last_material_changed_at set not null"
+                )
+            )
+        _execute_best_effort_ddl(
+            conn,
+            "create index if not exists event_map_story_identity_material_idx "
+            "on event_map_story_identity(playlist_id, status, last_material_changed_at)",
+        )
+
     for table_name in ("event_map_lod_member", "event_map_lod_node"):
         suffix = " cascade" if conn.dialect.name == "postgresql" else ""
         _execute_best_effort_ddl(conn, f"drop table if exists {table_name}{suffix}")
@@ -513,6 +777,14 @@ def _migrate_schema(conn) -> None:
             conn.execute(text("alter table playlist add column avatar_s3_key varchar"))
         if "background_s3_key" not in cols:
             conn.execute(text("alter table playlist add column background_s3_key varchar"))
+        if "observation_enabled" not in cols:
+            default = "true" if conn.dialect.name == "postgresql" else "1"
+            conn.execute(
+                text(
+                    "alter table playlist add column observation_enabled "
+                    f"boolean not null default {default}"
+                )
+            )
         if "brief_granularity" not in cols:
             if conn.dialect.name == "postgresql":
                 conn.execute(text("alter table playlist add column brief_granularity varchar not null default 'day'"))

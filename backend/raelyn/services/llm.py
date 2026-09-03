@@ -9,6 +9,7 @@ import httpx
 
 from raelyn.config import settings
 from raelyn.services.inference import get_effective_llm_config
+from raelyn.services.usage import record_external_service_usage
 
 
 def _as_int(value: Any) -> int:
@@ -232,6 +233,7 @@ def llm_generate(
     options: dict[str, Any] | None = None,
     stream: bool | None = None,
     idle_timeout_seconds: int | None = None,
+    usage_operation: str | None = None,
 ) -> dict[str, Any]:
     if not llm_enabled():
         raise RuntimeError("llm is not configured")
@@ -268,28 +270,71 @@ def llm_generate(
         payload = {"model": model, "prompt": prompt, "stream": False}
 
     headers = {"Content-Type": "application/json", **_headers()}
-    with httpx.Client(timeout=timeout, headers=headers, trust_env=False) as client:
-        if mode == "ollama_generate" and payload.get("stream") is True:
-            return _read_ollama_stream_response(
-                client=client,
-                url=url,
-                payload=payload,
-                total_timeout_seconds=cfg.timeout_seconds,
+    started_at = time.perf_counter()
+    try:
+        with httpx.Client(timeout=timeout, headers=headers, trust_env=False) as client:
+            if mode == "ollama_generate" and payload.get("stream") is True:
+                result = _read_ollama_stream_response(
+                    client=client,
+                    url=url,
+                    payload=payload,
+                    total_timeout_seconds=cfg.timeout_seconds,
+                )
+            else:
+                resp = client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                if mode == "ollama_generate":
+                    if isinstance(data, dict):
+                        result = {
+                            "text": str(data.get("response", "")).strip(),
+                            "usage": _extract_llm_usage(data, mode=mode),
+                        }
+                    else:
+                        result = {"text": str(data).strip(), "usage": _extract_llm_usage(data, mode=mode)}
+                elif mode == "openai_chat":
+                    result = {
+                        "text": _extract_openai_chat_content(data).strip(),
+                        "usage": _extract_llm_usage(data, mode=mode),
+                    }
+                else:
+                    result = {
+                        "text": _extract_openai_completion_text(data).strip(),
+                        "usage": _extract_llm_usage(data, mode=mode),
+                    }
+    except Exception:
+        if usage_operation:
+            record_external_service_usage(
+                service="llm",
+                operation=usage_operation,
+                provider=cfg.provider,
+                model=str(payload.get("model") or model),
+                succeeded=False,
+                duration_ms=round((time.perf_counter() - started_at) * 1000),
+                # 请求失败时无法证明 provider 未消耗 token，也拿不到完整 usage。
+                usage_missing=True,
             )
-        resp = client.post(url, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+        raise
 
-    if mode == "ollama_generate":
-        if isinstance(data, dict):
-            return {
-                "text": str(data.get("response", "")).strip(),
-                "usage": _extract_llm_usage(data, mode=mode),
-            }
-        return {"text": str(data).strip(), "usage": _extract_llm_usage(data, mode=mode)}
-    if mode == "openai_chat":
-        return {"text": _extract_openai_chat_content(data).strip(), "usage": _extract_llm_usage(data, mode=mode)}
-    return {"text": _extract_openai_completion_text(data).strip(), "usage": _extract_llm_usage(data, mode=mode)}
+    if usage_operation:
+        usage = result.get("usage") if isinstance(result, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        input_tokens = _as_int(usage.get("input_tokens"))
+        output_tokens = _as_int(usage.get("output_tokens"))
+        total_tokens = _as_int(usage.get("total_tokens"))
+        record_external_service_usage(
+            service="llm",
+            operation=usage_operation,
+            provider=cfg.provider,
+            model=str(payload.get("model") or model),
+            succeeded=True,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            duration_ms=round((time.perf_counter() - started_at) * 1000),
+            usage_missing=not any((input_tokens, output_tokens, total_tokens)),
+        )
+    return result
 
 
 def llm_generate_markdown(*, prompt: str, think: bool | str | None = None) -> str:

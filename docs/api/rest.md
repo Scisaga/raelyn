@@ -66,6 +66,28 @@
 - `database_size_bytes` 返回 PostgreSQL 当前数据库的总占用，口径为 `pg_database_size(current_database())`，包含表、索引和 TOAST；非 PostgreSQL 数据库返回 `null`。
 - 资产容量统计会优先使用配置的 `S3_BUCKET`；若资产表中没有该 bucket 且只存在一个实际 bucket，则返回实际 bucket 的统计，并通过 `s3_configured_bucket_mismatch` 标记配置漂移。
 
+### `GET /api/usage`
+
+- 供独立“资源用量”页面读取全局当前摘要、按日趋势与构成明细；接口只读，不在请求线程创建资源快照或投递任务。
+- query：`days=7|30|90`，默认 `30`；其他值返回 `422`。`window` 始终包含今天，所有日桶固定按 `Asia/Shanghai` 切分，当天桶可能仍在采样。
+- 响应顶层固定包含：
+  - `generated_at`：本次响应生成时间；
+  - `timezone="Asia/Shanghai"`；
+  - `window`：`days/start/end`；
+  - `summary`：当前规模与所选窗口调用 / 新增汇总；
+  - `series`：从 `start` 到 `end` 的逐日序列；
+  - `service_breakdown`：外部服务维度明细；
+  - `asset_breakdown`：当前逻辑资产构成；
+  - `collection`：采集起点、最近采样与物理磁盘接入状态。
+- `summary` 在每次 GET 中实时读取当前仍存在的来源记录数 `video_count`、具有视频资产的去重视频数 `downloaded_video_count`、资产数量、已知 `Asset.size_bytes` 之和、缺少 `size_bytes` 的资产数和数据库规模；`video_downloaded` 统计窗口内真实成功完成的视频下载次数。数据库规模仅在 PostgreSQL 下使用 `pg_database_size(current_database())`，包含表、索引和 TOAST；非 PostgreSQL 返回 `null`。
+- `summary.external_calls` 只汇总 LLM、ASR、Embedding 三类外部服务调用，不统计浏览器、前端刷新或站内 `/api/*` HTTP。`summary.llm_calls`、`summary.asr_calls`、`summary.embedding_calls` 提供三类服务的独立口径；三类服务分别以自己的第一条聚合记录作为采集起点，尚未开始采集的服务返回 `null`，不会因为另一类服务已有数据而伪报为 `0`。`llm_input_tokens/llm_output_tokens/llm_total_tokens` 只统计 LLM。窗口没有 LLM 采集覆盖，或覆盖内存在无法取得 usage、因而无法形成完整 token 总数的调用时，相应 token 汇总返回 `null`，不把已知部分冒充完整值。`series[]` 同样逐日返回 `external_calls`、`llm_calls`、`asr_calls` 与 `embedding_calls`。
+- `series[]` 每项包含 `date`、`video_downloaded`、`external_calls`、`llm_calls`、`llm_input_tokens`、`llm_output_tokens`、`llm_total_tokens`、`asset_size_bytes`、`database_size_bytes`、`usage_sampled` 和 `resource_sampled`。`video_downloaded` 只统计 `video.download|video.download.youtube|video.download.bilibili` 中状态为 `succeeded`、具有结果且结果不是 `skipped` 或 `rescheduled` 的任务，并按 `finished_at` 落入 `Asia/Shanghai` 日桶；强制重新下载成功会作为一次真实下载计入。服务调用从 `ExternalServiceUsageDaily` 读取，逻辑资产与数据库历史只从 `ResourceUsageDaily` 快照读取，不以当前值反推过去。
+- 未开始采集或缺失采样日桶中的调用字段、逻辑资产和数据库字段以 `null` 返回，不补成 `0`；调用分类字段按 LLM、ASR、Embedding 各自的采集起点独立判断，`usage_sampled` 只表示当日至少有一类外部服务已进入采集覆盖，`resource_sampled` 表示当日存在资源快照。只有确定获得相应服务或资源的采集覆盖且实测为零时才返回数值 `0`。`video_downloaded` 不依赖采样覆盖，没有成功下载时返回 `0`。当天存在快照、下载任务或调用聚合也只代表截至当前采样时刻的部分日数据。
+- `service_breakdown[]` 按 `service/operation/provider/model` 聚合所选窗口，返回 `calls`、`successes`、`failures`、`input_tokens`、`output_tokens`、`total_tokens`、`duration_ms`、`usage_missing_calls` 和 `last_called_at`。`service` 当前只允许 `llm|asr|embedding`；实时采集的成功与失败直接来自调用结果，不从最终 Job 状态倒推。一次性历史迁移生成的 `legacy.*` 行是明确例外：LLM 使用旧 Job 终态恢复结果，ASR 使用请求开始 / 成功事件按任务与尝试次数配对；两者都不虚构旧记录未完整保存的耗时。
+- `asset_breakdown[]` 按 `Asset.type` 返回 `asset_type/count/size_bytes/missing_size_count`；`size_bytes` 是数据库记录的逻辑资产量，不代表 S3/MinIO 所在主机的文件系统占用。
+- `collection` 返回 `usage_started_at`、`last_usage_at`、`resource_started_at`、`last_resource_snapshot_at`、`physical_storage_available` 和 `physical_storage_reason`。当前没有跨 Docker、本机与远端对象存储都可靠的物理磁盘容量来源，因此 `physical_storage_available=false`、原因明确为“未接入部署侧指标”，接口不返回伪造的磁盘总量、余量或百分比。
+- 历史用量由一次性任务 `system.backfill_legacy_usage` 恢复。LLM 从旧 `Job.result` 读取：简报与转写润色使用 `llm_usage`，事件抽取使用 `usage`；`VideoEventExtractionRun.usage_json` 与 Job 结果存在重复，因此不作为第二数据源。ASR 只回填带有 `asr request started` 的真实请求事件，并用同一任务、同一 `attempt` 的 `asr request succeeded` 判断成功；事件日志产生前的旧任务无法证明是否实际发起调用，因此不从任务数量推算。迁移行使用独立 `legacy.*` operation，可重复精确重建且不会覆盖实时采集行。
+
 ## Media
 
 ### `POST /api/media`
@@ -155,8 +177,9 @@
 
 - query：
   - `provider`
+  - `domain_id`：可选的观测域基础范围；只返回该观测域已关联媒体下的视频。观测域不存在时返回 `404`。
   - `media_id`
-  - `media_id_in`
+  - `media_id_in`：用户显式选择的媒体子集；与 `domain_id` 同时传入时取交集，不替代观测域范围。
   - `status`
   - `q`
   - `published_since`
@@ -367,7 +390,7 @@
 ### `POST /api/playlists/{playlist_id}/events/extract`
 
 - 手动创建 `playlist.backfill_events` 父任务；父任务按播放列表内容时间轴拆分月份范围并投递 `playlist.backfill_events_range` 子任务，范围任务运行时再查询该月内已有 `plain` transcript 的视频并投递 `video.extract_events_batch` 或 `video.extract_events` 子任务。批量抽取任务执行时每次 LLM 请求只包含 1 个视频，避免多个视频共用一个大 JSON 生成导致本地模型长时间无返回。
-- 事件抽取在 Ollama `/api/generate` 模式下使用 JSON 输出约束、低温度采样、流式读取、全局统一的 `LLM_OLLAMA_NUM_CTX`、事件专用 `num_predict` 上限和 per-model advisory lock，降低标题、实体和证据之间的结构化抽取漂移，并避免同一 Ollama 大模型被多个事件抽取请求同时压满。v2 协议要求 LLM 只返回 `evidence_source_ids`，后端用 source map 写入可验证证据。
+- 事件抽取在 Ollama `/api/generate` 模式下使用 JSON 输出约束、低温度采样、流式读取、全局统一的 `LLM_OLLAMA_NUM_CTX`、事件专用 `num_predict` 上限和 per-model advisory lock，降低标题、实体和证据之间的结构化抽取漂移，并避免同一 Ollama 大模型被多个事件抽取请求同时压满。当前 v4 口径要求 LLM 只返回 `evidence_source_ids`，后端用 source map 写入可验证证据，并显式声明关系端点。
 - 月份范围任务的优先级低于它投递的视频事件抽取任务；同一批回填中，一旦 `video.extract_events_batch` 或 `video.extract_events` 入队，worker 会优先消费事件抽取，再继续领取后续月份范围任务。
 - body：`{ "force": false }`；`force=false` 只补齐缺失当前 transcript / prompt / model 口径事件的视频，`force=true` 会先取消当前播放列表相关的活跃事件抽取、事件 embedding 与事件地图构建任务，再重新抽取同一 prompt / model 口径下的视频事件。
 - `force=true` 的任务清理只取消 `pending/running` 任务并保留历史记录；地图 state 保持 dirty，现有 ready 快照不因重抽被提前切走。
@@ -404,7 +427,9 @@
 ### `GET /api/playlists/{playlist_id}/events/map/manifest`
 
 - query 可选 `snapshot_id`；省略时解析 `event_map_state.current_snapshot_id`，显式指定时读取仍可用且属于该播放列表的历史 ready 快照，并以 `is_current=false` 标记。无效的显式快照返回 `409`，不会静默回退到 current。
-- query 可选 `compact=true`，供构建状态轮询使用；该模式跳过覆盖统计与两级主题数据，完成后客户端应重新请求完整 manifest。
+- query 可选 `compact=true`，供构建状态轮询和星域首帧启动使用；该模式跳过主题标签、关键词、锚点等完整元数据，但仍返回 scene 协议、记录长度、坐标边界、稳定语义色映射、快照已物化的 `monthly_distribution[]` 和轻量 `topic_geometry[]`。首帧使用该月度分布直接确定最终的 12 个月窗口；`topic_geometry[]` 只含主题索引、层级、中心、半径和 canonical 数量，用于直接创建最终 WebGL 语义网格，不承担标签展示。
+- compact 模式的 `backfill_job` 只返回前端状态展示和轮询所需的 `job_id/status/progress_current/progress_total/created_at/started_at/cancel_requested_at`，不扫描并汇总整个 range/video 子任务树；完整 manifest 仍返回原有的详细 backfill 进度。
+- query 可选 `include_coverage=true|false`。省略时完整 manifest 默认计算覆盖率、compact manifest 默认跳过覆盖率；首屏使用 `include_coverage=false` 取得主题与标签元数据，交互开放后再以 `compact=true&include_coverage=true` 后台补取覆盖计数。
 - 返回构建/dirty generation、当前 ready snapshot、`dimension=3`、场景协议版本、canonical/record/topic/story/entity 数量、三维固定坐标边界、类别映射、两级主题中心/半径/父子索引、主题代表事件的 `anchor_canonical_id/anchor_point_index/anchor_title`、按事件覆盖区间计算的月度 canonical/record 分布、时间边界和峰值 RSS。
 - 完整 manifest 的 `semantic_families[]` 给出稳定语义族的 `code/label/color`；每个 `type_categories[]` 项通过 `semantic_family/semantic_family_label/semantic_color` 归入其中一个语义族。该映射同时适用于既有 ready 快照，无需仅为颜色重建投影。
 - `status` 描述当前可浏览快照；`build_status=idle|pending|running|failed` 和 `build_error` 独立描述下一版构建，因此后台失败不会让旧 ready 地图消失。
@@ -413,11 +438,11 @@
 
 ### `GET /api/playlists/{playlist_id}/events/map/scene`
 
-- query：必填 `snapshot_id`，且该快照必须属于播放列表并为 ready。
+- query：必填 `snapshot_id`，且该快照必须属于播放列表并为 ready。可选 `preview_limit=1..20000`；传入后按全量 `point_index` 的确定性步长均匀抽取最多指定数量的真实事件，并将响应内 point index 重新连续编号，供首帧快速落点。未传入时返回完整场景。
 - 返回不可变 `application/octet-stream`，按 `point_index` 递增；协议 v2 每条 56 字节，小端布局 `<I16sfffiiBBBBIII>`。
 - 字段依次是 point index、canonical UUID、float32 x/y/z、事件起止 epoch-day、类型/精度/flags/保留位、member 数、一级星域索引、二级主题索引。
 - 场景流只读取类型化数值列和物化的 `has_uncertainty` 布尔位，不逐点读取 canonical 修订 JSONB。
-- 全局节点是一件 canonical 真实事件，不是一条原始记录；不传输原始 embedding。响应可按 snapshot 长期缓存。
+- 预览和完整响应中的节点都是真实 canonical 事件，不生成装饰点或虚构位置；预览 URL 和完整 URL 分别按 snapshot 长期缓存。客户端在同一个 WebGL 场景中以预览点启动，再用完整点集原位替换几何，不重建网格或相机。
 
 ### `GET /api/playlists/{playlist_id}/events/map/entities`
 
@@ -434,7 +459,13 @@
 ### `GET /api/playlists/{playlist_id}/events/map/canonical/{canonical_id}`
 
 - query：必填 `snapshot_id`。
-- 返回真实事件摘要、时间、topic、最多 100 条 member 记录、实体角色、冻结的实体关系、证据及相邻 story edge。记录、关系和证据来自快照 revision，不回查可变事件子表，也不读写另一版快照。
+- 返回真实事件摘要、时间、topic、最多 100 条 member 记录、关联 `videos[]`、实体角色、冻结的实体关系、证据及相邻 story edge。每条 member 同时返回冻结 revision 对应的 `source_context` 与精确播放位置；视频缩略图使用 AssetRef。记录、关系和证据来自快照 revision，不回查可变事件子表，也不读写另一版快照。
+
+### `GET /api/domains/{domain_id}/event-highlights`
+
+- query：必填 `event_date_start`、`event_date_end`（按快照冻结的事件日历日解释、含首尾，最长 7 天）；可选 `window_start`、`window_end`、`snapshot_id`、`event_type_code`、`normalized_key`、`entity_type`、`topic_id` 和 `limit`（1–10，默认 10）。日期范围超过七天返回 `400`。接口按事件发生日期筛选 canonical，视频发布时间不参与事件入选。
+- 只把 `time_precision in ('second', 'day')` 的事件作为“今日 / 本周”精确焦点；只有月、年或未知精度的事件不会在整月、整年每天冒充当日事件。固定快照、观察窗口、类型、实体和主题条件在事件排序前共同生效，主题内空结果不会回退到全域。
+- 返回 `matched_event_total`、具有可播放关联视频的 `total`、实际展示的 `shown_total`、所选 `video_total`、单媒体视频上限 `max_cards_per_media`（固定为 2）、被精度规则排除的 `excluded_imprecise_total`，以及全部精确匹配事件的 `point_indices[]`。星图用完整 `point_indices[]` 突出当前日期焦点；`items[]` 承载最多十个入选事件，且 `canonical_id` 唯一。每项包含事件标题、摘要、发生时间、证据强度 `ranking_factors`、一级主题，以及一个 `primary_video`（`media_id`、媒体名、媒体头像 AssetRef `media_avatar_asset`、标题、缩略图 AssetRef、精确播放位置、时长和来源时间）。事件先按跨媒体/跨视频佐证、成员数、时间可靠性和稳定 tie-break 排序，再按原顺序选择尚未达到媒体上限的不同视频；某事件有多个真实关联视频时，优先选择当前占位更少的媒体。接口仍保持事件级事实结构；前端按 `primary_video.video_id` 将多个事件合成一张空间卡片并保留全部事件连线，因此卡片数可以少于 `shown_total`。该顺序衡量可审计的证据强度，不声称是尚未物化的市场影响重要度。媒体上限只影响视频卡，全部精确事件仍保留在 `point_indices[]` 中参与星图高亮。
 
 ### `GET /api/playlists/{playlist_id}/events/map/topic/{topic_id}`
 
@@ -444,7 +475,7 @@
 ### `GET /api/playlists/{playlist_id}/events/map/story/{story_id}`
 
 - query：必填 `snapshot_id`。
-- 返回故事线及有证据的有向 edge；普通三维近邻不会自动成为 story。
+- 返回故事事件图，以及 `anchor_key`、`story_type`、`maturity`、`quality_score` 和有证据的有向 edge。每条 edge 返回 `evidence_revision_ids` 与关系判定证据；普通三维近邻或仅有高语义相似度不会自动成为 story。
 
 ### `GET /api/playlists/{playlist_id}/events/map/search`
 
@@ -467,7 +498,13 @@
 
 ### `GET /api/domains`
 
-- 返回观测域目录、current ready 快照、信源数、未读变化数、最后观察位置，以及从类型化坐标列确定性抽样的 `preview_points`；目录缩略星域不解析 canonical JSONB。
+- 返回观测域目录、`avatar_asset`、`background_asset`、`observation_enabled`、`brief_granularity`、current ready 快照、`media_count`、最多 5 条 `media_preview`、`video_count`、未读变化数、最后观察位置，以及从类型化坐标列确定性抽样的 `preview_points`。观测域与媒体头像复用统一 AssetRef 交付链路并批量读取，目录响应不逐项生成 S3 预签名 URL，前端通过 `/api/assets/{asset_id}/content` 读取。
+- query 可选 `compact=true`，仅返回首屏恢复当前观测域所需的身份字段、观测开关、简报粒度、current ready 快照的 `id/status/observed_at` 和 `web_url`；不读取快照边界与月份分布，也不读取媒体预览、视频计数、未读变化或星点。星域入口先用该响应确定域并启动 WebGL，完整目录在首图之后再补取。
+
+### `PATCH /api/domains/{domain_id}`
+
+- body：`{ "name": "观测域名称", "description": "观测范围" }`。
+- 仅更新设置页的轻量身份字段并返回域摘要，不执行播放列表视频计数或详情聚合。
 
 ### `POST /api/domains/{domain_id}/sources`
 
@@ -494,8 +531,16 @@
 
 ### `GET /api/domains/{domain_id}/observation`
 
-- 返回当前快照、观察游标和四类独立覆盖率：信源处理、事件抽取、星域准入、证据验证。
-- 每类覆盖率都包含分子、分母和原因计数，不用单一百分比掩盖口径。
+- 返回当前域的 `observation_enabled`、`brief_granularity`、`brief_prompt`，以及当前快照、观察游标和四类独立覆盖：可分析转写、当前口径抽取、星域收录、证据核验。它们属于处理覆盖或产出覆盖，各自使用独立分母，不表示同一条流水线的四阶段总进度。观测域设置页复用该响应，不额外读取包含完整媒体清单的播放列表详情。
+- `coverage.event_extraction` 的分母是已有纯文本转写的视频，分子是存在与当前 `prompt_version + extraction_model` 一致的成功抽取记录的视频；`details` 进一步区分有事件、成功但零事件、仅旧口径成功、当前口径失败、尚无成功记录和缺少转写。`event_count=0` 是成功结果，不计为失败。
+- 提示词基础版本、提示词正文哈希或模型变化不会在服务启动时自动重投全部历史视频；历史迁移通过 `POST /api/playlists/{playlist_id}/events/extract` 的 `force=false` 回填显式触发，并复用精确命中当前 `source_hash / prompt_version / extraction_model` 的成功结果。
+
+### `PUT /api/domains/{domain_id}/observation`
+
+- body：`{ "enabled": true|false }`，持久化当前域的持续观测状态。
+- 停用只阻止新的认知分析与域派生任务，不停止匹配来源的同步、视频/字幕下载和转写归档，也不强制取消已经 `running` 的任务。
+- 视频属于多个域时，只要其中一个域仍启用，视频级转写润色、事件抽取与事件向量仍可执行一次；域级简报和星域任务只为启用域投递。
+- 从停用切回启用时投递一次事件补齐和星域 dirty 信号，复用 Job 去重语义。
 
 ### `GET|PUT /api/domains/{domain_id}/observation/cursor`
 
@@ -509,7 +554,7 @@
 - query 可选 `after_snapshot_id`、`object_type`、`change_type`、`cursor`、`limit`。
 - 按 `(observed_at desc, id desc)` 稳定分页；每项同时声明事件发生时间和系统认知时间口径。
 - 每项返回 `before_revision` / `after_revision`；retire 变化的 Web 深链接固定到对象最后仍存在的 `from_snapshot_id`，其余变化固定到 `to_snapshot_id`。
-- 新增且带 evidence revision 的显式 `corrects` 故事关系会额外生成 `story_correction_added`；普通标题、摘要或成员变化不会被推断为纠正。
+- 新增且带 evidence revision 的显式 `corrects` 故事关系会额外生成 `story_correction_added`。故事首次形成、成员或顺序变化、关系或判定依据变化、支持记录变化、事实纠正和 `emerging / established` 成熟度变化属于实质变化；仅标题/摘要措辞、质量分波动和无变化重建不刷新故事未读状态。
 
 ### `GET /api/domains/{domain_id}/observation/feed`
 
@@ -531,16 +576,27 @@
 
 ### `GET /api/domains/{domain_id}/stories`
 
-- 返回 current ready 快照中的稳定故事目录、关注状态和未读状态。
+- query 可选 `scope=all|attention|followed|established|emerging`、`q`、`limit`（默认 `80`，最大 `200`）和 `offset`；API 默认 `scope=all`，故事页显式请求 `attention`。
+- `attention` 包含已关注或读过故事中尚未阅读的实质更新，以及域观察游标之后发生任一实质变化的成熟故事；后者包含首次形成、成员、关系、支持记录、事实纠正和成熟度变化，不要求用户预先打开过该故事。没有任何观察或阅读基线时，只返回最近一页成熟故事并逐项标记推荐，不把全库伪装成未读；只保存阅读位置或关注状态不等于已经读过，关注但未读的故事仍单独进入队列。
+- 搜索同时匹配不会随快照改写的 `stable_title` 和最新真实事件标题。结果按 `last_material_changed_at desc, story_identity_id asc` 稳定排序。
+- 每项返回稳定标题、`latest_progress`、成熟度、关系与支持记录数量、最近实质更新时间、实质变化类型、关注状态和准确的 `unread`；同时提供 `total`、`offset`、`limit`、`has_more`，调用方应渐进读取。
 
 ### `GET /api/domains/{domain_id}/stories/{story_identity_id}`
 
 - query 可选 `snapshot_id`；省略时读取 current ready，显式指定时航迹固定到该历史 ready 快照且不回退。
-- 返回跨快照故事修订、逐版本成员/关系/证据差异、变化、阅读状态，以及所选快照可直接绘制的完整 `current_trajectory.nodes/edges`。
+- 返回 `stable_title`、所选 `selected_revision`、可读的 `trajectory.nodes/edges`、相对最后阅读修订的具名 `reading_update`、仅含实质变化的 `material_history`、合并后的 `audit_summary`、阅读状态与相关简报。若期间发生过实质变化但当前净结构已恢复，`reading_update.returned_to_previous_state=true` 并返回期间变化次数与类型，不伪造净增减。兼容期继续返回 `current_trajectory` 别名和旧历史字段。
+- 节点返回标题、摘要、起止时间、时间精度、事件类型、成员数和不确定性；同一发生时间的节点保留所选 story revision 的成员顺序。边返回中文关系、两端事件标题、支持记录数，以及已有两端命题、摘录和时间间隔。它们用于解释系统为何建立关系，不代表每一段摘录已经完成严格的逐段关系归因。
+- 历史深链接中的标题、进展、节点、关系和简报上下文全部来自所选 revision，不能混入 current 数据。
+
+### `GET /api/domains/{domain_id}/stories/{story_identity_id}/edges/{edge_id}/support`
+
+- query 必填 `snapshot_id`，并校验观测域、故事身份、故事修订和关系边属于同一所选快照。
+- 返回具名来源事件、目标事件、中文关系类型、两端 claim、已有摘录、时间间隔，以及去重后的来源支持记录。
+- 支持记录包含来源标题、信源、原文片段、`verified`、转写版本状态与精确播放位置（若存在）；`support_granularity=record_revision` 明确当前证明粒度。详情按选中关系懒加载，故事主响应不逐记录扩张。
 
 ### `PATCH /api/domains/{domain_id}/stories/{story_identity_id}/read-state`
 
-- body 可包含 `followed`、`snapshot_id`、`position`、`mark_read`，保存关注与阅读位置。
+- body 可包含 `followed`、`snapshot_id`、`position`、`mark_read`。打开故事不写已读；位置更新也不隐式清除未读。只有显式 `mark_read=true` 才把 current 故事实质更新标为已读，历史快照不能清除 current 未读状态。
 
 ### `GET /api/briefs/{brief_id}/structured`
 

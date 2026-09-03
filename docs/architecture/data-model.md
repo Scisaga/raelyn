@@ -96,12 +96,13 @@
 
 当前职责：
 
-- `playlist` 保存播放列表元信息、简报粒度、简报提示词、头像 / 背景图资产引用。
+- `playlist` 保存观测域元信息、持续观测状态、简报粒度、简报提示词、头像 / 背景图资产引用。
 - `playlist_media` 保存播放列表与媒体的多对多关系。
 
 关键字段：
 
 - `avatar_asset_id` / `background_asset_id`
+- `observation_enabled`：当前域是否继续生成认知分析与域派生产物；默认启用，停用不删除共享来源记录与资产。
 - `brief_granularity`：`day | week | month`
 - `brief_prompt`：播放列表级提示词
 
@@ -220,8 +221,8 @@
 - `event_map_canonical_history_revision` / `event_map_canonical_history_member`：不依赖大快照保留期的 canonical 修订正文，以及来源修订到 canonical 的类型化反向索引；
 - `event_map_entity_index`：快照原生的实体—canonical 倒排索引；每行保存实体类型、规范键、展示名、固定 `point_index` 和该 canonical 内的底层记录数，实体筛选不再扫描可变的 `market_event_entity` 或 revision JSON；
 - `event_map_topic` / `event_map_topic_member`：确定性的一级星域与二级主题团；保存三维中心、包围半径和每层唯一归属，不保存二维 polygon；
-- `event_map_story_identity` / `event_map_story` / `event_map_story_member` / `event_map_story_edge`：稳定故事身份、快照版本、有证据的事件序列和有向关系；
-- `event_map_story_history_revision` / `event_map_story_history_evidence` / `story_read_state`：跨快照故事修订、故事边到来源修订的反向索引、关注状态与最后阅读位置；
+- `event_map_story_identity` / `event_map_story` / `event_map_story_member` / `event_map_story_edge`：稳定故事身份、快照版本、有证据的事件图和有向关系；身份保存首次形成后冻结的 `stable_title`、最近实质变化快照 `last_material_snapshot_id` 与时间 `last_material_changed_at`，故事版本保存 `anchor_key`、`story_type`、`maturity` 与 `quality_score`，边保存 evidence revision 列表及关系判定证据 JSON；
+- `event_map_story_history_revision` / `event_map_story_history_evidence` / `story_read_state`：跨快照故事修订、锚点/成熟度/质量历史、故事边到来源修订的反向索引、关注状态与最后阅读位置；
 - `domain_observation_cursor` / `event_map_change`：观察窗口和按系统认知时间分页的对象变化集；
 - `event_map_projection_anchor`：三维布局继承所需的 canonical anchor、x/y/z 与 float32 centroid。
 
@@ -237,6 +238,9 @@
 - 每个 canonical 在一级星域和二级主题团各有且仅有一个成员归属；
 - 主题下钻与主题—简报反查使用 `(snapshot_id, topic_id, level)` 复合索引，不扫描整个快照成员集；
 - story edge 禁止 self-edge，`(snapshot, source, target, relation_type)` 唯一；
+- story 身份只能在相同故事算法版本和相同 `anchor_key` 内延续；算法定义升级不会把旧语义身份误接到新故事；
+- `event_map_story_identity.stable_title` 在身份创建时写入，后续快照的生成标题不得覆盖；旧身份从最早历史修订标题回填，缺少历史时取最早可用故事标题，active 身份无法得到非空标题时迁移失败并报告；
+- `last_material_snapshot_id` 不外键依赖可能被裁剪的快照。`(playlist_id, status, last_material_changed_at)` 支撑阅读队列；只有成员/顺序、关系/判定依据、支持记录、纠正或成熟度等事实结构变化才推进该游标，文案与质量分不推进；
 - occurrence interval 只来自 `event_time_start/end`；`available_at` 不进入地图表；
 - 原始 embedding 不通过地图 API 传输。
 
@@ -275,6 +279,47 @@ requeue / reschedule 与所有终态都会清空旧 `execution_token`。失去�
 - `role`
 - `updated_at`
 
+### `external_service_usage_daily`
+
+ORM 模型为 `ExternalServiceUsageDaily`，用于保存资源用量页所需的外部服务日聚合；它不是站内 HTTP access log。
+
+关键字段：
+
+- `day`：调用发生时间换算到 `Asia/Shanghai` 后的日桶；
+- `service`：`llm | asr | embedding`；
+- `operation` / `provider` / `model`：调用用途与服务维度；provider 或 model 不适用时保存空字符串，使复合键保持非空；
+- `call_count` / `success_count` / `failure_count`：调用总数与成功、失败列聚合；
+- `input_tokens` / `output_tokens` / `total_tokens`：LLM usage 聚合，非 LLM 服务保持 `0`；
+- `duration_ms`：调用累计耗时；
+- `usage_missing_calls`：调用成功或失败但未取得完整 usage 的次数，用于阻止 UI 把部分 token 误报为完整总量；
+- `last_called_at`：该维度最近一次实际调用时间。
+
+约束与写入语义：
+
+- `(day, service, operation, provider, model)` 为复合主键；
+- 每次真实外部调用完成或失败后，以独立短事务对对应日桶原子累加；成功与失败直接来自调用结果，不从 Job 终态反推；
+- 只聚合计数、token 与耗时，不保存请求正文、响应正文、鉴权头、URL 查询参数或站内 `/api/*` 请求；
+- 实时采集使用正常 operation；一次性 `system.backfill_legacy_usage` 从终态 `Job.result` 恢复旧 LLM 用量，并从终态 ASR 任务的 `asr request started / succeeded` 事件按 `job_id + attempt` 恢复真实请求。两类历史行都写入 `legacy.*` operation；没有请求事件的旧 ASR 任务不做数量推算。简报与转写润色读取 `llm_usage`，事件抽取读取 `usage`，不再叠加 `VideoEventExtractionRun.usage_json`，避免同一次事件抽取重复计数；
+- 历史迁移以 `Asia/Shanghai` 日桶聚合，调用成功 / 失败来自旧 Job 终态，provider 固定为 `legacy`，未持久化的耗时保持 `0` 并由 UI 标明“历史未记录”。每次迁移只删除并重建 `legacy.*` 行，不影响实时行，因此重试结果一致且不会与实时采集冲突。
+
+### `resource_usage_daily`
+
+ORM 模型为 `ResourceUsageDaily`，用于保存每天最后一次资源规模快照。
+
+关键字段：
+
+- `day`：`Asia/Shanghai` 日桶，也是主键；
+- `captured_at`：快照实际完成时间；
+- `video_count`：快照时仍存在的 `video` 行数；
+- `asset_count`：快照时仍存在的 `asset` 行数；
+- `asset_size_bytes`：已知 `Asset.size_bytes` 的逻辑总量；
+- `asset_missing_size_count`：`size_bytes IS NULL` 的资产数；
+- `database_size_bytes`：PostgreSQL `pg_database_size(current_database())`，非 PostgreSQL 为 `null`。
+
+同一天的 `system.capture_usage_snapshot` 可以重复执行；写入按 `day` upsert，只有 `captured_at` 更新的结果才能覆盖当日旧值，因此重试、重复投递或乱序完成不会让快照倒退。Scheduler 每小时只投递任务，实际全库计数与快照写入由 `sync` worker 执行；该表不保存物理磁盘总量或余量。
+
+资源用量接口的当前摘要直接实时查询 `video`、`asset` 和数据库，不依赖该表是否已有当天记录；按日逻辑资产与数据库趋势只读本表。快照采集启用前的日期保持缺失，不使用当前库存反向补齐。
+
 ### `app_config`
 
 当前职责：
@@ -284,6 +329,7 @@ requeue / reschedule 与所有终态都会清空旧 `execution_token`。失去�
 当前已使用的 key 包括：
 
 - `ytdlp_cookies_youtube`
+- `usage.legacy_llm_backfill`：旧 Job LLM 用量与可核验 ASR 请求事件完成一次性回填后的版本、完成时间与分服务汇总；Scheduler 据此停止重复投递迁移任务。
 - `ytdlp_cookies_bilibili`
 - `ytdlp_subtitles`
 - `ytdlp_members_only`
@@ -328,3 +374,4 @@ playlist/{playlist_id}/background.{ext}
 - ORM 定义见 [backend/raelyn/models.py](../../backend/raelyn/models.py)。
 - 初始化与兼容迁移见 [backend/raelyn/db.py](../../backend/raelyn/db.py)。
 - 对象存储写入与 presign 见 [backend/raelyn/services/s3.py](../../backend/raelyn/services/s3.py)。
+- 外部调用日聚合、资源快照与用量查询组装见 [backend/raelyn/services/usage.py](../../backend/raelyn/services/usage.py)。

@@ -1,7 +1,7 @@
           <!-- Media -->
-          <div x-show="activeView==='media' || (activeView==='library' && libraryTab==='sources')" x-transition.opacity class="h-full" :class="activeView==='library' ? 'pt-12' : ''">
-            <div class="bg-slate-900/40 overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
-              <div class="shrink-0 px-4 py-3 flex items-center justify-between gap-2 sm:gap-3">
+          <div x-show="activeView==='media' || (activeView==='library' && libraryTab==='sources')" x-transition.opacity class="raelyn-view h-full" :class="activeView==='library' ? 'raelyn-view--library pt-12' : 'raelyn-view--media'">
+            <div class="raelyn-surface-base overflow-hidden h-full flex flex-col min-h-0 divide-y divide-slate-800">
+              <div class="raelyn-toolbar-band shrink-0 px-4 py-3 flex items-center justify-between gap-2 sm:gap-3">
 	                <div class="hidden sm:block text-xs text-slate-400" x-text="mediaList.length ? ('已加载 ' + mediaList.length + ' 条') : ''"></div>
                 <div class="flex items-center gap-2 min-w-0 flex-1 justify-end">
                   <button

@@ -14,11 +14,6 @@ export function createNavItems() {
       icon: raelynIcon('<path d="M4 18.5c3.1-5.5 5.9-8.8 9-9.7 2.5-.8 4.4-2.5 6-5.3"/><circle cx="4" cy="18.5" r="1.4"/><circle cx="13" cy="8.8" r="1.4"/><circle cx="19" cy="3.5" r="1.4"/><path d="M9 18h10" opacity=".55"/>'),
     },
     {
-      key: "briefs",
-      label: "简报",
-      icon: raelynIcon('<path d="M6 3.5h9l3 3V21H6z"/><path d="M15 3.5v3h3M9 11h6M9 15h6M9 18h4"/>'),
-    },
-    {
       key: "playlist",
       label: "播放列表",
       icon: raelynIcon(
@@ -29,6 +24,11 @@ export function createNavItems() {
       key: "library",
       label: "资料库",
       icon: raelynIcon('<path d="M4 5.5h16v14H4z"/><path d="M8 5.5v14M4 9h4M11 10h6M11 14h6"/>'),
+    },
+    {
+      key: "domain-settings",
+      label: "观测域设置",
+      icon: raelynIcon('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1.1 1.6V21h-4v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.8.3l-.1.1-2.8-2.8.1-.1a1.7 1.7 0 0 0 .3-1.8A1.7 1.7 0 0 0 3 14H3v-4h.1a1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1L7 4.2l.1.1a1.7 1.7 0 0 0 1.8.3A1.7 1.7 0 0 0 10 3.1V3h4v.1a1.7 1.7 0 0 0 1.1 1.6 1.7 1.7 0 0 0 1.8-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.8A1.7 1.7 0 0 0 20.9 10h.1v4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>'),
     },
     { key: "overview", label: "旧概览", hidden: true, icon: raelynIcon('<path d="M4 4h16v16H4z"/>') },
     { key: "media", label: "信源", hidden: true, icon: raelynIcon('<circle cx="12" cy="10" r="4"/>') },
@@ -53,6 +53,12 @@ export function createNavItems() {
       label: "运行中心",
       system: true,
       icon: raelynIcon('<path d="M4 17V9m5 8V5m5 12v-7m5 7V3"/><path d="M3 21h18"/>'),
+    },
+    {
+      key: "usage",
+      label: "资源用量",
+      system: true,
+      icon: raelynIcon('<path d="M4 18a8 8 0 1 1 16 0"/><path d="m12 14 4-5"/><path d="M7 18h10"/><path d="M6.4 9.5 8 11m9.6-1.5L16 11M12 6v2"/>'),
     },
     {
       key: "mcp-guide",
