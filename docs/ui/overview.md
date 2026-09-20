@@ -173,8 +173,9 @@
 
 ### 智能体接入页面
 
-- 说明 MCP Server 的连接地址、Bearer 鉴权、V2 语义 tools / resources。
-- 内置 VS Code / Codex CLI / OpenClaw 等接入示例。
+- 说明 MCP Server 的两种连接地址、权限边界以及 V2 语义 tools / resources。
+- ChatGPT / Claude 使用公网 HTTPS 的路径密钥入口与只读能力；桌面端以“客户端导航 + 操作步骤 + 连接字段”工作区呈现，小屏改为可横向滚动的客户端标签。
+- VS Code + Codex / Codex CLI 继续使用 Bearer Token 完整能力入口。
 
 ### 设置页
 
@@ -211,5 +212,5 @@
 
 - UI 仍以单用户桌面 / 平板场景为主，移动端重点保障浏览、播放和 PWA 安装路径。
 - 全局搜索当前采用关系字段与文本匹配，不伪装为向量语义召回；构建侧 embedding 查询优化见 V2 能力差距文档。
-- 智能体接入页面是前端说明页，不等价于 MCP 实际 endpoint；真实接口由主 API 进程挂载在 `/mcp` 提供。
+- 智能体接入页面是前端说明页，不等价于 MCP 实际 endpoint；真实接口由主 API 进程挂载在 `/mcp` 与可选的 `/mcp/<MCP_ROUTE_SECRET>`。
 - 播放日期、记录和位置当前保存在 URL 与本机浏览器中；跨设备播放游标尚未实现。

@@ -6,7 +6,8 @@
 
 - 主应用入口：[backend/raelyn/main.py](../../backend/raelyn/main.py)
 - MCP 注册层：[backend/raelyn/mcp/](../../backend/raelyn/mcp/)
-- 默认入口：`/mcp`
+- 完整能力入口：`/mcp`
+- 可选只读连接器入口：`/mcp/<MCP_ROUTE_SECRET>`
 - 健康检查：`GET /mcp/health`
 - Transport：官方 Python `mcp` SDK 的 `FastMCP` + `Streamable HTTP`
 
@@ -15,9 +16,13 @@ MCP 作为主 API 的子应用挂载，但它直接复用现有 DB / model / ser
 ## 安全边界
 
 - `API_BEARER_TOKEN` 非空时才会挂载 MCP；为空时主 API 仍可正常启动，但 `/mcp` 不可用。
-- `/api` 与 `/mcp` 复用同一个 Bearer Token；浏览器 cookie 只服务 `/api`，MCP 仍只接受 `Authorization: Bearer <token>`。
+- `/api` 与完整能力 `/mcp` 复用同一个 Bearer Token；浏览器 cookie 只服务 `/api`，该 MCP 入口仍只接受 `Authorization: Bearer <token>`。
 - `/mcp/health` 允许匿名访问。
-- `/mcp` 下的所有请求都要求 `Authorization: Bearer <token>`。
+- 配置独立的 `MCP_ROUTE_SECRET` 后，精确路径 `/mcp/<MCP_ROUTE_SECRET>` 允许不带 Header 的远程连接器访问；其他 `/mcp/*` 路径仍要求 Bearer Token。
+- 路径密钥入口只注册查询类 tools 和 resources，不注册 `sync_media`、`download_video`、`retranscribe_video`、`generate_brief`。
+- `MCP_ROUTE_SECRET` 至少 32 个字符且只能占一个路径段。它必须是独立随机值，不能从 `API_BEARER_TOKEN` 派生；路径本身就是 capability 凭证。
+- ChatGPT / Claude 使用该入口时需要公网可达 HTTPS。应用自身关闭 Uvicorn access log，部署层还必须避免反向代理记录完整 MCP 路径；泄露时通过轮换密钥并重启 API 失效旧 URL。
+- 路径密钥没有用户身份、授权同意或单用户撤销能力，只适合当前单用户 / 受信任小团队边界；真正的多用户接入应升级为 OAuth。
 - MCP 与主 API 共用同一个监听端口，不额外占用独立端口。
 - 远程使用时仍应配合主机防火墙、受控网段或反向代理。
 
@@ -28,6 +33,11 @@ MCP 作为主 API 的子应用挂载，但它直接复用现有 DB / model / ser
 - 只读查询
 - 长文本 transcript 分块读取
 - 安全的异步任务触发
+
+能力按入口收敛：
+
+- Bearer 入口：上述完整能力。
+- 路径密钥入口：只读查询、transcript 分块和 resources；不提供异步任务触发。
 
 首版不实现：
 
@@ -240,7 +250,7 @@ MCP 与 REST 的关系不是一比一镜像，而是：
 - [backend/raelyn/main.py](../../backend/raelyn/main.py)
 - [scripts/dev/devctl.sh](../../scripts/dev/devctl.sh)
 
-`devctl.sh start` 只启动 API/worker/scheduler；如果 `API_BEARER_TOKEN` 非空，MCP 会随 API 一起挂载到 `/mcp`。如果为空，则 `/mcp` 与 `/mcp/health` 返回 `404`。
+`devctl.sh start` 只启动 API/worker/scheduler；如果 `API_BEARER_TOKEN` 非空，MCP 会随 API 一起挂载到 `/mcp`。同时配置 `MCP_ROUTE_SECRET` 时会增加只读连接器路径；如果 `API_BEARER_TOKEN` 为空，则所有 MCP 入口与 `/mcp/health` 返回 `404`。
 
 ## 测试覆盖
 
@@ -250,7 +260,8 @@ MCP 与 REST 的关系不是一比一镜像，而是：
 - transcript 选择顺序与 chunking
 - 下载 / 重转写任务投递分支
 - `get_brief` / `get_playlist_brief` / `get_playlist_latest_brief` / `get_video_context` / `get_playlist_summary`
-- `/health` 和 Bearer 鉴权
+- `/health`、Bearer 鉴权和路径密钥精确匹配
+- 路径密钥入口不发布异步动作 tools
 - `Streamable HTTP` 协议最小链路：`list_tools`、`call_tool`、`read_resource`
 
 ## 后续扩展
@@ -260,7 +271,7 @@ MCP 与 REST 的关系不是一比一镜像，而是：
 - `search_content`
 - transcript 基于时间戳的切片读取
 - Prompts
-- 远程认证方案（如果以后不再局限于受信任局域网）
+- OAuth 多用户身份与逐用户撤销（如果以后不再局限于单用户 / 受信任小团队）
 - 更强的检索能力（全文 / 混合 / 向量）
 
 这些取舍如果以后变成明确架构决策，再进入 `docs/adr/`。

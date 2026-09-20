@@ -24,6 +24,14 @@ function context(overrides = {}) {
   };
 }
 
+async function waitForTestState(predicate, message) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail(message);
+}
+
 test("星域变化默认收起，并优先打开第一个有内容的口径", () => {
   const ctx = context({
     domainObservationFeed: {
@@ -829,6 +837,7 @@ test("故事页切换观测域先读取目标目录，失败时完整保留当�
       selectedPlaylistId: "domain-1",
       playlistPageId: "domain-1",
       domains: [{ id: "domain-1" }, { id: "domain-2" }],
+      _domainsComplete: true,
       domainSwitcherOpen: true,
       storySelectedId: "story-old",
       storyDetail: detail,
@@ -878,6 +887,7 @@ test("故事页目标目录成功后才原子提交新观测域", async () => {
       selectedPlaylistId: "domain-1",
       playlistPageId: "domain-1",
       domains: [{ id: "domain-1" }, { id: "domain-2" }],
+      _domainsComplete: true,
       storySelectedId: "story-old",
       storyDetail: { story_identity_id: "story-old" },
       storyDetailLoading: true,
@@ -951,6 +961,7 @@ test("目标故事目录读取期间切走页面会取消域切换", async () =>
       selectedPlaylistId: "domain-1",
       playlistPageId: "domain-1",
       domains: [{ id: "domain-1" }, { id: "domain-2" }],
+      _domainsComplete: true,
       _syncUrl() { throw new Error("取消的切换不得改写 URL"); },
       api() { return new Promise((resolve) => { resolveTarget = resolve; }); },
     });
@@ -979,6 +990,7 @@ test("星域入口预检失败时不销毁当前星域或提交新域", async ()
       selectedPlaylistId: "domain-1",
       playlistPageId: "domain-1",
       domains: [{ id: "domain-1" }, { id: "domain-2" }],
+      _domainsComplete: true,
       async saveFieldCursor() { calls.push("save"); },
       leaveField() { calls.push("leave"); },
       _syncUrl() { calls.push("sync"); },
@@ -1012,6 +1024,7 @@ test("星域游标保存期间切走页面会在销毁当前画面前取消切�
       selectedPlaylistId: "domain-1",
       playlistPageId: "domain-1",
       domains: [{ id: "domain-1" }, { id: "domain-2" }],
+      _domainsComplete: true,
       api: async () => ({}),
       saveFieldCursor() { return new Promise((resolve) => { resolveSave = resolve; }); },
       leaveField() { calls.push("leave"); },
@@ -1019,7 +1032,7 @@ test("星域游标保存期间切走页面会在销毁当前画面前取消切�
     });
 
     const switching = ctx.selectDomain("domain-2");
-    while (!resolveSave) await Promise.resolve();
+    await waitForTestState(() => Boolean(resolveSave), "切域应等待当前星域游标保存");
     ctx.activeView = "library";
     resolveSave();
 
@@ -1043,6 +1056,7 @@ test("重复点击当前域只返回主导航，切换进行中不会再启动�
       selectedPlaylistId: "domain-1",
       playlistPageId: "domain-1",
       domains: [{ id: "domain-1" }, { id: "domain-2" }, { id: "domain-3" }],
+      _domainsComplete: true,
       domainSwitcherOpen: true,
       _syncUrl() {},
       api(path) {
@@ -1764,7 +1778,7 @@ test("事件位置保存未完成时打开关系，不会让旧事件请求作�
   });
 
   const openingEvent = ctx.storyOpenEventInspector({ canonical_id: "event-1" }, 0, null);
-  while (!resolvePosition) await Promise.resolve();
+  await waitForTestState(() => Boolean(resolvePosition), "打开事件应先保存故事阅读位置");
   await ctx.storyOpenEdgeInspector({ edge_id: "edge-1" }, null);
   resolvePosition({ last_position: 0 });
   await openingEvent;
@@ -2264,7 +2278,7 @@ test("V2 主界面区分主视图、临时工具与星域上下文", async () =>
   const stories = await readFile(new URL("../../../templates/app/views/stories.html", import.meta.url), "utf8");
   const playlistModel = await readFile(new URL("../event-map-model.js", import.meta.url), "utf8");
 
-  assert.match(template, /\['now','replay','story','verify'\]/);
+  assert.doesNotMatch(template, /\['now','replay','story','verify'\]/);
   assert.match(template, /fieldSetPrimaryView\('map'\)[^>]*>星域</);
   assert.match(template, /fieldSetPrimaryView\('list'\)[^>]*>列表</);
   assert.match(template, />事件列表</);

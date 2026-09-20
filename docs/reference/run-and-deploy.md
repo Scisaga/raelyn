@@ -358,7 +358,7 @@ PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.repair_empty_audio_assets 
 - `devctl.sh` 后台进程会优先以独立进程组启动；如需停止服务，使用 `./scripts/dev/devctl.sh stop`。
 - `devctl.sh` 启动的 worker 会先进入轻量 supervisor；worker 子进程崩溃后会自动拉起，默认等待 `WORKER_RESTART_DELAY_SECONDS=5` 秒，也可用旧的 `DEV_WORKER_RESTART_DELAY_SECONDS` 覆盖本地等待时间。
 - 同步/下载类 worker 的主执行心跳超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进时，会主动退出并交给 supervisor 重启；YouTube 全量同步按 yt-dlp 的真实分页与条目日志刷新该心跳，下载任务按下载进度刷新。
-- 只有在 `.env` 里配置了 `API_BEARER_TOKEN` 时，主 API 进程才会额外挂载 `/mcp`；否则 `/mcp` 与 `/mcp/health` 返回 `404`。
+- 只有在 `.env` 里配置了 `API_BEARER_TOKEN` 时，主 API 进程才会额外挂载 `/mcp`；否则 `/mcp` 与 `/mcp/health` 返回 `404`。同时配置独立随机的 `MCP_ROUTE_SECRET` 后，还会挂载 `/mcp/<MCP_ROUTE_SECRET>` 只读连接器入口。
 - 主 API 关闭 Uvicorn HTTP access log；WebSocket 握手日志中的 `token` / `access_token` / `api_key` query 值会被脱敏，避免 `devctl.sh logs` 暴露访问凭证。
 
 ## UI 构建（离线/无 CDN）
@@ -409,6 +409,17 @@ WSL 提示：如果你的 `npm` 指向 Windows 安装路径（如 `/mnt/c/Progra
 - UI 首页：`GET /`
 - MCP 健康检查：`GET http://127.0.0.1:8000/mcp/health`
 - MCP endpoint：`http://127.0.0.1:8000/mcp`（需要 `Authorization: Bearer <API_BEARER_TOKEN>`）
+- ChatGPT / Claude connector：`https://<public-host>/mcp/<MCP_ROUTE_SECRET>`（客户端选择 No authentication / No sign-in，只发布只读能力）
+
+默认测试套件只运行本地单元测试和隔离数据库测试，不访问真实 LLM 或业务数据库：
+
+```bash
+./.venv/bin/python -m unittest discover -s backend -p 'test_*.py'
+```
+
+真实依赖验证必须显式开启。转写润色实测使用 `RAELYN_RUN_LLM_LIVE=1`；只读复用业务库中的用量、资产或事件星域数据时使用 `RAELYN_RUN_REAL_DB_TESTS=1`。两类测试都应定向运行，不要把开关写入常驻 `.env`。
+
+远程连接器必须使用公网可达的 HTTPS 地址。`MCP_ROUTE_SECRET` 是 capability URL 的凭证部分：反向代理不要记录该路径的完整 access log，也不要把真实地址放进截图、文档或工单；怀疑泄露时生成新值并重启 API。该方式用于当前单用户 / 受信任小团队边界，不替代多用户 OAuth 身份认证。
 
 任务入队与会话锁的 PostgreSQL 定向集成验证：
 

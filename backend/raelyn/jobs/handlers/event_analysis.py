@@ -67,6 +67,7 @@ def _enqueue_dirty_event_map_build(
     playlist_id: uuid.UUID,
     state: EventMapState,
     now: datetime,
+    priority: int = 0,
 ) -> uuid.UUID:
     scheduled_for = _event_map_build_scheduled_for(state, now)
     job_id = enqueue_job(
@@ -77,6 +78,7 @@ def _enqueue_dirty_event_map_build(
             "trigger": "dirty",
             "requested_generation": int(state.dirty_generation or 0),
         },
+        priority=priority,
         scheduled_for=scheduled_for,
     )
     build_job = session.get(Job, job_id)
@@ -85,6 +87,7 @@ def _enqueue_dirty_event_map_build(
         and build_job.status == "pending"
         and str((build_job.params or {}).get("trigger") or "") == "dirty"
     ):
+        build_job.priority = max(int(build_job.priority or 0), int(priority or 0))
         build_job.scheduled_for = scheduled_for
         params = dict(build_job.params or {})
         params["requested_generation"] = int(state.dirty_generation or 0)
@@ -185,7 +188,12 @@ def event_embed(session: Session, job: Job) -> dict | None:
     event_id = uuid.UUID(str(job.params["event_id"]))
     if not event_has_enabled_observation(session, event_id):
         return {"skipped": "domain observation is disabled"}
-    return embed_event(session, event_id=event_id)
+    return embed_event(
+        session,
+        event_id=event_id,
+        priority=int(job.priority or 0),
+        source_job_id=job.id,
+    )
 
 
 @registry.register("event.backfill_embeddings")
@@ -219,6 +227,7 @@ def playlist_mark_event_map_dirty(session: Session, job: Job) -> dict | None:
         playlist_id=playlist_id,
         state=state,
         now=now,
+        priority=int(job.priority or 0),
     )
     return {
         "dirty_generation": int(state.dirty_generation),
@@ -303,6 +312,7 @@ def playlist_build_event_map_snapshot(session: Session, job: Job) -> dict | None
             playlist_id=playlist_id,
             state=state,
             now=utcnow(),
+            priority=int(job.priority or 0),
         )
     return result
 

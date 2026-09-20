@@ -73,6 +73,8 @@ EVENT_EXTRACTION_PROGRESS_LLM_DONE = 9000
 EVENT_EXTRACTION_PROGRESS_WRITTEN = 9600
 EVENT_EXTRACTION_PROGRESS_POST_PROCESSED = 9900
 EVENT_MAP_DIRTY_DEBOUNCE_SECONDS = 0
+EVENT_EXTRACTION_CURRENT_WEEK_PRIORITY = 15
+EVENT_EXTRACTION_RECENT_24H_PRIORITY = 20
 
 
 class _EventExtractionResponseError(ValueError):
@@ -2064,13 +2066,58 @@ def schedule_video_event_extraction(
         return None
     if not video_has_enabled_observation(session, video_id):
         return None
-    return enqueue_job(
+    video = session.get(Video, video_id)
+    effective_priority = event_extraction_priority(video, priority=priority) if video is not None else int(priority or 0)
+    job_id = enqueue_job(
         session,
         type_="video.extract_events",
         params={"video_id": str(video_id), "force": force},
-        priority=priority,
+        priority=effective_priority,
         parent_job_id=parent_job_id,
     )
+    job = session.get(Job, job_id)
+    if job is not None and job.status == "pending" and int(job.priority or 0) < effective_priority:
+        previous_priority = int(job.priority or 0)
+        job.priority = effective_priority
+        session.add(
+            JobEvent(
+                job_id=job.id,
+                level="info",
+                message="event extraction priority promoted",
+                data={
+                    "priority": effective_priority,
+                    "previous_priority": previous_priority,
+                    "video_id": str(video_id),
+                },
+            )
+        )
+    return job_id
+
+
+def event_extraction_priority(
+    video: Video,
+    *,
+    priority: int = 0,
+    now: datetime | None = None,
+) -> int:
+    """让当前星域时间焦点先于历史 AI 积压完成事件抽取。"""
+
+    effective_priority = int(priority or 0)
+    published_at = video.published_at
+    current = now or utcnow()
+    if published_at is None or published_at > current:
+        return effective_priority
+    if published_at >= current - timedelta(hours=24):
+        return max(effective_priority, EVENT_EXTRACTION_RECENT_24H_PRIORITY)
+
+    current_date = local_date(current)
+    if current_date is None:
+        return effective_priority
+    week_start = current_date - timedelta(days=current_date.weekday())
+    week_start_at, week_end_at = period_bounds_utc(week_start, "week")
+    if week_start_at <= published_at < week_end_at:
+        return max(effective_priority, EVENT_EXTRACTION_CURRENT_WEEK_PRIORITY)
+    return effective_priority
 
 
 def _playlist_video_id_texts(playlist_id: uuid.UUID):
@@ -2510,7 +2557,13 @@ def _event_embedding_text(session: Session, event: MarketEvent) -> str:
     return event_embedding_texts(session, [event])[event.id]
 
 
-def embed_event(session: Session, *, event_id: uuid.UUID) -> dict[str, Any]:
+def embed_event(
+    session: Session,
+    *,
+    event_id: uuid.UUID,
+    priority: int = 0,
+    source_job_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
     if not embedding_enabled():
         return {"skipped": "embedding service not configured"}
     event = session.get(MarketEvent, event_id)
@@ -2596,6 +2649,8 @@ def embed_event(session: Session, *, event_id: uuid.UUID) -> dict[str, Any]:
             session,
             video_id=event.source_video_id,
             reason="event_embedding_changed",
+            source_job_id=source_job_id,
+            priority=priority,
         )
     return {"ok": True, "status": existing.status, "embedding_id": str(existing.id)}
 

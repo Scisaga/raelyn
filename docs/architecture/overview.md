@@ -5,7 +5,7 @@
 ## 当前约束与决策
 
 - 单用户系统；不做多租户与复杂权限模型。
-- 主站 API 与 MCP HTTP 共用同一个可选 Bearer Token；未配置时 `/api/*` 公开，且不挂载 `/mcp`。
+- 主站 API 与完整能力 MCP 入口共用同一个可选 Bearer Token；未配置时 `/api/*` 公开，且不挂载 MCP。可另配独立路径密钥，为 ChatGPT / Claude 暴露只读连接器入口。
 - 媒体新增后默认 `monitor_enabled=false`，只有启用监控后才会进入分钟级自动同步。
 - 播放列表不只是“媒体集合”，还承载周期聚合粒度、简报提示词、封面与背景图。
 - 任务系统沿用项目内 [skills/job-system-design/SKILL.md](../../skills/job-system-design/SKILL.md) 的通用原则，项目文档只记录本仓库的实现形态。
@@ -80,6 +80,7 @@
 
 - 由 [backend/raelyn/main.py](../../backend/raelyn/main.py) 按 `MCP_BASE_PATH=/mcp` 挂载。
 - 只有在配置了 `API_BEARER_TOKEN` 时才启用；否则主 API 正常启动但不提供 `/mcp`。
+- `/mcp` 使用 Bearer Token 并提供完整能力；可选 `/mcp/<MCP_ROUTE_SECRET>` 不要求额外 Header，只发布只读 tools / resources，用于 ChatGPT / Claude 远程连接器。
 - 复用现有 DB / service / job enqueue 能力，不通过 `/api/*` 再套一层 HTTP。
 
 ### 静态 UI / PWA

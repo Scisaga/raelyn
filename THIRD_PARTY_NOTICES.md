@@ -3,6 +3,19 @@
 Raelyn includes the following third-party browser bundles. These components
 remain subject to their own licenses.
 
+## Product names, icons, and trademarks
+
+`static/brand/official/chatgpt.svg` and `static/brand/official/claude.svg` are
+used only to identify compatible MCP clients in Raelyn's connection guide.
+ChatGPT and the ChatGPT icon are trademarks or copyrighted assets of OpenAI;
+Claude and the Claude icon are trademarks or copyrighted assets of Anthropic.
+They are not part of Raelyn's own branding, are not licensed under Raelyn's
+Apache-2.0 license, and do not imply sponsorship, endorsement, or partnership.
+
+Use of the OpenAI mark remains subject to the
+[OpenAI design guidelines](https://openai.com/brand/). Anthropic publishes its
+current media assets from the [Anthropic newsroom](https://www.anthropic.com/news).
+
 ## Alpine.js 3.15.3
 
 MIT License

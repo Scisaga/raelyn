@@ -5,7 +5,7 @@ import json
 import sys
 import unittest
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -1049,13 +1049,20 @@ class EventAnalysisTests(unittest.TestCase):
                 with patch("raelyn.services.event_analysis._event_embedding_text", return_value="text"):
                     with patch("raelyn.services.event_analysis.embed_text", side_effect=event_analysis.EmbeddingError("bad response")):
                         with patch("raelyn.services.event_analysis.schedule_playlists_event_map_dirty_for_video") as schedule_dirty:
-                            result = event_analysis.embed_event(session, event_id=event_id)
+                            result = event_analysis.embed_event(
+                                session,
+                                event_id=event_id,
+                                priority=20,
+                                source_job_id=uuid.UUID(int=1),
+                            )
 
         self.assertEqual(result["status"], "failed")
         schedule_dirty.assert_called_once_with(
             session,
             video_id=video_id,
             reason="event_embedding_changed",
+            source_job_id=uuid.UUID(int=1),
+            priority=20,
         )
 
     def test_embed_event_replaces_invalid_cached_vector_and_marks_map_dirty(self) -> None:
@@ -1093,7 +1100,13 @@ class EventAnalysisTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ready")
         self.assertEqual(embedding.vector, [0.0, 1.0, 0.0])
-        schedule_dirty.assert_called_once_with(session, video_id=video_id, reason="event_embedding_changed")
+        schedule_dirty.assert_called_once_with(
+            session,
+            video_id=video_id,
+            reason="event_embedding_changed",
+            source_job_id=None,
+            priority=0,
+        )
 
     def test_job_dedupe_keys_use_event_job_types(self) -> None:
         video_id = uuid.uuid4()
@@ -1142,6 +1155,31 @@ class EventAnalysisTests(unittest.TestCase):
         self.assertEqual(key, f"playlist_event_map_dirty:{playlist_id}")
         self.assertEqual(params["playlist_id"], str(playlist_id))
         self.assertEqual(params["source_video_id"], str(video_id))
+
+    def test_event_extraction_priority_prefers_recent_and_current_week_videos(self) -> None:
+        now = datetime(2026, 9, 16, 12, tzinfo=timezone.utc)
+        video = Video(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_video_id="recent",
+            media_id=uuid.uuid4(),
+            url="https://example.test/watch?v=recent",
+            published_at=now - timedelta(hours=2),
+        )
+
+        self.assertEqual(
+            event_analysis.event_extraction_priority(video, priority=7, now=now),
+            event_analysis.EVENT_EXTRACTION_RECENT_24H_PRIORITY,
+        )
+
+        video.published_at = datetime(2026, 9, 14, 4, tzinfo=timezone.utc)
+        self.assertEqual(
+            event_analysis.event_extraction_priority(video, priority=7, now=now),
+            event_analysis.EVENT_EXTRACTION_CURRENT_WEEK_PRIORITY,
+        )
+
+        video.published_at = datetime(2026, 9, 11, 4, tzinfo=timezone.utc)
+        self.assertEqual(event_analysis.event_extraction_priority(video, priority=7, now=now), 7)
 
     def test_schedule_playlists_event_map_dirty_queries_playlists_in_stable_order(self) -> None:
         video_id = uuid.uuid4()

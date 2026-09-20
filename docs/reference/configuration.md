@@ -16,7 +16,7 @@
   - 为空时不启用主站 API 鉴权。
   - 非空时 `/api/*` 需要 `Authorization: Bearer <token>` 或 `raelyn_api_token` cookie。
   - `/api/ws/*` 需要 query `token=<token>`。
-  - 非空时主 API 进程也会额外挂载 `/mcp`，MCP HTTP 复用同一个 Bearer Token。
+  - 非空时主 API 进程也会额外挂载 `/mcp`，完整能力 MCP HTTP 入口复用同一个 Bearer Token；可选只读连接器入口另用路径密钥。
   - Docker Compose 部署要求显式设置非空随机值，不提供可公开复用的默认 token。
 
 ### 数据与对象存储
@@ -299,12 +299,20 @@ Embedding 健康检查固定探测 `${EMBEDDING_URL}/health`；实际向量请�
 ### MCP HTTP
 
 - `MCP_BASE_PATH`
+  - 完整能力入口，默认 `/mcp`，使用 `API_BEARER_TOKEN`。
+- `MCP_ROUTE_SECRET`
+  - 可选。非空时增加 `<MCP_BASE_PATH>/<MCP_ROUTE_SECRET>` 连接器入口，供不能配置静态 Bearer Header 的 ChatGPT / Claude 使用。
+  - 至少 32 个字符，必须是单个 URL path segment；应使用独立随机值，例如 `openssl rand -hex 32`，不能从 `API_BEARER_TOKEN` 推导或复用它。
+  - 该入口把路径本身视为访问凭证，只发布只读 tools / resources，不发布同步、下载、重转写和简报生成操作。
+  - 仅适合单用户或受信任小团队；不要在截图、日志、工单或聊天中暴露完整 URL。泄露后应立即轮换并重启 API。
 - `MCP_ALLOWED_HOSTS`
   - 逗号分隔的 Host 白名单，用于 MCP SDK 的 DNS rebinding 防护。
   - 反向代理公网访问时，需要把外部 Host 加进去，例如 `raelyn.example.com:234`。
 - `MCP_ALLOWED_ORIGINS`
   - 逗号分隔的 Origin 白名单。
   - 反向代理公网访问时，通常与 `MCP_ALLOWED_HOSTS` 对应，例如 `https://raelyn.example.com:234`。
+
+ChatGPT / Claude 远程连接器还要求该地址可从公网通过 HTTPS 访问。反向代理应对 MCP 路径关闭 access log，或至少把 `MCP_ROUTE_SECRET` 路径段脱敏；TLS、限流和来源控制仍由部署层负责。
 
 ## 运行时配置（`app_config`）
 

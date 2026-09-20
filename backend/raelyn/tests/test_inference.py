@@ -110,7 +110,7 @@ class InferenceServiceTests(unittest.TestCase):
     def test_sanitize_config_value_masks_volcengine_secrets(self) -> None:
         masked = sanitize_config_value(
             VOLCENGINE_INFERENCE_CONFIG_KEY,
-            {"api_key": "abcdef123456", "asr_app_key": "app-secret", "asr_access_key": "access-secret"},
+            {"api_key": "abcdef123456", "asr_app_key": "app-secret", "asr_access_key": "access-secret"},  # gitleaks:allow -- 合成凭据仅用于验证脱敏
         )
 
         self.assertNotEqual(masked["api_key"], "abcdef123456")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import time
 import unittest
@@ -25,6 +26,10 @@ POLISH_TEST_REPEAT = 1
 MAX_SECONDS_POLISH: float | None = None
 
 
+@unittest.skipUnless(
+    os.getenv("RAELYN_RUN_LLM_LIVE") == "1",
+    "设置 RAELYN_RUN_LLM_LIVE=1 后调用已配置的真实 LLM",
+)
 class LiveTranscriptPolishTests(unittest.TestCase):
     def test_polish_transcript_via_llm_returns_and_prints_latency(self) -> None:
         if not llm_enabled():

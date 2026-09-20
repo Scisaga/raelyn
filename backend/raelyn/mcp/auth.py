@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from fastapi.responses import JSONResponse
@@ -24,6 +25,19 @@ def require_bearer_token(token: str | None, *, label: str = "API_BEARER_TOKEN") 
     return value
 
 
+def normalize_route_secret(value: str | None) -> str:
+    secret = str(value or "").strip()
+    if not secret:
+        return ""
+    if len(secret) < 32:
+        raise RuntimeError("MCP_ROUTE_SECRET must contain at least 32 characters")
+    if re.fullmatch(r"[A-Za-z0-9._~-]+", secret) is None:
+        raise RuntimeError("MCP_ROUTE_SECRET must contain only URL-safe path characters")
+    if secret.lower() == "health":
+        raise RuntimeError("MCP_ROUTE_SECRET cannot use the reserved health path")
+    return secret
+
+
 class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
@@ -44,7 +58,7 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         path = request.url.path
         protected = self._protected_prefix == "/" or path == self._protected_prefix or path.startswith(f"{self._protected_prefix}/")
-        if path in self._public_paths:
+        if normalize_mount_path(path, default="/") in self._public_paths:
             protected = False
         if not protected:
             return await call_next(request)

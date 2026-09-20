@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -29,7 +29,7 @@ from raelyn.api.ws import router as ws_router
 from raelyn.config import settings
 from raelyn.db import init_db
 from raelyn.mcp.app import create_mcp_http_mount
-from raelyn.mcp.auth import BearerTokenAuthMiddleware, normalize_mount_path
+from raelyn.mcp.auth import BearerTokenAuthMiddleware, normalize_mount_path, normalize_route_secret
 from raelyn.services.s3 import s3_ensure_bucket
 from raelyn.services.system_pause import SystemPausedError
 from starlette.routing import Route
@@ -55,7 +55,19 @@ def _static_root_file(filename: str, *, media_type: str) -> FileResponse:
 def create_app() -> FastAPI:
     shared_bearer_token = str(settings.api_bearer_token or "").strip()
     mcp_base_path = normalize_mount_path(settings.mcp_base_path)
+    mcp_route_secret = normalize_route_secret(settings.mcp_route_secret) if shared_bearer_token else ""
     mcp_mount = create_mcp_http_mount(token=shared_bearer_token) if shared_bearer_token else None
+    connector_mount = (
+        create_mcp_http_mount(token=shared_bearer_token, include_actions=False)
+        if shared_bearer_token and mcp_route_secret
+        else None
+    )
+    connector_path = ""
+    if connector_mount is not None:
+        connector_path = f"/{mcp_route_secret}" if mcp_base_path == "/" else f"{mcp_base_path}/{mcp_route_secret}"
+    mcp_public_paths = {f"{mcp_base_path}/health"}
+    if connector_path:
+        mcp_public_paths.update({connector_path, f"{connector_path}/"})
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -69,11 +81,11 @@ def create_app() -> FastAPI:
             # Best-effort; worker(s) will also run recovery. Avoid blocking API startup.
             pass
 
-        if mcp_mount is None:
-            yield
-            return
-
-        async with mcp_mount.session_manager.run():
+        async with AsyncExitStack() as stack:
+            if mcp_mount is not None:
+                await stack.enter_async_context(mcp_mount.session_manager.run())
+            if connector_mount is not None:
+                await stack.enter_async_context(connector_mount.session_manager.run())
             yield
 
     app = FastAPI(title="raelyn", version="0.1.0", lifespan=lifespan)
@@ -85,7 +97,7 @@ def create_app() -> FastAPI:
             BearerTokenAuthMiddleware,
             token=shared_bearer_token,
             protected_prefix=mcp_base_path,
-            public_paths={f"{mcp_base_path}/health"},
+            public_paths=mcp_public_paths,
         )
 
     @app.exception_handler(SystemPausedError)
@@ -112,6 +124,10 @@ def create_app() -> FastAPI:
         app.router.routes.append(Route(mcp_base_path, endpoint=mcp_mount.transport_app, methods=["GET", "POST", "DELETE"]))
         if mcp_base_path != "/":
             app.router.routes.append(Route(f"{mcp_base_path}/", endpoint=mcp_mount.transport_app, methods=["GET", "POST", "DELETE"]))
+        if connector_mount is not None:
+            connector_methods = ["GET", "POST", "DELETE"]
+            app.router.routes.append(Route(connector_path, endpoint=connector_mount.transport_app, methods=connector_methods))
+            app.router.routes.append(Route(f"{connector_path}/", endpoint=connector_mount.transport_app, methods=connector_methods))
     else:
         def _mcp_not_found() -> None:
             raise HTTPException(status_code=404)

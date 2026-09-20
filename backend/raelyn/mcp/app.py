@@ -12,7 +12,7 @@ from raelyn.mcp.resources import register_resources
 from raelyn.mcp.tools import register_tools
 
 
-def create_mcp_server() -> FastMCP:
+def create_mcp_server(*, include_actions: bool = True) -> FastMCP:
     mcp = FastMCP(
         name="raelyn",
         instructions=(
@@ -29,7 +29,7 @@ def create_mcp_server() -> FastMCP:
             allowed_origins=settings.mcp_allowed_origin_values(),
         ),
     )
-    register_tools(mcp)
+    register_tools(mcp, include_actions=include_actions)
     register_resources(mcp)
     return mcp
 
@@ -40,9 +40,9 @@ class McpHttpMount:
     transport_app: Any
 
 
-def create_mcp_http_mount(*, token: str) -> McpHttpMount:
+def create_mcp_http_mount(*, token: str, include_actions: bool = True) -> McpHttpMount:
     require_bearer_token(token)
-    mcp = create_mcp_server()
+    mcp = create_mcp_server(include_actions=include_actions)
     mcp.streamable_http_app()
     transport_app = StreamableHTTPASGIApp(mcp.session_manager)
     return McpHttpMount(session_manager=mcp.session_manager, transport_app=transport_app)

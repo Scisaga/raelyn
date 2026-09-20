@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, time, timedelta, timezone
+import os
 import unittest
 from zoneinfo import ZoneInfo
 
@@ -30,6 +31,10 @@ def _sqlite_array(_type, _compiler, **_kwargs):
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
+@unittest.skipUnless(
+    os.getenv("RAELYN_RUN_REAL_DB_TESTS") == "1",
+    "设置 RAELYN_RUN_REAL_DB_TESTS=1 后只读复用真实资产与资源快照",
+)
 class UsageStorageHistoryIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

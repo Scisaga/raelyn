@@ -2,192 +2,226 @@
           <div x-show="activeView==='mcp-guide'" x-transition.opacity class="raelyn-view raelyn-view--mcp h-full">
             <div class="raelyn-surface-base overflow-hidden h-full flex flex-col min-h-0">
               <div class="raelyn-toolbar-band shrink-0 border-b border-slate-800 px-5 py-4">
-                <div class="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
-                    <div>
-                      <h1 class="text-sm font-semibold text-slate-100">MCP Server 接入说明</h1>
-                      <div class="mt-1 text-xs text-slate-400">
-                      本项目提供的是一个挂载在主 API 进程内的 MCP Server。这里从客户端如何接入这个 Server 的角度，说明连接参数、鉴权方式、验证步骤和可调用能力。前端页面路由是
-                      <code class="text-slate-200">/mcp-guide</code>，真实 MCP endpoint 默认仍是
-                      <code class="text-slate-200">http(s)://&lt;host&gt;:&lt;port&gt;&lt;base_path&gt;</code>。
+                <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <h1 class="text-base font-semibold text-slate-100">智能体接入</h1>
+                    <div class="mt-1 text-xs leading-5 text-slate-400">
+                      将 Raelyn 连接到 ChatGPT、Claude 或 Codex；根据客户端能力选择只读连接器或完整开发入口。
                     </div>
                   </div>
                   <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-300">
-                    <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/30 px-2.5 py-1">Role: MCP Server</span>
                     <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/30 px-2.5 py-1">Transport: Streamable HTTP</span>
-                    <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/30 px-2.5 py-1">Auth: Bearer Token</span>
-                    <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/30 px-2.5 py-1">Process: 主 API 同端口挂载</span>
+                    <span class="inline-flex items-center rounded-full border border-slate-700 bg-slate-950/30 px-2.5 py-1">只读连接器 + 完整开发入口</span>
                   </div>
                 </div>
               </div>
 
               <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar">
                 <div class="divide-y divide-slate-800">
-                  <section class="space-y-2 px-5 py-4">
+                  <section class="space-y-3 px-5 py-4">
                     <div class="space-y-1.5">
-                      <h2 class="text-base font-semibold text-slate-100">1. 开发工具接入</h2>
+                      <h2 class="text-base font-semibold text-slate-100">1. 选择客户端并连接</h2>
                       <div class="text-xs leading-6 text-slate-400">
-                        这个 MCP Server 使用 <code class="text-slate-200">Streamable HTTP</code> transport。
-                        接入时提供 Server URL 和 Bearer Token 即可；地址格式统一为
-                        <code class="text-slate-200">http(s)://&lt;host&gt;:&lt;port&gt;&lt;base_path&gt;</code>。
+                        选择客户端后，只需按右侧步骤填写对应参数。ChatGPT / Claude 使用公网 HTTPS 只读入口，Codex 使用 Bearer 完整入口。
                       </div>
                     </div>
-                    <div class="space-y-1.5">
-                      <h3 class="text-sm font-medium text-slate-200">连接信息</h3>
-                      <div class="text-[12px] leading-6 text-slate-400">
-                        示例接入地址可写为 <code class="text-slate-200">http://raelyn:8000/mcp</code>；
-                        远端部署时再替换为实际域名、内网 IP 或反向代理地址。
-                      </div>
-                    </div>
-                    <pre class="overflow-x-auto border border-slate-800 bg-slate-950 px-3 py-2 text-[12px] text-slate-200"><code>Server URL: http(s)://&lt;host&gt;:&lt;port&gt;&lt;base_path&gt;
-Transport: Streamable HTTP
-Authorization: Bearer &lt;MCP_BEARER_TOKEN&gt;</code></pre>
-                    <div x-data="{ toolTab: 'vscode' }" class="space-y-2">
-                      <div class="flex flex-wrap gap-2 border-b border-slate-800 pb-2" role="tablist" aria-label="开发工具接入示例">
-                        <button
-                          type="button"
-                          role="tab"
-                          @click="toolTab='vscode'"
-                          :aria-selected="toolTab==='vscode'"
-                          :class="toolTab==='vscode' ? 'border-slate-500 bg-slate-800/60 text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]' : 'border-slate-800 bg-slate-950/40 text-slate-400 hover:border-slate-700 hover:text-slate-200'"
-                          class="inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-[12px]"
-                        >
-                          <svg viewBox="0 0 100 100" aria-hidden="true" class="h-4 w-4 shrink-0" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <mask id="mcp-vscode-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100">
-                              <path fill-rule="evenodd" clip-rule="evenodd" d="M70.9119 99.3171C72.4869 99.9307 74.2828 99.8914 75.8725 99.1264L96.4608 89.2197C98.6242 88.1787 100 85.9892 100 83.5872V16.4133C100 14.0113 98.6243 11.8218 96.4609 10.7808L75.8725 0.873756C73.7862 -0.130129 71.3446 0.11576 69.5135 1.44695C69.252 1.63711 69.0028 1.84943 68.769 2.08341L29.3551 38.0415L12.1872 25.0096C10.589 23.7965 8.35363 23.8959 6.86933 25.2461L1.36303 30.2549C-0.452552 31.9064 -0.454633 34.7627 1.35853 36.417L16.2471 50.0001L1.35853 63.5832C-0.454633 65.2374 -0.452552 68.0938 1.36303 69.7453L6.86933 74.7541C8.35363 76.1043 10.589 76.2037 12.1872 74.9905L29.3551 61.9587L68.769 97.9167C69.3925 98.5406 70.1246 99.0104 70.9119 99.3171ZM75.0152 27.2989L45.1091 50.0001L75.0152 72.7012V27.2989Z" fill="#fff"/>
-                            </mask>
-                            <g mask="url(#mcp-vscode-mask)">
-                              <path d="M96.4614 10.7962L75.8569 0.875542C73.4719 -0.272773 70.6217 0.211611 68.75 2.08333L1.29858 63.5832C-0.515693 65.2373 -0.513607 68.0937 1.30308 69.7452L6.81272 74.754C8.29793 76.1042 10.5347 76.2036 12.1338 74.9905L93.3609 13.3699C96.086 11.3026 100 13.2462 100 16.6667V16.4275C100 14.0265 98.6246 11.8378 96.4614 10.7962Z" fill="#0065A9"/>
-                              <path d="M96.4614 89.2038L75.8569 99.1245C73.4719 100.273 70.6217 99.7884 68.75 97.9167L1.29858 36.4169C-0.515693 34.7627 -0.513607 31.9063 1.30308 30.2548L6.81272 25.246C8.29793 23.8958 10.5347 23.7964 12.1338 25.0095L93.3609 86.6301C96.086 88.6974 100 86.7538 100 83.3334V83.5726C100 85.9735 98.6246 88.1622 96.4614 89.2038Z" fill="#007ACC"/>
-                              <path d="M75.8578 99.1263C73.4721 100.274 70.6219 99.7885 68.75 97.9166C71.0564 100.223 75 98.5895 75 95.3278V4.67213C75 1.41039 71.0564 -0.223106 68.75 2.08329C70.6219 0.211402 73.4721 -0.273666 75.8578 0.873633L96.4587 10.7807C98.6234 11.8217 100 14.0112 100 16.4132V83.5871C100 85.9891 98.6234 88.1786 96.4586 89.2196L75.8578 99.1263Z" fill="#1F9CF0"/>
-                            </g>
-                          </svg>
-                          VS Code + Codex
-                        </button>
-                        <button
-                          type="button"
-                          role="tab"
-                          @click="toolTab='cli'"
-                          :aria-selected="toolTab==='cli'"
-                          :class="toolTab==='cli' ? 'border-slate-500 bg-slate-800/60 text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]' : 'border-slate-800 bg-slate-950/40 text-slate-400 hover:border-slate-700 hover:text-slate-200'"
-                          class="inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-[12px]"
-                        >
-                          <svg viewBox="0 0 17.328 17.328" aria-hidden="true" class="h-4 w-4 shrink-0" fill="none" xmlns="http://www.w3.org/2000/svg">
-                            <path d="M8.66379 -3.57628e-05C10.2318 -3.57628e-05 11.6798 0.391964 13.0078 1.17596C14.3358 1.94396 15.3838 2.99196 16.1518 4.31996C16.9358 5.64796 17.3278 7.09596 17.3278 8.66396C17.3278 10.232 16.9358 11.68 16.1518 13.008C15.3838 14.336 14.3358 15.392 13.0078 16.176C11.6798 16.944 10.2318 17.328 8.66379 17.328C7.09579 17.328 5.64779 16.944 4.31979 16.176C2.99179 15.392 1.93579 14.336 1.15179 13.008C0.383785 11.68 -0.000214815 10.232 -0.000214815 8.66396C-0.000214815 7.09596 0.383785 5.64796 1.15179 4.31996C1.93579 2.99196 2.99179 1.94396 4.31979 1.17596C5.64779 0.391964 7.09579 -3.57628e-05 8.66379 -3.57628e-05ZM8.71179 14.208C9.67179 14.208 10.5518 13.976 11.3518 13.512C12.1518 13.032 12.7838 12.368 13.2478 11.52C13.7278 10.672 13.9678 9.71996 13.9678 8.66396C13.9678 7.60796 13.7278 6.65596 13.2478 5.80796C12.7838 4.95996 12.1518 4.30396 11.3518 3.83996C10.5518 3.35996 9.67179 3.11996 8.71179 3.11996H8.61579C7.65579 3.11996 6.77579 3.35996 5.97579 3.83996C5.17579 4.30396 4.53579 4.95996 4.05579 5.80796C3.59179 6.65596 3.35979 7.60796 3.35979 8.66396C3.35979 9.71996 3.59179 10.672 4.05579 11.52C4.53579 12.368 5.17579 13.032 5.97579 13.512C6.77579 13.976 7.65579 14.208 8.61579 14.208H8.71179Z" fill="currentColor"/>
-                          </svg>
-                          Codex CLI
-                        </button>
-                        <button
-                          type="button"
-                          role="tab"
-                          @click="toolTab='openclaw'"
-                          :aria-selected="toolTab==='openclaw'"
-                          :class="toolTab==='openclaw' ? 'border-slate-500 bg-slate-800/60 text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]' : 'border-slate-800 bg-slate-950/40 text-slate-400 hover:border-slate-700 hover:text-slate-200'"
-                          class="inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-[12px]"
-                        >
-                          <svg viewBox="0 0 16 16" aria-hidden="true" class="h-4 w-4 shrink-0" xmlns="http://www.w3.org/2000/svg">
-                            <rect width="16" height="16" fill="none"/>
-                            <g fill="#3a0a0d">
-                              <rect x="1" y="5" width="1" height="3"/>
-                              <rect x="2" y="4" width="1" height="1"/>
-                              <rect x="2" y="8" width="1" height="1"/>
-                              <rect x="3" y="3" width="1" height="1"/>
-                              <rect x="3" y="9" width="1" height="1"/>
-                              <rect x="4" y="2" width="1" height="1"/>
-                              <rect x="4" y="10" width="1" height="1"/>
-                              <rect x="5" y="2" width="6" height="1"/>
-                              <rect x="11" y="2" width="1" height="1"/>
-                              <rect x="12" y="3" width="1" height="1"/>
-                              <rect x="12" y="9" width="1" height="1"/>
-                              <rect x="13" y="4" width="1" height="1"/>
-                              <rect x="13" y="8" width="1" height="1"/>
-                              <rect x="14" y="5" width="1" height="3"/>
-                              <rect x="5" y="11" width="6" height="1"/>
-                              <rect x="4" y="12" width="1" height="1"/>
-                              <rect x="11" y="12" width="1" height="1"/>
-                              <rect x="3" y="13" width="1" height="1"/>
-                              <rect x="12" y="13" width="1" height="1"/>
-                              <rect x="5" y="14" width="6" height="1"/>
-                            </g>
-                            <g fill="#ff4f40">
-                              <rect x="5" y="3" width="6" height="1"/>
-                              <rect x="4" y="4" width="8" height="1"/>
-                              <rect x="3" y="5" width="10" height="1"/>
-                              <rect x="3" y="6" width="10" height="1"/>
-                              <rect x="3" y="7" width="10" height="1"/>
-                              <rect x="4" y="8" width="8" height="1"/>
-                              <rect x="5" y="9" width="6" height="1"/>
-                              <rect x="5" y="12" width="6" height="1"/>
-                              <rect x="6" y="13" width="4" height="1"/>
-                            </g>
-                            <g fill="#ff775f">
-                              <rect x="1" y="6" width="2" height="1"/>
-                              <rect x="2" y="5" width="1" height="1"/>
-                              <rect x="2" y="7" width="1" height="1"/>
-                              <rect x="13" y="6" width="2" height="1"/>
-                              <rect x="13" y="5" width="1" height="1"/>
-                              <rect x="13" y="7" width="1" height="1"/>
-                            </g>
-                            <g fill="#081016">
-                              <rect x="6" y="5" width="1" height="1"/>
-                              <rect x="9" y="5" width="1" height="1"/>
-                            </g>
-                            <g fill="#f5fbff">
-                              <rect x="6" y="4" width="1" height="1"/>
-                              <rect x="9" y="4" width="1" height="1"/>
-                            </g>
-                          </svg>
-                          OpenClaw
-                        </button>
-                      </div>
 
-                      <div x-show="toolTab==='vscode'" x-transition.opacity class="space-y-1.5">
-                        <h3 class="text-sm font-medium text-slate-200">VS Code + Codex</h3>
-                        <div class="text-[12px] leading-6 text-slate-400">
-                          Codex IDE Extension 与 Codex CLI 共用 <code class="text-slate-200">~/.codex/config.toml</code>。
-                          在 VS Code 中可从 Codex 扩展齿轮菜单进入 <code class="text-slate-200">MCP settings &gt; Open config.toml</code>，
-                          然后写入这个 server 配置。
+                    <div x-data="{ toolTab: 'chatgpt' }" class="overflow-hidden border border-slate-700/80 bg-slate-950/20 xl:grid xl:grid-cols-[220px_minmax(0,1fr)]">
+                      <div class="flex gap-1 overflow-x-auto border-b border-slate-700/70 bg-slate-950/40 p-2 xl:block xl:overflow-visible xl:border-b-0 xl:border-r" role="tablist" aria-label="客户端接入说明">
+                        <div class="contents xl:block" role="presentation">
+                          <div class="hidden px-2 pb-1.5 pt-1 text-[10px] font-medium uppercase tracking-[0.16em] text-slate-600 xl:block">连接器</div>
+                          <button
+                            type="button"
+                            role="tab"
+                            @click="toolTab='chatgpt'"
+                            :aria-selected="toolTab==='chatgpt'"
+                            :class="toolTab==='chatgpt' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-100' : 'border-transparent text-slate-400 hover:bg-slate-900/60 hover:text-slate-200'"
+                            class="inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-[12px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30 xl:mb-1 xl:w-full"
+                          >
+                            <img src="/static/brand/official/chatgpt.svg" alt="" class="h-5 w-5 shrink-0 rounded-[5px] object-contain" />
+                            <span>ChatGPT</span>
+                          </button>
+                          <button
+                            type="button"
+                            role="tab"
+                            @click="toolTab='claude'"
+                            :aria-selected="toolTab==='claude'"
+                            :class="toolTab==='claude' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-100' : 'border-transparent text-slate-400 hover:bg-slate-900/60 hover:text-slate-200'"
+                            class="inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-[12px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30 xl:mb-1 xl:w-full"
+                          >
+                            <img src="/static/brand/official/claude.svg" alt="" class="h-5 w-5 shrink-0 rounded-[5px] object-contain" />
+                            <span>Claude</span>
+                          </button>
+                        </div>
+                        <div class="contents xl:mt-4 xl:block" role="presentation">
+                          <div class="hidden px-2 pb-1.5 pt-1 text-[10px] font-medium uppercase tracking-[0.16em] text-slate-600 xl:block">开发工具</div>
+                          <button
+                            type="button"
+                            role="tab"
+                            @click="toolTab='vscode'"
+                            :aria-selected="toolTab==='vscode'"
+                            :class="toolTab==='vscode' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-100' : 'border-transparent text-slate-400 hover:bg-slate-900/60 hover:text-slate-200'"
+                            class="inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-[12px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30 xl:mb-1 xl:w-full"
+                          >
+                            <img src="/static/brand/official/vscode.ico" alt="" class="h-5 w-5 shrink-0 object-contain" />
+                            <span>VS Code + Codex</span>
+                          </button>
+                          <button
+                            type="button"
+                            role="tab"
+                            @click="toolTab='cli'"
+                            :aria-selected="toolTab==='cli'"
+                            :class="toolTab==='cli' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-100' : 'border-transparent text-slate-400 hover:bg-slate-900/60 hover:text-slate-200'"
+                            class="inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-[12px] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30 xl:w-full"
+                          >
+                            <img src="/static/brand/official/openai.png" alt="" class="h-5 w-5 shrink-0 rounded-[5px] object-contain" />
+                            <span>Codex CLI</span>
+                          </button>
                         </div>
                       </div>
-                      <pre x-show="toolTab==='vscode'" x-transition.opacity class="overflow-x-auto border border-slate-800 bg-slate-950 px-3 py-2 text-[12px] text-slate-200"><code>[mcp_servers.raelyn]
+
+                      <div class="raelyn-mcp-client-workspace min-w-0">
+                        <div x-show="toolTab==='chatgpt'" x-transition.opacity class="mx-auto w-full max-w-[1440px] p-4 sm:p-5">
+                          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-700/60 pb-3">
+                            <div class="flex items-center gap-3">
+                              <img src="/static/brand/official/chatgpt.svg" alt="" class="h-8 w-8 rounded-lg object-contain" />
+                              <div>
+                                <h3 class="text-base font-semibold text-slate-100">在 ChatGPT 中添加插件</h3>
+                                <div class="mt-0.5 text-[11px] text-slate-400">公网 HTTPS · 路径密钥 · 只读能力</div>
+                              </div>
+                            </div>
+                            <a href="https://developers.openai.com/plugins/deploy/connect-chatgpt" target="_blank" rel="noreferrer" class="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/30 px-2.5 py-1.5 text-[11px] font-medium text-sky-300 transition hover:border-slate-600 hover:bg-slate-900/60 hover:text-sky-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30">
+                              查看官方步骤<span aria-hidden="true">↗</span>
+                            </a>
+                          </div>
+                          <div class="mt-3 grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+                            <div class="min-w-0">
+                              <div class="flex items-center justify-between gap-3 text-[11px] text-slate-500">
+                                <span class="font-medium uppercase tracking-[0.14em]">操作路径</span>
+                                <span>界面名称以当前版本为准</span>
+                              </div>
+                              <ol class="mt-2 space-y-2">
+                                <li class="flex gap-3 border border-slate-700/60 bg-slate-950/20 px-3 py-2.5">
+                                  <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-slate-600 bg-slate-900/80 font-mono text-[10px] text-slate-300">1</span>
+                                  <div class="min-w-0"><div class="text-xs font-medium text-slate-200">启用开发者模式</div><div class="mt-0.5 text-[11px] leading-5 text-slate-500">进入 Settings → Security and login，开启 Developer mode。</div></div>
+                                </li>
+                                <li class="flex gap-3 border border-slate-700/60 bg-slate-950/20 px-3 py-2.5">
+                                  <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-slate-600 bg-slate-900/80 font-mono text-[10px] text-slate-300">2</span>
+                                  <div class="min-w-0"><div class="text-xs font-medium text-slate-200">添加 MCP Server</div><div class="mt-0.5 text-[11px] leading-5 text-slate-500">进入 ChatGPT Plugins，选择加号并添加公网 endpoint。</div></div>
+                                </li>
+                                <li class="flex gap-3 border border-slate-700/60 bg-slate-950/20 px-3 py-2.5">
+                                  <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-slate-600 bg-slate-900/80 font-mono text-[10px] text-slate-300">3</span>
+                                  <div class="min-w-0"><div class="text-xs font-medium text-slate-200">填写参数并检查工具</div><div class="mt-0.5 text-[11px] leading-5 text-slate-500">按右侧字段创建连接，确认发现的只读工具与元数据。</div></div>
+                                </li>
+                              </ol>
+                            </div>
+                            <div class="self-start overflow-hidden border border-slate-700/70 bg-slate-950/40">
+                              <div class="flex items-center justify-between gap-3 border-b border-slate-700/70 px-3 py-2 text-[11px] font-medium text-slate-300">
+                                <span>连接参数</span>
+                                <span class="rounded-full border border-sky-500/25 bg-sky-500/10 px-2 py-0.5 font-normal text-sky-200">只读</span>
+                              </div>
+                              <dl class="text-[11px]">
+                                <div class="border-b border-slate-700/70 bg-slate-900/60 px-3 py-3"><dt class="text-slate-400">MCP Server URL</dt><dd class="mt-1.5 select-all break-all font-mono text-[12px] text-slate-100">https://&lt;host&gt;/mcp/&lt;MCP_ROUTE_SECRET&gt;</dd></div>
+                                <div class="grid sm:grid-cols-2">
+                                  <div class="border-b border-slate-800 px-3 py-2.5 sm:border-r"><dt class="text-slate-500">Name</dt><dd class="mt-1 font-mono text-slate-200">Raelyn</dd></div>
+                                  <div class="border-b border-slate-800 px-3 py-2.5"><dt class="text-slate-500">Authentication</dt><dd class="mt-1 font-mono text-slate-200">No authentication</dd></div>
+                                </div>
+                                <div class="px-3 py-2.5"><dt class="text-slate-500">权限</dt><dd class="mt-1 text-slate-300">tools + resources（只读）</dd></div>
+                              </dl>
+                              <div class="border-t border-amber-500/20 px-3 py-2.5 text-[11px] leading-5 text-amber-300">
+                                路径包含访问密钥，请勿泄露。
+                                <details class="mt-1 text-amber-300/75"><summary class="cursor-pointer select-none">查看安全与只读范围</summary><div class="mt-1 text-slate-400">请使用独立随机值，不要放进截图、日志或聊天消息。<span class="mt-1 block font-mono leading-5">不发布 sync_media、download_video、retranscribe_video、generate_brief。</span></div></details>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div x-show="toolTab==='claude'" x-transition.opacity class="mx-auto w-full max-w-[1440px] p-4 sm:p-5">
+                          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-700/60 pb-3">
+                            <div class="flex items-center gap-3">
+                              <img src="/static/brand/official/claude.svg" alt="" class="h-8 w-8 rounded-lg object-contain" />
+                              <div>
+                                <h3 class="text-base font-semibold text-slate-100">在 Claude 中添加自定义连接器</h3>
+                                <div class="mt-0.5 text-[11px] text-slate-400">公网 HTTPS · 路径密钥 · 只读能力</div>
+                              </div>
+                            </div>
+                            <a href="https://claude.com/docs/connectors/custom/remote-mcp" target="_blank" rel="noreferrer" class="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/30 px-2.5 py-1.5 text-[11px] font-medium text-sky-300 transition hover:border-slate-600 hover:bg-slate-900/60 hover:text-sky-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30">
+                              查看官方步骤<span aria-hidden="true">↗</span>
+                            </a>
+                          </div>
+                          <div class="mt-3 grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+                            <div class="min-w-0">
+                              <div class="flex items-center justify-between gap-3 text-[11px] text-slate-500"><span class="font-medium uppercase tracking-[0.14em]">操作路径</span><span>界面名称以当前版本为准</span></div>
+                              <ol class="mt-2 space-y-2">
+                                <li class="flex gap-3 border border-slate-700/60 bg-slate-950/20 px-3 py-2.5">
+                                  <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-slate-600 bg-slate-900/80 font-mono text-[10px] text-slate-300">1</span>
+                                  <div class="min-w-0"><div class="text-xs font-medium text-slate-200">打开连接器设置</div><div class="mt-0.5 text-[11px] leading-5 text-slate-500">进入 Settings → Connectors。</div></div>
+                                </li>
+                                <li class="flex gap-3 border border-slate-700/60 bg-slate-950/20 px-3 py-2.5">
+                                  <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-slate-600 bg-slate-900/80 font-mono text-[10px] text-slate-300">2</span>
+                                  <div class="min-w-0"><div class="text-xs font-medium text-slate-200">添加自定义连接器</div><div class="mt-0.5 text-[11px] leading-5 text-slate-500">选择 Add custom connector。</div></div>
+                                </li>
+                                <li class="flex gap-3 border border-slate-700/60 bg-slate-950/20 px-3 py-2.5">
+                                  <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-slate-600 bg-slate-900/80 font-mono text-[10px] text-slate-300">3</span>
+                                  <div class="min-w-0"><div class="text-xs font-medium text-slate-200">填写参数并确认工具</div><div class="mt-0.5 text-[11px] leading-5 text-slate-500">添加后确认 Raelyn 的只读工具列表可见。</div></div>
+                                </li>
+                              </ol>
+                            </div>
+                            <div class="self-start overflow-hidden border border-slate-700/70 bg-slate-950/40">
+                              <div class="flex items-center justify-between gap-3 border-b border-slate-700/70 px-3 py-2 text-[11px] font-medium text-slate-300">
+                                <span>连接参数</span>
+                                <span class="rounded-full border border-sky-500/25 bg-sky-500/10 px-2 py-0.5 font-normal text-sky-200">只读</span>
+                              </div>
+                              <dl class="text-[11px]">
+                                <div class="border-b border-slate-700/70 bg-slate-900/60 px-3 py-3"><dt class="text-slate-400">Remote MCP URL</dt><dd class="mt-1.5 select-all break-all font-mono text-[12px] text-slate-100">https://&lt;host&gt;/mcp/&lt;MCP_ROUTE_SECRET&gt;</dd></div>
+                                <div class="grid sm:grid-cols-2">
+                                  <div class="border-b border-slate-800 px-3 py-2.5 sm:border-r"><dt class="text-slate-500">Name</dt><dd class="mt-1 font-mono text-slate-200">Raelyn</dd></div>
+                                  <div class="border-b border-slate-800 px-3 py-2.5"><dt class="text-slate-500">Authentication</dt><dd class="mt-1 font-mono text-slate-200">No sign-in</dd></div>
+                                </div>
+                                <div class="px-3 py-2.5"><dt class="text-slate-500">权限</dt><dd class="mt-1 text-slate-300">tools + resources（只读）</dd></div>
+                              </dl>
+                              <div class="border-t border-amber-500/20 px-3 py-2.5 text-[11px] leading-5 text-amber-300">
+                                路径包含访问密钥，请勿泄露。
+                                <details class="mt-1 text-amber-300/75"><summary class="cursor-pointer select-none">查看安全与只读范围</summary><div class="mt-1 text-slate-400">请使用独立随机值，不要放进截图、日志或聊天消息。<span class="mt-1 block font-mono leading-5">不发布 sync_media、download_video、retranscribe_video、generate_brief。</span></div></details>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div x-show="toolTab==='vscode'" x-transition.opacity class="mx-auto w-full max-w-[1440px] p-4 sm:p-5">
+                          <div class="flex items-center gap-3 border-b border-slate-800 pb-4">
+                            <img src="/static/brand/official/vscode.ico" alt="" class="h-9 w-9 object-contain" />
+                            <div><h3 class="text-sm font-semibold text-slate-100">VS Code + Codex</h3><div class="mt-0.5 text-[11px] text-slate-500">Bearer Token · 完整能力</div></div>
+                          </div>
+                          <div class="mt-4 grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]">
+                            <div class="text-[12px] leading-6 text-slate-400">
+                              Codex IDE Extension 与 Codex CLI 共用 <code class="text-slate-200">~/.codex/config.toml</code>。在 Codex 扩展的 MCP 设置中打开该文件，写入右侧配置后重新加载工具列表。
+                            </div>
+                            <pre class="overflow-x-auto border border-slate-800 bg-slate-950 px-3 py-3 text-[12px] text-slate-200"><code>[mcp_servers.raelyn]
 url = "http://raelyn:8000/mcp"
 bearer_token_env_var = "MCP_BEARER_TOKEN"</code></pre>
-
-                      <div x-show="toolTab==='cli'" x-transition.opacity class="space-y-1.5">
-                        <h3 class="text-sm font-medium text-slate-200">Codex CLI</h3>
-                        <div class="text-[12px] leading-6 text-slate-400">
-                          使用 CLI 添加后，VS Code 中的 Codex 扩展会直接复用同一份 MCP 配置。
+                          </div>
                         </div>
-                      </div>
-                      <pre x-show="toolTab==='cli'" x-transition.opacity class="overflow-x-auto border border-slate-800 bg-slate-950 px-3 py-2 text-[12px] text-slate-200"><code>export MCP_BEARER_TOKEN=replace-with-your-token
+
+                        <div x-show="toolTab==='cli'" x-transition.opacity class="mx-auto w-full max-w-[1440px] p-4 sm:p-5">
+                          <div class="flex items-center gap-3 border-b border-slate-800 pb-4">
+                            <img src="/static/brand/official/openai.png" alt="" class="h-9 w-9 rounded-lg object-contain" />
+                            <div><h3 class="text-sm font-semibold text-slate-100">Codex CLI</h3><div class="mt-0.5 text-[11px] text-slate-500">Bearer Token · 完整能力</div></div>
+                          </div>
+                          <div class="mt-4 grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.9fr)]">
+                            <div class="text-[12px] leading-6 text-slate-400">先把 API Token 写入环境变量，再执行右侧命令。添加成功后，VS Code 中的 Codex 扩展会复用同一份 MCP 配置。</div>
+                            <pre class="overflow-x-auto border border-slate-800 bg-slate-950 px-3 py-3 text-[12px] text-slate-200"><code>export MCP_BEARER_TOKEN=replace-with-your-token
 codex mcp add raelyn \
   --url http://raelyn:8000/mcp \
   --bearer-token-env-var MCP_BEARER_TOKEN</code></pre>
-
-                      <div x-show="toolTab==='openclaw'" x-transition.opacity class="space-y-1.5">
-                        <h3 class="text-sm font-medium text-slate-200">OpenClaw</h3>
-                        <div class="text-[12px] leading-6 text-slate-400">
-                          将配置写入 <code class="text-slate-200">~/.openclaw/openclaw.json</code>，保存后重启 gateway。
-                          Bearer Token 可通过 <code class="text-slate-200">${MCP_BEARER_TOKEN}</code> 引用环境变量。
+                          </div>
                         </div>
                       </div>
-                      <pre x-show="toolTab==='openclaw'" x-transition.opacity class="overflow-x-auto border border-slate-800 bg-slate-950 px-3 py-2 text-[12px] text-slate-200"><code>{
-  "mcpServers": {
-    "raelyn": {
-      "url": "http://raelyn:8000/mcp",
-      "headers": {
-        "Authorization": "Bearer ${MCP_BEARER_TOKEN}"
-      }
-    }
-  }
-}
-
-openclaw gateway restart</code></pre>
                     </div>
-                    <div class="text-[11px] leading-5 text-slate-500">
-                      如果客户端要读取 transcript 大文本，优先使用
-                      <code class="text-slate-200">get_video_transcript</code> 或
-                      <code class="text-slate-200">raelyn://video/{video_id}/transcript/chunks/{chunk_index}</code>
-                      的分块方式，不要假设单次能安全拿完整文本。
+
+                    <div class="border-l-2 border-slate-700 pl-3 text-[11px] leading-5 text-slate-500">
+                      读取 transcript 大文本时，优先使用 <code class="text-slate-200">get_video_transcript</code> 或
+                      <code class="text-slate-200">raelyn://video/{video_id}/transcript/chunks/{chunk_index}</code> 分块读取。
                     </div>
                   </section>
 
@@ -195,7 +229,8 @@ openclaw gateway restart</code></pre>
                     <div class="space-y-1.5">
                       <h2 class="text-base font-semibold text-slate-100">2. 接口与资源</h2>
                       <div class="text-xs leading-6 text-slate-400">
-                        MCP 握手和 tool/resource 调用都走 <code class="text-slate-200">/mcp</code>；
+                        Bearer 客户端走 <code class="text-slate-200">/mcp</code>，ChatGPT / Claude 走
+                        <code class="text-slate-200">/mcp/&lt;MCP_ROUTE_SECRET&gt;</code>；
                         对象型资源读取使用 <code class="text-slate-200">raelyn://</code> URI。
                       </div>
                     </div>
@@ -207,6 +242,7 @@ openclaw gateway restart</code></pre>
                           <div><code class="text-slate-200">POST /mcp</code></div>
                           <div><code class="text-slate-200">GET /mcp</code></div>
                           <div><code class="text-slate-200">DELETE /mcp</code></div>
+                          <div><code class="text-slate-200">GET/POST/DELETE /mcp/&lt;MCP_ROUTE_SECRET&gt;</code>（只读能力）</div>
                         </div>
                       </div>
                       <div class="border-t border-slate-800 pt-3">
@@ -408,7 +444,7 @@ openclaw gateway restart</code></pre>
                     <div>
                       <h3 class="text-sm font-medium text-slate-200">先拿播放列表上下文</h3>
                       <div class="mt-2 text-slate-400">
-                        周报/日报类总结优先调用 <code class="text-slate-200">get_playlist_context</code>，它已经聚合了周期边界、视频列表和 brief 状态。
+                        周报/日报类总结优先调用 <code class="text-slate-200">get_playlist_summary</code>，它已经聚合了周期边界、视频列表和 brief 状态。
                       </div>
                     </div>
                     <div class="border-t border-slate-800 pt-3">

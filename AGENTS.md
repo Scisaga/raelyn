@@ -35,6 +35,7 @@
 * 核心入口
   - 项目愿景与功能范围维护在 [docs/vision.md](docs/vision.md)。
   - 架构总览维护在 [docs/architecture/overview.md](docs/architecture/overview.md)。
+  - README 演示素材（星域录屏、产品导览片、字幕与过场）由 [scripts/record/README.md](scripts/record/README.md) 的脚本流水线生成；分镜、字幕文案与选择器的唯一真源是 `scripts/record/tour.config.mjs`。UI 变更导致素材过期时重跑该流水线，不手工录屏，也不把录制脚本散落到其他目录。
 
 * 文档分类
   - 专题文档入口与分类以 [docs/README.md](docs/README.md) 为准。

@@ -40,3 +40,4 @@
 - [LLM 有限输出预算实验](reference/llm-output-budget-experiment.md)
 - [YouTube yt-dlp 同步与 Cookies 策略](reference/youtube-ytdlp-strategy.md)
 - [yt-dlp 视频 / 音频格式选择策略](reference/ytdlp-format-selection.md)
+- [产品导览录制流水线](../scripts/record/README.md)

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     timezone: str = "Asia/Shanghai"
     api_bearer_token: str = ""
     mcp_base_path: str = "/mcp"
+    mcp_route_secret: str = ""
     mcp_dns_rebinding_protection_enabled: bool = True
     mcp_allowed_hosts: str = ""
     mcp_allowed_origins: str = ""

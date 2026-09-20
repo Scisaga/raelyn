@@ -1,0 +1,19 @@
+{
+  "name": "raelyn-tour-recorder",
+  "private": true,
+  "type": "module",
+  "description": "Raelyn 产品导览的脚本化录制、画面字幕、配音稿与合成流水线",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "node record-tour.mjs --check",
+    "record": "node record-tour.mjs",
+    "subtitles": "node make-subtitles.mjs",
+    "narration": "node make-narration.mjs",
+    "music": "node select-music.mjs",
+    "compose": "node compose-tour.mjs",
+    "all": "bash run-all.sh"
+  },
+  "dependencies": {
+    "playwright": "^1.50.0"
+  }
+}

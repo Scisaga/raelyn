@@ -37,9 +37,11 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
         *,
         mcp_allowed_hosts: str = "",
         mcp_allowed_origins: str = "",
+        mcp_route_secret: str = "",
     ):
         stack.enter_context(patch.object(config.settings, "api_bearer_token", "apitoken"))
         stack.enter_context(patch.object(config.settings, "mcp_base_path", "/mcp"))
+        stack.enter_context(patch.object(config.settings, "mcp_route_secret", mcp_route_secret))
         stack.enter_context(patch.object(config.settings, "mcp_dns_rebinding_protection_enabled", True))
         stack.enter_context(patch.object(config.settings, "mcp_allowed_hosts", mcp_allowed_hosts))
         stack.enter_context(patch.object(config.settings, "mcp_allowed_origins", mcp_allowed_origins))
@@ -56,6 +58,7 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
     def _load_app_without_mcp(self, stack: ExitStack):
         stack.enter_context(patch.object(config.settings, "api_bearer_token", ""))
         stack.enter_context(patch.object(config.settings, "mcp_base_path", "/mcp"))
+        stack.enter_context(patch.object(config.settings, "mcp_route_secret", ""))
         stack.enter_context(patch.object(config.settings, "mcp_dns_rebinding_protection_enabled", True))
         stack.enter_context(patch.object(config.settings, "mcp_allowed_hosts", ""))
         stack.enter_context(patch.object(config.settings, "mcp_allowed_origins", ""))
@@ -178,6 +181,10 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("list_latest_briefs", tool_names)
         self.assertIn("get_domain_topic", tool_names)
         self.assertNotIn("get_playlist_context", tool_names)
+        self.assertIn("sync_media", tool_names)
+        self.assertIn("download_video", tool_names)
+        self.assertIn("retranscribe_video", tool_names)
+        self.assertIn("generate_brief", tool_names)
         self.assertEqual(set(get_brief_tool.inputSchema["properties"]), {"brief_id", "include_body"})
         self.assertEqual(
             tool_result.structuredContent,
@@ -188,6 +195,44 @@ class McpHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resource_payload["text"], "hello")
         self.assertEqual(resource_payload["chunk_index"], 0)
         self.assertEqual(brief_body_resource.contents[0].text, "# Demo Brief")
+
+    async def test_route_secret_endpoint_is_public_and_read_only(self) -> None:
+        route_secret = "test-connector-route-secret-1234567890"
+        with ExitStack() as stack:
+            app = self._load_app(stack, mcp_route_secret=route_secret)
+            transport = ASGITransport(app=app)
+
+            async with app.router.lifespan_context(app):
+                async with AsyncClient(
+                    transport=transport,
+                    base_url="http://127.0.0.1:8000",
+                    follow_redirects=True,
+                ) as http_client:
+                    wrong_secret = await http_client.post("/mcp/not-the-route-secret")
+                    async with streamable_http_client(
+                        f"http://127.0.0.1:8000/mcp/{route_secret}/",
+                        http_client=http_client,
+                    ) as streams:
+                        read_stream, write_stream, _get_session_id = streams
+                        session = ClientSession(read_stream, write_stream)
+                        async with session:
+                            await session.initialize()
+                            tools = await session.list_tools()
+                            tool_names = {tool.name for tool in tools.tools}
+
+        self.assertEqual(wrong_secret.status_code, 401)
+        self.assertIn("get_video", tool_names)
+        self.assertIn("get_playlist_summary", tool_names)
+        self.assertNotIn("sync_media", tool_names)
+        self.assertNotIn("download_video", tool_names)
+        self.assertNotIn("retranscribe_video", tool_names)
+        self.assertNotIn("generate_brief", tool_names)
+
+    async def test_route_secret_rejects_short_or_nested_values(self) -> None:
+        for invalid_secret in ("too-short", "a" * 32 + "/nested"):
+            with self.subTest(route_secret=invalid_secret), ExitStack() as stack:
+                with self.assertRaises(RuntimeError):
+                    self._load_app(stack, mcp_route_secret=invalid_secret)
 
     async def test_public_host_can_be_allowed_via_config(self) -> None:
         with ExitStack() as stack:

@@ -176,6 +176,13 @@
     linear-gradient(150deg, rgb(13 25 48 / 72%), rgb(5 11 27 / 90%) 58%, rgb(8 13 30 / 86%));
 }
 
+.raelyn-mcp-client-workspace {
+  background-color: rgb(10 22 42 / 96%);
+  background-image:
+    linear-gradient(145deg, rgb(16 32 57 / 94%), rgb(7 16 34 / 98%));
+  box-shadow: inset 0 1px rgb(255 255 255 / 3%);
+}
+
 .raelyn-brief-table-wrap {
   margin-block: 1rem;
   max-width: 100%;

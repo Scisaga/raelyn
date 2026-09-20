@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import timedelta
+import os
 import unittest
 
 from sqlalchemy import create_engine, insert, select, text
@@ -26,6 +27,10 @@ def _sqlite_array(_type, _compiler, **_kwargs):
     return "JSON"
 
 
+@unittest.skipUnless(
+    os.getenv("RAELYN_RUN_REAL_DB_TESTS") == "1",
+    "设置 RAELYN_RUN_REAL_DB_TESTS=1 后只读复用真实用量日聚合",
+)
 class UsageRealIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -20,7 +20,7 @@ def _raise_tool_error(exc: Exception) -> None:
     raise ToolError(str(exc)) from exc
 
 
-def register_tools(mcp: FastMCP) -> None:
+def register_tools(mcp: FastMCP, *, include_actions: bool = True) -> None:
     @mcp.tool(name="list_media", structured_output=True)
     def list_media(provider: str | None = None, q: str | None = None, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
         try:
@@ -287,6 +287,9 @@ def register_tools(mcp: FastMCP) -> None:
             return queries.search_semantic_objects(query, playlist_id=playlist_id, limit=limit)
         except Exception as exc:
             _raise_tool_error(exc)
+
+    if not include_actions:
+        return
 
     @mcp.tool(name="sync_media", structured_output=True)
     def sync_media(media_id: str, scope: str = "recent") -> dict[str, Any]:

@@ -9,5 +9,5 @@ Conventions:
   - Do not point tests at the active development database; use isolated test state.
 
 Live transcript polish check (calls handlers._polish_transcript_via_llm; prints latency):
-  ./.venv/bin/python -m unittest backend.raelyn.tests.test_llm_live
+  RAELYN_RUN_LLM_LIVE=1 ./.venv/bin/python -m unittest backend.raelyn.tests.test_llm_live
 """

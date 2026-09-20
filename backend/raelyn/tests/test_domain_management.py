@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import sys
@@ -41,10 +42,22 @@ class DomainManagementIntegrationTests(unittest.TestCase):
         self.engine = create_engine(f"sqlite:///{Path(self.tempdir.name) / 'domain.sqlite'}")
 
         @event.listens_for(self.engine, "connect")
-        def _enable_foreign_keys(dbapi_connection, _connection_record) -> None:
+        def _configure_sqlite(dbapi_connection, _connection_record) -> None:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
+            dbapi_connection.create_function(
+                "make_timestamptz",
+                7,
+                lambda year, month, day, hour, minute, second, _timezone_name: datetime(
+                    int(year),
+                    int(month),
+                    int(day),
+                    int(hour),
+                    int(minute),
+                    int(second),
+                ).isoformat(sep=" "),
+            )
 
         Base.metadata.create_all(self.engine)
         self.session = Session(self.engine)
