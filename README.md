@@ -20,7 +20,7 @@
 
 ---
 
-![Raelyn 产品导览](docs/assets/tour/raelyn-tour-zh-2026.gif)
+https://github.com/user-attachments/assets/ac977c8c-3d1e-4eb7-8374-8e51788970ed
 
 <p align="center"><sub>真实界面录制，不是概念动画。节选 10 秒：星域回放 12 个月观察窗 → 事件按语义聚合成主题 → 从星群下钻到真实事件与原始来源。<br><a href="docs/assets/tour/raelyn-tour-zh-2026.mp4">观看 57 秒完整导览（1440×960，含配音与字幕）</a></sub></p>
 
