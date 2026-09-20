@@ -1,7 +1,7 @@
 # Third-party notices
 
-Raelyn includes the following third-party browser bundles. These components
-remain subject to their own licenses.
+Raelyn includes or displays the following third-party components and
+materials. They remain subject to their own licenses or rights holders' terms.
 
 ## Product names, icons, and trademarks
 
@@ -12,9 +12,23 @@ Claude and the Claude icon are trademarks or copyrighted assets of Anthropic.
 They are not part of Raelyn's own branding, are not licensed under Raelyn's
 Apache-2.0 license, and do not imply sponsorship, endorsement, or partnership.
 
+Other product names and icons under `static/brand/official/`, including those
+used to identify Visual Studio Code, Codex, OpenClaw, and Volcengine clients or
+providers, remain the property of their respective rights holders. They are
+used only for identification, are excluded from Raelyn's Apache-2.0 license,
+and do not imply sponsorship, endorsement, or partnership.
+
 Use of the OpenAI mark remains subject to the
 [OpenAI design guidelines](https://openai.com/brand/). Anthropic publishes its
 current media assets from the [Anthropic newsroom](https://www.anthropic.com/news).
+
+## Demonstration media
+
+Product-tour and README media under `docs/assets/tour/` may show third-party
+client icons, channel names, video thumbnails, or frames from source material
+solely to demonstrate Raelyn's interface and provenance workflow. Those items
+remain subject to their respective rights holders' terms, are excluded from
+Raelyn's Apache-2.0 license, and do not imply sponsorship or endorsement.
 
 ## Alpine.js 3.15.3
 

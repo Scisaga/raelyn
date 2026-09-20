@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-labelledby="title desc" style="background: #ffffff; color-scheme: light;">
+  <title id="title">从信源到理解</title>
+  <desc id="desc">双行蛇形流程图。公开信源依次经过同步下载、字幕或 ASR、事件抽取、审核与保守归并，形成主题、故事与三维星域快照；转写同时生成周期简报，最终由 Web、REST 和 MCP 使用。</desc>
+  <defs>
+    <style>
+      :root { color-scheme: light; }
+      * { forced-color-adjust: none; }
+      .canvas { fill: #ffffff; }
+      .node { fill: #f5f3ff; stroke: #7c3aed; stroke-width: 2; }
+      .source { fill: #eff6ff; }
+      .output { fill: #ecfdf5; }
+      .edge { fill: none; stroke: #475569; stroke-width: 2.2; marker-end: url(#arrow); }
+      .evidence { stroke-dasharray: 8 7; }
+      .arrow-head { fill: #475569; }
+      .label, .sub-label, .edge-label {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        text-anchor: middle;
+      }
+      .label { fill: #111827; font-size: 22px; font-weight: 600; }
+      .sub-label { fill: #334155; font-size: 18px; }
+      .edge-label {
+        fill: #334155;
+        font-size: 17px;
+        paint-order: stroke;
+        stroke: #ffffff;
+        stroke-width: 7px;
+        stroke-linejoin: round;
+      }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path class="arrow-head" d="M 0 0 L 10 5 L 0 10 z" />
+    </marker>
+  </defs>
+
+  <rect class="canvas" width="1280" height="520" />
+
+  <!-- 第一行：采集与事件抽取 -->
+  <rect class="node source" x="35" y="52" width="230" height="96" rx="14" />
+  <text class="label" x="150" y="91">公开信源</text>
+  <text class="sub-label" x="150" y="121">YouTube / Bilibili</text>
+
+  <rect class="node" x="340" y="52" width="230" height="96" rx="14" />
+  <text class="label" x="455" y="109">同步与下载</text>
+
+  <rect class="node" x="645" y="52" width="230" height="96" rx="14" />
+  <text class="label" x="760" y="91">字幕 / ASR</text>
+  <text class="sub-label" x="760" y="121">Transcript</text>
+
+  <rect class="node" x="950" y="52" width="230" height="96" rx="14" />
+  <text class="label" x="1065" y="91">事件抽取</text>
+  <text class="sub-label" x="1065" y="121">与证据定位</text>
+
+  <!-- 第二行：归并、理解与出口；按阅读顺序从右向左 -->
+  <rect class="node output" x="35" y="315" width="230" height="96" rx="14" />
+  <text class="label" x="150" y="371">Web / REST / MCP</text>
+
+  <rect class="node" x="340" y="315" width="230" height="96" rx="14" />
+  <text class="label" x="455" y="371">日 / 周 / 月简报</text>
+
+  <rect class="node" x="645" y="315" width="230" height="96" rx="14" />
+  <text class="label" x="760" y="354">主题、故事</text>
+  <text class="sub-label" x="760" y="384">三维星域快照</text>
+
+  <rect class="node" x="950" y="315" width="230" height="96" rx="14" />
+  <text class="label" x="1065" y="354">审核、Embedding</text>
+  <text class="sub-label" x="1065" y="384">与保守归并</text>
+
+  <!-- 主流程 -->
+  <path class="edge" d="M 265 100 H 340" />
+  <path class="edge" d="M 570 100 H 645" />
+  <path class="edge" d="M 875 100 H 950" />
+  <path class="edge" d="M 1065 148 V 315" />
+  <path class="edge" d="M 950 363 H 875" />
+
+  <!-- Transcript 直接生成简报 -->
+  <path class="edge" d="M 705 148 V 218 H 420 V 315" />
+  <text class="edge-label" x="562" y="207">周期聚合</text>
+
+  <!-- 星域为简报附加已核验证据引用 -->
+  <path class="edge evidence" d="M 735 315 V 270 H 490 V 315" />
+  <text class="edge-label" x="612" y="258">附加已核验证据引用</text>
+
+  <!-- 星域和简报共同进入产品与智能体入口 -->
+  <path class="edge" d="M 340 363 H 265" />
+  <path class="edge" d="M 760 411 V 472 H 150 V 411" />
+  <text class="edge-label" x="455" y="461">星域与故事</text>
+</svg>

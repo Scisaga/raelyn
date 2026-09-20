@@ -1,4 +1,4 @@
-// Raelyn 产品导览录制配置 —— 分镜、画面字幕、配音稿、镜头转场与配乐的唯一真源。
+// Raelyn 产品导览录制配置 —— 分镜、README 截图、画面字幕、配音稿、镜头转场与配乐的唯一真源。
 //
 // 所有时间单位为秒。改分镜只改这个文件；record-tour.mjs / make-subtitles.mjs /
 // make-narration.mjs / compose-tour.mjs 都从这里读取，保证视频与文案时间线永远对齐。
@@ -93,6 +93,20 @@ export const subtitles = {
   },
   // 单条字幕最短停留，低于此值会在构建时报警。
   minHoldSeconds: 1.2,
+};
+
+// README 三联图从已经审片的单镜头视频精确取帧。时间基于 out/shots/*.mp4，
+// 不重新访问页面，确保静态展示与产品导览来自同一批素材。
+export const readmeScreenshots = {
+  outputDir: "docs/assets/tour",
+  width: 1440,
+  height: 960,
+  quality: 82,
+  frames: [
+    { id: "story", shotId: "stories-page", atSeconds: 8.2, file: "readme-story.webp" },
+    { id: "playlist", shotId: "playlist", atSeconds: 8.2, file: "readme-playlist.webp" },
+    { id: "mcp", shotId: "mcp", atSeconds: 0.8, file: "readme-mcp.webp" },
+  ],
 };
 
 // ---------------------------------------------------------------------------

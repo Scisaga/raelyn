@@ -37,6 +37,7 @@
 - [MVP 路线图与当前状态](roadmap/mvp.md)
 - [运行与部署](reference/run-and-deploy.md)
 - [配置项说明](reference/configuration.md)
+- [按领域改造](reference/domain-customization.md)
 - [LLM 有限输出预算实验](reference/llm-output-budget-experiment.md)
 - [YouTube yt-dlp 同步与 Cookies 策略](reference/youtube-ytdlp-strategy.md)
 - [yt-dlp 视频 / 音频格式选择策略](reference/ytdlp-format-selection.md)

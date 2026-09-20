@@ -3,7 +3,7 @@
 把 Raelyn 的产品导览片做成**可重跑的构建产物**，而不是一次性手工录屏。UI 迭代之后
 重跑一遍即可，不必重新手动走位、对轴、打字幕。
 
-录制、画面字幕、配音演讲稿、镜头转场和合成全部脚本化，唯一真源是
+录制、README 截图、画面字幕、配音演讲稿、镜头转场和合成全部脚本化，唯一真源是
 [`tour.config.mjs`](tour.config.mjs)。
 
 ## 快速开始
@@ -18,7 +18,8 @@ npm ci && npx playwright install chromium   # 首次；版本由 package-lock.js
 node record-tour.mjs --check     # 数据、深链接、快照、选择器与 H.264 巡检
 node record-tour.mjs             # 只录原始界面片段，到这里停下来审片
 
-# 审片通过后才执行后处理；先生成画面字幕与配音演讲稿供复审
+# 审片通过后生成 README 三联图，再执行其余后处理
+node make-readme-screenshots.mjs
 node make-subtitles.mjs
 node make-narration.mjs
 
@@ -34,12 +35,13 @@ node compose-tour.mjs
 交叉溶解。需要完整重建时再运行 `bash run-all.sh`；脚本
 在缺少依赖时会自动执行同等的锁定版本安装。
 
-产物在 `out/`：
+主要产物如下；录制与合成中间产物位于 `out/`，README 三联图直接更新文档资产：
 
 | 文件 | 说明 |
 | --- | --- |
 | `raw/<id>.mkv` | 按真实状态时间戳封装的原始界面片段 |
 | `shots/<id>.mp4` | 供审查的 1440×960、H.264 单镜头片段 |
+| `../../docs/assets/tour/readme-*.webp` | 从故事、播放列表与 MCP 镜头精确取帧的 README 三联图 |
 | `tour-master.mp4` | **无字幕、无配乐的母版** |
 | `tour.{zh,en}.srt` | 成片内嵌的软字幕，同时可作为外挂字幕；不是配音逐字稿 |
 | `tour.{zh,en}.ass` | 可选硬字幕样式文件；默认合成不会把它烧进画面 |
@@ -71,6 +73,10 @@ ffmpeg 后处理”路径，同时避免低码率 webm、无意义鼠标轨迹�
 
 **页面保持完整。** 用量和智能体接入页都保留完整 1440×960 画面，通过页内滚动、页签
 切换和稳定帧体现操作；不做会丢失上下文的固定裁切。
+
+**README 截图来自已审镜头。** 三张图的镜头、取帧时间、尺寸与质量都在
+`tour.config.mjs` 的 `readmeScreenshots` 中维护。生成器只读取 `out/shots/`，不会重新访问
+页面；图片以三列缩略图展示，点击后仍可查看 1440×960 原图。
 
 **字幕默认不烧进画面。** 单一成片 MP4 内嵌中文（默认）和英文两条可开关的 `mov_text`
 字幕轨，视频流直接复用无字幕母版，因此改文案不会再次编码画面；同一份 SRT 也可作为
@@ -182,6 +188,10 @@ node record-tour.mjs --shot playlist
 **只想改配音演讲稿。** 改 `tour.config.mjs` 里对应镜头的 `narration`，然后
 `node make-narration.mjs`；它只刷新文字稿和对时 SRT，不会重录镜头或合成配音。
 
+**只想刷新 README 截图。** 先确认 `out/manifest.json` 与三个单镜头视频来自同一次完整
+录制，再运行 `node make-readme-screenshots.mjs`。如果要换画面，只调整
+`tour.config.mjs` 中对应的 `atSeconds`，不要手工截屏覆盖公开素材。
+
 **要出 GIF。** 先有完整视频，再从成片里截片段。仓库根 `README.md` 首屏那张导览 GIF
 取成片 4–18 秒（星域回放 → 主题聚合 → 事件下钻），再按 1.4 倍速压到 10 秒；保持
 1440×960 原始尺寸，并使用完整的 256 色调色板：
@@ -204,8 +214,9 @@ ffmpeg -y -ss 4 -t 14 -i out/raelyn-tour-1440x960.mp4 \
 
 | 文件 | 职责 |
 | --- | --- |
-| `tour.config.mjs` | 分镜、时长、画面字幕、配音稿、镜头转场、配乐、选择器——唯一真源 |
+| `tour.config.mjs` | 分镜、时长、README 取帧、画面字幕、配音稿、镜头转场、配乐、选择器——唯一真源 |
 | `record-tour.mjs` | 驱动页面、抓帧、编码单镜头 |
+| `make-readme-screenshots.mjs` | 从已审单镜头精确取帧并生成 README 三联图 |
 | `make-subtitles.mjs` | 由实测时长生成 Markdown 文字稿、ASS/SRT 与合成时间线 |
 | `make-narration.mjs` | 由同一时间线生成独立的中文配音审阅稿与对时 SRT |
 | `select-music.mjs` | 明确选择并校验音轨，或明确选择静音 |

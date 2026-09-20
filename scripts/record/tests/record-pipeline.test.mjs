@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { output, shots } from "../tour.config.mjs";
+import { output, readmeScreenshots, shots } from "../tour.config.mjs";
 import { mergeShotManifest } from "../lib/manifest.mjs";
 import { buildTimeline } from "../lib/timeline.mjs";
 
@@ -54,6 +54,25 @@ test("所有画面字幕都不超过两行", () => {
   for (const caption of shots.flatMap((shot) => shot.captions || [])) {
     assert.ok(caption.zh.split(/\r?\n/).length <= 2);
     assert.ok(caption.en.split(/\r?\n/).length <= 2);
+  }
+});
+
+test("README 截图固定引用有效镜头且每项唯一", () => {
+  const shotById = new Map(shots.map((shot) => [shot.id, shot]));
+  const ids = new Set();
+  const files = new Set();
+
+  assert.equal(readmeScreenshots.width / readmeScreenshots.height, output.finalWidth / output.finalHeight);
+  for (const frame of readmeScreenshots.frames) {
+    const shot = shotById.get(frame.shotId);
+    assert.ok(shot, `未知镜头: ${frame.shotId}`);
+    assert.ok(frame.atSeconds >= 0);
+    assert.ok(frame.atSeconds < shot.duration * (shot.playbackRate || output.playbackRate));
+    assert.match(frame.file, /^[a-z0-9-]+\.webp$/);
+    assert.ok(!ids.has(frame.id), `重复截图 id: ${frame.id}`);
+    assert.ok(!files.has(frame.file), `重复截图文件: ${frame.file}`);
+    ids.add(frame.id);
+    files.add(frame.file);
   }
 });
 

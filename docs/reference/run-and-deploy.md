@@ -13,7 +13,18 @@
 
 ## 推荐：Docker 一键启动（含 Postgres + MinIO）
 
-说明：本项目的 `Dockerfile` 会直接 `COPY` 开发环境已下载的 `./bin/*` 外部工具二进制，避免在镜像构建时重新下载。`yt-dlp` 本身通过 `backend/requirements.lock.txt` 安装到 Python 环境中；这里需要你先准备的是 `ffmpeg` / `ffprobe` / `node`：
+当前脚本化 Docker 启动支持 x86_64 Linux / WSL2。其他平台需要自行准备与 Linux 容器架构匹配的 `bin/ffmpeg`、`bin/ffprobe` 和 `bin/node`。
+
+干净 clone 不包含被忽略的 UI 构建产物。首次启动前需要 Node.js 22+ 与 npm；Ubuntu / WSL 可用项目脚本安装，并按脚本提示加载 nvm：
+
+```bash
+./scripts/dev/bootstrap-node-wsl.sh
+export NVM_DIR="$HOME/.nvm"
+source "$NVM_DIR/nvm.sh"
+./scripts/dev/build-ui.sh
+```
+
+项目的 `Dockerfile` 会直接 `COPY` 开发环境已下载的 `./bin/*` 外部工具二进制，避免在镜像构建时重新下载。`yt-dlp` 本身通过 `backend/requirements.lock.txt` 安装到 Python 环境中；这里需要你先准备的是 `ffmpeg` / `ffprobe` / `node`：
 
 ```bash
 ./scripts/dev/download-ffmpeg.sh
