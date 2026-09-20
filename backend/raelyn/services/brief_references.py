@@ -165,7 +165,12 @@ def attach_structured_brief_references(
             EventMapStory.snapshot_id == snapshot_id,
             EventMapStoryHistoryEvidence.record_revision_id.in_(selected_revision_ids),
         )
-        .order_by(EventMapStory.event_time_end.desc(), EventMapStory.story_id.asc())
+        .order_by(
+            EventMapStory.event_time_end.desc(),
+            EventMapStory.story_id.asc(),
+            EventMapStoryHistoryEvidence.target_canonical_id.asc(),
+            EventMapStoryHistoryEvidence.edge_id.asc(),
+        )
     ).all()
     seen_stories: set[uuid.UUID] = set()
     for story, evidence in story_rows:
@@ -183,10 +188,13 @@ def attach_structured_brief_references(
             context={
                 "edge_id": str(evidence.edge_id),
                 "relation_type": evidence.relation_type,
+                "source_canonical_id": str(evidence.source_canonical_id),
+                "target_canonical_id": str(evidence.target_canonical_id),
+                "focus_canonical_id": str(evidence.target_canonical_id),
                 "time_basis": "event_occurrence_and_system_cognition",
                 "web_url": (
-                    f"/field?domain_id={brief.playlist_id}&mode=story&story_id={identity_id}"
-                    f"&snapshot_id={snapshot_id}"
+                    f"/stories?domain_id={brief.playlist_id}&story_id={identity_id}"
+                    f"&focus_canonical_id={evidence.target_canonical_id}"
                 ),
             },
         )

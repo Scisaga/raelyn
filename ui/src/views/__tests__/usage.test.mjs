@@ -227,14 +227,14 @@ test("趋势序列把缺失采样保留为空白，同时保留已采样的零�
     { time: "2026-09-01" },
     { time: "2026-09-02", value: 0 },
   ]);
-  assert.equal(ctx.usageCountLabel(ctx.usageSummary.externalCalls), "暂无采样");
+  assert.equal(ctx.usageCountLabel(ctx.usageSummary.externalCalls), "未采集");
   assert.equal(ctx.usageBytesLabel(ctx.usageSummary.databaseSizeBytes), "暂无采样");
   assert.equal(ctx.usageDatabaseSizeLabel(), "不可用");
 });
 
 test("外部调用长窗口使用移动均值，视频下载量保留每日实际值", () => {
   const ctx = usageContext();
-  ctx.usageDays = 30;
+
   ctx.usageSeries = [
     { date: "2026-09-01", llmCalls: 0, videoDownloaded: 1, usageSampled: true },
     { date: "2026-09-02", llmCalls: 3, videoDownloaded: 8, usageSampled: true },
@@ -243,8 +243,8 @@ test("外部调用长窗口使用移动均值，视频下载量保留每日实�
     { date: "2026-09-05", llmCalls: 9, videoDownloaded: 3, usageSampled: true },
   ];
 
-  assert.equal(ctx.usageCallTrendWindow(), 3);
-  assert.equal(ctx.usageCallTrendGranularityLabel(), "3 日移动均值");
+  assert.equal(ctx.usageCallTrendWindow(), 7);
+  assert.equal(ctx.usageCallTrendGranularityLabel(), "7 日移动均值");
   assert.deepEqual(ctx._usageCallTrendData("llmCalls", "usageSampled"), [
     { time: "2026-09-01", value: 0 },
     { time: "2026-09-02", value: 1.5 },
@@ -260,17 +260,15 @@ test("外部调用长窗口使用移动均值，视频下载量保留每日实�
     { time: "2026-09-05", value: 3 },
   ]);
 
-  ctx.usageDays = 90;
+
   assert.equal(ctx.usageCallTrendWindow(), 7);
   assert.equal(ctx.usageCallTrendGranularityLabel(), "7 日移动均值");
-  ctx.usageDays = 7;
-  assert.equal(ctx.usageCallTrendWindow(), 1);
-  assert.equal(ctx.usageCallTrendGranularityLabel(), "每日原值");
+
 });
 
-test("7/30/90 天切换调用 usage API，离开页面会丢弃在途结果", async () => {
+test("固定读取90天趋势，离开页面会丢弃在途结果", async () => {
   const ctx = usageContext();
-  assert.equal(ctx.usageDays, 90);
+  assert.equal(ctx.usageRangeLabel(), "最近 90 天");
   const calls = [];
   let updateCount = 0;
   ctx.api = async (path) => {
@@ -280,18 +278,18 @@ test("7/30/90 天切换调用 usage API，离开页面会丢弃在途结果", as
   ctx._updateUsageCharts = () => { updateCount += 1; };
   ctx.globalStatus = "error: 404: Not Found";
 
-  await ctx.loadUsage({ days: 90 });
+  await ctx.loadUsage();
   assert.deepEqual(calls, ["/usage?days=90"]);
-  assert.equal(ctx.usageDays, 90);
+  assert.equal(ctx.usageRangeLabel(), "最近 90 天");
   assert.equal(updateCount, 1);
   assert.equal(ctx.globalStatus, "");
-  assert.equal(await ctx.loadUsage({ days: 14 }), null);
-  assert.equal(calls.length, 1);
+  await ctx.refreshUsage();
+  assert.deepEqual(calls, ["/usage?days=90", "/usage?days=90"]);
 
   let resolveRequest;
   ctx.usagePayload = null;
   ctx.api = () => new Promise((resolve) => { resolveRequest = resolve; });
-  const pending = ctx.loadUsage({ days: 7 });
+  const pending = ctx.loadUsage();
   ctx.leaveUsagePage();
   resolveRequest(usagePayload());
   assert.equal(await pending, null);
@@ -299,87 +297,48 @@ test("7/30/90 天切换调用 usage API，离开页面会丢弃在途结果", as
   assert.equal(ctx.usageLoading, false);
 });
 
-test("四类趋势复用 lightweight-charts，并在离开时释放实例", () => {
+test("图表读数保留零值和未采集差异，调用读数与移动均值一致", () => {
   const ctx = usageContext();
   ctx.applyUsagePayload(usagePayload());
-  ctx.$refs = Object.fromEntries(
-    ["usageVideoChart", "usageCallsChart", "usageTokensChart", "usageStorageChart"]
-      .map((name) => [name, { clientWidth: 480, clientHeight: 192 }]),
-  );
-
-  const charts = [];
-  globalThis.window = {
-    LightweightCharts: {
-      ColorType: { Solid: "solid" },
-      CrosshairMode: { Normal: "normal" },
-      AreaSeries: "area",
-      LineSeries: "line",
-      createChart() {
-        const chart = {
-          removed: false,
-          fitCount: 0,
-          seriesTypes: [],
-          addSeries(type) {
-            chart.seriesTypes.push(type);
-            return { data: [], setData(data) { this.data = data; } };
-          },
-          timeScale() {
-            return { fitContent: () => { chart.fitCount += 1; } };
-          },
-          remove() { chart.removed = true; },
-        };
-        charts.push(chart);
-        return chart;
-      },
-    },
-  };
-
-  ctx._updateUsageCharts();
-  assert.equal(charts.length, 4);
-  assert.equal(ctx.usageCharts.calls.series.externalCalls, undefined);
-  assert.deepEqual(ctx.usageCharts.calls.series.asrCalls.data, [
-    { time: "2026-09-01" },
-    { time: "2026-09-02", value: 0 },
-  ]);
-  assert.deepEqual(ctx.usageCharts.videos.series.videoDownloaded.data, [
-    { time: "2026-09-01", value: 1 },
-    { time: "2026-09-02", value: 2 },
-  ]);
-  assert.deepEqual(charts[0].seriesTypes, ["area"]);
-  assert.deepEqual(charts[1].seriesTypes, ["line", "line", "line"]);
-  assert.deepEqual(charts.map((chart) => chart.fitCount), [1, 1, 1, 1]);
-
+  assert.equal(ctx.usageChartValue("calls", "llmCalls"), "0");
+  assert.equal(ctx.usageChartValue("storage", "databaseSizeBytes"), "—");
+  assert.equal(ctx.usageChartDateLabel("calls"), "09/02 · 当日");
+  ctx.usageChartDates = { calls: "2026-09-01" };
+  assert.equal(ctx.usageChartValue("calls", "llmCalls"), "—");
+  assert.equal(ctx.usageChartDateLabel("calls"), "09/01");
+  ctx.usageSeries[0].usageSampled = true;
+  ctx.usageSeries[0].llmCalls = 10;
+  ctx.usageChartDates.calls = "2026-09-02";
+  assert.equal(ctx.usageChartValue("calls", "llmCalls"), "5");
   ctx.leaveUsagePage();
-  assert.deepEqual(charts.map((chart) => chart.removed), [true, true, true, true]);
-  assert.deepEqual(ctx.usageCharts, {});
+  assert.deepEqual(ctx.usageChartDates, {});
 });
 
-test("资源观测站使用等权指标、紧凑单屏网格和本地 SVG 图标", async () => {
+test("资源大屏保留五项摘要、四图与明细，移除周期及未知大小展示", async () => {
   const template = await readFile(new URL("../../../templates/app/views/usage.html", import.meta.url), "utf8");
-  assert.match(template, /资源观测站/);
-  assert.match(template, /全局遥测/);
-  assert.match(template, /\[7,30,90\]/);
-  assert.match(template, /ASR/);
+  const icons = await readFile(new URL("../../../templates/app/components/usage-icons.html", import.meta.url), "utf8");
+  assert.equal((template.match(/class="raelyn-usage-metric"/g) || []).length, 5);
   assert.equal((template.match(/x-ref="usage(?:Video|Calls|Tokens|Storage)Chart"/g) || []).length, 4);
-  assert.equal((template.match(/raelyn-usage-hero/g) || []).length, 0);
-  assert.equal((template.match(/raelyn-usage-metric/g) || []).length, 6);
-  assert.match(template, /xl:grid-rows-\[82px_54px_minmax\(0,1fr\)_240px\]/);
-  assert.match(template, /Token 趋势/);
-  assert.match(template, /外部服务节奏/);
-  assert.match(template, /视频下载量/);
-  assert.match(template, /每天成功完成的下载任务数/);
-  assert.match(template, /usageCallTrendGranularityLabel/);
-  assert.doesNotMatch(template, /视频摄入节奏|新增视频移动均值/);
-  assert.doesNotMatch(template, /全部服务与服务分类/);
-  assert.match(template, /采集链路状态/);
-  assert.match(template, /服务调用画像/);
-  assert.match(template, /资产构成/);
-  assert.match(template, /大小未知资产/);
-  assert.match(template, /未记录文件大小/);
-  assert.doesNotMatch(template, /元数据缺口|缺少大小的资产/);
-  assert.match(template, /主机物理磁盘/);
-  assert.match(template, /未接入/);
-  assert.equal((template.match(/usageDateLabel\(usageCollection\.(?:usageStartedAt|resourceStartedAt)\)/g) || []).length, 2);
-  assert.ok((template.match(/<svg aria-hidden="true"/g) || []).length >= 8);
-  assert.doesNotMatch(template, /material-symbols|>monitoring<|>query_stats<|>video_library</);
+  for (const label of ["累计外部调用", "累计 LLM Token", "外部服务调用", "Token 消耗", "视频下载", "存储规模", "服务调用画像", "资产构成", "主机物理磁盘", "采集信息与统计说明"]) {
+    assert.ok(template.includes(label), label);
+  }
+  assert.doesNotMatch(template, /setUsageDays|大小未知资产|缺大小|missingSizeCount|assetMissingSizeCount|\[7,30,90\]/);
+  assert.match(template, /usageTokenDialog.showModal/);
+  assert.match(template, /usageCollectionDialog.showModal/);
+  assert.match(template, /usageProviderLabel/);
+  for (const name of ["video", "calls", "token", "storage", "database"]) assert.ok(icons.includes(`id="usage-icon-${name}"`));
+});
+
+test("累计指标区分未采集、实际零值与缺失调用，并使用中文大数单位", () => {
+  const ctx = usageContext();
+  ctx.applyUsagePayload(usagePayload());
+  assert.deepEqual(ctx.usageMetricParts(null), { value: "未采集", unit: "" });
+  assert.deepEqual(ctx.usageMetricParts(0), { value: "0", unit: "" });
+  assert.deepEqual(ctx.usageMetricParts(2283574221), { value: "22.84", unit: "亿" });
+  assert.deepEqual(ctx.usageMetricParts(781591), { value: "78.16", unit: "万" });
+  assert.match(ctx.usageTokenCoverageLabel(), /尚未采集/);
+  ctx.usageSummary.llmUsageMissingCalls = 16;
+  assert.match(ctx.usageTokenCoverageLabel(), /16 次调用缺失用量，按 0 计/);
+  ctx.usageSummary.llmUsageMissingCalls = 0;
+  assert.match(ctx.usageTokenCoverageLabel(), /均已记录/);
 });

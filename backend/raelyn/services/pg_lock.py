@@ -4,6 +4,7 @@ import hashlib
 from contextlib import contextmanager
 
 from sqlalchemy import text
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 
@@ -14,7 +15,7 @@ def lock_key(name: str) -> int:
     return value % (2**63)
 
 
-def try_lock(session: Session, name: str) -> bool:
+def try_lock(session: Session | Connection, name: str) -> bool:
     key = lock_key(name)
     row = session.execute(text("select pg_try_advisory_lock(:k) as ok").bindparams(k=key)).mappings().one()
     return bool(row["ok"])
@@ -27,36 +28,34 @@ def try_xact_lock(session: Session, name: str) -> bool:
     return bool(row["ok"])
 
 
-def unlock(session: Session, name: str) -> None:
+def unlock(session: Session | Connection, name: str) -> None:
     key = lock_key(name)
     session.execute(text("select pg_advisory_unlock(:k)").bindparams(k=key))
 
 
 @contextmanager
 def advisory_lock(session: Session, name: str):
-    ok = try_lock(session, name)
-    try:
-        yield ok
-    finally:
-        if ok:
-            unlock(session, name)
+    with advisory_lock_any(session, [name]) as acquired:
+        yield acquired is not None
 
 
 @contextmanager
 def advisory_lock_any(session: Session, names: list[str]):
-    """
-    Try to acquire any lock from `names` (in order). Yields the acquired name, or None.
-    """
-    acquired: str | None = None
-    for n in names or []:
-        s = str(n or "").strip()
-        if not s:
-            continue
-        if try_lock(session, s):
-            acquired = s
-            break
-    try:
-        yield acquired
-    finally:
-        if acquired:
-            unlock(session, acquired)
+    """按顺序领取一个会话锁，并在同一物理连接上释放。"""
+    # 业务 Session 可能提交、回滚或进入 aborted 状态。独立借用池中连接
+    # 持有门控锁，使解锁不依赖业务事务，也不会因换连接遗留会话锁。
+    with session.get_bind().engine.connect() as connection:
+        acquired: str | None = None
+        for raw_name in names or []:
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            if try_lock(connection, name):
+                acquired = name
+                break
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                unlock(connection, acquired)
+            connection.commit()

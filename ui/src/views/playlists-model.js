@@ -80,7 +80,6 @@ export function createPlaylistsViewMethods() {
       this.createPlaylistMediaTagQuery = "";
       this.createPlaylistMediaTagOpen = false;
       this.createPlaylistAvatarFile = null;
-      this.createPlaylistBackgroundFile = null;
       if (!this.mediaIndex || this.mediaIndex.length === 0) {
         const loadOptions =
           typeof this.loadMediaIndex === "function"
@@ -125,12 +124,8 @@ export function createPlaylistsViewMethods() {
         createdId = pid;
         const maxBytes = 2 * 1024 * 1024;
         if (pid && this.createPlaylistAvatarFile) {
-          if (this.createPlaylistAvatarFile.size > maxBytes) throw new Error("头像超过 2MB");
+          if (this.createPlaylistAvatarFile.size > maxBytes) throw new Error("头图超过 2MB");
           await this._uploadPlaylistImage(pid, "avatar", this.createPlaylistAvatarFile);
-        }
-        if (pid && this.createPlaylistBackgroundFile) {
-          if (this.createPlaylistBackgroundFile.size > maxBytes) throw new Error("背景超过 2MB");
-          await this._uploadPlaylistImage(pid, "background", this.createPlaylistBackgroundFile);
         }
 
         this.modals.createPlaylist = false;

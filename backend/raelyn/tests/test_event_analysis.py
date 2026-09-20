@@ -408,7 +408,7 @@ class EventAnalysisTests(unittest.TestCase):
         self.assertIn("source_entity_key / target_entity_key 是独立端点", event_analysis.COMPACT_EVENT_EXTRACTION_PROMPT)
         self.assertEqual(
             event_analysis.EVENT_EXTRACTION_PROMPT_BASE_VERSION,
-            "llm_event_v4_explicit_relation_endpoints",
+            "llm_event_v5_bounded_response",
         )
 
     def test_insert_event_relations_only_resolves_explicit_exact_endpoint_keys(self) -> None:
@@ -605,7 +605,10 @@ class EventAnalysisTests(unittest.TestCase):
         mark_dirty.assert_not_called()
         llm_generate.assert_called_once()
         self.assertEqual(llm_generate.call_args.kwargs["think"], False)
-        self.assertEqual(llm_generate.call_args.kwargs["response_format"], "json")
+        self.assertEqual(
+            llm_generate.call_args.kwargs["response_format"],
+            event_analysis.event_extraction_response_schema(["v1"]),
+        )
         self.assertEqual(llm_generate.call_args.kwargs["options"]["temperature"], 0)
         enqueue_embeddings.assert_called_once_with(session, event_ids=[event_id], priority=4)
         schedule_dirty.assert_called_once_with(

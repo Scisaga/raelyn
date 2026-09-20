@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import multiprocessing
 import uuid
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import String, cast, exists, select
@@ -12,6 +13,7 @@ from raelyn.config import settings
 from raelyn.jobs.enqueue import enqueue_in, enqueue_job
 from raelyn.jobs.log import job_log
 from raelyn.jobs.registry import registry
+from raelyn.jobs.reschedule import JobReschedule
 from raelyn.jobs.worker_activity import touch_current_worker_activity
 from raelyn.models import Asset, Job, Media, Video
 from raelyn.services.pg_lock import advisory_lock_any, try_xact_lock
@@ -41,9 +43,13 @@ from .common import (
 )
 
 _AUTO_DISCOVERED_DOWNLOAD_PRIORITY = 7
+_RECENT_VIDEO_DOWNLOAD_PRIORITY = 8
+_RECENT_VIDEO_DOWNLOAD_WINDOW = timedelta(hours=24)
 _YOUTUBE_METADATA_ENRICH_JOB_TYPE = "video.enrich_metadata.youtube"
 _YOUTUBE_METADATA_ENRICH_PRIORITY = 0
+_YOUTUBE_MEMBER_AVAILABILITY_PRIORITY = 8
 _YOUTUBE_METADATA_ENRICH_TIMEOUT_SECONDS = 45
+_YOUTUBE_MEMBER_MONITOR_REPAIR_WINDOW = timedelta(days=7)
 _DOWNLOAD_JOB_TYPES = ("video.download", "video.download.youtube", "video.download.bilibili")
 _AUTO_DISABLED_SOURCE_UNAVAILABLE_REASON = "source_unavailable"
 _RAW_INFO_KEEP_KEYS = [
@@ -58,8 +64,13 @@ _RAW_INFO_KEEP_KEYS = [
     "release_timestamp",
     "release_date",
     "duration",
+    "availability",
+    "_availability",
     "webpage_url",
 ]
+
+_YOUTUBE_AVAILABILITY_CHECKED_AT_KEY = "_availability_checked_at"
+_YOUTUBE_PLAYABLE_AVAILABILITIES = {"public", "unlisted"}
 
 
 def _youtube_profile_avatar_url(info: dict[str, Any]) -> str | None:
@@ -132,9 +143,9 @@ def _enqueue_existing_discovered_downloads(
     if allow_members_only_download:
         eligible_statuses.append("members_only")
 
-    video_ids = (
+    video_rows = (
         session.execute(
-            select(Video.id)
+            select(Video.id, Video.published_at)
             .where(
                 Video.media_id == media.id,
                 Video.status.in_(eligible_statuses),
@@ -149,12 +160,18 @@ def _enqueue_existing_discovered_downloads(
             )
             .order_by(Video.published_at.desc().nullslast(), Video.created_at.desc(), Video.id.desc())
         )
-        .scalars()
         .all()
     )
     enqueued = 0
-    for video_id in video_ids:
-        schedule_video_download(session, video_id, priority=download_priority)
+    for video_id, published_at in video_rows:
+        schedule_video_download(
+            session,
+            video_id,
+            priority=_effective_video_download_priority(
+                published_at=published_at,
+                default_priority=download_priority,
+            ),
+        )
         enqueued += 1
     return enqueued
 
@@ -164,6 +181,12 @@ def _job_download_priority(job: Job) -> int:
         return int(job.params.get("download_priority", _AUTO_DISCOVERED_DOWNLOAD_PRIORITY))
     except Exception:
         return _AUTO_DISCOVERED_DOWNLOAD_PRIORITY
+
+
+def _effective_video_download_priority(*, published_at: Any | None, default_priority: int) -> int:
+    if published_at is not None and published_at >= utcnow() - _RECENT_VIDEO_DOWNLOAD_WINDOW:
+        return max(int(default_priority), _RECENT_VIDEO_DOWNLOAD_PRIORITY)
+    return int(default_priority)
 
 
 def _compact_raw_info(info: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -265,18 +288,56 @@ def _find_video_by_provider_id(session: Session, *, provider: str, provider_vide
     ).scalar_one_or_none()
 
 
-def _enqueue_youtube_metadata_enrichment_if_needed(session: Session, *, video: Video) -> bool:
+def _youtube_metadata_enrichment_needed(video: Video) -> bool:
     if str(video.provider or "").strip().lower() != "youtube":
         return False
-    if video.published_at is not None:
+    if str(video.status or "").strip().lower() != "members_only":
+        return video.published_at is None
+
+    # 新插入对象尚未由 ORM 载入 created_at，必须立即建立监测。对已有记录只
+    # 自动修复最近窗口，避免首次上线把数千条历史会员视频同时打向 YouTube；
+    # 已建立的监测任务会自行重排，不受该窗口限制。
+    created_at = getattr(video, "created_at", None)
+    if created_at is None:
+        return True
+    return created_at >= utcnow() - _YOUTUBE_MEMBER_MONITOR_REPAIR_WINDOW
+
+
+def _youtube_metadata_enrichment_active(session: Session, *, video_id: uuid.UUID) -> bool:
+    dedupe_key = f"{_YOUTUBE_METADATA_ENRICH_JOB_TYPE}:{video_id}"
+    return (
+        session.execute(
+            select(Job.id)
+            .where(
+                Job.type == _YOUTUBE_METADATA_ENRICH_JOB_TYPE,
+                Job.dedupe_key == dedupe_key,
+                Job.status.in_(("pending", "running")),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
+def _youtube_metadata_enrichment_priority(video: Video) -> int:
+    if str(video.status or "").strip().lower() == "members_only":
+        return _YOUTUBE_MEMBER_AVAILABILITY_PRIORITY
+    return _YOUTUBE_METADATA_ENRICH_PRIORITY
+
+
+def _enqueue_youtube_metadata_enrichment_if_needed(session: Session, *, video: Video) -> bool:
+    if not _youtube_metadata_enrichment_needed(video):
         return False
-    if _youtube_metadata_enrichment_terminal_failed(session, video_id=video.id):
+    is_member_availability_monitor = str(video.status or "").strip().lower() == "members_only"
+    if is_member_availability_monitor and _youtube_metadata_enrichment_active(session, video_id=video.id):
+        return False
+    if not is_member_availability_monitor and _youtube_metadata_enrichment_terminal_failed(session, video_id=video.id):
         return False
     enqueue_job(
         session,
         type_=_YOUTUBE_METADATA_ENRICH_JOB_TYPE,
         params={"video_id": str(video.id)},
-        priority=_YOUTUBE_METADATA_ENRICH_PRIORITY,
+        priority=_youtube_metadata_enrichment_priority(video),
     )
     return True
 
@@ -395,7 +456,10 @@ def _update_video_from_youtube_metadata(video: Video, info: dict[str, Any]) -> b
     if not isinstance(info, dict):
         return False
 
-    video.raw_info = _compact_raw_info(info)
+    video.raw_info = {
+        **(_compact_raw_info(info) or {}),
+        _YOUTUBE_AVAILABILITY_CHECKED_AT_KEY: utcnow().isoformat(),
+    }
     if not video.thumbnail_url and info.get("thumbnail"):
         video.thumbnail_url = info.get("thumbnail")
     if video.duration_sec is None and info.get("duration") is not None:
@@ -406,6 +470,37 @@ def _update_video_from_youtube_metadata(video: Video, info: dict[str, Any]) -> b
         return False
     video.published_at = published_at
     return True
+
+
+def _restore_public_youtube_video(video: Video, info: dict[str, Any]) -> bool:
+    if str(video.status or "").strip().lower() != "members_only":
+        return False
+    availability = info.get("availability")
+    if availability is None:
+        availability = info.get("_availability")
+    if str(availability or "").strip().lower() not in _YOUTUBE_PLAYABLE_AVAILABILITIES:
+        return False
+    video.status = "discovered"
+    video.error_message = None
+    return True
+
+
+def _youtube_member_availability_recheck_seconds(video: Video) -> int:
+    """新发布内容优先复核，长期会员内容逐步退避但不停止观测。"""
+
+    created_at = getattr(video, "created_at", None)
+    if created_at is None:
+        return 10 * 60
+    age = max(timedelta(0), utcnow() - created_at)
+    if age < timedelta(hours=6):
+        return 10 * 60
+    if age < timedelta(days=1):
+        return 30 * 60
+    if age < timedelta(days=7):
+        return 2 * 60 * 60
+    if age < timedelta(days=30):
+        return 6 * 60 * 60
+    return 24 * 60 * 60
 
 
 @registry.register(_YOUTUBE_METADATA_ENRICH_JOB_TYPE)
@@ -421,7 +516,7 @@ def youtube_metadata_enrich(session: Session, job: Job) -> dict | None:
         return {"skipped": "video not found"}
     if str(video.provider or "").strip().lower() != "youtube":
         return {"skipped": "not youtube"}
-    if video.published_at is not None:
+    if video.published_at is not None and str(video.status or "").strip().lower() != "members_only":
         return {"skipped": "published_at already present"}
 
     with advisory_lock_any(session, _provider_guard_names("youtube", "sync")) as lock_name:
@@ -452,6 +547,7 @@ def youtube_metadata_enrich(session: Session, job: Job) -> dict | None:
         if provider_video_id and str(info.get("id") or "").strip() not in {"", provider_video_id}:
             return {"skipped": "metadata id mismatch"}
 
+        availability_updated = _restore_public_youtube_video(video, info)
         published_at_updated = _update_video_from_youtube_metadata(video, info)
         if published_at_updated:
             schedule_playlists_event_map_dirty_for_video(
@@ -462,8 +558,49 @@ def youtube_metadata_enrich(session: Session, job: Job) -> dict | None:
                 priority=job.priority,
                 require_event_map_input=True,
             )
-        job_log(session, job, f"youtube metadata enrich done published_at_updated={published_at_updated}", level="info")
-        return {"ok": True, "published_at_updated": published_at_updated}
+        download_enqueued = False
+        effective_download_priority = _effective_video_download_priority(
+            published_at=video.published_at,
+            default_priority=_AUTO_DISCOVERED_DOWNLOAD_PRIORITY,
+        )
+        should_schedule_download = str(video.status or "").strip().lower() == "discovered" and (
+            availability_updated
+            or (published_at_updated and effective_download_priority > _AUTO_DISCOVERED_DOWNLOAD_PRIORITY)
+        )
+        if should_schedule_download and settings.auto_download_new_videos:
+            schedule_video_download(session, video.id, priority=effective_download_priority)
+            download_enqueued = True
+        if str(video.status or "").strip().lower() == "members_only":
+            delay_seconds = _youtube_member_availability_recheck_seconds(video)
+            availability = str(info.get("availability") or info.get("_availability") or "unknown").strip().lower()
+            job_log(
+                session,
+                job,
+                "youtube video remains members-only; availability check rescheduled",
+                level="info",
+                data={"availability": availability, "delay_seconds": delay_seconds},
+            )
+            raise JobReschedule(
+                delay_seconds=delay_seconds,
+                reason="youtube_members_only_availability_recheck",
+            )
+        job_log(
+            session,
+            job,
+            (
+                "youtube metadata enrich done "
+                f"published_at_updated={published_at_updated} "
+                f"availability_updated={availability_updated} "
+                f"download_enqueued={download_enqueued}"
+            ),
+            level="info",
+        )
+        return {
+            "ok": True,
+            "published_at_updated": published_at_updated,
+            "availability_updated": availability_updated,
+            "download_enqueued": download_enqueued,
+        }
 
 
 @registry.register("media.sync_profile")
@@ -697,7 +834,7 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                 allow_members_only_download=allow_members_only_download,
             )
             if not video:
-                if media.provider == "youtube" and parse_published_at(entry) is None:
+                if media.provider == "youtube":
                     existing_video = _find_video_by_provider_id(
                         session,
                         provider=media.provider,
@@ -716,7 +853,7 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                     priority=job.priority,
                     require_event_map_input=True,
                 )
-            elif media.provider == "youtube" and _enqueue_youtube_metadata_enrichment_if_needed(session, video=video):
+            if media.provider == "youtube" and _enqueue_youtube_metadata_enrichment_if_needed(session, video=video):
                 metadata_enrichment_enqueued += 1
 
             has_transcript = (
@@ -743,7 +880,10 @@ def media_sync_videos(session: Session, job: Job) -> dict | None:
                     session,
                     type_=download_type,
                     params={"video_id": str(video.id)},
-                    priority=download_priority,
+                    priority=_effective_video_download_priority(
+                        published_at=video.published_at,
+                        default_priority=download_priority,
+                    ),
                 )
                 enqueued_downloads += 1
 

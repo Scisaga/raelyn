@@ -1,4 +1,4 @@
-const USAGE_DAY_OPTIONS = new Set([7, 30, 90]);
+const USAGE_TREND_DAYS = 90;
 
 function nullableNumber(value) {
   return value === null || value === undefined ? null : Number(value);
@@ -22,30 +22,35 @@ function usageChartOptions(LC, priceFormatter) {
     },
     layout: {
       background: { type: LC.ColorType.Solid, color: "rgba(0,0,0,0)" },
-      textColor: "rgba(148, 163, 184, 0.85)",
+      textColor: "#718096",
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
       fontSize: 11,
       attributionLogo: false,
     },
     rightPriceScale: {
-      borderVisible: true,
-      borderColor: "rgba(51, 65, 85, 0.55)",
+      borderVisible: false,
+      minimumWidth: 68,
       scaleMargins: { top: 0.18, bottom: 0.12 },
     },
     leftPriceScale: { visible: false },
     grid: {
-      vertLines: { visible: true, color: "rgba(30, 41, 59, 0.35)" },
-      horzLines: { visible: true, color: "rgba(30, 41, 59, 0.35)" },
+      vertLines: { visible: false },
+      horzLines: { visible: true, color: "rgba(51, 65, 85, 0.22)" },
     },
     timeScale: {
-      borderVisible: true,
-      borderColor: "rgba(51, 65, 85, 0.55)",
+      borderVisible: false,
       timeVisible: false,
       secondsVisible: false,
       fixLeftEdge: true,
       fixRightEdge: true,
+      lockVisibleTimeRangeOnResize: true,
+      tickMarkFormatter: (time) => usageChartTimeLabel(time).slice(5).replace("-", "/"),
     },
-    crosshair: { mode: LC.CrosshairMode.Normal },
+    crosshair: {
+      mode: LC.CrosshairMode.Normal,
+      vertLine: { color: "rgba(148, 163, 184, 0.4)", labelVisible: false },
+      horzLine: { visible: false, labelVisible: false },
+    },
     handleScroll: false,
     handleScale: false,
   };
@@ -71,6 +76,7 @@ export function createUsageViewMethods() {
         llmInputTokens: nullableNumber(summary.llm_input_tokens),
         llmOutputTokens: nullableNumber(summary.llm_output_tokens),
         llmTotalTokens: nullableNumber(summary.llm_total_tokens),
+        llmUsageMissingCalls: nullableNumber(summary.llm_usage_missing_calls),
         assetCount: Number(summary.asset_count),
         assetSizeBytes: Number(summary.asset_size_bytes),
         assetMissingSizeCount: Number(summary.asset_missing_size_count),
@@ -86,7 +92,8 @@ export function createUsageViewMethods() {
         llmInputTokens: nullableNumber(point.llm_input_tokens),
         llmOutputTokens: nullableNumber(point.llm_output_tokens),
         llmTotalTokens: nullableNumber(point.llm_total_tokens),
-        assetSizeBytes: nullableNumber(point.asset_size_bytes),
+        llmUsageMissingCalls: nullableNumber(point.llm_usage_missing_calls),
+        assetSizeBytes: nullableNumber(point.asset_size_bytes ?? point.asset_size_estimate_bytes),
         databaseSizeBytes: nullableNumber(point.database_size_bytes),
         usageSampled: Boolean(point.usage_sampled),
         resourceSampled: Boolean(point.resource_sampled),
@@ -111,7 +118,7 @@ export function createUsageViewMethods() {
         count: Number(row.count),
         sizeBytes: Number(row.size_bytes),
         missingSizeCount: Number(row.missing_size_count),
-      }));
+      })).sort((a, b) => b.sizeBytes - a.sizeBytes);
       this.usageCollection = {
         usageStartedAt: collection.usage_started_at,
         lastUsageAt: collection.last_usage_at,
@@ -123,18 +130,14 @@ export function createUsageViewMethods() {
       return payload;
     },
 
-    async loadUsage({ days = this.usageDays } = {}) {
-      const normalizedDays = Number(days);
-      if (!USAGE_DAY_OPTIONS.has(normalizedDays)) return null;
-
-      this.usageDays = normalizedDays;
+    async loadUsage() {
       const requestToken = Number(this._usageRequestToken || 0) + 1;
       this._usageRequestToken = requestToken;
       this.usageLoading = true;
       this.usageError = "";
 
       try {
-        const payload = await this.api(`/usage?days=${normalizedDays}`);
+        const payload = await this.api(`/usage?days=${USAGE_TREND_DAYS}`);
         if (requestToken !== this._usageRequestToken || this.activeView !== "usage") return null;
         this.applyUsagePayload(payload);
         if (String(this.globalStatus || "").startsWith("error:")) this.globalStatus = "";
@@ -151,31 +154,24 @@ export function createUsageViewMethods() {
       }
     },
 
-    async setUsageDays(days) {
-      const normalizedDays = Number(days);
-      if (!USAGE_DAY_OPTIONS.has(normalizedDays)) return null;
-      if (normalizedDays === this.usageDays && this.usagePayload) return this.usagePayload;
-      return this.loadUsage({ days: normalizedDays });
-    },
-
     refreshUsage() {
-      return this.loadUsage({ days: this.usageDays });
+      return this.loadUsage();
     },
 
     leaveUsagePage() {
       this._usageRequestToken = Number(this._usageRequestToken || 0) + 1;
       this.usageLoading = false;
+      this.$refs?.usageTokenDialog?.close();
+      this.$refs?.usageCollectionDialog?.close();
       this._destroyUsageCharts();
     },
 
     usageRangeLabel() {
-      return `最近 ${this.usageDays} 天`;
+      return `最近 ${USAGE_TREND_DAYS} 天`;
     },
 
     usageCallTrendWindow() {
-      if (this.usageDays >= 90) return 7;
-      if (this.usageDays >= 30) return 3;
-      return 1;
+      return 7;
     },
 
     usageCallTrendGranularityLabel() {
@@ -185,7 +181,35 @@ export function createUsageViewMethods() {
 
     usageCountLabel(value) {
       if (!this.usagePayload) return this.usageLoading ? "加载中…" : "—";
-      return value === null ? "暂无采样" : this.formatCompactInteger(value);
+      return value === null ? "未采集" : this.formatCompactInteger(value);
+    },
+
+    usageMetricParts(value, kind = "count") {
+      if (!this.usagePayload) return { value: this.usageLoading ? "加载中…" : "—", unit: "" };
+      if (value === null) return { value: kind === "bytes" ? "不可用" : "未采集", unit: "" };
+      if (kind === "bytes") {
+        const [number, unit] = this.formatBytes(value).split(" ");
+        return { value: number, unit };
+      }
+      if (value >= 1e8) return { value: (value / 1e8).toFixed(2), unit: "亿" };
+      if (value >= 1e4) return { value: (value / 1e4).toFixed(2), unit: "万" };
+      return { value: this.formatInteger(value), unit: "" };
+    },
+
+    usageTokenCoverageLabel() {
+      const missing = this.usageSummary.llmUsageMissingCalls;
+      if (missing === null) return "LLM 用量尚未采集";
+      return missing > 0
+        ? `${this.formatInteger(missing)} 次调用缺失用量，按 0 计；已记录的 Token 全部保留。`
+        : "已采集调用的 Token 用量均已记录。";
+    },
+
+    usageShortDateTimeLabel(value) {
+      if (!value) return "未采集";
+      return new Intl.DateTimeFormat("zh-CN", {
+        timeZone: this.usageTimezone || undefined,
+        month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+      }).format(new Date(value));
     },
 
     usageBytesLabel(value) {
@@ -236,10 +260,10 @@ export function createUsageViewMethods() {
     },
 
     usageAssetShare(row) {
-      const maximum = Math.max(0, ...this.usageAssetBreakdown.map((item) => Number(item.sizeBytes || 0)));
+      const maximum = this.usageSummary.assetSizeBytes;
       const current = Math.max(0, Number(row && row.sizeBytes || 0));
       if (maximum <= 0 || current <= 0) return 0;
-      return Math.max(3, Math.min(100, current * 100 / maximum));
+      return current * 100 / maximum;
     },
 
     usageOperationLabel(operation) {
@@ -276,6 +300,7 @@ export function createUsageViewMethods() {
         subtitle: "字幕",
         transcript: "转写文本",
         video: "视频",
+        thumbnail: "缩略图",
       })[value] || value || "其他资产";
     },
 
@@ -289,7 +314,38 @@ export function createUsageViewMethods() {
       const value = Number(durationMs);
       if (value <= 0 && String(operation || "").startsWith("legacy.")) return "历史未记录";
       if (value < 1000) return `${this.formatInteger(value)} ms`;
-      return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)} 秒`;
+      if (value < 60000) return `${(value / 1000).toFixed(1)} 秒`;
+      const minutes = Math.floor(value / 60000);
+      if (minutes < 60) return `${minutes} 分 ${Math.floor(value / 1000) % 60} 秒`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return `${hours} 小时 ${minutes % 60} 分`;
+      return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时`;
+    },
+
+    usageChartDate(key) {
+      return this.usageChartDates[key] || this.usageSeries.at(-1)?.date || "";
+    },
+
+    usageChartDateLabel(key) {
+      const date = this.usageChartDate(key);
+      if (!date) return "—";
+      const label = date.slice(5).replace("-", "/");
+      return `${label}${date === this.usageSeries.at(-1)?.date ? " · 当日" : ""}`;
+    },
+
+    usageChartValue(key, field) {
+      const sampledField = key === "calls" || key === "tokens" ? "usageSampled"
+        : field === "databaseSizeBytes" ? "resourceSampled" : "";
+      const data = key === "calls" ? this._usageCallTrendData(field, sampledField)
+        : this._usageMetricData(field, sampledField);
+      const point = data.find((item) => item.time === this.usageChartDate(key));
+      if (point?.value === undefined) return "—";
+      return key === "storage" ? this.formatBytes(point.value) : this.formatCompactInteger(point.value);
+    },
+
+    usageAssetShareLabel(row) {
+      const share = this.usageAssetShare(row);
+      return share > 0 && share < 0.1 ? "<0.1%" : `${share.toFixed(1)}%`;
     },
 
     usageHasVideoSeries() {
@@ -314,7 +370,7 @@ export function createUsageViewMethods() {
 
     usageHasStorageSeries() {
       return this.usageSeries.some(
-        (point) => point.resourceSampled && (point.assetSizeBytes !== null || point.databaseSizeBytes !== null)
+        (point) => point.assetSizeBytes !== null || point.databaseSizeBytes !== null
       );
     },
 
@@ -353,6 +409,9 @@ export function createUsageViewMethods() {
         chart: LC.createChart(element, usageChartOptions(LC, priceFormatter)),
         series: {},
       };
+      entry.chart.subscribeCrosshairMove(({ time }) => {
+        this.usageChartDates = { ...this.usageChartDates, [key]: usageChartTimeLabel(time) };
+      });
       this.usageCharts = { ...this.usageCharts, [key]: entry };
       return entry;
     },
@@ -363,14 +422,11 @@ export function createUsageViewMethods() {
 
       let ready = true;
       if (this.usageHasVideoSeries()) {
-        const entry = this._usageCreateChart("videos", "usageVideoChart", (value) => this.formatInteger(value));
+        const entry = this._usageCreateChart("videos", "usageVideoChart", (value) => this.formatCompactInteger(value));
         ready = Boolean(entry) && ready;
         if (entry && !entry.series.videoDownloaded) {
-          entry.series.videoDownloaded = entry.chart.addSeries(LC.AreaSeries, {
-            lineColor: "rgba(34, 211, 238, 0.92)",
-            topColor: "rgba(34, 211, 238, 0.10)",
-            bottomColor: "rgba(34, 211, 238, 0.005)",
-            lineWidth: 2,
+          entry.series.videoDownloaded = entry.chart.addSeries(LC.HistogramSeries, {
+            color: "rgba(98, 213, 237, 0.55)",
             lastValueVisible: false,
             priceLineVisible: false,
           });
@@ -381,19 +437,19 @@ export function createUsageViewMethods() {
         ready = Boolean(entry) && ready;
         if (entry && !entry.series.llmCalls) {
           entry.series.llmCalls = entry.chart.addSeries(LC.LineSeries, {
-            color: "rgba(167, 139, 250, 0.95)",
+            color: "rgba(176, 155, 255, 0.9)",
             lineWidth: 2,
             lastValueVisible: false,
             priceLineVisible: false,
           });
           entry.series.asrCalls = entry.chart.addSeries(LC.LineSeries, {
-            color: "rgba(45, 212, 191, 0.95)",
+            color: "rgba(104, 214, 192, 0.9)",
             lineWidth: 2,
             lastValueVisible: false,
             priceLineVisible: false,
           });
           entry.series.embeddingCalls = entry.chart.addSeries(LC.LineSeries, {
-            color: "rgba(52, 211, 153, 0.95)",
+            color: "rgba(108, 205, 163, 0.9)",
             lineWidth: 2,
             lastValueVisible: false,
             priceLineVisible: false,
@@ -405,17 +461,17 @@ export function createUsageViewMethods() {
         ready = Boolean(entry) && ready;
         if (entry && !entry.series.inputTokens) {
           entry.series.inputTokens = entry.chart.addSeries(LC.AreaSeries, {
-            lineColor: "rgba(45, 212, 191, 0.98)",
-            topColor: "rgba(45, 212, 191, 0.20)",
-            bottomColor: "rgba(45, 212, 191, 0.01)",
+            lineColor: "rgba(104, 214, 192, 0.9)",
+            topColor: "rgba(104, 214, 192, 0.07)",
+            bottomColor: "rgba(104, 214, 192, 0)",
             lineWidth: 2,
             lastValueVisible: false,
             priceLineVisible: false,
           });
           entry.series.outputTokens = entry.chart.addSeries(LC.AreaSeries, {
-            lineColor: "rgba(251, 191, 36, 0.98)",
-            topColor: "rgba(251, 191, 36, 0.15)",
-            bottomColor: "rgba(251, 191, 36, 0.01)",
+            lineColor: "rgba(239, 202, 123, 0.9)",
+            topColor: "rgba(239, 202, 123, 0.05)",
+            bottomColor: "rgba(239, 202, 123, 0)",
             lineWidth: 2,
             lastValueVisible: false,
             priceLineVisible: false,
@@ -427,13 +483,13 @@ export function createUsageViewMethods() {
         ready = Boolean(entry) && ready;
         if (entry && !entry.series.assetSize) {
           entry.series.assetSize = entry.chart.addSeries(LC.LineSeries, {
-            color: "rgba(56, 189, 248, 0.95)",
+            color: "rgba(115, 182, 255, 0.9)",
             lineWidth: 2,
             lastValueVisible: false,
             priceLineVisible: false,
           });
           entry.series.databaseSize = entry.chart.addSeries(LC.LineSeries, {
-            color: "rgba(52, 211, 153, 0.95)",
+            color: "rgba(108, 205, 163, 0.9)",
             lineWidth: 2,
             lastValueVisible: false,
             priceLineVisible: false,
@@ -478,7 +534,7 @@ export function createUsageViewMethods() {
 
       const storage = this.usageCharts.storage;
       if (storage) {
-        storage.series.assetSize.setData(this._usageMetricData("assetSizeBytes", "resourceSampled"));
+        storage.series.assetSize.setData(this._usageMetricData("assetSizeBytes"));
         storage.series.databaseSize.setData(this._usageMetricData("databaseSizeBytes", "resourceSampled"));
       }
 
@@ -496,6 +552,7 @@ export function createUsageViewMethods() {
         }
       });
       this.usageCharts = {};
+      this.usageChartDates = {};
     },
   };
 }

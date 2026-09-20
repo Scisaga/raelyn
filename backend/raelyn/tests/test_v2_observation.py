@@ -62,6 +62,7 @@ from raelyn.services.event_analysis import event_extraction_spec
 from raelyn.services.v2_observation import (
     _story_delta_is_material,
     _story_revision_delta,
+    brief_reference_payload,
     canonical_directory,
     canonical_history,
     change_payload,
@@ -3030,6 +3031,29 @@ class V2ObservationIntegrationTests(unittest.TestCase):
 
         self.assertEqual(count, 4)
         self.assertEqual({row.object_type for row in references}, {"canonical", "story", "evidence", "source"})
+        story_reference = next(row for row in references if row.object_type == "story")
+        self.assertEqual(story_reference.snapshot_id, self.current.id)
+        self.assertEqual(story_reference.context["source_canonical_id"], str(canonical_id))
+        self.assertEqual(story_reference.context["target_canonical_id"], str(target_id))
+        self.assertEqual(story_reference.context["focus_canonical_id"], str(target_id))
+        self.assertIn(f"/stories?domain_id={self.playlist.id}", story_reference.context["web_url"])
+        self.assertIn(f"focus_canonical_id={target_id}", story_reference.context["web_url"])
+        self.assertNotIn("snapshot_id=", story_reference.context["web_url"])
+        story_reference.context = {
+            **story_reference.context,
+            "web_url": (
+                f"/field?domain_id={self.playlist.id}&mode=story&story_id={story_identity_id}"
+                f"&snapshot_id={self.current.id}"
+            ),
+        }
+        story_payload = brief_reference_payload(
+            story_reference,
+            self.playlist.id,
+            brief=brief,
+        )
+        self.assertIn(f"/stories?domain_id={self.playlist.id}", story_payload["web_url"])
+        self.assertIn(f"focus_canonical_id={target_id}", story_payload["web_url"])
+        self.assertNotIn("snapshot_id=", story_payload["web_url"])
         self.assertIn('<a id="field-ref-4"></a>', markdown)
         self.assertEqual(brief.snapshot_id, self.current.id)
         directory = domain_directory(self.session)

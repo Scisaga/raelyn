@@ -2955,6 +2955,13 @@ export function createPlaylistViewMethods() {
       const lines = src.split(/\r?\n/);
       const out = [];
       let listType = "";
+      let structuredReferenceListOpen = false;
+
+      const structuredReferences = new Map(
+        (Array.isArray(this.briefV2Detail?.references) ? this.briefV2Detail.references : [])
+          .filter((reference) => reference?.anchor)
+          .map((reference) => [String(reference.anchor), reference])
+      );
 
       const flushList = () => {
         if (!listType) return;
@@ -2969,6 +2976,18 @@ export function createPlaylistViewMethods() {
         out.push(type === "ol"
           ? '<ol class="list-decimal pl-5 space-y-2 leading-relaxed">'
           : '<ul class="list-disc pl-5 space-y-2 leading-relaxed">');
+      };
+
+      const flushStructuredReferenceList = () => {
+        if (!structuredReferenceListOpen) return;
+        out.push("</div>");
+        structuredReferenceListOpen = false;
+      };
+
+      const openStructuredReferenceList = () => {
+        if (structuredReferenceListOpen) return;
+        out.push('<div class="raelyn-brief-reference-list" role="list" aria-label="星域引用列表">');
+        structuredReferenceListOpen = true;
       };
 
       const formatInlineEsc = (escaped) => {
@@ -3017,6 +3036,81 @@ export function createPlaylistViewMethods() {
       };
 
       const briefLooksLikeUrl = (value) => /^https?:\/\//i.test(String(value || "").trim());
+
+      const structuredReferenceMeta = (reference) => {
+        const type = String(reference?.object_type || "").trim();
+        return {
+          canonical: { type: "真实事件", action: "查看星点" },
+          story: { type: "故事", action: "查看故事" },
+          evidence: { type: "证据", action: "核验证据" },
+          source: { type: "来源记录", action: "播放来源" },
+          source_record: { type: "来源记录", action: "播放来源" },
+        }[type] || { type: "星域对象", action: "查看对象" };
+      };
+
+      const structuredReferenceLabel = (reference, fallback) => {
+        const type = String(reference?.object_type || "").trim();
+        const label = String(reference?.label || fallback || "未命名引用").trim();
+        const prefixes = {
+          story: /^故事\s*[·・]\s*/u,
+          evidence: /^证据\s*[·・]\s*/u,
+          source: /^来源记录\s*[·・]\s*/u,
+          source_record: /^来源记录\s*[·・]\s*/u,
+        };
+        return label.replace(prefixes[type] || /$^/, "") || label;
+      };
+
+      const structuredReferenceUrl = (value) => {
+        const url = String(value || "").trim();
+        return url.startsWith("/") && !url.startsWith("//") ? url : "";
+      };
+
+      const structuredReferenceRow = (anchorId, rawBody) => {
+        const fallbackMatch = String(rawBody || "").trim().match(/^\[(\d+)\]\s*(.*)$/);
+        const reference = structuredReferences.get(anchorId) || null;
+        const position = Number(reference?.position || fallbackMatch?.[1] || 0);
+        const meta = structuredReferenceMeta(reference);
+        const label = structuredReferenceLabel(reference, fallbackMatch?.[2] || rawBody);
+        const objectType = String(reference?.object_type || "unknown");
+        const objectUrl = structuredReferenceUrl(reference?.web_url);
+        const isSource = ["source", "source_record"].includes(objectType);
+        const sourceVideoId = String(
+          isSource ? reference?.object_id || "" : reference?.context?.source_video_id || ""
+        ).trim();
+        const evidenceRevisionId = String(reference?.evidence_revision_id || "").trim();
+        const sourceUrl = sourceVideoId ? `/video?video_id=${encodeURIComponent(sourceVideoId)}` : "";
+        const domainId = String(this.selectedPlaylistId || this.playlistPageId || this.briefV2Detail?.playlist_id || "").trim();
+        const storyFocusCanonicalId = String(
+          reference?.context?.focus_canonical_id || reference?.context?.target_canonical_id || ""
+        ).trim();
+        const storyUrl = objectType === "story" && domainId && reference?.object_id
+          ? `/stories?domain_id=${encodeURIComponent(domainId)}&story_id=${encodeURIComponent(reference.object_id)}${storyFocusCanonicalId ? `&focus_canonical_id=${encodeURIComponent(storyFocusCanonicalId)}` : ""}`
+          : "";
+        const mainUrl = isSource ? sourceUrl || objectUrl : storyUrl || objectUrl;
+        const mainData = isSource
+          ? `data-brief-video-id="${this._escapeHtml(sourceVideoId)}"`
+          : `data-brief-reference-anchor="${anchorId}"`;
+        const mainAction = mainUrl && reference
+          ? `<a class="raelyn-brief-reference-action" href="${this._escapeHtml(mainUrl)}" ${mainData}>${meta.action}<span aria-hidden="true">→</span></a>`
+          : "";
+        const evidenceData = evidenceRevisionId
+          ? `data-brief-evidence-id="${this._escapeHtml(evidenceRevisionId)}" data-brief-evidence-video-id="${this._escapeHtml(sourceVideoId)}"`
+          : `data-brief-video-id="${this._escapeHtml(sourceVideoId)}"`;
+        const videoAction = !isSource && sourceUrl
+          ? `<a class="raelyn-brief-reference-action raelyn-brief-reference-action--secondary" href="${this._escapeHtml(sourceUrl)}" ${evidenceData}>播放证据<span aria-hidden="true">▶</span></a>`
+          : "";
+
+        return [
+          `<div id="${anchorId}" class="raelyn-brief-reference-item" data-reference-type="${this._escapeHtml(objectType)}" role="listitem">`,
+          `<span class="raelyn-brief-reference-position">${String(position || "—").padStart(2, "0")}</span>`,
+          '<span class="raelyn-brief-reference-copy">',
+          `<span class="raelyn-brief-reference-type">${meta.type}</span>`,
+          `<span class="raelyn-brief-reference-title">${formatInlineEsc(this._escapeHtml(label))}</span>`,
+          "</span>",
+          `<span class="raelyn-brief-reference-actions">${videoAction}${mainAction}</span>`,
+          "</div>",
+        ].join("");
+      };
 
       const splitTableRow = (raw) => {
         let value = String(raw || "").trim();
@@ -3137,12 +3231,21 @@ export function createPlaylistViewMethods() {
         }
         if (!trimmed) {
           flushList();
+          flushStructuredReferenceList();
           out.push("<div class=\"h-2\"></div>");
+          continue;
+        }
+        const structuredAnchor = trimmed.match(/^<a id="(field-ref-\d+)"><\/a>\s*(.*)$/);
+        if (structuredAnchor) {
+          flushList();
+          openStructuredReferenceList();
+          out.push(structuredReferenceRow(structuredAnchor[1], structuredAnchor[2] || ""));
           continue;
         }
         const headerCells = splitTableRow(trimmed);
         if (trimmed.includes("|") && isTableDelimiter(lines[lineIndex + 1] || "", headerCells.length)) {
           flushList();
+          flushStructuredReferenceList();
           const alignments = splitTableRow(lines[lineIndex + 1]).map(tableAlignment);
           const rows = [];
           lineIndex += 2;
@@ -3166,40 +3269,48 @@ export function createPlaylistViewMethods() {
           out.push("</tbody></table></div>");
           continue;
         }
-        const structuredAnchor = trimmed.match(/^<a id="(field-ref-\d+)"><\/a>\s*(.*)$/);
-        if (structuredAnchor) {
-          flushList();
-          const anchorId = structuredAnchor[1];
-          const body = linkifyAndFormat(structuredAnchor[2] || "");
-          out.push(`<p id="${anchorId}" class="scroll-mt-6 rounded-md border border-cyan-500/15 bg-cyan-500/5 px-3 py-2">${body}</p>`);
-          continue;
-        }
         const m = trimmed.match(/^(#{1,4})\s+(.*)$/);
         if (m) {
           flushList();
+          flushStructuredReferenceList();
           const level = m[1].length;
           const body = linkifyAndFormat(m[2] || "");
-          out.push(`<h${level} class="mt-2">${body}</h${level}>`);
+          if (level === 2 && String(m[2] || "").trim() === "星域引用") {
+            out.push('<h2 class="raelyn-brief-reference-heading"><span>星域引用</span><small>生成时采用的星域对象与来源</small></h2>');
+          } else {
+            out.push(`<h${level} class="mt-2">${body}</h${level}>`);
+          }
           continue;
         }
         const m2 = trimmed.match(/^\d+[\).]\s+(.*)$/);
         if (m2) {
+          flushStructuredReferenceList();
           openList("ol");
           const body = linkifyAndFormat(m2[1] || "");
           out.push(`<li>${body}</li>`);
           continue;
         }
         if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+          flushStructuredReferenceList();
           openList("ul");
           const body = linkifyAndFormat(trimmed.slice(2));
           out.push(`<li>${body}</li>`);
           continue;
         }
         flushList();
+        flushStructuredReferenceList();
         out.push(`<p class="my-2 leading-relaxed">${linkifyAndFormat(line)}</p>`);
       }
       flushList();
+      flushStructuredReferenceList();
       return out.join("");
+    },
+
+    playlistBriefReferenceByAnchor(anchor) {
+      const target = String(anchor || "").trim();
+      if (!target) return null;
+      const references = Array.isArray(this.briefV2Detail?.references) ? this.briefV2Detail.references : [];
+      return references.find((reference) => String(reference?.anchor || "") === target) || null;
     },
 
     playlistBriefClick(ev) {
@@ -3209,11 +3320,43 @@ export function createPlaylistViewMethods() {
           ev.stopPropagation();
           return;
         }
-        const btn = ev && ev.target && ev.target.closest ? ev.target.closest("button[data-play-url]") : null;
+        const target = ev?.target;
+        if (!target?.closest) return;
+        const internalNavigation = !(ev?.metaKey || ev?.ctrlKey || ev?.shiftKey || ev?.altKey) && Number(ev?.button || 0) === 0;
+        const evidenceReference = target.closest("a[data-brief-evidence-id]");
+        if (evidenceReference && internalNavigation) {
+          this.playlistPlayBriefEvidence(
+            evidenceReference.getAttribute("data-brief-evidence-id") || "",
+            evidenceReference.getAttribute("data-brief-evidence-video-id") || ""
+          );
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
+        const videoReference = target.closest("a[data-brief-video-id]");
+        if (videoReference && internalNavigation) {
+          this._playlistBriefEvidenceToken = Number(this._playlistBriefEvidenceToken || 0) + 1;
+          this.playlistSelectVideoById(videoReference.getAttribute("data-brief-video-id") || "");
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
+        const objectReference = target.closest("a[data-brief-reference-anchor]");
+        if (objectReference && internalNavigation) {
+          this._playlistBriefEvidenceToken = Number(this._playlistBriefEvidenceToken || 0) + 1;
+          const reference = this.playlistBriefReferenceByAnchor(
+            objectReference.getAttribute("data-brief-reference-anchor") || ""
+          );
+          if (reference) this.briefOpenReference(reference);
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
+        const btn = target.closest("button[data-play-url]");
         if (!btn) return;
+        this._playlistBriefEvidenceToken = Number(this._playlistBriefEvidenceToken || 0) + 1;
         const enc = btn.getAttribute("data-play-url") || "";
-        const url = decodeURIComponent(enc);
-        this.playlistSelectVideoByUrl(url);
+        this.playlistSelectVideoByUrl(decodeURIComponent(enc));
         ev.preventDefault();
         ev.stopPropagation();
       } catch {
@@ -3345,11 +3488,58 @@ export function createPlaylistViewMethods() {
       }
     },
 
-	    async playlistSelectVideoByUrl(url) {
-	      const u = String(url || "").trim();
-	      if (!u) return;
+    async playlistPlayBriefEvidence(evidenceRevisionId, fallbackVideoId = "") {
+      const revisionId = String(evidenceRevisionId || "").trim();
+      const domainId = String(this.selectedPlaylistId || this.playlistPageId || "").trim();
+      let videoId = String(fallbackVideoId || "").trim();
+      let seekSec = 0;
+      const requestToken = Number(this._playlistBriefEvidenceToken || 0) + 1;
+      this._playlistBriefEvidenceToken = requestToken;
+      const originPeriod = String(this.playlistSelectedDate || "");
+      const originBriefId = String(this.briefV2Detail?.id || this.briefV2SelectedId || "");
+      const requestIsCurrent = () => (
+        Number(this._playlistBriefEvidenceToken || 0) === requestToken
+        && String(this.selectedPlaylistId || this.playlistPageId || "").trim() === domainId
+        && this.activeView === "playlist"
+        && (!originPeriod || String(this.playlistSelectedDate || "") === originPeriod)
+        && (!originBriefId || String(this.briefV2Detail?.id || this.briefV2SelectedId || "") === originBriefId)
+      );
+
+      if (revisionId && domainId) {
+        try {
+          const detail = await this.api(
+            `/domains/${encodeURIComponent(domainId)}/evidence/${encodeURIComponent(revisionId)}`
+          );
+          if (!requestIsCurrent()) return;
+          videoId = String(detail?.source?.video_id || videoId).trim();
+          const exactEvidence = (Array.isArray(detail?.evidence) ? detail.evidence : []).find(
+            (item) => item?.playback_position_seconds !== null && item?.playback_position_seconds !== undefined
+          );
+          const position = Number(exactEvidence?.playback_position_seconds);
+          if (Number.isFinite(position)) seekSec = Math.max(0, position);
+        } catch (error) {
+          if (!requestIsCurrent()) return;
+          if (!videoId) {
+            this.globalStatus = `无法读取证据来源：${error?.message || String(error)}`;
+            return;
+          }
+          this.toastPush?.({
+            level: "info",
+            title: "精确定位不可用",
+            message: "已打开对应来源视频，未对字符区间估算播放时间。",
+          });
+        }
+      }
+      if (!videoId) {
+        this.globalStatus = "该证据没有可播放的来源记录";
+        return;
+      }
+      await this.playlistSelectVideoById(videoId, { seekSec });
+    },
+
+    async _playlistSelectBriefVideo(matchVideo, notFoundMessage, { seekSec = 0 } = {}) {
       let items = Array.isArray(this.playlistDayVideos) ? this.playlistDayVideos : [];
-      let found = items.find((video) => video && String(video.url || "").trim() === u);
+      let found = items.find((video) => video && matchVideo(video));
       if (!found && this.activeView === "playlist" && this.playbackContentTab === "brief") {
         const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
         const granularity = this.playlistGranularity();
@@ -3360,7 +3550,7 @@ export function createPlaylistViewMethods() {
               `/playlists/${encodeURIComponent(pid)}/videos_by_period?granularity=${encodeURIComponent(granularity)}&date=${encodeURIComponent(date)}&limit=500&time_basis=content`
             );
             items = Array.isArray(periodVideos) ? periodVideos : [];
-            found = items.find((video) => video && String(video.url || "").trim() === u);
+            found = items.find((video) => video && matchVideo(video));
           } catch (error) {
             this.globalStatus = `无法读取引用记录：${error?.message || String(error)}`;
             return;
@@ -3368,30 +3558,48 @@ export function createPlaylistViewMethods() {
         }
       }
       if (!found) {
-        this.globalStatus = "该链接不在本周期视频列表中";
+        this.globalStatus = notFoundMessage;
         return;
       }
       if (this.activeView !== "playlist") {
-        this.playlistSelectVideo(found, { autoPlay: true });
+        await this.playbackSelectVideo(found, { autoPlay: true, seekSec });
         return;
       }
 
-	      const granularity = this.playlistGranularity();
-	      const targetDate = this._periodStartIso(
-	        String(this.playlistVideoTimelineAt(found) || "").slice(0, 10) || String(this.playlistSelectedDate || ""),
-	        granularity
-	      );
-	      this.briefV2SelectedId = "";
-	      this.playbackMobileTab = "transcript";
-	      this.playlistStopBriefSpeech({ clearError: true });
-	      if (targetDate && targetDate !== this.playlistSelectedDate) {
-	        await this.playbackSetDate(targetDate);
-	      } else if (!(this.playlistDayVideos || []).some((video) => video && String(video.id) === String(found.id))) {
-	        await this.playlistLoadDay(targetDate, { autoPlay: false, preferredVideoId: String(found.id || "") });
-	      }
+      const granularity = this.playlistGranularity();
+      const targetDate = this._periodStartIso(
+        String(this.playlistVideoTimelineAt(found) || "").slice(0, 10) || String(this.playlistSelectedDate || ""),
+        granularity
+      );
+      this.playbackMobileTab = "transcript";
+      this.playlistStopBriefSpeech({ clearError: true });
+      if (targetDate && targetDate !== this.playlistSelectedDate) {
+        await this.playbackSetDate(targetDate);
+      } else if (!(this.playlistDayVideos || []).some((video) => video && String(video.id) === String(found.id))) {
+        await this.playlistLoadDay(targetDate, { autoPlay: false, preferredVideoId: String(found.id || "") });
+      }
       const selected = (this.playlistDayVideos || []).find((video) => video && String(video.id) === String(found.id));
-      if (selected) await this.playbackSelectVideo(selected, { autoPlay: true });
+      if (selected) await this.playbackSelectVideo(selected, { autoPlay: true, seekSec });
       this._syncUrl({ push: false });
+    },
+
+    async playlistSelectVideoByUrl(url) {
+      const target = String(url || "").trim();
+      if (!target) return;
+      await this._playlistSelectBriefVideo(
+        (video) => String(video.url || "").trim() === target,
+        "该链接不在本周期视频列表中"
+      );
+    },
+
+    async playlistSelectVideoById(videoId, { seekSec = 0 } = {}) {
+      const target = String(videoId || "").trim();
+      if (!target) return;
+      await this._playlistSelectBriefVideo(
+        (video) => String(video.id || "") === target,
+        "该引用对应的来源不在本周期可播放列表中",
+        { seekSec }
+      );
     },
 
     async playlistLoadBrief(day, { loadToken = null } = {}) {
@@ -3410,6 +3618,7 @@ export function createPlaylistViewMethods() {
           this.playlistBriefError = "";
           this._playlistSetBriefSourceState("ready", "");
           this.playlistBriefHtml = cached;
+          this.briefV2Detail = this._cacheGet(this.playlistBriefDetailCache, k) || null;
           const cachedMd = this._cacheGet(this.playlistBriefMarkdownCache, k);
           this.playlistBriefMarkdown = cachedMd ? String(cachedMd) : "";
           this.playlistBriefSpeechText = cachedMd ? this._briefToSpeechText(cachedMd) : "";
@@ -3421,6 +3630,7 @@ export function createPlaylistViewMethods() {
       this.playlistBriefHtml = "";
       this.playlistBriefMarkdown = "";
       this.playlistBriefSpeechText = "";
+      this.briefV2Detail = null;
       this._playlistSetBriefSourceState("", "");
       try {
         this._abortCtrl("_playlistBriefAbortCtrl");
@@ -3477,9 +3687,14 @@ export function createPlaylistViewMethods() {
           }
           return;
         }
+        const structuredDetail = Number(brief.reference_count || 0) > 0
+          ? await this.api(`/briefs/${encodeURIComponent(brief.id)}/structured`, { signal: ctrl.signal })
+          : { ...brief, references: [] };
+        if (Number(this.playlistLoadToken || 0) !== token) return;
+        this.briefV2Detail = structuredDetail;
         const mdCtrl = new AbortController();
         this._playlistBriefMdAbortCtrl = mdCtrl;
-        const markdownUrl = this.assetContentUrl(brief.markdown_asset);
+        const markdownUrl = structuredDetail?.markdown_url || this.assetContentUrl(brief.markdown_asset);
         const resp = await this.fetchWithApiAuth(markdownUrl, { signal: mdCtrl.signal });
         if (resp.status === 401) this.handleApiUnauthorized({});
         if (!resp.ok) throw new Error(`${resp.status}: brief markdown fetch failed`);
@@ -3491,6 +3706,7 @@ export function createPlaylistViewMethods() {
         this.playlistBriefHtml = this._briefToHtml(md);
         this._cacheSet(this.playlistBriefHtmlCache, k, this.playlistBriefHtml, PLAYLIST_BRIEF_CACHE_TTL_MS);
         this._cacheSet(this.playlistBriefMarkdownCache, k, md, PLAYLIST_BRIEF_CACHE_TTL_MS);
+        this._cacheSet(this.playlistBriefDetailCache, k, structuredDetail, PLAYLIST_BRIEF_CACHE_TTL_MS);
         if (manualGenerating) this.playlistBriefGeneratingKey = "";
         try {
           const k = this._playlistBriefKey(pid, g, d);
@@ -3577,49 +3793,19 @@ export function createPlaylistViewMethods() {
         const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
         const f = ev && ev.target && ev.target.files && ev.target.files[0] ? ev.target.files[0] : null;
         if (!pid || !f) return;
-        if (f.size > 2 * 1024 * 1024) throw new Error("头像超过 2MB");
+        if (f.size > 2 * 1024 * 1024) throw new Error("头图超过 2MB");
         const updated = await this._uploadPlaylistImage(pid, "avatar", f);
         if (this.playlistDetail) this.playlistDetail.avatar_asset = updated.avatar_asset || this.playlistDetail.avatar_asset;
+        const domain = this.currentDomain?.();
+        if (domain) domain.avatar_asset = updated.avatar_asset || domain.avatar_asset;
         await this.loadPlaylists();
-        this.globalStatus = "已更新头像";
+        this.globalStatus = "已更新头图";
       } catch (e) {
         this.globalStatus = `error: ${e.message}`;
       } finally {
         try {
           if (ev && ev.target) ev.target.value = "";
         } catch {}
-      }
-    },
-
-    async playlistUploadBackground(ev) {
-      try {
-        const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
-        const f = ev && ev.target && ev.target.files && ev.target.files[0] ? ev.target.files[0] : null;
-        if (!pid || !f) return;
-        if (f.size > 2 * 1024 * 1024) throw new Error("背景超过 2MB");
-        const updated = await this._uploadPlaylistImage(pid, "background", f);
-        if (this.playlistDetail) this.playlistDetail.background_asset = updated.background_asset || this.playlistDetail.background_asset;
-        await this.loadPlaylists();
-        this.globalStatus = "已更新背景";
-      } catch (e) {
-        this.globalStatus = `error: ${e.message}`;
-      } finally {
-        try {
-          if (ev && ev.target) ev.target.value = "";
-        } catch {}
-      }
-    },
-
-    async playlistClearBackground() {
-      const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim();
-      if (!pid || !this.playlistDetail) return;
-      try {
-        const updated = await this.api(`/playlists/${encodeURIComponent(pid)}/background`, { method: "DELETE" });
-        if (this.playlistDetail) this.playlistDetail.background_asset = (updated && updated.background_asset) || null;
-        await this.loadPlaylists();
-        this.globalStatus = "已清除背景";
-      } catch (e) {
-        this.globalStatus = `error: ${e.message}`;
       }
     },
 

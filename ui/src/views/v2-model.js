@@ -398,6 +398,7 @@ export function createV2ViewMethods() {
         this.storyCloseInspector?.({ restoreFocus: false });
         this.storySelectedId = "";
         this.storySelectedSnapshotId = "";
+        this.storyReferenceFocusCanonicalId = "";
         this.storyDetail = null;
         const emptyQueue = () => ({ items: [], total: 0, hasMore: false, loaded: false });
         this.storyQueues = {
@@ -1462,6 +1463,7 @@ export function createV2ViewMethods() {
       const id = String(storyId || "").trim();
       if (!id) return;
       this.storySelectedSnapshotId = "";
+      this.storyReferenceFocusCanonicalId = "";
       this.storyCloseInspector({ restoreFocus: false });
       this.storySetSnapshotUrl("");
       await this.loadStoryDetail(id, { snapshotId: "" });
@@ -1471,6 +1473,7 @@ export function createV2ViewMethods() {
     storyBackToQueue() {
       this.storySelectedId = "";
       this.storySelectedSnapshotId = "";
+      this.storyReferenceFocusCanonicalId = "";
       this.storyDetail = null;
       this.storyCloseInspector({ restoreFocus: false });
       this.storySetSnapshotUrl("");
@@ -1744,6 +1747,8 @@ export function createV2ViewMethods() {
     storySuggestedStartIndex() {
       const update = this.storyDetail?.reading_update || {};
       const nodes = this.storySortedNodes();
+      const referenceFocusIndex = this.storyReferenceFocusIndex(nodes);
+      if (referenceFocusIndex >= 0) return referenceFocusIndex;
       const supplied = Number(update.first_new_position ?? update.first_added_position);
       if (this.storyHasReadingUpdate() && Number.isInteger(supplied) && supplied >= 0) return Math.min(supplied, Math.max(0, nodes.length - 1));
       const added = update.events_added || update.members_added || [];
@@ -1755,6 +1760,17 @@ export function createV2ViewMethods() {
       const lastPosition = Number(this.storyDetail?.last_position);
       if (!update.baseline && Number.isInteger(lastPosition) && lastPosition >= 0) return Math.min(lastPosition, Math.max(0, nodes.length - 1));
       return 0;
+    },
+
+    storyReferenceFocusIndex(nodes = this.storySortedNodes()) {
+      const canonicalId = String(this.storyReferenceFocusCanonicalId || "").trim();
+      if (!canonicalId) return -1;
+      return nodes.findIndex((node) => String(node?.canonical_id || node?.id || "") === canonicalId);
+    },
+
+    storyIsReferenceFocus(node) {
+      const canonicalId = String(this.storyReferenceFocusCanonicalId || "").trim();
+      return Boolean(canonicalId && String(node?.canonical_id || node?.id || "") === canonicalId);
     },
 
     storyScheduleInitialPosition() {
@@ -2127,24 +2143,202 @@ export function createV2ViewMethods() {
       }
     },
 
-    briefOpenReference(reference) {
-      if (!reference) return;
-      const objectId = String(reference.object_id || "");
-      if (reference.object_type === "story") {
-        this.storySelectedId = objectId;
-        this.fieldMode = "story";
-      } else if (reference.object_type === "evidence") {
+    briefNavigateReferenceToField(reference, snapshotId = "") {
+      const objectId = String(reference?.object_id || "").trim();
+      const objectType = String(reference?.object_type || "").trim();
+      if (!objectId || !["canonical", "evidence"].includes(objectType)) return false;
+      this.fieldRequestedSnapshotId = String(snapshotId || "");
+      if (objectType === "evidence") {
         this.openEvidenceInField(reference.evidence_revision_id || objectId);
-        return;
-      } else if (["source", "source_record"].includes(reference.object_type)) {
-        this.fieldOpenSourceRecord(objectId);
-        return;
-      } else if (reference.object_type === "canonical") {
-        this.playlistEventMapSelectedKind = reference.object_type;
-        this.playlistEventMapSelectedId = objectId;
-        this.fieldRequestedCanonicalId = objectId;
+        return true;
       }
+      this.playlistEventMapSelectedKind = objectType;
+      this.playlistEventMapSelectedId = objectId;
+      this.fieldRequestedCanonicalId = objectId;
       this.switchView("field");
+      return true;
+    },
+
+    async briefResolveStoryFocusCanonicalId(reference, domainId, isCurrentRequest) {
+      const direct = String(
+        reference?.context?.focus_canonical_id || reference?.context?.target_canonical_id || ""
+      ).trim();
+      if (direct) return direct;
+      const storyId = String(reference?.object_id || "").trim();
+      const snapshotId = String(reference?.snapshot_id || "").trim();
+      const edgeId = String(reference?.context?.edge_id || "").trim();
+      if (!storyId || !snapshotId || !edgeId) return "";
+      try {
+        const detail = await this.api(
+          `/domains/${encodeURIComponent(domainId)}/stories/${encodeURIComponent(storyId)}?snapshot_id=${encodeURIComponent(snapshotId)}`
+        );
+        if (!isCurrentRequest()) return "";
+        const edge = (detail?.trajectory?.edges || []).find(
+          (item) => String(item?.edge_id || "") === edgeId
+        );
+        return String(edge?.target_canonical_id || "").trim();
+      } catch {
+        return "";
+      }
+    },
+
+    async briefOpenStoryReference(reference, domainId, isCurrentRequest) {
+      const storyId = String(reference?.object_id || "").trim();
+      const previousStoryState = {
+        selectedId: this.storySelectedId,
+        selectedSnapshotId: this.storySelectedSnapshotId,
+        referenceFocusCanonicalId: this.storyReferenceFocusCanonicalId,
+        detail: this.storyDetail,
+        focusIndex: this.storyFocusIndex,
+      };
+      const focusCanonicalId = await this.briefResolveStoryFocusCanonicalId(
+        reference,
+        domainId,
+        isCurrentRequest
+      );
+      if (!isCurrentRequest()) return;
+      this.storyReferenceFocusCanonicalId = focusCanonicalId;
+      this.storySelectedSnapshotId = "";
+      try {
+        await this.loadStoryDetail(storyId, { snapshotId: "" });
+      } catch (error) {
+        if (isCurrentRequest()) {
+          this.storySelectedId = previousStoryState.selectedId;
+          this.storySelectedSnapshotId = previousStoryState.selectedSnapshotId;
+          this.storyReferenceFocusCanonicalId = previousStoryState.referenceFocusCanonicalId;
+          this.storyDetail = previousStoryState.detail;
+          this.storyFocusIndex = previousStoryState.focusIndex;
+          this.toastError?.(`无法打开故事：${error?.message || String(error)}`);
+        }
+        return;
+      }
+      if (!isCurrentRequest()) return;
+      this.fieldRequestedSnapshotId = "";
+      this.storySelectedId = storyId;
+      this.storySelectedSnapshotId = "";
+      const focusIndex = this.storyReferenceFocusIndex();
+      if (focusIndex >= 0) this.storyFocusIndex = focusIndex;
+      this.switchView("stories");
+      this.storyScheduleInitialPosition();
+      if (focusCanonicalId && focusIndex < 0) {
+        this.toastPush?.({
+          level: "info",
+          title: "引用阶段已变化",
+          message: "该阶段已不在故事的当前航迹中；已打开故事最新进展，可在“故事变化”中查看当时版本。",
+        });
+      }
+    },
+
+    async briefTryOpenCanonicalInCurrentField(reference, domainId, isCurrentRequest) {
+      const objectId = String(reference?.object_id || "").trim();
+      if (!objectId) return false;
+      const manifest = await this.api(
+        `/playlists/${encodeURIComponent(domainId)}/events/map/manifest?compact=true`
+      );
+      const currentSnapshotId = String(manifest?.snapshot_id || "").trim();
+      if (manifest?.status !== "ready" || !currentSnapshotId || !isCurrentRequest()) return false;
+      const history = await this.api(
+        `/domains/${encodeURIComponent(domainId)}/canonicals/${encodeURIComponent(objectId)}/history`
+      );
+      const existsInCurrent = (history?.revisions || []).some(
+        (revision) => String(revision?.snapshot_id || "") === currentSnapshotId
+      );
+      if (!existsInCurrent || !isCurrentRequest()) return false;
+      this.toastPush?.({
+        level: "info",
+        title: "历史星域已归档",
+        message: "该期三维快照已不可用，已在当前星域定位同一真实事件。",
+      });
+      return this.briefNavigateReferenceToField(reference, "");
+    },
+
+    async briefOpenReference(reference) {
+      if (!reference) return;
+      const objectId = String(reference.object_id || "").trim();
+      const objectType = String(reference.object_type || "").trim();
+      const snapshotId = String(reference.snapshot_id || "").trim();
+      const domainId = String(this.selectedPlaylistId || this.playlistPageId || "").trim();
+      if (["source", "source_record"].includes(objectType)) {
+        if (this.activeView === "playlist" && typeof this.playlistSelectVideoById === "function") {
+          await this.playlistSelectVideoById(objectId);
+        } else {
+          this.fieldOpenSourceRecord(objectId);
+        }
+        return;
+      }
+      if (!domainId || !objectId) {
+        this.toastError?.("该星域引用缺少观测域或对象标识，无法打开。");
+        return;
+      }
+
+      const requestToken = Number(this._briefReferenceOpenToken || 0) + 1;
+      this._briefReferenceOpenToken = requestToken;
+      const originView = String(this.activeView || "");
+      const originPeriod = String(this.playlistSelectedDate || "");
+      const originBriefId = String(this.briefV2Detail?.id || this.briefV2SelectedId || "");
+      const isCurrentRequest = () => (
+        Number(this._briefReferenceOpenToken || 0) === requestToken
+        && String(this.selectedPlaylistId || this.playlistPageId || "").trim() === domainId
+        && (!originView || String(this.activeView || "") === originView)
+        && (!originPeriod || String(this.playlistSelectedDate || "") === originPeriod)
+        && (!originBriefId || String(this.briefV2Detail?.id || this.briefV2SelectedId || "") === originBriefId)
+      );
+      if (objectType === "story") {
+        await this.briefOpenStoryReference(reference, domainId, isCurrentRequest);
+        return;
+      }
+      if (!snapshotId) {
+        if (isCurrentRequest()) this.briefNavigateReferenceToField(reference, "");
+        return;
+      }
+
+      try {
+        await this.api(
+          `/playlists/${encodeURIComponent(domainId)}/events/map/manifest?compact=true&snapshot_id=${encodeURIComponent(snapshotId)}`
+        );
+        if (isCurrentRequest()) this.briefNavigateReferenceToField(reference, snapshotId);
+        return;
+      } catch (error) {
+        if (!isCurrentRequest()) return;
+        const message = error?.message || String(error);
+        if (!message.startsWith("409:")) {
+          this.toastError?.(`无法打开星域引用：${message}`);
+          return;
+        }
+      }
+
+      if (objectType === "canonical") {
+        try {
+          if (await this.briefTryOpenCanonicalInCurrentField(reference, domainId, isCurrentRequest)) return;
+        } catch (error) {
+          if (!isCurrentRequest()) return;
+          this.toastError?.(`无法确认当前星域中的同一真实事件：${error?.message || String(error)}`);
+          return;
+        }
+      }
+
+      if (objectType === "evidence" && reference.context?.source_video_id) {
+        if (typeof this.playlistPlayBriefEvidence === "function") {
+          await this.playlistPlayBriefEvidence(
+            reference.evidence_revision_id || objectId,
+            String(reference.context.source_video_id)
+          );
+        } else {
+          await this.playlistSelectVideoById?.(String(reference.context.source_video_id));
+        }
+        if (!isCurrentRequest()) return;
+        this.toastPush?.({
+          level: "info",
+          title: "历史星域已归档",
+          message: "该期三维快照已不可用，已改为打开对应的来源视频。",
+        });
+        return;
+      }
+
+      this.toastError?.(
+        "该引用对应的历史三维星域已不可用，且当前星域没有同一对象；仍可查看来源证据，或重建当前星域。",
+        { action: this.toastJobsAction?.() || null }
+      );
     },
 
     openBriefAtReference(reference) {

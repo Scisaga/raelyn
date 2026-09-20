@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import dataclass
@@ -207,6 +208,7 @@ def compose_guarded_brief_prompt(
     period_start: date,
     period_end: date,
     blocks: list[str],
+    structured: bool = False,
 ) -> str:
     prompt = compose_brief_prompt(
         tpl,
@@ -215,7 +217,78 @@ def compose_guarded_brief_prompt(
         period_end=period_end,
         blocks=blocks,
     )
-    return f"{prompt.rstrip()}\n{BRIEF_FINAL_OUTPUT_GUARD}"
+    prompt = f"{prompt.rstrip()}\n{BRIEF_FINAL_OUTPUT_GUARD}"
+    if structured:
+        headings = required_brief_headings(tpl)
+        if not headings:
+            return prompt + (
+                "\n\n### 响应封装协议\n只输出符合给定 schema 的 JSON 对象，"
+                "markdown 字段保存满足上述要求的完整 Markdown 正文，不要输出代码围栏。"
+            )
+        prompt += (
+            "\n\n### 响应封装协议\n"
+            "只输出符合给定 schema 的 JSON 对象，不要输出 Markdown 代码围栏。"
+            "每个键必须是以下章节名称，值为该章节的要点数组。"
+            "每条要点的 text 字段只写正文，不要写章节标题、列表前缀或任何 URL；"
+            "source_urls 字段只能选择支持该要点的完整原始来源 URL，由应用附在要点末尾。"
+            "所有章节都必须有实际内容；材料不足时明确写“文本未提及”。"
+            "保持原来的事实、来源链接和禁止编造约束。每章只保留最重要的 3–5 条，避免重复扩写。\n"
+            + json.dumps(headings, ensure_ascii=False)
+        )
+    return prompt
+
+
+def brief_response_schema(template: str, *, source_urls: list[str]) -> dict:
+    headings = required_brief_headings(template)
+    keys = headings or ["markdown"]
+    section = {
+        "type": "array", "minItems": 1, "maxItems": 5,
+        "items": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "minLength": 1},
+                "source_urls": {
+                    "type": "array", "minItems": 1, "maxItems": 3,
+                    "items": {"type": "string", "enum": source_urls},
+                },
+            },
+            "required": ["text", "source_urls"], "additionalProperties": False,
+        },
+    }
+    return {
+        "type": "object",
+        "properties": {key: section if headings else {"type": "string", "minLength": 1} for key in keys},
+        "required": keys,
+        "additionalProperties": False,
+    }
+
+
+def parse_structured_brief_response(value: str, *, template: str, source_urls: list[str]) -> str:
+    payload = json.loads(value)
+    headings = required_brief_headings(template)
+    if not isinstance(payload, dict):
+        raise ValueError("简报结构化响应必须是对象")
+    if not headings:
+        if not isinstance(payload.get("markdown"), str) or not payload["markdown"].strip():
+            raise ValueError("简报结构化响应缺少非空正文")
+        return payload["markdown"].strip()
+    sections = []
+    for heading in headings:
+        points = payload.get(heading)
+        if not isinstance(points, list) or not 1 <= len(points) <= 5:
+            raise ValueError(f"简报章节 {heading} 必须包含 1–5 条要点")
+        lines = []
+        for point in points:
+            if not isinstance(point, dict) or not isinstance(point.get("text"), str) or not point["text"].strip():
+                raise ValueError(f"简报章节 {heading} 缺少要点正文")
+            urls = point.get("source_urls")
+            if not isinstance(urls, list) or not 1 <= len(urls) <= 3 or any(url not in source_urls for url in urls):
+                raise ValueError(f"简报章节 {heading} 包含无效来源链接")
+            if extract_brief_urls(point["text"]):
+                raise ValueError("简报来源 URL 必须放在 source_urls 字段")
+            lines.append(f"* {point['text'].strip()}（来源：{'，'.join(urls)}）")
+        sections.append(f"## {heading}\n\n" + "\n".join(lines))
+    return "\n\n".join(sections)
 
 
 def estimate_brief_tokens(value: str) -> int:
@@ -239,8 +312,15 @@ def compose_brief_reduction_prompt(
     blocks: list[str],
     *,
     retry_errors: list[str] | None = None,
+    structured: bool = False,
 ) -> str:
     prompt = BRIEF_REDUCTION_PROMPT_TEMPLATE.replace("{{blocks}}", "\n\n\n".join(blocks))
+    if structured:
+        prompt += (
+            "\n\n### 响应封装协议\n只输出符合给定 schema 的 JSON 对象。"
+            "points 包含最多 8 条最重要的事实，每条 fact 不超过 120 字，"
+            "source_urls 必须逐字复制支持该事实的原始来源 URL。不要重复同一事实，不得编造。"
+        )
     errors = [str(value).strip() for value in (retry_errors or []) if str(value).strip()]
     if not errors:
         return prompt
@@ -255,6 +335,47 @@ def compose_brief_reduction_prompt(
             ),
         ]
     )
+
+
+def brief_reduction_response_schema(source_urls: list[str]) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "points": {
+                "type": "array", "minItems": 1, "maxItems": 8,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "fact": {"type": "string", "minLength": 1, "maxLength": 120},
+                        "source_urls": {
+                            "type": "array", "minItems": 1, "maxItems": 3,
+                            "items": {"type": "string", "enum": source_urls},
+                        },
+                    },
+                    "required": ["fact", "source_urls"], "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["points"], "additionalProperties": False,
+    }
+
+
+def parse_structured_brief_reduction(value: str, *, source_urls: list[str]) -> str:
+    payload = json.loads(value)
+    points = payload.get("points") if isinstance(payload, dict) else None
+    if not isinstance(points, list) or not 1 <= len(points) <= 8:
+        raise ValueError("分段摘要结构化响应缺少 1–8 条事实")
+    lines = []
+    for point in points:
+        if not isinstance(point, dict) or not isinstance(point.get("fact"), str):
+            raise ValueError("分段摘要结构化响应缺少事实正文")
+        if not 1 <= len(point["fact"].strip()) <= 120:
+            raise ValueError("分段摘要事实正文必须为 1–120 字")
+        urls = point.get("source_urls")
+        if not isinstance(urls, list) or not 1 <= len(urls) <= 3 or any(url not in source_urls for url in urls):
+            raise ValueError("分段摘要结构化响应包含无效来源链接")
+        lines.append(f"* {point['fact'].strip()}（来源：{'，'.join(urls)}）")
+    return "\n".join(lines)
 
 
 def _take_text_within_token_budget(value: str, max_tokens: int) -> tuple[str, str]:
@@ -307,8 +428,10 @@ def _split_brief_block(block: str, max_tokens: int) -> list[str]:
     return [f"{header}\n原文片段 {index}/{total}\n\n{part}" for index, part in enumerate(raw_parts, start=1)]
 
 
-def build_brief_reduction_batches(blocks: list[str], *, max_input_tokens: int) -> list[list[str]]:
-    empty_prompt_tokens = estimate_brief_tokens(compose_brief_reduction_prompt([]))
+def build_brief_reduction_batches(
+    blocks: list[str], *, max_input_tokens: int, structured: bool = False,
+) -> list[list[str]]:
+    empty_prompt_tokens = estimate_brief_tokens(compose_brief_reduction_prompt([], structured=structured))
     source_budget = int(max_input_tokens) - empty_prompt_tokens - 128
     if source_budget < 512:
         raise ValueError("brief LLM input budget leaves no room for source material")
@@ -321,12 +444,12 @@ def build_brief_reduction_batches(blocks: list[str], *, max_input_tokens: int) -
     current: list[str] = []
     for part in source_parts:
         candidate = [*current, part]
-        if current and estimate_brief_tokens(compose_brief_reduction_prompt(candidate)) > max_input_tokens:
+        if current and estimate_brief_tokens(compose_brief_reduction_prompt(candidate, structured=structured)) > max_input_tokens:
             batches.append(current)
             current = [part]
         else:
             current = candidate
-        if estimate_brief_tokens(compose_brief_reduction_prompt(current)) > max_input_tokens:
+        if estimate_brief_tokens(compose_brief_reduction_prompt(current, structured=structured)) > max_input_tokens:
             raise ValueError("one brief source part exceeds the LLM input budget")
     if current:
         batches.append(current)
@@ -370,6 +493,8 @@ def validate_generated_brief(markdown: str, *, template: str, source_urls: list[
         errors.append("正文没有 Markdown 二级标题")
     if source_urls and not any(url in value for url in source_urls):
         errors.append("正文没有引用任何真实输入来源")
+    if source_urls and any(url not in source_urls for url in extract_brief_urls(value)):
+        errors.append("正文引用了不属于真实输入的来源")
     if any(phrase in value for phrase in _GENERIC_ASSISTANT_PHRASES):
         errors.append("正文退化为通用助手回答")
     return errors

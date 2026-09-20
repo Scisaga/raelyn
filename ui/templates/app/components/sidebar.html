@@ -63,7 +63,7 @@
               x-ref="domainSwitcherTrigger"
               type="button"
               class="group flex items-center rounded-md border border-transparent text-left transition hover:border-cyan-400/15 hover:bg-cyan-400/[0.045] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/30"
-              :class="sidebarCollapsed ? 'h-10 w-10 justify-center self-center' : 'h-8 w-full gap-2 px-1.5'"
+              :class="sidebarCollapsed ? 'h-10 w-10 justify-center self-center' : 'h-9 w-full gap-2 px-1.5'"
               :title="domainSwitcherTriggerLabel()"
               :aria-expanded="domainSwitcherOpen"
               aria-controls="raelyn-domain-switcher-page"
@@ -71,7 +71,7 @@
               @click="openDomainSwitcherMenu()"
               @keydown.arrow-down.prevent.stop="openDomainSwitcherMenu()"
             >
-              <span class="inline-flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-700/80 bg-slate-900 text-[9px] font-semibold text-slate-200">
+              <span class="inline-flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-700/80 bg-slate-900 text-[9px] font-semibold text-slate-200">
                 <template x-if="currentDomain()?.avatar_asset">
                   <img class="h-full w-full object-cover" :src="assetContentUrl(currentDomain().avatar_asset)" alt="" loading="lazy" @error="clearAssetRef(currentDomain(), 'avatar_asset')" />
                 </template>

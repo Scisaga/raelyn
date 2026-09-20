@@ -5,7 +5,7 @@ import sys
 import unittest
 import uuid
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -18,14 +18,19 @@ if str(_BACKEND_DIR) not in sys.path:
 from raelyn.jobs.handlers.media_sync import (
     _compact_raw_info,
     _compact_youtube_metadata_info,
+    _enqueue_youtube_metadata_enrichment_if_needed,
     _insert_discovered_video_if_new,
     _receive_youtube_metadata_child_result,
+    _restore_public_youtube_video,
+    _youtube_member_availability_recheck_seconds,
     _youtube_profile_avatar_url,
     _youtube_metadata_enrichment_terminal_failed,
+    _youtube_metadata_enrichment_needed,
     _ytdlp_extract_info_child,
     media_sync_videos,
     youtube_metadata_enrich,
 )
+from raelyn.jobs.reschedule import JobReschedule
 from raelyn.jobs.worker_activity import touch_current_worker_activity
 from raelyn.models import Job, Media, Video
 from raelyn.services.provider_pause import ProviderPauseRequestError
@@ -280,6 +285,56 @@ class MediaSyncVideoOrderingTests(unittest.TestCase):
         self.assertEqual(result, {"created": 2, "metadata_enrichment_enqueued": 0})
         self.assertEqual([call.kwargs["priority"] for call in enqueue_job.call_args_list], [8, 8])
 
+    def test_full_sync_promotes_video_published_within_24_hours(self) -> None:
+        now = datetime(2026, 9, 16, tzinfo=timezone.utc)
+        media = Media(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_media_id="channel-recent-gap",
+            url="https://www.youtube.com/@channel-recent-gap/videos",
+            monitor_enabled=True,
+        )
+        job = Job(
+            id=uuid.uuid4(),
+            type="media.sync_videos",
+            params={"media_id": str(media.id), "max_entries": 0, "download_priority": 5},
+            priority=1,
+            status="pending",
+        )
+        session = Mock()
+        session.get.side_effect = lambda model, _key: media if getattr(model, "__name__", "") == "Media" else None
+        session.execute.side_effect = [_scalar_one_or_none(None), _scalar_one_or_none(None)]
+        added_videos: list[Video] = []
+        info = {
+            "entries": [
+                {
+                    "id": "recentgap01",
+                    "webpage_url": "https://www.youtube.com/watch?v=recentgap01",
+                    "timestamp": int((now - timedelta(hours=12)).timestamp()),
+                },
+                {
+                    "id": "historical1",
+                    "webpage_url": "https://www.youtube.com/watch?v=historical1",
+                    "timestamp": int((now - timedelta(days=2)).timestamp()),
+                },
+            ]
+        }
+
+        with patch("raelyn.jobs.handlers.media_sync.try_xact_lock", return_value=True), patch(
+            "raelyn.jobs.handlers.media_sync._insert_discovered_video_if_new",
+            side_effect=_fake_insert_collector(added_videos),
+        ), patch("raelyn.jobs.handlers.media_sync.advisory_lock_any", return_value=nullcontext("youtube:sync")), patch(
+            "raelyn.jobs.handlers.media_sync.ytdlp_extract_info", return_value=info
+        ), patch("raelyn.jobs.handlers.media_sync.settings.auto_download_new_videos", True), patch(
+            "raelyn.jobs.handlers.media_sync.schedule_playlists_event_map_dirty_for_video"
+        ), patch("raelyn.jobs.handlers.media_sync.utcnow", return_value=now), patch(
+            "raelyn.jobs.handlers.media_sync.enqueue_job"
+        ) as enqueue_job:
+            result = media_sync_videos(session, job)
+
+        self.assertEqual(result, {"created": 2, "metadata_enrichment_enqueued": 0})
+        self.assertEqual([call.kwargs["priority"] for call in enqueue_job.call_args_list], [8, 5])
+
     def test_media_sync_enqueues_metadata_enrichment_when_flat_entry_has_no_time(self) -> None:
         media = Media(
             id=uuid.uuid4(),
@@ -336,6 +391,56 @@ class MediaSyncVideoOrderingTests(unittest.TestCase):
             type_="video.enrich_metadata.youtube",
             params={"video_id": str(video.id)},
             priority=0,
+        )
+
+    def test_media_sync_immediately_monitors_new_members_only_video_with_published_time(self) -> None:
+        media = Media(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_media_id="@sunriches",
+            url="https://www.youtube.com/@sunriches/videos",
+            monitor_enabled=True,
+        )
+        job = Job(
+            id=uuid.uuid4(),
+            type="media.sync_videos",
+            params={"media_id": str(media.id), "max_entries": 1},
+            priority=1,
+            status="pending",
+        )
+        session = Mock()
+        session.get.side_effect = lambda model, _key: media if getattr(model, "__name__", "") == "Media" else None
+        session.execute.return_value = _scalar_one_or_none(None)
+        added_videos: list[Video] = []
+        flat_info = {
+            "entries": [
+                {
+                    "id": "93LpJL7uDz0",
+                    "url": "https://www.youtube.com/watch?v=93LpJL7uDz0",
+                    "title": "中国的老实人，快用完了",
+                    "timestamp": 1788883200,
+                    "availability": "subscriber_only",
+                }
+            ]
+        }
+
+        with patch("raelyn.jobs.handlers.media_sync.try_xact_lock", return_value=True), patch(
+            "raelyn.jobs.handlers.media_sync._insert_discovered_video_if_new",
+            side_effect=_fake_insert_collector(added_videos),
+        ), patch("raelyn.jobs.handlers.media_sync.advisory_lock_any", return_value=nullcontext("youtube:sync")), patch(
+            "raelyn.jobs.handlers.media_sync.ytdlp_extract_info", return_value=flat_info
+        ), patch("raelyn.jobs.handlers.media_sync.settings.auto_download_new_videos", True), patch(
+            "raelyn.jobs.handlers.media_sync.schedule_playlists_event_map_dirty_for_video"
+        ), patch("raelyn.jobs.handlers.media_sync.enqueue_job") as enqueue_job:
+            result = media_sync_videos(session, job)
+
+        self.assertEqual(result, {"created": 1, "metadata_enrichment_enqueued": 1})
+        self.assertEqual(added_videos[0].status, "members_only")
+        enqueue_job.assert_called_once_with(
+            session,
+            type_="video.enrich_metadata.youtube",
+            params={"video_id": str(added_videos[0].id)},
+            priority=8,
         )
 
     def test_media_sync_enqueues_metadata_enrichment_for_existing_video_without_time(self) -> None:
@@ -466,14 +571,18 @@ class MediaSyncVideoOrderingTests(unittest.TestCase):
         )
         session = Mock()
         session.get.side_effect = lambda model, _key: media if getattr(model, "__name__", "") == "Media" else None
-        existing_video_ids = [uuid.uuid4(), uuid.uuid4()]
+        now = datetime.now(timezone.utc)
+        existing_video_rows = [
+            (uuid.uuid4(), now - timedelta(hours=12)),
+            (uuid.uuid4(), now - timedelta(days=2)),
+        ]
 
         def _execute(stmt):
             compiled = str(stmt.compile(dialect=postgresql.dialect())).lower()
             self.assertIn("asset.type =", compiled)
             self.assertIn("job.type in", compiled)
             self.assertIn("video.status in", compiled)
-            return Mock(scalars=Mock(return_value=Mock(all=Mock(return_value=existing_video_ids))))
+            return Mock(all=Mock(return_value=existing_video_rows))
 
         session.execute.side_effect = _execute
 
@@ -487,9 +596,9 @@ class MediaSyncVideoOrderingTests(unittest.TestCase):
         self.assertEqual(result, {"created": 0, "metadata_enrichment_enqueued": 0})
         self.assertEqual(
             [call.args[1] for call in schedule_video_download.call_args_list],
-            existing_video_ids,
+            [video_id for video_id, _published_at in existing_video_rows],
         )
-        self.assertTrue(all(call.kwargs["priority"] == 5 for call in schedule_video_download.call_args_list))
+        self.assertEqual([call.kwargs["priority"] for call in schedule_video_download.call_args_list], [8, 5])
 
     def test_media_sync_public_discovery_fetches_without_cookies_and_still_enqueues_download(self) -> None:
         media = Media(
@@ -650,6 +759,7 @@ class YoutubeMetadataEnrichTests(unittest.TestCase):
             "description": "desc",
             "timestamp": 1780401635,
             "duration": 735,
+            "availability": "public",
             "webpage_url": "https://www.youtube.com/watch?v=vH7rDhyn1W8",
             "thumbnail": "https://img.example/thumb.jpg",
             "formats": [{"format_id": str(i), "url": "https://media.example/item"} for i in range(300)],
@@ -674,6 +784,7 @@ class YoutubeMetadataEnrichTests(unittest.TestCase):
         self.assertEqual(payload, _compact_youtube_metadata_info(full_info))
         self.assertEqual(payload["thumbnail"], "https://img.example/thumb.jpg")
         self.assertEqual(payload["timestamp"], 1780401635)
+        self.assertEqual(payload["availability"], "public")
         self.assertNotIn("formats", payload)
         self.assertNotIn("automatic_captions", payload)
         self.assertNotIn("thumbnails", payload)
@@ -730,12 +841,21 @@ class YoutubeMetadataEnrichTests(unittest.TestCase):
         ), patch("raelyn.jobs.handlers.media_sync.schedule_playlists_event_map_dirty_for_video") as dirty:
             result = youtube_metadata_enrich(session, job)
 
-        self.assertEqual(result, {"ok": True, "published_at_updated": True})
+        self.assertEqual(
+            result,
+            {
+                "ok": True,
+                "published_at_updated": True,
+                "availability_updated": False,
+                "download_enqueued": False,
+            },
+        )
         self.assertEqual(video.title, "existing title")
         self.assertEqual(video.thumbnail_url, "https://img.example/thumb.jpg")
         self.assertEqual(video.duration_sec, 735)
         self.assertIsNotNone(video.published_at)
         self.assertEqual(video.raw_info["timestamp"], 1780401635)
+        self.assertTrue(video.raw_info["_availability_checked_at"])
         dirty.assert_called_once_with(
             session,
             video_id=video.id,
@@ -744,6 +864,222 @@ class YoutubeMetadataEnrichTests(unittest.TestCase):
             priority=job.priority,
             require_event_map_input=True,
         )
+
+    def test_youtube_metadata_enrich_promotes_recent_pending_download(self) -> None:
+        now = datetime(2026, 9, 16, tzinfo=timezone.utc)
+        video = Video(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_video_id="vH7rDhyn1W8",
+            media_id=uuid.uuid4(),
+            url="https://www.youtube.com/watch?v=vH7rDhyn1W8",
+            status="discovered",
+            published_at=None,
+        )
+        job = Job(
+            id=uuid.uuid4(),
+            type="video.enrich_metadata.youtube",
+            params={"video_id": str(video.id)},
+            priority=0,
+            status="running",
+        )
+        session = Mock()
+        session.get.side_effect = lambda model, _key: video if getattr(model, "__name__", "") == "Video" else None
+        info = {
+            "id": video.provider_video_id,
+            "timestamp": int((now - timedelta(hours=6)).timestamp()),
+        }
+
+        with patch("raelyn.jobs.handlers.media_sync.advisory_lock_any", return_value=nullcontext("youtube:sync")), patch(
+            "raelyn.jobs.handlers.media_sync._extract_youtube_video_metadata_with_timeout", return_value=info
+        ), patch("raelyn.jobs.handlers.media_sync.settings.auto_download_new_videos", True), patch(
+            "raelyn.jobs.handlers.media_sync.schedule_playlists_event_map_dirty_for_video"
+        ), patch("raelyn.jobs.handlers.media_sync.schedule_video_download") as schedule_video_download, patch(
+            "raelyn.jobs.handlers.media_sync.utcnow", return_value=now
+        ):
+            result = youtube_metadata_enrich(session, job)
+
+        self.assertTrue(result["published_at_updated"])
+        self.assertTrue(result["download_enqueued"])
+        schedule_video_download.assert_called_once_with(session, video.id, priority=8)
+
+    def test_youtube_metadata_enrich_does_not_redownload_recent_ready_video(self) -> None:
+        now = datetime(2026, 9, 16, tzinfo=timezone.utc)
+        video = Video(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_video_id="vH7rDhyn1W8",
+            media_id=uuid.uuid4(),
+            url="https://www.youtube.com/watch?v=vH7rDhyn1W8",
+            status="ready",
+            published_at=None,
+        )
+        job = Job(
+            id=uuid.uuid4(),
+            type="video.enrich_metadata.youtube",
+            params={"video_id": str(video.id)},
+            priority=0,
+            status="running",
+        )
+        session = Mock()
+        session.get.side_effect = lambda model, _key: video if getattr(model, "__name__", "") == "Video" else None
+
+        with patch("raelyn.jobs.handlers.media_sync.advisory_lock_any", return_value=nullcontext("youtube:sync")), patch(
+            "raelyn.jobs.handlers.media_sync._extract_youtube_video_metadata_with_timeout",
+            return_value={"id": video.provider_video_id, "timestamp": int((now - timedelta(hours=6)).timestamp())},
+        ), patch("raelyn.jobs.handlers.media_sync.settings.auto_download_new_videos", True), patch(
+            "raelyn.jobs.handlers.media_sync.schedule_playlists_event_map_dirty_for_video"
+        ), patch("raelyn.jobs.handlers.media_sync.schedule_video_download") as schedule_video_download, patch(
+            "raelyn.jobs.handlers.media_sync.utcnow", return_value=now
+        ):
+            result = youtube_metadata_enrich(session, job)
+
+        self.assertTrue(result["published_at_updated"])
+        self.assertFalse(result["download_enqueued"])
+        schedule_video_download.assert_not_called()
+
+    def test_new_members_only_video_needs_an_availability_monitor_even_after_detail_check(self) -> None:
+        video = Video(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_video_id="vH7rDhyn1W8",
+            url="https://www.youtube.com/watch?v=vH7rDhyn1W8",
+            status="members_only",
+            created_at=datetime.now(timezone.utc),
+            published_at=datetime(2026, 6, 21, tzinfo=timezone.utc),
+            raw_info={"availability": "subscriber_only"},
+        )
+        self.assertTrue(_youtube_metadata_enrichment_needed(video))
+        video.raw_info["_availability_checked_at"] = "2026-06-21T01:00:00+00:00"
+        self.assertTrue(_youtube_metadata_enrichment_needed(video))
+
+    def test_old_members_only_video_does_not_bootstrap_a_new_monitor(self) -> None:
+        video = Video(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_video_id="vH7rDhyn1W8",
+            status="members_only",
+            created_at=datetime.now(timezone.utc) - timedelta(days=8),
+            published_at=None,
+        )
+
+        self.assertFalse(_youtube_metadata_enrichment_needed(video))
+
+    def test_members_only_video_does_not_duplicate_active_availability_monitor(self) -> None:
+        video = Video(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_video_id="vH7rDhyn1W8",
+            status="members_only",
+            published_at=datetime(2026, 6, 21, tzinfo=timezone.utc),
+        )
+        session = Mock()
+        session.execute.return_value = _scalar_one_or_none(uuid.uuid4())
+
+        with patch("raelyn.jobs.handlers.media_sync.enqueue_job") as enqueue_job:
+            self.assertFalse(_enqueue_youtube_metadata_enrichment_if_needed(session, video=video))
+
+        enqueue_job.assert_not_called()
+
+    def test_public_detail_restores_stale_members_only_status(self) -> None:
+        video = Video(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_video_id="vH7rDhyn1W8",
+            url="https://www.youtube.com/watch?v=vH7rDhyn1W8",
+            status="members_only",
+            error_message="members-only video; not enqueued",
+            published_at=datetime(2026, 6, 21, tzinfo=timezone.utc),
+            raw_info={"availability": "subscriber_only"},
+        )
+
+        self.assertTrue(_restore_public_youtube_video(video, {"availability": "public"}))
+        self.assertEqual(video.status, "discovered")
+        self.assertIsNone(video.error_message)
+
+    def test_members_only_detail_reschedules_same_monitor_until_availability_changes(self) -> None:
+        video = Video(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_video_id="93LpJL7uDz0",
+            url="https://www.youtube.com/watch?v=93LpJL7uDz0",
+            status="members_only",
+            published_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+            created_at=datetime.now(timezone.utc),
+            raw_info={"availability": "subscriber_only"},
+        )
+        job = Job(
+            id=uuid.uuid4(),
+            type="video.enrich_metadata.youtube",
+            params={"video_id": str(video.id)},
+            priority=8,
+            status="running",
+        )
+        session = Mock()
+        session.get.side_effect = lambda model, _key: video if getattr(model, "__name__", "") == "Video" else None
+
+        with patch("raelyn.jobs.handlers.media_sync.advisory_lock_any", return_value=nullcontext("youtube:sync")), patch(
+            "raelyn.jobs.handlers.media_sync._extract_youtube_video_metadata_with_timeout",
+            return_value={"id": "93LpJL7uDz0", "availability": "subscriber_only"},
+        ), patch("raelyn.jobs.handlers.media_sync.job_log"):
+            with self.assertRaises(JobReschedule) as raised:
+                youtube_metadata_enrich(session, job)
+
+        self.assertEqual(raised.exception.delay_seconds, 10 * 60)
+        self.assertEqual(raised.exception.reason, "youtube_members_only_availability_recheck")
+        self.assertEqual(video.status, "members_only")
+        self.assertEqual(video.raw_info["availability"], "subscriber_only")
+        self.assertTrue(video.raw_info["_availability_checked_at"])
+
+    def test_public_detail_restores_and_immediately_enqueues_download(self) -> None:
+        video = Video(
+            id=uuid.uuid4(),
+            provider="youtube",
+            provider_video_id="93LpJL7uDz0",
+            url="https://www.youtube.com/watch?v=93LpJL7uDz0",
+            status="members_only",
+            error_message="members-only video; not enqueued",
+            published_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+            created_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+            raw_info={"availability": "subscriber_only"},
+        )
+        job = Job(
+            id=uuid.uuid4(),
+            type="video.enrich_metadata.youtube",
+            params={"video_id": str(video.id)},
+            priority=8,
+            status="running",
+        )
+        session = Mock()
+        session.get.side_effect = lambda model, _key: video if getattr(model, "__name__", "") == "Video" else None
+
+        with patch("raelyn.jobs.handlers.media_sync.advisory_lock_any", return_value=nullcontext("youtube:sync")), patch(
+            "raelyn.jobs.handlers.media_sync._extract_youtube_video_metadata_with_timeout",
+            return_value={"id": "93LpJL7uDz0", "availability": "public"},
+        ), patch("raelyn.jobs.handlers.media_sync.settings.auto_download_new_videos", True), patch(
+            "raelyn.jobs.handlers.media_sync.schedule_video_download"
+        ) as schedule_video_download:
+            result = youtube_metadata_enrich(session, job)
+
+        self.assertEqual(video.status, "discovered")
+        self.assertIsNone(video.error_message)
+        self.assertTrue(result["availability_updated"])
+        self.assertTrue(result["download_enqueued"])
+        schedule_video_download.assert_called_once_with(session, video.id, priority=7)
+
+    def test_members_only_availability_recheck_uses_bounded_backoff(self) -> None:
+        now = datetime.now(timezone.utc)
+        cases = [
+            (now, 10 * 60),
+            (now - timedelta(hours=8), 30 * 60),
+            (now - timedelta(days=2), 2 * 60 * 60),
+            (now - timedelta(days=14), 6 * 60 * 60),
+            (now - timedelta(days=60), 24 * 60 * 60),
+        ]
+        for created_at, expected in cases:
+            with self.subTest(created_at=created_at):
+                video = Video(created_at=created_at)
+                self.assertEqual(_youtube_member_availability_recheck_seconds(video), expected)
 
     def test_youtube_metadata_enrich_reschedules_when_provider_lock_busy(self) -> None:
         video = Video(

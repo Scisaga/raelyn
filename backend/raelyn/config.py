@@ -153,17 +153,18 @@ class Settings(BaseSettings):
         default=32768,
         validation_alias=AliasChoices("LLM_OLLAMA_NUM_CTX", "EVENT_EXTRACTION_OLLAMA_NUM_CTX"),
     )
-    # 简报最终提示词与每个分段摘要请求的输入预算；Ollama 还会限制为全局上下文的 70%。
+    # 简报各阶段输入预算；Ollama 还会限制为上下文的 70%，并扣除输出预留额度。
     brief_llm_max_input_tokens: int = Field(
         default=24000,
         ge=2048,
         validation_alias=AliasChoices("BRIEF_LLM_MAX_INPUT_TOKENS"),
     )
+    brief_ollama_num_predict: int = Field(default=8000, ge=1)
 
     # --- Event extraction / event graph semantic analysis ---
     event_extraction_chunk_max_chars: int = Field(default=12000, validation_alias=AliasChoices("EVENT_EXTRACTION_CHUNK_MAX_CHARS"))
     event_extraction_ollama_stream: bool = Field(default=True, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_STREAM"))
-    event_extraction_ollama_num_predict: int = Field(default=4000, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_NUM_PREDICT"))
+    event_extraction_ollama_num_predict: int = Field(default=4000, ge=1, validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_NUM_PREDICT"))
     event_extraction_ollama_idle_timeout_seconds: int = Field(
         default=120,
         validation_alias=AliasChoices("EVENT_EXTRACTION_OLLAMA_IDLE_TIMEOUT_SECONDS"),

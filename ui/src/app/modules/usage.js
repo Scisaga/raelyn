@@ -1,6 +1,5 @@
 export function createUsageModule() {
   return {
-    usageDays: 90,
     usagePayload: null,
     usageGeneratedAt: "",
     usageTimezone: "",
@@ -15,6 +14,7 @@ export function createUsageModule() {
       llmInputTokens: null,
       llmOutputTokens: null,
       llmTotalTokens: null,
+      llmUsageMissingCalls: null,
       assetCount: null,
       assetSizeBytes: null,
       assetMissingSizeCount: null,
@@ -35,6 +35,7 @@ export function createUsageModule() {
     usageError: "",
     usageChartError: "",
     usageCharts: {},
+    usageChartDates: {},
     _usageRequestToken: 0,
     _usageChartRetryTimer: null,
   };

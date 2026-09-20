@@ -57,11 +57,15 @@ Docker 单容器入口会直接守护 worker 子进程：某个 worker 崩溃退
 
 Scheduler 不直接扫描库存，也不在调度循环中持有长数据库事务。运行资源趋势必须同时保持 scheduler 与至少一个 `sync` worker 在线；若 `sync` worker 不可用，快照任务会留在统一 Job 队列中等待，不会由 API 请求线程代跑。系统暂停期间 Scheduler 不新增快照任务。
 
-资源日桶固定使用 `Asia/Shanghai`。同一天可生成多次快照，但只有 `captured_at` 较新的结果覆盖当日旧值；因此当天趋势点是截至最近快照的部分日数据。LLM 调用可从旧 Job 结果回填；旧结果没有保存耗时时不推测耗时，页面标明“历史未记录”。ASR、Embedding 与资源规模只从采集功能启用后开始形成历史，不回填不存在的旧采样，页面用空缺而不是 `0` 表达缺失。
+资源日桶固定使用 `Asia/Shanghai`。同一天可生成多次快照，但只有 `captured_at` 较新的结果覆盖当日旧值；因此当天趋势点是截至最近快照的部分日数据。LLM 调用可从旧 Job 结果回填；旧结果没有保存耗时时不推测耗时，页面标明“历史未记录”。资源实测规模从快照功能启用后开始形成历史，不回填不存在的旧采样。
+
+资源用量页对首次快照前的逻辑资产规模按现存资产的创建日期累计已知大小，保留窗口之前的起始库存，并与每日快照绘制为同一条“逻辑资产”曲线。该计算在只读查询中进行，不需要迁移、回填任务或额外数据库写入；采集开始后的缺口不做回溯。删除记录与替换前的大小没有完整历史，API 仍保留数据来源区分，页面将口径集中在统计说明中；数据库占用仍只展示真实快照。新增回溯计算需要构建 UI 并重启 API；仅调整曲线呈现与样式时只需重新构建 UI。
 
 逻辑资产容量仅为已知 `Asset.size_bytes` 的和，数据库容量在 PostgreSQL 下使用 `pg_database_size(current_database())`。当前没有能同时适用于宿主机、Docker volume 和远端 S3/MinIO 的物理磁盘容量来源，因此不展示主机磁盘总量、剩余空间或占用百分比。
 
 ## 本地启动（无 Docker）
+
+启动时的 V2 历史检查使用 `playlist_id + snapshot_id` 确认关系数据是否存在，以命中现有以观测域为首列的索引；不要退回只按 `snapshot_id` 扫描历史成员或故事证据表，否则大型历史库会显著拖慢 API 启动。
 
 你需要自行准备：
 
@@ -149,6 +153,8 @@ YTDLP_YOUTUBE_IMPERSONATE=chrome
 
 当 YouTube cookies 保存后仍快速触发 bot check 或部分 403 时，启用 bgutil PO Token Provider。项目依赖中已包含 `bgutil-ytdlp-pot-provider` 插件，但仍需要单独运行 bgutil HTTP server。
 
+当前 Python 插件和服务端镜像均锁定 `2.0.0`。`<2.0.0` 的 HTTP 服务受 [GHSA-qpv9-8xfj-xx9m](https://github.com/Brainicism/bgutil-ytdlp-pot-provider/security/advisories/GHSA-qpv9-8xfj-xx9m) 影响；升级时需要同时更新 `backend/requirements.txt`、`backend/requirements.lock.txt` 与 Compose 镜像。两端主版本不同会被插件拒绝。
+
 Docker Compose 会自动启动 `bgutil-pot` 服务，并给 app 注入：
 
 ```bash
@@ -157,6 +163,8 @@ YTDLP_POT_BGUTIL_BASE_URL=http://host.docker.internal:4416
 
 `docker-compose.yml` 中的 `bgutil-pot` 使用 `restart: unless-stopped`，避免宿主机或 Docker daemon 重启后 provider 长期停在 exited 状态。
 
+`2.0.0-node` 镜像默认命令仍是 `--host 0.0.0.0`。Compose 显式覆盖为 `--host 127.0.0.1,::1,host.docker.internal`，并通过 `host-gateway` 将最后一个名称映射到 Docker 内部网关，使宿主机原生进程和 Compose app 都可访问，而无需监听 LAN 地址或通配地址。Docker 内部网关只应供可信的本机容器访问，不应向外部网络转发 `4416`。
+
 如果 `YTDLP_PROXY` 是宿主机上的本地代理，例如 `socks5://127.0.0.1:8887`，bgutil Docker 容器也必须能访问宿主机网络；否则 provider 生成 PO Token 时会在容器内访问自己的 `127.0.0.1` 并失败。Docker Compose 中的 `bgutil-pot` 使用 host 网络以保持这条路径一致。
 
 如果宿主机 shell 或 systemd 环境设置了 `HTTP_PROXY` / `HTTPS_PROXY`，还要确认 `NO_PROXY` / `no_proxy` 包含 `127.0.0.1,localhost,::1,host.docker.internal`。否则访问 `http://127.0.0.1:4416/ping` 也可能被环境代理劫持并显示假性的 `502 Bad Gateway`。
@@ -164,7 +172,7 @@ YTDLP_POT_BGUTIL_BASE_URL=http://host.docker.internal:4416
 本机运行时可单独启动 provider server，例如：
 
 ```bash
-docker run --name bgutil-provider -d --init --net=host brainicism/bgutil-ytdlp-pot-provider:1.3.1-node
+docker run --name bgutil-provider -d --init --net=host brainicism/bgutil-ytdlp-pot-provider:2.0.0-node --host 127.0.0.1,::1
 ```
 
 然后在 `.env` 中配置：
@@ -180,6 +188,8 @@ NO_PROXY=127.0.0.1,localhost .venv/bin/python -m yt_dlp -v "https://www.youtube.
 ```
 
 输出应包含类似 `bgutil:http`；真正生成 token 时还应出现 `Generating a ... PO Token ... via bgutil HTTP server`。启用后需重启 `download_youtube` / `sync` worker。
+
+升级前先下载依赖和镜像，停止应用进程后再同步安装插件、重建 `bgutil-pot`，最后重启应用，避免新旧主版本交叉运行。只改 Python 依赖时可用 `SKIP_UI_BUILD=1 ./scripts/dev/devctl.sh start` 跳过 UI 构建。验证至少包括：直连 `/ping` 返回 `2.0.0`、Compose 网络内能访问 `host.docker.internal:4416`、监听地址没有 `0.0.0.0` / `::`，以及通过原有 Cookies 和 `YTDLP_PROXY` 完成一次真实 PO Token 生成。重启会清空 provider 的进程内 token 缓存，但不会替换应用保存的 YouTube Cookies。
 
 ### 配置
 
@@ -400,6 +410,17 @@ WSL 提示：如果你的 `npm` 指向 Windows 安装路径（如 `/mnt/c/Progra
 - MCP 健康检查：`GET http://127.0.0.1:8000/mcp/health`
 - MCP endpoint：`http://127.0.0.1:8000/mcp`（需要 `Authorization: Bearer <API_BEARER_TOKEN>`）
 
+任务入队与会话锁的 PostgreSQL 定向集成验证：
+
+```bash
+RAELYN_JOB_TEST_DATABASE_URL='<独立 PostgreSQL 测试库连接串>' \
+  ./.venv/bin/python -m unittest backend.raelyn.tests.test_job_postgres_integration
+```
+
+测试只在显式指定的隔离库创建临时 schema，退出后清理该 schema；`.env` 中的业务库只读，用于复用真实媒体同步生成的 2000 条 YouTube 视频参数。缺少隔离库或上游产物时会 skip，并说明准备方式。验证覆盖批量入队的锁数量、并发去重、重试预算保留、事务回滚，以及业务 SQL 失败后保留首个异常并释放门控锁。可在独立 PostgreSQL 实例以 `max_connections=20`、`max_locks_per_transaction=10` 运行，验证低锁容量下批量投递仍完成。
+
+任务入队和门控代码由 worker 在启动时导入；应用更新后需让相关 worker 重新启动才能生效。运行中的任务先正常结束，再重启对应执行进程；按 [任务系统](../architecture/job-system.md) 保留 provider 并发门控与租约回收语义。
+
 ## 数据迁移（Postgres + MinIO）
 
 将当前 `.env` 指向的源 PostgreSQL / MinIO 数据，迁移到 `.env.migrate` 指向的目标 PostgreSQL / MinIO。
@@ -429,3 +450,24 @@ cp .env.migrate.example .env.migrate
 - 默认要求 `.env.migrate` 的 `S3_BUCKET` 与 `.env` 相同；如需迁移到不同桶名可用 `--allow-bucket-mismatch`
 - 使用 `--allow-bucket-mismatch` 时，脚本会把对象复制到目标桶，并将数据库里的 `asset.s3_bucket` 改写为目标桶名
 - 可用 `--db` / `--s3` 只迁移其中一项
+
+### LLM 有限预算定向实验
+
+输出预算与修复依据见 [实验记录](llm-output-budget-experiment.md)。加载此次修复需要重启 AI worker；通过角色暂停门控等待当前任务结束后重启，不中断正在调用模型的任务。新版本不会自动重投全部历史失败任务。
+
+先采集明确指定的真实失败任务（支持重复 `--job-id`），只读业务库与字幕对象，不执行 handler、不写业务结果：
+
+```bash
+PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.capture_llm_budget_cases \
+  --output-dir /tmp/llm-budget-cases --job-id <失败任务UUID>
+```
+
+显式执行有限额度的真实模型实验，逐次记录响应，不记录认证头；不写外部服务用量表或 domain 表：
+
+```bash
+RAELYN_LLM_BUDGET_CASES_DIR=/tmp/llm-budget-cases \
+RAELYN_RUN_LLM_BUDGET_LIVE=1 \
+PYTHONPATH=backend ./.venv/bin/python -m unittest raelyn.tests.test_llm_budget_integration
+```
+
+响应按提示词、schema、模型名称、上下文与生成参数的散列缓存。省略 `RAELYN_RUN_LLM_BUDGET_LIVE` 时只校验已有真实响应，缺少产物则 skip；需要对可变模型别名的新权重重新实测时，采集到新的独立目录。验证范围包括全部事件分段的 JSON/视频唯一性/事件数/证据来源，以及简报摘要、章节、链接和 token 上限。

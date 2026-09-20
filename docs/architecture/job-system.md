@@ -51,7 +51,8 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - `worker_heartbeat.current_job_id` 记录主执行线程最近声明的任务，用于排障时定位哪个任务导致执行心跳停止推进。
 - `video.backfill_subtitles.*` 属于 provider-facing 下载角色任务：它只执行 yt-dlp subtitle-only 抓取，不下载媒体文件，但仍复用 provider 下载并发门控、平台暂停、cookies 失效暂停和长执行心跳语义。
 - `media.sync_videos` 在 yt-dlp flat 列表提取期间复用 yt-dlp 的真实分页 / 条目日志刷新执行活动心跳，并在提取完成后和逐条处理循环中继续刷新；这使万级频道全量枚举不会因单次提取超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 被误判卡死，同时真实无日志、无进展的阻塞仍会由 watchdog 回收。YouTube 缺失发布时间的单视频详情解析已拆到 `video.enrich_metadata.youtube`，避免同步任务在批量补 metadata 时长期不推进 `active_at`。
-- `video.enrich_metadata.youtube` 是低优先级单视频补全任务，自身通过可终止子进程给 yt-dlp 详情解析设置 45 秒硬超时；子进程只向父进程回传 compact metadata，避免完整 yt-dlp `info` 大对象在进程队列中阻塞；超时只使该补全任务失败或重试，不扩大 `media.sync_videos` 的执行窗口。同一视频达到 `max_attempts` 终止失败后，后续自动同步不会再为同一 `dedupe_key` 反复投递补全任务，避免 best-effort 补全绕过任务重试上限。
+- 同步发现或历史补漏产生下载任务时，以单条视频的 `published_at` 决定最终优先级；最近 24 小时的视频至少为优先级 8，不随全量历史任务降到优先级 5。发布时间稍后由 `video.enrich_metadata.youtube` 补齐时，通过既有 `schedule_video_download` 语义提升 pending 任务并写入优先级提升事件，不绕过原子领取或 provider 下载门控。
+- `video.enrich_metadata.youtube` 的普通 metadata 补全使用低优先级，自身通过可终止子进程给 yt-dlp 详情解析设置 45 秒硬超时；子进程只向父进程回传 compact metadata，避免完整 yt-dlp `info` 大对象在进程队列中阻塞。`members_only` 可用性监测使用优先级 8；详情仍受限时，同一个 Job 通过 `scheduled_for` 按视频年龄从 10 分钟逐步退避到 24 小时并持续复核，明确变为 `public/unlisted` 后才成功收口并补投下载。普通缺失时间补全达到 `max_attempts` 后仍不自动反复投递。
 - provider-facing worker（同步 / 下载）会在本进程内启动执行 watchdog；当 `current_job_id` 指向同步或下载任务且 `active_at` 超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进时，worker 主动退出，让 supervisor 重启并释放 PostgreSQL session 级 advisory lock。
 - 保存新的平台 cookies 并恢复 provider 时，catch-up `media.sync_videos` 不会集中变为可领取；配置 API 会把它们均匀排在一个正常同步周期内，并将同媒体已有的 pending 同步（包括 public discovery）原地转换为认证恢复任务。恢复调度仍落在 `job.scheduled_for` 单一事实源中，不依赖 API 进程内计时器。
 - YouTube 频道/播放列表的 `youtube_auth_check` 可能由一次瞬时网页下载失败触发。worker 在当前任务仍有剩余 attempt 时只按既有退避重试，不持久化 provider pause；仅最终尝试仍返回同一错误时才暂停 YouTube。明确 cookies 无效、`youtube_bot_check` 与其他 provider 风控仍立即暂停，避免重复请求扩大风控。
@@ -71,12 +72,13 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - 单次恢复耗尽后抛出带原因码的 `YtdlpTransientDownloadError`。worker 将这类任务扩展为最多 4 次执行，前三次失败分别按 2 分钟、10 分钟、30 分钟加确定性 `±20%` jitter 写回 `job.scheduled_for`，等待期间释放 worker 与 provider 下载锁；其它下载错误仍保持最多 2 次、10 秒起步的通用退避。重复 pending job 合并时继承较大的 `attempt/max_attempts`，不能借 dedupe 合并重置自动重试预算；手动重试仍显式把 attempt 清零。
 - 多视频同时出现上述瞬时错误时，worker 把观测写入 `app_config.youtube_download_circuit`。10 分钟内至少 2 个不同 job 累计 4 次失败后打开下载熔断，暂停领取新的 `video.download.youtube`；冷却 5 分钟后只放行一个 half-open 探测，探测失败依次把冷却提升到 15、30 分钟，真实下载成功后关闭熔断。该状态独立于 cookies / bot check 的 provider pause，不改变认证会话或代理配置。
 - YouTube 单次格式下载即使 HTTP 层报告完成，也必须经 FFprobe 读到真实视频和音频 packet；无 packet 的临时容器按格式失败处理并进入下一个 selector。音频提取输出和 ASR 输入无音频 packet 时属于确定性坏输入，分别在资产写入和 ASR 请求前以 `JobTerminalFailure` 收口，避免重复请求同一个坏资产。
-- 事件抽取把“响应顶层结构不满足协议”视为可重试错误，包括 JSON 无法解析、顶层不是对象、缺少 `videos[]`、缺少预期 `video_id` 或对应项缺少 `events[]`。服务会先把当前 `video_event_extraction_run` 持久化为 `failed`，再把异常抛给 worker 进入既有 `attempt/max_attempts` 退避；结构错误不会删除该视频已有事件。
+- 事件抽取把“响应顶层结构不满足协议”视为可重试错误，包括 JSON 无法解析、顶层不是对象、缺少 `videos[]`、缺少或重复预期 `video_id`、对应项缺少 `events[]`。服务会先把当前 `video_event_extraction_run` 持久化为 `failed`，再把异常抛给 worker 进入既有 `attempt/max_attempts` 退避；结构错误不会删除该视频已有事件。Ollama 使用 JSON schema 限制视频数量与每视频最多 4 个事件，防止重复展开同一视频直到触发 4000 token 上限；schema 不替代现有事实、实体与证据校验。
 - 对纯 JSON 语法错误，每个抽取批次在当前任务尝试内最多额外调用一次 LLM 修复语法；修复成功后仍执行完整协议校验，修复失败才进入既有 worker 重试。缺少 `videos[]`、缺少预期 `video_id` 等已能解析但违反协议的响应不会触发修复调用，避免模型借“修复”重新生成业务内容。
 - 事件抽取响应在 JSON 解析失败时会检查 LLM 结束原因与输出 token 数；`done_reason=length` 或输出达到 `num_predict` 表示内容已被截断，不属于可保真修复的 JSON 语法错误。该情况会持久化 failed run 并将当前 job 收口为终止失败，避免相同生成上限下重复修复和重试。
 - `events: []` 是合法的零事件结果，会写入 `succeeded` run；空 `plain` transcript 继续按 `skipped` 成功收口，不强制失败或重试。单条事件字段不合法仍只丢弃该条并记录 warning，不能把内容质量问题扩大成整个响应的结构失败。
-- 事件提示词或模型升级只改变后续抽取的复用口径，不在 API、scheduler 或 worker 启动时隐式扫描并重投全部历史视频。需要迁移历史结果时显式创建 `playlist.backfill_events(force=false)`；其子任务只复用精确匹配当前 `source_hash / prompt_version / extraction_model` 的成功运行，因此旧 v2 结果不会被误算成当前 v4 已完成。
+- 事件提示词或模型升级只改变后续抽取的复用口径，不在 API、scheduler 或 worker 启动时隐式扫描并重投全部历史视频。需要迁移历史结果时显式创建 `playlist.backfill_events(force=false)`；其子任务只复用精确匹配当前 `source_hash / prompt_version / extraction_model` 的成功运行，因此旧版本结果不会被误算成当前 v5 已完成。
 - `brief.generate_period` 会先估算完整提示词输入；超过 `BRIEF_LLM_MAX_INPUT_TOKENS` 时，在当前 Job 内按来源顺序串行生成有来源链接的事实摘要，必要时执行有限轮次归并，再进行最终简报合成。该流程不创建进程内并发，也不改变原有 period 去重锚点。单个分段若偶发返回空白、过短或缺少真实来源的内容，会把上一次的校验错误显式带入原分段的串行重试；连续无效，或最终输出缺少真实来源、缺少模板规定章节、退化成通用助手回答时，当前 Job 以终止失败收口，不写入新的 `ready` 简报。
+- Ollama 简报采用 `structured_brief_v2`：分段摘要通过 schema 保留最多 8 条、每条不超过 120 字的关键事实及输入中的真实 URL；最终生成按模板章节返回非空 Markdown 内容，再按模板顺序渲染。两阶段关闭显式思考，分别保留 2500 / 8000 的输出硬上限。每次调用持久化结束原因、token 数和正文/思考字符数，明确截断立即终止；不得把达到上限的部分输出标记为有效摘要或 ready 简报。非 Ollama 接口继续使用原 Markdown 生成流程；所有最终简报均拒绝不属于真实输入的来源 URL。
 
 ## Worker 角色暂停（Claim Gate）
 
@@ -102,7 +104,8 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
   - 例如 `media.sync_videos:{media_id}`
   - 例如 `video.enrich_metadata.youtube:{video_id}`
   - 事件模型迁移使用 `event_embedding_backfill:{source_model}:{target_model}:{dimension}`；该类型在事务级 advisory lock 内同时查询 pending/running，避免长任务运行时被重复投递。
-  - PostgreSQL 下，创建 pending dedupe job 时先按 `dedupe_key` 获取事务级 advisory lock，再查询已有 `pending`，最后才插入新 job；`job(dedupe_key) where status='pending'` 唯一索引只作为兜底约束，不作为常规并发控制机制。
+  - PostgreSQL 下，普通 pending dedupe job 使用既有 `job(dedupe_key) where dedupe_key is not null and status='pending'` 唯一索引执行 `INSERT ... ON CONFLICT ... RETURNING id`。冲突时返回已有任务 ID，保留其参数、排期、优先级与重试预算，且不重复写入 `enqueued` 事件。任务与事件仍和调用方业务数据在同一事务内提交或回滚。
+  - `playlist.mark_event_map_dirty` 的 outbox 参数合并，以及 `event.backfill_embeddings` 的 pending/running 去重，继续按 `dedupe_key` 获取事务级 advisory lock。普通任务不再逐 key 持有事务锁或创建入队保存点，避免万级频道全量同步将锁共享内存耗尽。
   - 同一事务需要投递多个 dedupe job 时，调用方必须按稳定 key 顺序投递，避免多个 worker 对同一批 key 反向等待。
   - 手动重试失败任务时，若同一 `dedupe_key` 已有 pending 任务，重试接口会取消那个 pending 任务并复用当前任务，避免提交时撞 pending dedupe 唯一约束
   - 自动重试合并到同一 `dedupe_key` 的 pending 任务时，会同步继承已经消耗的 `attempt` 和当前 `max_attempts`，避免通过重复投递绕过有界重试
@@ -135,6 +138,10 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - `video.download.*` 与 `video.backfill_subtitles.*` 共享对应 provider 的下载角色和 advisory lock；字幕回补不会绕过平台并发上限
 - `video.enrich_metadata.youtube` 归属 `sync` worker role，受 YouTube provider pause 与 sync provider advisory lock 控制；sync 锁繁忙时重排当前补全任务，不占用下载并发。
 - provider advisory lock / guard slot 只负责做最终上限保护和防风控，不作为对外配置语义
+
+同步、下载与事件抽取的 session-level advisory lock 使用从现有 Engine 连接池独立借出的物理连接，领取和释放始终在同一连接上进行；业务 Session 的提交、回滚或 SQL 异常不会释放门控锁，也不会使解锁进入 aborted 事务而覆盖首个异常。离开门控范围后先解锁，再将连接归还原池。该连接只负责 PostgreSQL 并发门控，不创建或重置 YouTube cookies、yt-dlp client 或其他上游认证会话；事务级媒体锁与特殊入队锁仍随业务事务结束释放。每个持有此类门控的 worker 会额外占用一条池内连接，运行容量见 [配置说明](../reference/configuration.md)。
+
+锁生命周期与原子入队依据：[PostgreSQL 16 advisory locks](https://www.postgresql.org/docs/16/explicit-locking.html#ADVISORY-LOCKS)、[SQLAlchemy PostgreSQL ON CONFLICT](https://docs.sqlalchemy.org/en/20/dialects/postgresql.html#insert-on-conflict-upsert)。
 
 实现方式可从易到难演进：
 

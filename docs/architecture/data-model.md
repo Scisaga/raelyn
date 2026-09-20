@@ -96,7 +96,7 @@
 
 当前职责：
 
-- `playlist` 保存观测域元信息、持续观测状态、简报粒度、简报提示词、头像 / 背景图资产引用。
+- `playlist` 保存观测域元信息、持续观测状态、简报粒度、简报提示词与头图资产引用；`background_asset_id` 仅保留兼容历史数据和接口，当前产品界面不再写入或消费背景图。
 - `playlist_media` 保存播放列表与媒体的多对多关系。
 
 关键字段：
@@ -291,7 +291,7 @@ ORM 模型为 `ExternalServiceUsageDaily`，用于保存资源用量页所需的
 - `call_count` / `success_count` / `failure_count`：调用总数与成功、失败列聚合；
 - `input_tokens` / `output_tokens` / `total_tokens`：LLM usage 聚合，非 LLM 服务保持 `0`；
 - `duration_ms`：调用累计耗时；
-- `usage_missing_calls`：调用成功或失败但未取得完整 usage 的次数，用于阻止 UI 把部分 token 误报为完整总量；
+- `usage_missing_calls`：调用成功或失败但未取得完整 usage 的次数；缺失调用按 0 参与已记录 Token 累计，API 同时返回缺失数供界面说明，不再将包含缺失调用的整个日桶或累计清空；
 - `last_called_at`：该维度最近一次实际调用时间。
 
 约束与写入语义：
@@ -318,7 +318,7 @@ ORM 模型为 `ResourceUsageDaily`，用于保存每天最后一次资源规模�
 
 同一天的 `system.capture_usage_snapshot` 可以重复执行；写入按 `day` upsert，只有 `captured_at` 更新的结果才能覆盖当日旧值，因此重试、重复投递或乱序完成不会让快照倒退。Scheduler 每小时只投递任务，实际全库计数与快照写入由 `sync` worker 执行；该表不保存物理磁盘总量或余量。
 
-资源用量接口的当前摘要直接实时查询 `video`、`asset` 和数据库，不依赖该表是否已有当天记录；按日逻辑资产与数据库趋势只读本表。快照采集启用前的日期保持缺失，不使用当前库存反向补齐。
+资源用量接口的当前摘要直接实时查询 `video`、`asset` 和数据库，不依赖该表是否已有当天记录；实测逻辑资产与数据库趋势只读本表。首次快照之前允许通过现存 `Asset.created_at` 与已知 `size_bytes` 按上海日期累计生成逻辑资产估算，单列在 API 的 `asset_size_estimate_bytes` 中；它不是历史实测，不写入本表，也不改变 `resource_sampled`。已删除资产、被替换前的大小与数据库历史占用仍无法还原。
 
 ### `app_config`
 

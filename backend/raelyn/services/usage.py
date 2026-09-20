@@ -592,6 +592,45 @@ def _asset_breakdown(session: Session) -> list[dict[str, Any]]:
     ]
 
 
+def _asset_size_history_estimates(
+    session: Session,
+    *,
+    start_day: date,
+    until_day: date,
+) -> dict[date, int]:
+    """按现存资产的创建日期累计已知大小，估算快照采集前的规模。"""
+    if until_day <= start_day:
+        return {}
+
+    until_utc = datetime.combine(until_day, time.min, tzinfo=_USAGE_TZ).astimezone(timezone.utc)
+    if session.get_bind().dialect.name == "postgresql":
+        day_bucket = func.date(func.timezone(USAGE_TIMEZONE, Asset.created_at))
+    else:
+        day_bucket = func.date(Asset.created_at, "+8 hours")
+    rows = session.execute(
+        select(day_bucket, func.sum(Asset.size_bytes))
+        .where(Asset.created_at < until_utc, Asset.size_bytes.is_not(None))
+        .group_by(day_bucket)
+        .order_by(day_bucket)
+    ).all()
+    if not rows:
+        return {}
+
+    daily_bytes = {
+        day_value if isinstance(day_value, date) else date.fromisoformat(str(day_value)): int(size_bytes)
+        for day_value, size_bytes in rows
+    }
+    # 窗口之前的资产是起始库存；删除和替换历史未留存，因此结果单列为估算。
+    total = sum(size_bytes for day, size_bytes in daily_bytes.items() if day < start_day)
+    current_day = max(start_day, min(daily_bytes))
+    estimates: dict[date, int] = {}
+    while current_day < until_day:
+        total += daily_bytes.get(current_day, 0)
+        estimates[current_day] = total
+        current_day += timedelta(days=1)
+    return estimates
+
+
 def _empty_usage_totals() -> dict[str, int]:
     return {
         "external_calls": 0,
@@ -613,7 +652,6 @@ def build_usage_payload(session: Session, *, days: int) -> dict[str, Any]:
     start_day, end_day, start_utc, until_utc = _window_bounds(generated_at, days)
     usage_rows = session.execute(
         select(ExternalServiceUsageDaily).where(
-            ExternalServiceUsageDaily.day >= start_day,
             ExternalServiceUsageDaily.day <= end_day,
         )
     ).scalars().all()
@@ -639,6 +677,17 @@ def build_usage_payload(session: Session, *, days: int) -> dict[str, Any]:
     for row in usage_rows:
         usage_by_day[row.day].append(row)
     resource_by_day = {row.day: row for row in resource_rows}
+    resource_started_at, last_resource_snapshot_at = session.execute(
+        select(
+            func.min(ResourceUsageDaily.day),
+            func.max(ResourceUsageDaily.captured_at),
+        )
+    ).one()
+    asset_size_estimates = _asset_size_history_estimates(
+        session,
+        start_day=start_day,
+        until_day=min(resource_started_at or end_day + timedelta(days=1), end_day + timedelta(days=1)),
+    )
     asset_breakdown = _asset_breakdown(session)
     current_resource = _collect_current_resource_values(
         session,
@@ -686,6 +735,13 @@ def build_usage_payload(session: Session, *, days: int) -> dict[str, Any]:
             item["last_called_at"] = called_at
     series: list[dict[str, Any]] = []
     summary_usage = _empty_usage_totals()
+    # 摘要与服务明细按采集以来累计，只有趋势受 days 限制。
+    for item in breakdown.values():
+        summary_usage["external_calls"] += item["calls"]
+        summary_usage[f"{item['service']}_calls"] += item["calls"]
+        if item["service"] == "llm":
+            for field in ("input_tokens", "output_tokens", "total_tokens", "usage_missing_calls"):
+                summary_usage[f"llm_{field}"] += item[field]
     summary_service_sampled = {
         service: first_day <= end_day
         for service, first_day in service_started_at.items()
@@ -715,7 +771,6 @@ def build_usage_payload(session: Session, *, days: int) -> dict[str, Any]:
                 daily["embedding_calls"] += int(row.call_count or 0)
 
         llm_sampled = service_sampled.get("llm", False)
-        llm_tokens_known = llm_sampled and daily["llm_usage_missing_calls"] == 0
         series.append(
             {
                 "date": current_day,
@@ -733,15 +788,19 @@ def build_usage_payload(session: Session, *, days: int) -> dict[str, Any]:
                     else None
                 ),
                 "llm_input_tokens": (
-                    daily["llm_input_tokens"] if llm_tokens_known else None
+                    daily["llm_input_tokens"] if llm_sampled else None
                 ),
                 "llm_output_tokens": (
-                    daily["llm_output_tokens"] if llm_tokens_known else None
+                    daily["llm_output_tokens"] if llm_sampled else None
                 ),
                 "llm_total_tokens": (
-                    daily["llm_total_tokens"] if llm_tokens_known else None
+                    daily["llm_total_tokens"] if llm_sampled else None
+                ),
+                "llm_usage_missing_calls": (
+                    daily["llm_usage_missing_calls"] if llm_sampled else None
                 ),
                 "asset_size_bytes": int(resource.asset_size_bytes) if resource is not None else None,
+                "asset_size_estimate_bytes": asset_size_estimates.get(current_day),
                 "database_size_bytes": (
                     int(resource.database_size_bytes)
                     if resource is not None and resource.database_size_bytes is not None
@@ -751,27 +810,14 @@ def build_usage_payload(session: Session, *, days: int) -> dict[str, Any]:
                 "resource_sampled": resource is not None,
             }
         )
-        for key in summary_usage:
-            summary_usage[key] += daily[key]
 
     summary_llm_sampled = summary_service_sampled.get("llm", False)
-    summary_llm_tokens_known = (
-        summary_llm_sampled and summary_usage["llm_usage_missing_calls"] == 0
-    )
     usage_started_at, last_usage_at = session.execute(
         select(
             func.min(ExternalServiceUsageDaily.day),
             func.max(ExternalServiceUsageDaily.last_called_at),
         )
     ).one()
-    all_resource_bounds = session.execute(
-        select(
-            func.min(ResourceUsageDaily.day),
-            func.max(ResourceUsageDaily.captured_at),
-        )
-    ).one()
-    resource_started_at, last_resource_snapshot_at = all_resource_bounds
-
     return {
         "generated_at": generated_at,
         "timezone": USAGE_TIMEZONE,
@@ -798,17 +844,22 @@ def build_usage_payload(session: Session, *, days: int) -> dict[str, Any]:
             ),
             "llm_input_tokens": (
                 summary_usage["llm_input_tokens"]
-                if summary_llm_tokens_known
+                if summary_llm_sampled
                 else None
             ),
             "llm_output_tokens": (
                 summary_usage["llm_output_tokens"]
-                if summary_llm_tokens_known
+                if summary_llm_sampled
                 else None
             ),
             "llm_total_tokens": (
                 summary_usage["llm_total_tokens"]
-                if summary_llm_tokens_known
+                if summary_llm_sampled
+                else None
+            ),
+            "llm_usage_missing_calls": (
+                summary_usage["llm_usage_missing_calls"]
+                if summary_llm_sampled
                 else None
             ),
             "asset_count": int(current_resource["asset_count"] or 0),

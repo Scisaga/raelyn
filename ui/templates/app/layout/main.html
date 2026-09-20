@@ -66,6 +66,13 @@
           </div>
 
           <div class="flex items-center gap-2">
+            <div x-cloak x-show="activeView==='usage'" class="flex shrink-0 items-center gap-3">
+              <time class="hidden xl:inline font-mono tabular-nums text-[11px] text-slate-500" :datetime="usageGeneratedAt" :title="usageGeneratedLabel()" x-text="usagePayload ? '更新于 ' + usageShortDateTimeLabel(usageGeneratedAt) + ' · 上海' : usageGeneratedLabel()"></time>
+              <button type="button" class="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-slate-800 bg-slate-950/30 px-2 text-[11px] text-slate-400 hover:border-slate-600 hover:text-slate-200 focus-visible:outline-2 focus-visible:outline-cyan-400/60 disabled:cursor-wait disabled:opacity-60" :disabled="usageLoading" @click="refreshUsage()" :aria-label="usageLoading ? '正在刷新资源用量' : '刷新资源用量'" :title="usageGeneratedLabel()">
+                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" :class="usageLoading ? 'animate-spin' : ''"><path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"/></svg>
+                <span class="hidden sm:inline" x-text="usageLoading ? '刷新中…' : '刷新'"></span>
+              </button>
+            </div>
             <button
               class="inline-flex items-center gap-2 rounded-md border border-red-900/60 bg-red-950/20 px-3 py-1.5 text-sm text-red-200 hover:bg-red-900/30"
               x-show="hasProviderPause('youtube')"
@@ -73,8 +80,9 @@
               :title="providerPauseMessage('youtube')"
               @click="gotoCookiesSettings('youtube')"
             >
+              <svg class="h-3.5 w-3.5 shrink-0 sm:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>
               <span class="hidden sm:inline" x-text="providerPauseLabel('youtube')"></span>
-              <span class="text-xs truncate max-w-[240px] hidden md:inline" x-text="providerPauseHint('youtube')"></span>
+              <span class="text-xs truncate max-w-[240px] hidden 2xl:inline" x-text="providerPauseHint('youtube')"></span>
             </button>
             <button
               class="inline-flex items-center gap-2 rounded-md border border-sky-900/60 bg-sky-950/20 px-3 py-1.5 text-sm text-sky-200 hover:bg-sky-900/30"
@@ -83,8 +91,9 @@
               :title="providerPauseMessage('bilibili')"
               @click="gotoCookiesSettings('bilibili')"
             >
+              <svg class="h-3.5 w-3.5 shrink-0 sm:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>
               <span class="hidden sm:inline" x-text="providerPauseLabel('bilibili')"></span>
-              <span class="text-xs truncate max-w-[220px] hidden md:inline" x-text="providerPauseHint('bilibili')"></span>
+              <span class="text-xs truncate max-w-[220px] hidden 2xl:inline" x-text="providerPauseHint('bilibili')"></span>
             </button>
             <button
               class="inline-flex items-center gap-2 rounded-md border border-rose-900/60 bg-rose-950/20 px-3 py-1.5 text-sm text-rose-200 hover:bg-rose-900/30"
@@ -93,8 +102,9 @@
               :title="pause && pause.message ? pause.message : '系统已暂停'"
               @click="gotoCookiesSettings()"
             >
+              <svg class="h-3.5 w-3.5 shrink-0 sm:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>
               <span class="hidden sm:inline">已暂停</span>
-              <span class="text-xs truncate max-w-[360px] hidden md:inline" x-text="pauseBadgeText()"></span>
+              <span class="text-xs truncate max-w-[360px] hidden 2xl:inline" x-text="pauseBadgeText()"></span>
             </button>
             <div class="relative hidden sm:block" @click.away="semanticSearchOpen=false">
               <input

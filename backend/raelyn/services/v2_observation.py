@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 import uuid
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlencode
 
 from sqlalchemy import String, and_, case, cast, func, or_, select
@@ -974,8 +974,9 @@ def event_highlights(
     session: Session,
     playlist_id: uuid.UUID,
     *,
-    event_date_start: date,
-    event_date_end: date,
+    event_date_start: date | None = None,
+    event_date_end: date | None = None,
+    scope: Literal["event_date", "24h"] = "event_date",
     window_start: date | None = None,
     window_end: date | None = None,
     snapshot_id: uuid.UUID | None = None,
@@ -985,19 +986,26 @@ def event_highlights(
     topic_id: uuid.UUID | None = None,
     limit: int = 10,
 ) -> dict[str, Any]:
-    """按事件日历日选择 canonical，再为每个事件选择一个可播放来源。"""
+    """按事件日期或过去 24 小时发布的视频选择 canonical 与可播放来源。"""
 
-    if event_date_start > event_date_end:
-        raise ValueError("invalid event date range")
-    if (event_date_end - event_date_start).days >= 7:
-        raise ValueError("event date range must not exceed 7 days")
+    if scope == "event_date":
+        if event_date_start is None or event_date_end is None:
+            raise ValueError("event date range is required")
+        if event_date_start > event_date_end:
+            raise ValueError("invalid event date range")
+        if (event_date_end - event_date_start).days >= 7:
+            raise ValueError("event date range must not exceed 7 days")
     if window_start is not None and window_end is not None and window_start > window_end:
         raise ValueError("invalid event map window")
     snapshot = observation_snapshot(session, playlist_id, snapshot_id)
 
     epoch_ordinal = date(1970, 1, 1).toordinal()
-    event_start_day = event_date_start.toordinal() - epoch_ordinal
-    event_end_day = event_date_end.toordinal() - epoch_ordinal
+    published_before = utcnow() if scope == "24h" else None
+    published_since = published_before - timedelta(hours=24) if published_before is not None else None
+    video_time_clauses = (
+        [Video.published_at >= published_since, Video.published_at <= published_before]
+        if published_since is not None and published_before is not None else []
+    )
 
     def response(
         *,
@@ -1016,8 +1024,11 @@ def event_highlights(
         }
         return {
             "snapshot_id": str(resolved_snapshot_id) if resolved_snapshot_id is not None else None,
-            "event_date_start": event_date_start.isoformat(),
-            "event_date_end": event_date_end.isoformat(),
+            "scope": scope,
+            "event_date_start": _iso(event_date_start) if scope == "event_date" else None,
+            "event_date_end": _iso(event_date_end) if scope == "event_date" else None,
+            "published_since": _iso(published_since),
+            "published_before": _iso(published_before),
             "window_start": window_start.isoformat() if window_start is not None else None,
             "window_end": window_end.isoformat() if window_end is not None else None,
             "matched_event_total": matched_event_total,
@@ -1034,11 +1045,25 @@ def event_highlights(
     if snapshot is None:
         return response(resolved_snapshot_id=snapshot.id if snapshot is not None else None)
 
-    scope_clauses: list[Any] = [
-        EventMapCanonical.snapshot_id == snapshot.id,
-        EventMapCanonical.event_start_day >= event_start_day,
-        EventMapCanonical.event_start_day <= event_end_day,
-    ]
+    scope_clauses: list[Any] = [EventMapCanonical.snapshot_id == snapshot.id]
+    if scope == "24h":
+        recent_canonicals = (
+            select(EventMapCanonicalMember.canonical_id)
+            .join(EventMapRecordRevision, EventMapRecordRevision.id == EventMapCanonicalMember.record_revision_id)
+            .join(Video, Video.id == EventMapRecordRevision.source_video_id)
+            .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
+            .where(
+                EventMapCanonicalMember.snapshot_id == snapshot.id,
+                PlaylistMedia.playlist_id == playlist_id,
+                *video_time_clauses,
+            )
+        )
+        scope_clauses.append(EventMapCanonical.canonical_id.in_(recent_canonicals))
+    elif event_date_start is not None and event_date_end is not None:
+        scope_clauses.extend([
+            EventMapCanonical.event_start_day >= event_date_start.toordinal() - epoch_ordinal,
+            EventMapCanonical.event_start_day <= event_date_end.toordinal() - epoch_ordinal,
+        ])
     if window_start is not None:
         scope_clauses.append(
             EventMapCanonical.event_end_day >= window_start.toordinal() - epoch_ordinal
@@ -1064,21 +1089,20 @@ def event_highlights(
         )
         scope_clauses.append(EventMapCanonical.canonical_id.in_(topic_scope))
 
-    excluded_imprecise_total = int(
-        session.execute(
-            select(func.count())
-            .select_from(EventMapCanonical)
-            .where(
-                *scope_clauses,
-                EventMapCanonical.time_precision.notin_(["day", "second"]),
-            )
-        ).scalar_one()
-        or 0
-    )
-    precise_clauses = [
-        *scope_clauses,
-        EventMapCanonical.time_precision.in_(["day", "second"]),
-    ]
+    excluded_imprecise_total = 0
+    if scope == "event_date":
+        excluded_imprecise_total = int(
+            session.execute(
+                select(func.count())
+                .select_from(EventMapCanonical)
+                .where(
+                    *scope_clauses,
+                    EventMapCanonical.time_precision.notin_(["day", "second"]),
+                )
+            ).scalar_one()
+            or 0
+        )
+        scope_clauses.append(EventMapCanonical.time_precision.in_(["day", "second"]))
 
     video_count = func.count(func.distinct(EventMapRecordRevision.source_video_id))
     source_count = func.count(func.distinct(Video.media_id))
@@ -1107,7 +1131,7 @@ def event_highlights(
             EventMapRecordRevision.id == EventMapCanonicalMember.record_revision_id,
         )
         .outerjoin(Video, Video.id == EventMapRecordRevision.source_video_id)
-        .where(*precise_clauses)
+        .where(*scope_clauses)
         .group_by(EventMapCanonical)
     )
     ranked_rows = session.execute(
@@ -1156,6 +1180,7 @@ def event_highlights(
         .where(
             EventMapCanonicalMember.snapshot_id == snapshot.id,
             EventMapCanonicalMember.canonical_id.in_(canonical_ids),
+            *video_time_clauses,
             select(Asset.id)
             .where(Asset.video_id == Video.id, Asset.type == "video")
             .exists(),
@@ -2677,6 +2702,21 @@ def brief_reference_payload(
     brief: Brief | None = None,
 ) -> dict[str, Any]:
     context = dict(row.context or {})
+    web_url = context.get("web_url") or _web_url(
+        playlist_id,
+        object_type=row.object_type,
+        object_id=row.object_id,
+        snapshot_id=row.snapshot_id,
+    )
+    if row.object_type == "story":
+        params = {
+            "domain_id": str(playlist_id),
+            "story_id": str(row.object_id),
+        }
+        focus_canonical_id = context.get("focus_canonical_id") or context.get("target_canonical_id")
+        if focus_canonical_id:
+            params["focus_canonical_id"] = str(focus_canonical_id)
+        web_url = f"/stories?{urlencode(params)}"
     return {
         "id": str(row.id),
         "brief_id": str(row.brief_id),
@@ -2692,7 +2732,7 @@ def brief_reference_payload(
         "evidence_revision_id": str(row.evidence_revision_id) if row.evidence_revision_id else None,
         "label": row.label,
         "context": context,
-        "web_url": context.get("web_url") or _web_url(playlist_id, object_type=row.object_type, object_id=row.object_id, snapshot_id=row.snapshot_id),
+        "web_url": web_url,
     }
 
 

@@ -22,12 +22,16 @@ from raelyn.services.brief_prompt import (
     brief_period_bounds_utc,
     brief_period_end_inclusive,
     brief_period_start,
+    brief_response_schema,
+    brief_reduction_response_schema,
     build_brief_reduction_batches,
     build_brief_blocks,
     compose_brief_reduction_prompt,
     compose_guarded_brief_prompt,
     estimate_brief_tokens,
     extract_brief_urls,
+    parse_structured_brief_response,
+    parse_structured_brief_reduction,
     validate_brief_reduction,
     validate_generated_brief,
 )
@@ -69,7 +73,34 @@ def _effective_brief_input_budget(session: Session) -> int:
     if "/api/generate" not in urlparse(str(cfg.url or "")).path.lower():
         return configured
     context_tokens = max(2048, int(settings.llm_ollama_num_ctx or 0))
-    return min(configured, max(2048, context_tokens * 7 // 10))
+    output_budget = max(settings.brief_ollama_num_predict, _BRIEF_REDUCTION_NUM_PREDICT)
+    available = min(configured, context_tokens * 7 // 10, context_tokens - output_budget)
+    if available < 2048:
+        raise _BriefGenerationInvalid("Ollama 上下文扣除简报输出预算后不足 2048 token")
+    return available
+
+
+def _brief_uses_structured_output(session: Session) -> bool:
+    return "/api/generate" in urlparse(get_effective_llm_config(session).url).path.lower()
+
+
+def _check_brief_llm_response(
+    session: Session, job: Job, response: dict, *, phase: str, output_limit: int, **position: int,
+) -> None:
+    usage = response.get("usage") or {}
+    meta = response.get("meta") or {}
+    reason = str(meta.get("done_reason") or "")
+    output_tokens = int(usage.get("output_tokens") or 0)
+    job_log(session, job, "brief LLM response received", data={
+        "phase": phase, **position, "output_limit": output_limit,
+        "input_tokens": int(usage.get("input_tokens") or 0), "output_tokens": output_tokens,
+        "done_reason": reason, "response_chars": len(str(response.get("text") or "")),
+        "thinking_chars": int(meta.get("thinking_chars") or 0),
+    })
+    if reason == "length" or (not reason and output_limit > 0 and output_tokens >= output_limit):
+        raise _BriefGenerationInvalid(
+            f"简报 {phase} 输出截断：output_tokens={output_tokens}, num_predict={output_limit}, done_reason={reason}"
+        )
 
 
 def _reduce_brief_blocks_to_budget(
@@ -86,6 +117,7 @@ def _reduce_brief_blocks_to_budget(
     current = list(blocks)
     total_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "call_count": 0}
     reduction_calls = 0
+    structured = _brief_uses_structured_output(session)
 
     final_prompt = compose_guarded_brief_prompt(
         template,
@@ -93,13 +125,14 @@ def _reduce_brief_blocks_to_budget(
         period_start=period_start,
         period_end=period_end,
         blocks=current,
+        structured=structured,
     )
     if estimate_brief_tokens(final_prompt) <= max_input_tokens:
         return current, total_usage, reduction_calls, 0
 
     for round_index in range(1, _BRIEF_REDUCTION_MAX_ROUNDS + 1):
         try:
-            batches = build_brief_reduction_batches(current, max_input_tokens=max_input_tokens)
+            batches = build_brief_reduction_batches(current, max_input_tokens=max_input_tokens, structured=structured)
         except ValueError as exc:
             raise _BriefGenerationInvalid(str(exc)) from exc
 
@@ -123,17 +156,29 @@ def _reduce_brief_blocks_to_budget(
                 prompt = compose_brief_reduction_prompt(
                     batch,
                     retry_errors=errors if attempt > 1 else None,
+                    structured=structured,
                 )
                 response = llm_generate(
                     prompt=prompt,
                     think=False,
+                    response_format=brief_reduction_response_schema(source_urls) if structured else None,
                     options={"temperature": 0, "num_predict": _BRIEF_REDUCTION_NUM_PREDICT},
                     usage_operation="brief_reduction",
                 )
                 _merge_llm_usage(total_usage, response.get("usage"))
                 reduction_calls += 1
+                _check_brief_llm_response(
+                    session, job, response, phase="reduction",
+                    output_limit=_BRIEF_REDUCTION_NUM_PREDICT if structured else 0,
+                    round=round_index, batch=batch_index, attempt=attempt,
+                )
                 summary = str(response.get("text", "")).strip()
-                errors = validate_brief_reduction(summary, source_urls=source_urls)
+                try:
+                    if structured:
+                        summary = parse_structured_brief_reduction(summary, source_urls=source_urls)
+                    errors = validate_brief_reduction(summary, source_urls=source_urls)
+                except ValueError as exc:
+                    errors = [f"分段摘要结构化响应无效：{exc}"]
                 if not errors:
                     break
                 if attempt < _BRIEF_REDUCTION_MAX_ATTEMPTS:
@@ -166,6 +211,7 @@ def _reduce_brief_blocks_to_budget(
             period_start=period_start,
             period_end=period_end,
             blocks=current,
+            structured=structured,
         )
         if estimate_brief_tokens(final_prompt) <= max_input_tokens:
             return current, total_usage, reduction_calls, round_index
@@ -274,9 +320,11 @@ def _brief_generate_period_impl(
             return {"failed": True, "reason": "no transcript"}
 
         template = (getattr(playlist, "brief_prompt", None) or "").strip() or DEFAULT_BRIEF_PROMPT_TEMPLATE
-        max_input_tokens = _effective_brief_input_budget(session)
+        max_input_tokens = int(settings.brief_llm_max_input_tokens)
+        structured = _brief_uses_structured_output(session)
         source_input_chars = sum(len(block) for block in blocks)
         try:
+            max_input_tokens = _effective_brief_input_budget(session)
             final_blocks, total_usage, reduction_calls, reduction_rounds = _reduce_brief_blocks_to_budget(
                 session,
                 job,
@@ -293,20 +341,33 @@ def _brief_generate_period_impl(
                 period_start=period_start,
                 period_end=period_end,
                 blocks=final_blocks,
+                structured=structured,
             )
             estimated_final_input_tokens = estimate_brief_tokens(prompt)
             if estimated_final_input_tokens > max_input_tokens:
                 raise _BriefGenerationInvalid("最终简报提示词仍超过 LLM 输入预算")
 
             raise_if_job_cancel_requested(session, job)
+            final_source_urls = extract_brief_urls("\n".join(final_blocks))
             resp = llm_generate(
                 prompt=prompt,
-                think=True,
-                options={"temperature": 0},
+                think=False if structured else True,
+                response_format=brief_response_schema(template, source_urls=final_source_urls) if structured else None,
+                options={"temperature": 0, "num_predict": settings.brief_ollama_num_predict},
                 usage_operation="brief_generation",
             )
             _merge_llm_usage(total_usage, resp.get("usage"))
-            md = _sanitize_brief_markdown(str(resp.get("text", "")))
+            _check_brief_llm_response(
+                session, job, resp, phase="generation",
+                output_limit=settings.brief_ollama_num_predict if structured else 0,
+            )
+            md = str(resp.get("text", ""))
+            if structured:
+                try:
+                    md = parse_structured_brief_response(md, template=template, source_urls=final_source_urls)
+                except ValueError as exc:
+                    raise _BriefGenerationInvalid(f"简报结构化响应无效：{exc}") from exc
+            md = _sanitize_brief_markdown(md)
             validation_errors = validate_generated_brief(
                 md,
                 template=template,
@@ -344,10 +405,14 @@ def _brief_generate_period_impl(
         generation_basis = dict(brief.generation_basis or {})
         generation_basis.update(
             {
-                "generation_strategy": "hierarchical_brief_v1" if reduction_calls else "single_pass_brief_v1",
+                "generation_strategy": (
+                    "structured_brief_v2" if structured else
+                    "hierarchical_brief_v1" if reduction_calls else "single_pass_brief_v1"
+                ),
                 "prompt_template_sha256": hashlib.sha256(template.encode("utf-8")).hexdigest(),
                 "llm_model": effective_llm.model,
                 "max_input_tokens": max_input_tokens,
+                "max_output_tokens": settings.brief_ollama_num_predict if structured else None,
                 "estimated_final_input_tokens": estimated_final_input_tokens,
                 "source_input_chars": source_input_chars,
                 "source_video_count": len(video_urls),

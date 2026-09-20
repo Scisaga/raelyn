@@ -802,11 +802,13 @@ export function createPlaylistEventMapMethods() {
       this.playlistEventMapScheduleHighlights();
     },
     playlistEventMapHighlightRange(scope) {
-      const today = localToday();
-      const start = scope === "week" ? localWeekStart(today) : today;
       const windowStart = String(this.playlistEventMapWindowStart || "").slice(0, 10);
       const windowEnd = String(this.playlistEventMapWindowEnd || "").slice(0, 10);
-      if (!windowStart || !windowEnd || windowStart > today || windowEnd < start) return null;
+      if (!windowStart || !windowEnd) return null;
+      if (scope !== "week") return { scope: "24h" };
+      const today = localToday();
+      const start = localWeekStart(today);
+      if (windowStart > today || windowEnd < start) return null;
       return { start: windowStart > start ? windowStart : start, end: windowEnd < today ? windowEnd : today };
     },
     playlistEventMapHighlightAvailable(scope) { return Boolean(this.playlistEventMapHighlightRange(scope)); },
@@ -855,7 +857,7 @@ export function createPlaylistEventMapMethods() {
         : this.formatInteger(shown);
     },
     playlistEventMapHighlightStatusHint(scope) {
-      const label = scope === "week" ? "本周" : "今日";
+      const basis = scope === "week" ? "本周按事件发生日期筛选" : "24H事件按视频平台发布时间筛选过去 24 小时的视频";
       const data = this.playlistEventMapHighlightData(scope);
       const shown = this.formatInteger(this.playlistEventMapHighlightCount(scope));
       const total = this.formatInteger(this.playlistEventMapHighlightTotal(scope));
@@ -864,9 +866,9 @@ export function createPlaylistEventMapMethods() {
       const unavailable = Math.max(0, matched - Number(data?.total ?? 0));
       const imprecise = Math.max(0, Number(data?.excluded_imprecise_total || 0));
       const missingVideo = unavailable ? `；${this.formatInteger(unavailable)} 个事件没有可播放关联视频` : "";
-      const precision = imprecise ? `；已排除 ${this.formatInteger(imprecise)} 个只有月/年级日期的模糊事件` : "";
+      const precision = scope === "week" && imprecise ? `；已排除 ${this.formatInteger(imprecise)} 个只有月/年级日期的模糊事件` : "";
       const active = this.playlistEventMapHighlightProcessing(scope) ? "；星域后台任务正在运行" : "";
-      return `${label}按事件发生日期筛选，按多信源佐证强度排序，每个媒体最多 2 个视频；同一视频只显示一张卡片并连接全部入选事件；显示 ${shown}/${total} 个事件，关联 ${videos} 个视频${missingVideo}${precision}${active}`;
+      return `${basis}，按多信源佐证强度排序，每个媒体最多 2 个视频；同一视频只显示一张卡片并连接全部入选事件；显示 ${shown}/${total} 个事件，关联 ${videos} 个视频${missingVideo}${precision}${active}`;
     },
     playlistEventMapNormalizeHighlightData(payload) {
       const value = payload && typeof payload === "object" ? payload : {};
@@ -1016,12 +1018,16 @@ export function createPlaylistEventMapMethods() {
         if (!range) return null;
         const params = new URLSearchParams({
           snapshot_id: snapshotId,
-          event_date_start: range.start,
-          event_date_end: range.end,
           window_start: String(this.playlistEventMapWindowStart || "").slice(0, 10),
           window_end: String(this.playlistEventMapWindowEnd || "").slice(0, 10),
           limit: "10",
         });
+        if (range.scope === "24h") {
+          params.set("scope", "24h");
+        } else {
+          params.set("event_date_start", range.start);
+          params.set("event_date_end", range.end);
+        }
         if (this.playlistEventMapTypeFilter) params.set("event_type_code", String(this.playlistEventMapTypeFilter));
         if (this.playlistEventMapEntityFilter?.normalized_key) {
           params.set("normalized_key", String(this.playlistEventMapEntityFilter.normalized_key));
@@ -1202,15 +1208,6 @@ export function createPlaylistEventMapMethods() {
         .filter((item) => item?.parent_topic_index !== null && item?.parent_topic_index !== undefined && Number(item.parent_topic_index) === index && this.playlistEventMapTopicActiveCount(item) > 0)
         .map((item) => ({ ...item, canonical_count: this.playlistEventMapTopicActiveCount(item) }))
         .sort((left, right) => Number(right.canonical_count || 0) - Number(left.canonical_count || 0) || String(left.label || "").localeCompare(String(right.label || "")));
-    },
-    playlistEventMapCanonicalBreadcrumb() {
-      const detail = this.playlistEventMapSelectedDetail || {};
-      const topicId = String(detail?.topic?.topic_id || "");
-      const topic = topicId
-        ? (Array.isArray(this.playlistEventMapManifest?.topics) ? this.playlistEventMapManifest.topics : []).find((item) => String(item?.topic_id || "") === topicId)
-        : null;
-      const parent = topic ? this.playlistEventMapTopicParent(topic) : null;
-      return [parent, topic, detail?.title ? { label: detail.title, canonical: true } : null].filter(Boolean);
     },
     async playlistEventMapLoadTopicDetail(topic = this.playlistEventMapSelectedDetail) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim(); const snapshotId = String(this.playlistEventMapSnapshotId || "").trim(); const topicId = String(topic?.topic_id || "").trim();

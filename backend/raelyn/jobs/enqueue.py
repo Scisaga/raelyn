@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -382,6 +383,36 @@ def _merge_pending_dirty_job(existing: Job, params: dict[str, Any], priority: in
     existing.priority = max(int(existing.priority or 0), int(priority or 0))
 
 
+def _enqueue_postgres_pending_job(session: Session, job: Job) -> uuid.UUID:
+    # 全量同步会投递数万个不同视频任务；唯一索引原子去重，避免逐 key
+    # 的事务 advisory lock 一直累积到整个同步提交时才释放。
+    session.flush()
+    statement = pg_insert(Job).values(
+        id=job.id,
+        type=job.type,
+        status=job.status,
+        priority=job.priority,
+        dedupe_key=job.dedupe_key,
+        params=job.params,
+        scheduled_for=job.scheduled_for,
+        parent_job_id=job.parent_job_id,
+        max_attempts=job.max_attempts if job.max_attempts is not None else 5,
+    )
+    job_id = session.execute(
+        statement.on_conflict_do_update(
+            index_elements=[Job.dedupe_key],
+            index_where=text("dedupe_key is not null and status = 'pending'"),
+            # 保留已有任务的参数、排期、优先级与重试预算；返回其 ID。
+            set_={"dedupe_key": statement.excluded.dedupe_key},
+        ).returning(Job.id)
+    ).scalar_one()
+    if job_id == job.id:
+        event = JobEvent(job_id=job_id, level="info", message="enqueued", data={"type": job.type})
+        session.add(event)
+        session.flush([event])
+    return job_id
+
+
 def enqueue_job(
     session: Session,
     *,
@@ -394,6 +425,7 @@ def enqueue_job(
     max_attempts = _default_max_attempts(type_)
     dedupe_key, params2 = _normalize_dedupe_key_and_params(type_, params)
     job = Job(
+        id=uuid.uuid4(),
         type=type_,
         status="pending",
         priority=priority,
@@ -404,6 +436,13 @@ def enqueue_job(
         **({"max_attempts": max_attempts} if isinstance(max_attempts, int) else {}),
     )
     if dedupe_key:
+        # dirty outbox 的参数合并和 embedding 的 pending/running 去重仍需
+        # 原有事务锁；普通任务只按 pending 唯一索引原子入队。
+        if (
+            _session_dialect_name(session) == "postgresql"
+            and type_ not in {"playlist.mark_event_map_dirty", "event.backfill_embeddings"}
+        ):
+            return _enqueue_postgres_pending_job(session, job)
         _lock_pending_dedupe_key(session, dedupe_key)
         lock_existing = type_ == "playlist.mark_event_map_dirty"
         active_dedupe = type_ == "event.backfill_embeddings"

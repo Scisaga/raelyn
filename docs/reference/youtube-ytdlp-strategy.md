@@ -13,7 +13,7 @@
 - YouTube 的 `yt-dlp` 资料同步、频道头像下载和视频同步 / 下载可显式使用 `YTDLP_PROXY`；这只影响 YouTube yt-dlp 访问出口，不代表 ASR / LLM / Embedding 或其他头像抓取也走代理。
 - 不要从“cookies 会被轮换 / 会增加账号风险”推导出“cookies 不需要”。正确结论是：降低同步频率、降低并发、保持导出 cookies 的浏览器环境干净，并增加 PO Token Provider / impersonation，而不是盲目切到无 cookies。
 - `video.download.youtube` 默认使用 `YTDLP_COOKIES_YOUTUBE`，并通过 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 启用浏览器 impersonation；当前实测这是比单纯重启代理更接近浏览器成功路径的组合。
-- YouTube 频道 flat 列表有时只返回 `id/title/url/duration`，不返回 `timestamp/upload_date`。`media.sync_videos` 不再在同步循环里内联单视频 metadata 解析；若 flat 条目缺少发布时间，系统会投递低优先级 `video.enrich_metadata.youtube`，异步 best-effort 填充 `video.published_at/raw_info`，避免单个频道同步因逐条补 metadata 而超过执行心跳阈值。
+- YouTube 频道 flat 列表有时只返回 `id/title/url/duration`，不返回 `timestamp/upload_date`，也可能先把视频标成 `subscriber_only`。`media.sync_videos` 不再在同步循环里内联单视频 metadata 解析：普通缺失时间的视频投递低优先级 `video.enrich_metadata.youtube`；新发现或最近 7 天再次观测到的 `members_only` 视频则不受 flat 条目是否已有发布时间影响，立即投递优先级 8 的可用性监测。同一监测任务在详情仍受限时持续重排，详情明确返回 `public/unlisted` 后原子恢复为待下载并补投优先级 7 的下载任务，避免会员先享视频转公开后永久缺席播放列表。
 - 当同步任务持续触发 bot check 或 cookies 失效时，优先降低请求波峰，而不是反复更换 cookies。
 
 ## 2026-05-18 排障复盘
@@ -75,6 +75,8 @@ YouTube 频道资料同步从 yt-dlp 返回的 `thumbnails` 中优先选择 `ava
 
 其中 `youtube_auth_check` 可能由一次频道页瞬时下载失败触发：首次失败且任务仍有剩余 attempt 时，worker 只按任务退避重试，不立即暂停整个 YouTube provider；最终尝试仍失败才持久化 provider pause。`youtube_bot_check` 和明确 cookies 无效仍立即暂停，避免在真实风控下继续请求。
 
+鉴权检查错误会同时保留捕获到的底层诊断：HTTP 状态码、curl 错误码、超时、连接中断、DNS/TLS 错误或频道初始数据缺失。诊断只输出固定类别和数字码，不复制可能携带代理凭据、Cookie 或签名 URL 的原始日志；没有明确证据时显示“未捕获明确底层原因”。这只补齐排障证据，不改变 cookies、代理、`authcheck`、重试次数或 provider pause 策略。
+
 provider 暂停期间，若 `SYNC_PUBLIC_DISCOVERY_ENABLED=true`，自动同步会为到期媒体投递低波峰的 public discovery 任务，默认抓最新 `SYNC_PUBLIC_DISCOVERY_MAX_ENTRIES=200` 条。若无 cookies flat 抓取仍被平台挡住，任务只更新该媒体同步冷却并记录 `public_discovery_blocked`，不会覆盖原 provider pause。保存有效非空 cookies 后，配置 API 会清除对应 provider pause，并为该 provider 的受监控媒体补投 `force=true, max_entries=SYNC_COOKIE_RECOVERY_MAX_ENTRIES, download_priority=8` 的 catch-up 同步，默认 `200`。恢复任务按媒体稳定顺序均匀排在一个 `SYNC_INTERVAL_MINUTES` 周期内；同一媒体已有 pending 同步（包括 public discovery）时会原地转换为认证恢复并重新排期，避免 Cookie 更新后立即形成全量扫描波峰。
 
 如果 YouTube 频道同步在 yt-dlp 调用内卡住，没有及时抛出上述可识别错误，sync worker 的执行 watchdog 会先重启进程并释放锁。回收扫描会把 `media.sync_profile` / `media.sync_videos` 的执行心跳过期视为一次同步尝试失败，按 `max_attempts` 有上限地重试，且不提升 orphan 优先级；终止失败的 `media.sync_videos` 会推进该媒体的 `last_video_sync_at` 作为冷却时间，避免单个频道反复卡死时占住整个同步队列。
@@ -85,7 +87,7 @@ YouTube 媒体传输阶段若出现代理 `CONNECT ... 502`、`connection closed
 
 为避免代理整体故障时逐个消耗积压任务，系统另有独立的 YouTube 下载熔断：10 分钟窗口内至少 2 个不同下载 job 累计 4 次瞬时失败后，`app_config.youtube_download_circuit` 进入 open，worker 暂停领取新的 `video.download.youtube`。5 分钟后只允许一个 half-open 探测；探测仍失败时冷却依次提升到 15、30 分钟，任一真实媒体下载成功后关闭熔断并清空旧观测。熔断只改变新下载任务的 claim 时机，不重建 yt-dlp client、不切换 cookies 或代理，也不代替 cookies / bot check 对应的 provider pause。
 
-对 YouTube flat 条目缺失发布时间的场景，`media.sync_videos` 只做发现和幂等写入；flat 提取期间以 yt-dlp 的真实分页 / 条目日志刷新执行活动心跳，提取完成后和 entry 处理循环中继续刷新。万级频道的全量分页因此不会仅因总耗时超过 120 秒被误判卡死；如果 yt-dlp 长时间不再产生分页或条目活动，现有 watchdog 仍会回收任务。单视频详情解析由 `video.enrich_metadata.youtube` 独立执行：每个任务只处理一个 `video_id`，受 YouTube provider pause 与 sync provider advisory lock 控制，锁繁忙时延迟 30 秒重排，yt-dlp 详情解析有 45 秒可终止子进程硬超时。metadata 补全不需要媒体格式和签名 URL，因此固定使用 `web_safari` player client，并跳过 player config / JS challenge，避免详情任务被不必要的格式解析拖到超时。父进程会先接收子进程回传的 compact metadata，再等待子进程退出，避免较长 description 填满 IPC 管道后形成“父进程等退出、子进程等读取”的互等；`formats`、自动字幕、缩略图数组等完整 yt-dlp `info` 大对象仍不会跨进程回传。该补全是 best-effort，失败只影响对应补全任务，不阻塞视频发现、下载或后续同步。同一视频达到 `max_attempts` 终止失败后，自动同步不再为同一 `dedupe_key` 重复投递 metadata 补全；如需重试，应在失败任务上手动重试，或等待下载/后续真实 metadata 写入补齐发布时间。
+对 YouTube flat 条目缺失发布时间的场景，`media.sync_videos` 只做发现和幂等写入；flat 提取期间以 yt-dlp 的真实分页 / 条目日志刷新执行活动心跳，提取完成后和 entry 处理循环中继续刷新。万级频道的全量分页因此不会仅因总耗时超过 120 秒被误判卡死；如果 yt-dlp 长时间不再产生分页或条目活动，现有 watchdog 仍会回收任务。单视频详情解析由 `video.enrich_metadata.youtube` 独立执行：每个任务只处理一个 `video_id`，受 YouTube provider pause 与 sync provider advisory lock 控制，锁繁忙时延迟 30 秒重排，yt-dlp 详情解析有 45 秒可终止子进程硬超时。metadata 补全不需要媒体格式和签名 URL，因此固定使用 `web_safari` player client，并跳过 player config / JS challenge，避免详情任务被不必要的格式解析拖到超时。父进程会先接收子进程回传的 compact metadata，再等待子进程退出，避免较长 description 填满 IPC 管道后形成“父进程等退出、子进程等读取”的互等；compact payload 保留 `availability` 和复核时间。详情明确返回 `public/unlisted` 时会清除陈旧的 `members_only` 状态并按自动下载优先级投递下载；仍为会员内容或详情暂时没有明确可播放证据时保持原状态，并由同一 Job 持续监测：发现后 6 小时内每 10 分钟、当天每 30 分钟、7 天内每 2 小时、30 天内每 6 小时、之后每天复核一次。该退避既保证会员先享视频早期转公开时快速补抓，也避免永久会员内容长期高频请求。普通的缺失时间补全达到 `max_attempts` 后仍停止自动重复投递；最近 7 天的 `members_only` 状态在后续频道观测中会确保存在一个 pending/running 监测任务，已经建立的任务超过 7 天后仍继续重排。这个窗口只限制历史监测任务的自动补建，避免首次上线把数千条旧记录同时打向 YouTube。`formats`、自动字幕、缩略图数组等完整 yt-dlp `info` 大对象不会跨进程回传。
 
 bgutil PO Token Provider 的健康状态与 metadata 补全子进程回传路径是两类问题：`/ping` 正常、日志能生成 PO Token，只能证明 PO Token Provider 当前可用。2026-08-05 已确认旧实现会在较大 compact payload 上因“先 join、后读取”阻塞；当前已改为先读取 IPC 结果、再回收子进程。同一视频、cookie 与代理出口的 A/B 验证还确认：默认单视频解析进入 JS challenge 后 30 秒仍未返回，而 metadata-only 路径跳过 player config / JS 后约 7 秒返回发布时间。若之后仍出现 45 秒超时，才表示子进程没有在时限内产出结果，应继续排查 yt-dlp、代理或上游响应，而不是直接重启 bgutil 或更改 cookies。
 
@@ -118,6 +120,8 @@ yt-dlp 官方 PO Token Guide 当前推荐用 PO Token Provider plugin，尤其�
 
 本项目只接入 bgutil HTTP server 模式，不使用每次调用 yt-dlp 都拉起脚本的模式。HTTP server 模式更适合持续同步 / 下载任务，也更容易统一观测和重启。
 
+bgutil 插件与 HTTP server 当前均锁定 `2.0.0`。旧版 `<2.0.0` 存在 HTTP 服务远程代码执行风险，见 [上游安全公告 GHSA-qpv9-8xfj-xx9m](https://github.com/Brainicism/bgutil-ytdlp-pot-provider/security/advisories/GHSA-qpv9-8xfj-xx9m)。升级必须同时更新两端，主版本不一致时插件会拒绝生成 token。`2.0.0` Docker 镜像仍默认传入 `--host 0.0.0.0`，因此 Compose 显式覆盖为本机回环和 Docker 内部网关；独立原生部署只需监听回环地址。具体命令见 [运行与部署](run-and-deploy.md#可选youtube-po-token-providerbgutil)。
+
 启用方式：
 
 1. 运行 bgutil HTTP server，默认端口 `4416`。
@@ -133,7 +137,7 @@ yt-dlp 官方 PO Token Guide 当前推荐用 PO Token Provider plugin，尤其�
 
 ## 浏览器 Impersonation
 
-yt-dlp 官方 README 把 `curl_cffi` 列为推荐的浏览器 impersonation 支持库，可用于需要浏览器 TLS 指纹的站点。当前项目依赖固定 `curl_cffi>=0.15,<0.16`；`yt-dlp 2026.07.04` 的 `curl_cffi` 请求后端支持 `0.10.x` 到 `0.15.x`。
+yt-dlp 官方 README 把 `curl_cffi` 列为推荐的浏览器 impersonation 支持库，可用于需要浏览器 TLS 指纹的站点。当前项目依赖约束为 `curl_cffi>=0.16.3,<0.17`，锁定 `0.16.3`；`yt-dlp 2026.08.19` 已支持 `curl_cffi 0.16.x`。升级会加载新版浏览器指纹实现，需重启同步 / 下载 worker 并验证 YouTube 与 B 站访问；Cookies 和显式代理配置保持原有来源。
 
 当前默认：
 
@@ -146,6 +150,7 @@ yt-dlp 官方 README 把 `curl_cffi` 列为推荐的浏览器 impersonation 支�
 - 本地 `yt-dlp` 版本已更新到 `2026.08.19`，对应 PyPI 包版本 `2026.8.19`；`yt-dlp-ejs` 当前为 `0.8.0`。
 - 当前配置已有 `YTDLP_REMOTE_COMPONENTS=ejs:github`，用于 YouTube EJS / JS challenge 组件。
 - 当前支持通过 `YTDLP_POT_BGUTIL_BASE_URL` 启用 bgutil PO Token Provider HTTP server。
+- 当前 bgutil Python 插件与 Docker HTTP server 均为 `2.0.0`，`curl_cffi` 为 `0.16.3`。
 - 当前 YouTube 同步 / 下载固定注入已保存的 YouTube cookies；不再提供全局无 cookies 下载开关。
 - 历史 `_download_without_cookies` 任务参数只作为兼容清理对象存在，不允许作为新的自动重试策略。
 - 当前 YouTube `yt-dlp` 调用默认启用 `YTDLP_YOUTUBE_IMPERSONATE=chrome`。

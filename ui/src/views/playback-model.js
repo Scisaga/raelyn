@@ -195,9 +195,9 @@ export function createPlaybackViewMethods() {
       await this.playbackSetDate(next);
     },
 
-    async playbackSelectVideo(video, { autoPlay = true } = {}) {
+    async playbackSelectVideo(video, { autoPlay = true, seekSec = 0 } = {}) {
       if (!video?.id) return;
-      this.playbackPendingSeekSec = 0;
+      this.playbackPendingSeekSec = numericPosition(seekSec);
       this.playlistStopBriefSpeech({ clearError: true });
       await this.playlistSelectVideo(video, { autoPlay });
       this.playbackMobileTab = "transcript";
@@ -318,6 +318,7 @@ export function createPlaybackViewMethods() {
       this._abortCtrl("_playlistPlayableProbeAbortCtrl");
       this._abortCtrl("_playlistSelectAbortCtrl");
       this._abortCtrl("_playlistTranscriptVariantAbortCtrl");
+      this._playlistBriefEvidenceToken = Number(this._playlistBriefEvidenceToken || 0) + 1;
       this.playlistPendingAutoPlayId = "";
       this.playlistStopBriefSpeech({ clearError: true });
       this.playlistMediaPause();

@@ -68,25 +68,20 @@
 
 ### `GET /api/usage`
 
-- 供独立“资源用量”页面读取全局当前摘要、按日趋势与构成明细；接口只读，不在请求线程创建资源快照或投递任务。
-- query：`days=7|30|90`，默认 `30`；其他值返回 `422`。`window` 始终包含今天，所有日桶固定按 `Asia/Shanghai` 切分，当天桶可能仍在采样。
-- 响应顶层固定包含：
-  - `generated_at`：本次响应生成时间；
-  - `timezone="Asia/Shanghai"`；
-  - `window`：`days/start/end`；
-  - `summary`：当前规模与所选窗口调用 / 新增汇总；
-  - `series`：从 `start` 到 `end` 的逐日序列；
-  - `service_breakdown`：外部服务维度明细；
-  - `asset_breakdown`：当前逻辑资产构成；
-  - `collection`：采集起点、最近采样与物理磁盘接入状态。
-- `summary` 在每次 GET 中实时读取当前仍存在的来源记录数 `video_count`、具有视频资产的去重视频数 `downloaded_video_count`、资产数量、已知 `Asset.size_bytes` 之和、缺少 `size_bytes` 的资产数和数据库规模；`video_downloaded` 统计窗口内真实成功完成的视频下载次数。数据库规模仅在 PostgreSQL 下使用 `pg_database_size(current_database())`，包含表、索引和 TOAST；非 PostgreSQL 返回 `null`。
-- `summary.external_calls` 只汇总 LLM、ASR、Embedding 三类外部服务调用，不统计浏览器、前端刷新或站内 `/api/*` HTTP。`summary.llm_calls`、`summary.asr_calls`、`summary.embedding_calls` 提供三类服务的独立口径；三类服务分别以自己的第一条聚合记录作为采集起点，尚未开始采集的服务返回 `null`，不会因为另一类服务已有数据而伪报为 `0`。`llm_input_tokens/llm_output_tokens/llm_total_tokens` 只统计 LLM。窗口没有 LLM 采集覆盖，或覆盖内存在无法取得 usage、因而无法形成完整 token 总数的调用时，相应 token 汇总返回 `null`，不把已知部分冒充完整值。`series[]` 同样逐日返回 `external_calls`、`llm_calls`、`asr_calls` 与 `embedding_calls`。
-- `series[]` 每项包含 `date`、`video_downloaded`、`external_calls`、`llm_calls`、`llm_input_tokens`、`llm_output_tokens`、`llm_total_tokens`、`asset_size_bytes`、`database_size_bytes`、`usage_sampled` 和 `resource_sampled`。`video_downloaded` 只统计 `video.download|video.download.youtube|video.download.bilibili` 中状态为 `succeeded`、具有结果且结果不是 `skipped` 或 `rescheduled` 的任务，并按 `finished_at` 落入 `Asia/Shanghai` 日桶；强制重新下载成功会作为一次真实下载计入。服务调用从 `ExternalServiceUsageDaily` 读取，逻辑资产与数据库历史只从 `ResourceUsageDaily` 快照读取，不以当前值反推过去。
-- 未开始采集或缺失采样日桶中的调用字段、逻辑资产和数据库字段以 `null` 返回，不补成 `0`；调用分类字段按 LLM、ASR、Embedding 各自的采集起点独立判断，`usage_sampled` 只表示当日至少有一类外部服务已进入采集覆盖，`resource_sampled` 表示当日存在资源快照。只有确定获得相应服务或资源的采集覆盖且实测为零时才返回数值 `0`。`video_downloaded` 不依赖采样覆盖，没有成功下载时返回 `0`。当天存在快照、下载任务或调用聚合也只代表截至当前采样时刻的部分日数据。
-- `service_breakdown[]` 按 `service/operation/provider/model` 聚合所选窗口，返回 `calls`、`successes`、`failures`、`input_tokens`、`output_tokens`、`total_tokens`、`duration_ms`、`usage_missing_calls` 和 `last_called_at`。`service` 当前只允许 `llm|asr|embedding`；实时采集的成功与失败直接来自调用结果，不从最终 Job 状态倒推。一次性历史迁移生成的 `legacy.*` 行是明确例外：LLM 使用旧 Job 终态恢复结果，ASR 使用请求开始 / 成功事件按任务与尝试次数配对；两者都不虚构旧记录未完整保存的耗时。
-- `asset_breakdown[]` 按 `Asset.type` 返回 `asset_type/count/size_bytes/missing_size_count`；`size_bytes` 是数据库记录的逻辑资产量，不代表 S3/MinIO 所在主机的文件系统占用。
-- `collection` 返回 `usage_started_at`、`last_usage_at`、`resource_started_at`、`last_resource_snapshot_at`、`physical_storage_available` 和 `physical_storage_reason`。当前没有跨 Docker、本机与远端对象存储都可靠的物理磁盘容量来源，因此 `physical_storage_available=false`、原因明确为“未接入部署侧指标”，接口不返回伪造的磁盘总量、余量或百分比。
-- 历史用量由一次性任务 `system.backfill_legacy_usage` 恢复。LLM 从旧 `Job.result` 读取：简报与转写润色使用 `llm_usage`，事件抽取使用 `usage`；`VideoEventExtractionRun.usage_json` 与 Job 结果存在重复，因此不作为第二数据源。ASR 只回填带有 `asr request started` 的真实请求事件，并用同一任务、同一 `attempt` 的 `asr request succeeded` 判断成功；事件日志产生前的旧任务无法证明是否实际发起调用，因此不从任务数量推算。迁移行使用独立 `legacy.*` operation，可重复精确重建且不会覆盖实时采集行。
+- 供“资源用量”页读取当前规模、采集以来累计用量、按日趋势与构成明细；接口只读，不创建快照或投递任务。
+- query：`days=7|30|90`，默认 `30`，其他值返回 `422`。页面固定请求 `days=90`，不再提供周期切换。`window.days/start/end` 仅描述趋势和 `summary.video_downloaded` 的窗口；包含今天，按 `Asia/Shanghai` 归日，当天数据截至当前采集时刻。
+- 响应顶层包含 `generated_at`、`timezone`、`window`、`summary`、`series`、`service_breakdown`、`asset_breakdown`、`collection`。
+- `summary` 实时读取当前来源记录数 `video_count`、具有视频资产的去重视频数 `downloaded_video_count`、资产数量 `asset_count`、已知 `Asset.size_bytes` 之和 `asset_size_bytes`、缺少大小的资产数 `asset_missing_size_count`、数据库规模 `database_size_bytes`；这些值与 days 无关。页面不再展示未知大小资产，接口字段保留兼容。
+- `summary.video_downloaded` 是窗口内真实成功完成的下载任务次数。只统计 `video.download|video.download.youtube|video.download.bilibili` 中状态为 `succeeded`、具有结果且未 `skipped/rescheduled` 的任务，按 `finished_at` 归日；强制重新下载成功也计一次。来源发现、批量迁移不计作下载。
+- `summary.external_calls`、`llm_calls/asr_calls/embedding_calls` 和 `llm_input_tokens/llm_output_tokens/llm_total_tokens` 改为截至今天、**采集以来累计**，不受 days 限制。外部调用只包括 LLM、ASR、Embedding，不含站内 HTTP。各服务独立以自己的第一条日聚合记录判断采集覆盖；未采集的服务返回 `null`。
+- 缺失 LLM usage 的调用按 0 贡献统计，同一天其他调用的已知 Token 全部保留，不再因为一次缺失将整个日桶或累计返回 `null`。`summary.llm_usage_missing_calls` 和 `series[].llm_usage_missing_calls` 表示相应累计/日桶的缺失调用数；有采集覆盖返回整数，未采集返回 `null`。全为缺失调用的已采集区间返回 Token 0 和非零缺失数。结果是已记录用量，不代表完整账单，不对日总量做线性插值。
+- `series[]` 包含 `date`、`video_downloaded`、`external_calls`、各服务 `*_calls`、三个 LLM Token 字段、`llm_usage_missing_calls`、`asset_size_bytes`、`asset_size_estimate_bytes`、`database_size_bytes`、`usage_sampled`、`resource_sampled`，只输出 window 范围。服务调用读取 `ExternalServiceUsageDaily`，实测存储历史读取 `ResourceUsageDaily`。
+- `asset_size_estimate_bytes` 保存逻辑资产历史回溯值：首次资源快照之前，按现存资产 `created_at` 换算上海日期，并将当日及之前已知 `size_bytes` 累计为日末规模。窗口前资产计入起始库存；首次已知大小资产之前保持 `null`。没有任何快照时可回溯到当天。已删除资产及替换前的大小无法恢复，回溯值不写入快照、不改变 `asset_size_bytes` 或 `resource_sampled`。首次快照当天及之后保持该字段为 `null`，不填补采集中断；数据库没有历史估算。前端逐日优先采用 `asset_size_bytes`（包括实际零值），仅在其为 `null` 时使用回溯值，统一绘制“逻辑资产”实线；API 仍保留来源区分。
+- 服务采集起点之前返回 `null`，起点后无调用日返回 0；某类服务有数据不能让未采集的另一类服务返回 0。`usage_sampled` 表示当日至少一种服务进入采集覆盖；`resource_sampled` 表示当日存在资源快照。无资源快照的存储字段保持 `null`，没有成功下载的日桶 `video_downloaded` 为 0。
+- `service_breakdown[]` 按 `service/operation/provider/model` 聚合**采集以来**的调用，返回 `calls/successes/failures/input_tokens/output_tokens/total_tokens/duration_ms/usage_missing_calls/last_called_at`。实时成功、失败直接来自调用结果；历史 `legacy.*` 行保留迁移来源，不虚构未保存的耗时。累计调用、Token 与全历史明细合计一致，但不要求等于所选窗口的趋势之和。
+- `asset_breakdown[]` 返回当前 `asset_type/count/size_bytes/missing_size_count`。`size_bytes` 是已知逻辑资产量，不代表物理文件系统占用。数据库仅在 PostgreSQL 下读取 `pg_database_size(current_database())`，包含表、索引和 TOAST；非 PostgreSQL 返回 `null`，页面显示“不可用”。
+- `collection` 包含 `usage_started_at/last_usage_at/resource_started_at/last_resource_snapshot_at/physical_storage_available/physical_storage_reason`。当前物理磁盘尚无可靠部署侧来源，`physical_storage_available=false`，不把逻辑资产与数据库相加标为磁盘实际占用或百分比。存在快照时间也不等于链路健康。
+- 一次性任务 `system.backfill_legacy_usage` 从旧 `Job.result` 的 `usage/llm_usage` 恢复 LLM 历史；不重复累计 `VideoEventExtractionRun.usage_json`。ASR 仅恢复有真实 `asr request started` 事件的请求，以相同任务及 attempt 的成功事件判定成功，无请求事件的旧任务不按任务数量推算。`legacy.*` 行可重建且不覆盖实时采集。
 
 ## Media
 
@@ -152,14 +147,14 @@
 - query：`scope=recent|all`
 - 只对已启用监控的媒体批量投递同步任务。
 - `scope=recent`：同步近期视频；新发现视频会按配置自动投递下载。
-- `scope=all`：全量发现历史视频，并给库里已发现但尚未下载成功的历史视频补投下载。
+- `scope=all`：全量发现历史视频，并给库里已发现但尚未下载成功的历史视频补投下载；其中发布时间在最近 24 小时内的视频下载优先级至少为 8，避免被历史积压阻塞。
 
 ### `POST /api/media/{media_id}/sync`
 
 - query：`scope=recent|all`
 - 投递单个媒体的资料同步和视频同步任务。
 - `scope=recent`：只处理近期窗口。
-- `scope=all`：除了全量发现历史视频，还会补投该媒体下仍处于待下载状态的历史视频。
+- `scope=all`：除了全量发现历史视频，还会补投该媒体下仍处于待下载状态的历史视频；最近 24 小时的视频同样至少使用下载优先级 8。
 - 若媒体正在删除中，返回 `409`。
 
 ### `GET /api/cleanup/stale-videos`
@@ -463,9 +458,9 @@
 
 ### `GET /api/domains/{domain_id}/event-highlights`
 
-- query：必填 `event_date_start`、`event_date_end`（按快照冻结的事件日历日解释、含首尾，最长 7 天）；可选 `window_start`、`window_end`、`snapshot_id`、`event_type_code`、`normalized_key`、`entity_type`、`topic_id` 和 `limit`（1–10，默认 10）。日期范围超过七天返回 `400`。接口按事件发生日期筛选 canonical，视频发布时间不参与事件入选。
-- 只把 `time_precision in ('second', 'day')` 的事件作为“今日 / 本周”精确焦点；只有月、年或未知精度的事件不会在整月、整年每天冒充当日事件。固定快照、观察窗口、类型、实体和主题条件在事件排序前共同生效，主题内空结果不会回退到全域。
-- 返回 `matched_event_total`、具有可播放关联视频的 `total`、实际展示的 `shown_total`、所选 `video_total`、单媒体视频上限 `max_cards_per_media`（固定为 2）、被精度规则排除的 `excluded_imprecise_total`，以及全部精确匹配事件的 `point_indices[]`。星图用完整 `point_indices[]` 突出当前日期焦点；`items[]` 承载最多十个入选事件，且 `canonical_id` 唯一。每项包含事件标题、摘要、发生时间、证据强度 `ranking_factors`、一级主题，以及一个 `primary_video`（`media_id`、媒体名、媒体头像 AssetRef `media_avatar_asset`、标题、缩略图 AssetRef、精确播放位置、时长和来源时间）。事件先按跨媒体/跨视频佐证、成员数、时间可靠性和稳定 tie-break 排序，再按原顺序选择尚未达到媒体上限的不同视频；某事件有多个真实关联视频时，优先选择当前占位更少的媒体。接口仍保持事件级事实结构；前端按 `primary_video.video_id` 将多个事件合成一张空间卡片并保留全部事件连线，因此卡片数可以少于 `shown_total`。该顺序衡量可审计的证据强度，不声称是尚未物化的市场影响重要度。媒体上限只影响视频卡，全部精确事件仍保留在 `point_indices[]` 中参与星图高亮。
+- query：`scope=event_date|24h`，默认 `event_date`。`event_date` 模式必填 `event_date_start`、`event_date_end`（快照冻结的事件日历日、含首尾，最长 7 天），缺少日期或超过七天返回 `400`；`24h` 模式不需要事件日期，由服务端用一次 UTC 当前时刻确定 `[now-24h, now]`，按 `Video.published_at`（平台原始发布时间）筛选当前观测域视频及其快照事件，未知和未来发布时间不入选，视频卡也只能取该范围内的视频。两种模式均可传 `window_start`、`window_end`、`snapshot_id`、`event_type_code`、`normalized_key`、`entity_type`、`topic_id` 和 `limit`（1–10，默认 10）。
+- `event_date` 模式只选择 `time_precision in ('second', 'day')` 的事件；`24h` 模式不按事件日期精度排除，因为焦点由视频发布时间决定。固定快照、观察窗口、类型、实体和主题条件在事件排序前共同生效，主题内空结果不会回退到全域。响应增加 `scope`、`published_since`、`published_before`；`24h` 模式返回实际筛选的 UTC 时间边界，`event_date_start/end` 为 null，`excluded_imprecise_total` 为 0；日期模式的发布时间边界为 null。
+- 返回 `matched_event_total`、具有可播放关联视频的 `total`、实际展示的 `shown_total`、所选 `video_total`、单媒体视频上限 `max_cards_per_media`（固定为 2）、被精度规则排除的 `excluded_imprecise_total`，以及全部匹配事件的 `point_indices[]`。星图用完整 `point_indices[]` 突出当前时间焦点；`items[]` 承载最多十个入选事件，且 `canonical_id` 唯一。每项包含事件标题、摘要、发生时间、证据强度 `ranking_factors`、一级主题，以及一个 `primary_video`（`media_id`、媒体名、媒体头像 AssetRef `media_avatar_asset`、标题、缩略图 AssetRef、精确播放位置、时长和来源时间）。事件先按跨媒体/跨视频佐证、成员数、时间可靠性和稳定 tie-break 排序，再按原顺序选择尚未达到媒体上限的不同视频；某事件有多个真实关联视频时，优先选择当前占位更少的媒体。接口仍保持事件级事实结构；前端按 `primary_video.video_id` 将多个事件合成一张空间卡片并保留全部事件连线，因此卡片数可以少于 `shown_total`。该顺序衡量可审计的证据强度，不声称是尚未物化的市场影响重要度。媒体上限只影响视频卡，全部匹配事件仍保留在 `point_indices[]` 中参与星图高亮。
 
 ### `GET /api/playlists/{playlist_id}/events/map/topic/{topic_id}`
 
@@ -583,7 +578,7 @@
 
 ### `GET /api/domains/{domain_id}/stories/{story_identity_id}`
 
-- query 可选 `snapshot_id`；省略时读取 current ready，显式指定时航迹固定到该历史 ready 快照且不回退。
+- query 可选 `snapshot_id`；省略时优先读取 current ready 对应修订，没有可用 current 修订时读取最新长期修订；显式指定时固定到该故事历史修订且不回退到 current。故事历史正文独立于可裁剪的三维场景快照。
 - 返回 `stable_title`、所选 `selected_revision`、可读的 `trajectory.nodes/edges`、相对最后阅读修订的具名 `reading_update`、仅含实质变化的 `material_history`、合并后的 `audit_summary`、阅读状态与相关简报。若期间发生过实质变化但当前净结构已恢复，`reading_update.returned_to_previous_state=true` 并返回期间变化次数与类型，不伪造净增减。兼容期继续返回 `current_trajectory` 别名和旧历史字段。
 - 节点返回标题、摘要、起止时间、时间精度、事件类型、成员数和不确定性；同一发生时间的节点保留所选 story revision 的成员顺序。边返回中文关系、两端事件标题、支持记录数，以及已有两端命题、摘录和时间间隔。它们用于解释系统为何建立关系，不代表每一段摘录已经完成严格的逐段关系归因。
 - 历史深链接中的标题、进展、节点、关系和简报上下文全部来自所选 revision，不能混入 current 数据。
@@ -601,6 +596,7 @@
 ### `GET /api/briefs/{brief_id}/structured`
 
 - 返回简报生成快照、生成口径、正文地址和按正文锚点排序的结构化引用。
+- 故事引用行的 `snapshot_id` 只表示简报生成时的来源版本，用于审计；主 `web_url` 指向稳定故事身份，并通过 `focus_canonical_id` 指定应在当前故事中高亮的阶段，不用该快照约束默认阅读。`context` 同时返回该关系的 `source_canonical_id`、`target_canonical_id` 和 `focus_canonical_id`。旧引用缺少阶段 ID 时，客户端可从长期故事修订中的 `edge_id` 解析目标阶段。
 
 ### `GET /api/domains/{domain_id}/objects/{object_type}/{object_id}/brief-references`
 

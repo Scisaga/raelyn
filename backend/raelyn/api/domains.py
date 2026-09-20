@@ -334,8 +334,9 @@ def list_domain_canonicals(
 @router.get("/domains/{playlist_id}/event-highlights")
 def get_domain_event_highlights(
     playlist_id: uuid.UUID,
-    event_date_start: date,
-    event_date_end: date,
+    event_date_start: date | None = None,
+    event_date_end: date | None = None,
+    scope: Literal["event_date", "24h"] = "event_date",
     window_start: date | None = None,
     window_end: date | None = None,
     snapshot_id: uuid.UUID | None = None,
@@ -355,6 +356,7 @@ def get_domain_event_highlights(
                 snapshot_id=snapshot_id,
                 event_date_start=event_date_start,
                 event_date_end=event_date_end,
+                scope=scope,
                 window_start=window_start,
                 window_end=window_end,
                 event_type_code=event_type_code,

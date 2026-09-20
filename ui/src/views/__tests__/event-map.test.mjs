@@ -812,7 +812,7 @@ test("事件语义星域状态与控制合并在同一工具栏", async () => {
   const template = await readFile(new URL("../../../templates/app/views/field-v2.html", import.meta.url), "utf8");
   const styles = await readFile(new URL("../../../input.css", import.meta.url), "utf8");
   const section = template.slice(template.indexOf("<!-- V2 事件语义星域：独立于来源播放与旧设置。 -->"));
-  assert.match(section, /<header class="raelyn-surface-toolbar shrink-0 border-b border-slate-800">[\s\S]*?今日事件[\s\S]*?本周事件[\s\S]*?<\/header>/);
+  assert.match(section, /<header class="raelyn-surface-toolbar shrink-0 border-b border-slate-800">[\s\S]*?24H事件[\s\S]*?本周事件[\s\S]*?<\/header>/);
   assert.doesNotMatch(section, />截至</);
   assert.doesNotMatch(section, /\['now','replay','story','verify'\]/);
   assert.match(section, /class="raelyn-field-toolbar-layout px-4 py-2"/);

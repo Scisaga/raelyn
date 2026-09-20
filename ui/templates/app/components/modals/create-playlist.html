@@ -57,25 +57,14 @@
               </div>
             </div>
 
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div class="space-y-1">
-                <div class="text-xs text-slate-300">头像（方形，≤2MB）</div>
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  class="block w-full text-xs text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-slate-950 hover:file:bg-white"
-                  @change="createPlaylistAvatarFile = $event.target.files && $event.target.files[0] ? $event.target.files[0] : null"
-                />
-              </div>
-              <div class="space-y-1">
-                <div class="text-xs text-slate-300">背景（cover 填充，≤2MB）</div>
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  class="block w-full text-xs text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-slate-950 hover:file:bg-white"
-                  @change="createPlaylistBackgroundFile = $event.target.files && $event.target.files[0] ? $event.target.files[0] : null"
-                />
-              </div>
+            <div class="space-y-1">
+              <div class="text-xs text-slate-300">头图（方形，≤2MB）</div>
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                class="block w-full text-xs text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-slate-950 hover:file:bg-white"
+                @change="createPlaylistAvatarFile = $event.target.files && $event.target.files[0] ? $event.target.files[0] : null"
+              />
             </div>
 
             <div class="flex items-center justify-end gap-2">

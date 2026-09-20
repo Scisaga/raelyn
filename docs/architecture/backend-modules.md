@@ -26,7 +26,7 @@
 当前任务链：
 
 - `media.sync_videos`：轻量发现新视频，用平台 flat 列表信息幂等写入 `video`，并按配置决定是否自动下载；YouTube flat 条目缺少发布时间时只投递异步补全任务。
-- `video.enrich_metadata.youtube`：低优先级、best-effort 补全单个 YouTube 视频的 `raw_info/published_at`，不阻塞媒体同步。
+- `video.enrich_metadata.youtube`：补全单个 YouTube 视频的 `raw_info/published_at`，并持续监测 `members_only → public/unlisted` 状态变化，不阻塞媒体同步。
 - `video.download.youtube` / `video.download.bilibili`：下载视频、缩略图、字幕等原始产物。
 - `video.backfill_subtitles.youtube` / `video.backfill_subtitles.bilibili`：对已采集视频执行 subtitle-only 回补，只用 yt-dlp `skip_download` 抓取字幕 / 自动字幕并落 raw subtitle asset。
 - `video.extract_audio`：提取音频资产，供移动播放和 ASR 使用。
@@ -37,8 +37,9 @@
 当前边界：
 
 - `media.sync_videos` 同一媒体运行时互斥；重复发现同一平台视频时依赖 `video(provider, provider_video_id)` 唯一键执行幂等插入。
-- `media.sync_videos` 不再为 YouTube 缺失发布时间的视频内联调用单视频详情解析；新发现视频和已存在但 `published_at is null` 的视频会投递 `video.enrich_metadata.youtube`，同步任务结果会记录 `metadata_enrichment_enqueued`。
-- `video.enrich_metadata.youtube` 归属 `sync` worker role，复用 YouTube provider pause 与 sync provider advisory lock；拿不到锁时延迟 30 秒重排。单次只处理一个 `video_id`，单视频 yt-dlp 详情解析有 45 秒硬超时；metadata-only 提取跳过不需要的 player config / JS challenge，父进程先接收 compact IPC 结果再回收子进程，超时只影响该补全任务。同一视频达到 `max_attempts` 终止失败后，后续自动同步不会再为同一 `dedupe_key` 重复投递补全任务。
+- 下载任务按单条视频的发布时间确定最终优先级：无论来自常规同步、宽窗口发现还是全量历史补漏，`published_at` 距当前不足 24 小时的视频至少使用优先级 8；历史任务保持调用方原优先级。YouTube flat 条目起初缺少发布时间时，详情补全确认其属于最近 24 小时后会提升已有 pending 下载任务，而不重复创建任务。
+- `media.sync_videos` 不再为 YouTube 缺失发布时间的视频内联调用单视频详情解析；新发现视频和已存在但 `published_at is null` 的视频会投递 `video.enrich_metadata.youtube`。新发现或最近 7 天再次观测到的 `members_only` 视频，无论 flat 条目是否已有发布时间都会立即投递优先级 8 的详情监测；同步任务结果记录 `metadata_enrichment_enqueued`。已建立的监测任务超过 7 天后仍会继续重排，该窗口仅避免历史存量首次上线时形成请求洪峰。
+- `video.enrich_metadata.youtube` 归属 `sync` worker role，复用 YouTube provider pause 与 sync provider advisory lock；拿不到锁时延迟 30 秒重排。单次只处理一个 `video_id`，单视频 yt-dlp 详情解析有 45 秒硬超时；metadata-only 提取跳过不需要的 player config / JS challenge，父进程先接收 compact IPC 结果再回收子进程。普通缺失时间补全达到 `max_attempts` 后停止自动重投；会员可用性监测在仍受限时按 10 分钟到 24 小时的分段退避持续重排，并在后续频道观测时确保不会因旧终态任务永久漏检。详情明确变为 `public/unlisted` 后，同一事务恢复视频状态并补投下载。
 - YouTube metadata 补全只在缺失时写入 `published_at`、`thumbnail_url`、`duration_sec`，不会覆盖已有标题；若 `published_at` 从空变为有值，会触发播放列表事件时间轴 dirty 标记。
 - 正常视频下载链路的字幕下载是否开启由运行时配置 `ytdlp_subtitles` 决定；显式字幕回补任务不依赖该开关，因为任务本身就是人工发起的 subtitle-only 抓取。
 - `video.download.*` 只会把 yt-dlp 产出且经 FFprobe 确认同时包含视频、音频 packet 的可播放容器登记为 `video` asset；YouTube 某次格式产物无有效 packet 时会清理该次临时产物并进入下一个格式 selector。`.ytdl` 断点状态、`.info.json`、缩略图、字幕和纯音频片段不会进入 `video.extract_audio` 链路。

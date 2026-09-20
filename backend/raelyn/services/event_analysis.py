@@ -60,7 +60,7 @@ from raelyn.timeutil import utcnow
 
 
 EVENT_EXTRACTION_PROMPT_CONFIG_KEY = "llm_event_extraction_prompt"
-EVENT_EXTRACTION_PROMPT_BASE_VERSION = "llm_event_v4_explicit_relation_endpoints"
+EVENT_EXTRACTION_PROMPT_BASE_VERSION = "llm_event_v5_bounded_response"
 EVENT_ACCEPT_CONFIDENCE = 0.8
 EVENT_BATCH_MAX_VIDEOS = 1
 EVENT_BATCH_MAX_SOURCE_CHARS = 10000
@@ -417,7 +417,35 @@ def _event_llm_model_lock(session: Session):
         yield
 
 
-def _generate_event_extraction_llm(session: Session, *, prompt: str) -> dict[str, Any]:
+def event_extraction_response_schema(expected_video_ids: Sequence[str]) -> dict[str, Any]:
+    """限制响应容器，防止同一视频反复展开耗尽输出额度；事件事实仍由提示词约束。"""
+
+    return {
+        "type": "object",
+        "properties": {
+            "videos": {
+                "type": "array",
+                "minItems": len(expected_video_ids),
+                "maxItems": len(expected_video_ids),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "video_id": {"type": "string", "enum": list(expected_video_ids)},
+                        "events": {"type": "array", "maxItems": 4, "items": {"type": "object"}},
+                    },
+                    "required": ["video_id", "events"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["videos"],
+        "additionalProperties": False,
+    }
+
+
+def _generate_event_extraction_llm(
+    session: Session, *, prompt: str, expected_video_ids: Sequence[str] = (),
+) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "prompt": prompt,
         "think": False,
@@ -426,6 +454,8 @@ def _generate_event_extraction_llm(session: Session, *, prompt: str) -> dict[str
         "usage_operation": "event_extraction",
     }
     if _effective_llm_is_ollama_generate(session):
+        if expected_video_ids:
+            kwargs["response_format"] = event_extraction_response_schema(expected_video_ids)
         kwargs["stream"] = bool(settings.event_extraction_ollama_stream)
         idle_timeout = _positive_int(settings.event_extraction_ollama_idle_timeout_seconds, 120)
         if idle_timeout > 0:
@@ -553,6 +583,10 @@ def parse_event_extraction_batch_response(
         if alias not in expected_set:
             warnings.append(f"videos[{video_idx}] dropped: unexpected video_id {alias or '<empty>'}")
             continue
+        if alias in declared_videos:
+            structural_warnings.append(f"event extraction response repeats video_id {alias}")
+            structurally_invalid_videos.add(alias)
+            continue
         declared_videos.add(alias)
         raw_events = raw_video.get("events")
         if not isinstance(raw_events, list):
@@ -659,6 +693,7 @@ def _parse_event_extraction_batch_response_with_json_repair(
     assert initial_parse_error is not None
     repair_result = _generate_event_extraction_llm(
         session,
+        expected_video_ids=expected_video_ids,
         prompt=_render_event_extraction_json_repair_prompt(
             malformed_text=response_text,
             parse_error=initial_parse_error,
@@ -885,6 +920,14 @@ def _render_event_batch_prompt(
         )
 
     max_events = 4 if compact else 6
+    max_objects = 3 if compact else 5
+    max_relations = 2 if compact else 4
+    max_summary_chars = 80 if compact else 120
+    magnitude_rule = (
+        "不要输出 magnitude / surprise_or_delta 或其他 schema 外字段。"
+        if compact
+        else "magnitude / surprise_or_delta 没有明确数值时只保留空结构，不要在 description 里扩写背景。"
+    )
     protocol = f"""
 v3 输出协议：
 - 顶层必须是 {{"videos": [...]}}，每个输入 video_id 必须出现一次。
@@ -893,9 +936,9 @@ v3 输出协议：
 - sports celebration、皇室婚礼、娱乐闲聊、普通人物故事等没有可验证金融市场影响对象的内容应输出 events: []。
 - 如果输入内有多个视频，不要把一个视频的事实归到另一个 video_id。
 - 每个 video 最多输出 {max_events} 个置信度最高、市场影响对象最明确的事件；不足 {max_events} 个就输出更少，不要为了凑数扩写。
-- 每个事件的 summary 最多 120 个中文字；entities / assets / sectors / macro_variables 各最多 5 项，cause_effect_chain 最多 4 项。
+- 每个事件的 summary 最多 {max_summary_chars} 个中文字；entities / assets / sectors / macro_variables 各最多 {max_objects} 项，cause_effect_chain 最多 {max_relations} 项。
 - cause / effect 必须是自然语言命题；每条关系必须同时输出 source_entity_key / target_entity_key。端点键只能精确引用同事件四类对象按后端 normalized_key 规则得到的唯一键，没有对应实体时用空字符串；禁止用 cause / effect 猜测或代替端点键。
-- magnitude / surprise_or_delta 没有明确数值时只保留空结构，不要在 description 里扩写背景。
+- {magnitude_rule}
 - 不要输出同义重复实体、无证据实体或为贴合格式而补全的空泛对象。
 """.strip()
     prompt_text = COMPACT_EVENT_EXTRACTION_PROMPT if compact else spec.prompt_text
@@ -1755,9 +1798,9 @@ def extract_video_events_batch(
             chunk_label=", ".join([item[3] for item in batch]),
             compact=_effective_llm_is_ollama_generate(session),
         )
-        result = _generate_event_extraction_llm(session, prompt=prompt)
-        _merge_event_extraction_usage(usage, result.get("usage"))
         expected_aliases = [prepared_video.alias for prepared_video in batch_videos]
+        result = _generate_event_extraction_llm(session, prompt=prompt, expected_video_ids=expected_aliases)
+        _merge_event_extraction_usage(usage, result.get("usage"))
         response_structure_error: _EventExtractionResponseError | None = None
         try:
             parsed_by_alias, parse_warnings, repair_usage = (

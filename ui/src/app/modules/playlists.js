@@ -12,7 +12,6 @@ export function createPlaylistsModule() {
     createPlaylistMediaTagQuery: "",
     createPlaylistMediaTagOpen: false,
     createPlaylistAvatarFile: null,
-    createPlaylistBackgroundFile: null,
     playlistPageId: null,
     playlistDetail: null,
     playlistSubview: "main",
@@ -188,6 +187,7 @@ export function createPlaylistsModule() {
     playlistBriefDragDidMove: false,
     playlistBriefSettling: false,
     playlistBriefDragSuppressClickUntil: 0,
+    _playlistBriefEvidenceToken: 0,
     playlistDownloadSubmitting: false,
     playlistPeriodCounts: new Map(),
     playlistPeriodCountsKey: "",
@@ -237,5 +237,6 @@ export function createPlaylistsModule() {
     playlistVideoTranscriptCache: new Map(),
     playlistBriefHtmlCache: new Map(),
     playlistBriefMarkdownCache: new Map(),
+    playlistBriefDetailCache: new Map(),
   };
 }

@@ -164,6 +164,24 @@ def _raise_if_cookie_invalid_messages(msgs: list[str], *, provider: str | None =
         raise YtdlpCookiesInvalidError(reason, f"{cfg_name} 无效，请在 UI -> 设置 更新 {label} cookies.txt。", provider=p)
 
 
+def _youtube_authcheck_diagnostics(msgs: list[str]) -> str:
+    # 只保留固定类别和数字错误码；yt-dlp 原始日志可能含代理凭据和签名 URL。
+    combined = _normalize_msg("\n".join(msgs))
+    details = [f"HTTP {code}" for code in dict.fromkeys(re.findall(r"http(?: error)?[ :]+([45]\d\d)\b", combined))]
+    details.extend(f"curl {code}" for code in dict.fromkeys(re.findall(r"curl:\s*\((\d+)\)", combined)))
+    for patterns, label in (
+        (("timed out", "timeout"), "网络超时"),
+        (("connection reset", "connection closed", "connection refused"), "连接中断或被拒绝"),
+        (("could not resolve", "name resolution"), "DNS 解析失败"),
+        (("certificate verify failed", "ssl certificate problem"), "TLS 证书校验失败"),
+        (("unable to download webpage",), "频道网页下载失败"),
+        (("unable to extract initial data", "unable to extract yt initial data"), "频道页初始数据缺失"),
+    ):
+        if any(pattern in combined for pattern in patterns):
+            details.append(label)
+    return "、".join(details) or "未捕获明确底层原因"
+
+
 def _raise_if_youtube_bot_check_messages(
     msgs: list[str],
     *,
@@ -183,6 +201,7 @@ def _raise_if_youtube_bot_check_messages(
             message=(
                 "YouTube同步任务已暂停：YouTube 频道/播放列表鉴权检查失败，但这不一定是 cookies 失效。"
                 "若不是私有内容，请优先检查 cookies 导出会话、YTDLP_PROXY 出口、bgutil PO Token Provider 和同步频率。"
+                f"底层诊断：{_youtube_authcheck_diagnostics(msgs)}。"
                 f"环境信息：pot_provider={_youtube_pot_provider_desc()}，impersonate={_youtube_impersonate_desc()}。"
             ),
         )

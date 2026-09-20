@@ -2270,9 +2270,13 @@ def bootstrap_v2_event_map_history(session: Session) -> int:
                 parent_snapshot_id=snapshot.parent_snapshot_id,
             )
         if exists is not None:
+            # 历史关系索引以观测域开头；仅按 snapshot_id 检查会扫描跨域历史。
             membership_exists = session.execute(
                 select(EventMapCanonicalHistoryMember.history_revision_id)
-                .where(EventMapCanonicalHistoryMember.snapshot_id == snapshot.id)
+                .where(
+                    EventMapCanonicalHistoryMember.playlist_id == snapshot.playlist_id,
+                    EventMapCanonicalHistoryMember.snapshot_id == snapshot.id,
+                )
                 .limit(1)
             ).scalar_one_or_none()
             if membership_exists is None:
@@ -2293,7 +2297,10 @@ def bootstrap_v2_event_map_history(session: Session) -> int:
                 completed += 1
             story_evidence_exists = session.execute(
                 select(EventMapStoryHistoryEvidence.history_revision_id)
-                .where(EventMapStoryHistoryEvidence.snapshot_id == snapshot.id)
+                .where(
+                    EventMapStoryHistoryEvidence.playlist_id == snapshot.playlist_id,
+                    EventMapStoryHistoryEvidence.snapshot_id == snapshot.id,
+                )
                 .limit(1)
             ).scalar_one_or_none()
             if story_evidence_exists is None:

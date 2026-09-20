@@ -184,6 +184,7 @@ def _read_ollama_stream_response(
     started_at = time.monotonic()
     first_token_at: float | None = None
     chunks = 0
+    thinking_chars = 0
     text_parts: list[str] = []
     final_payload: dict[str, Any] = {}
 
@@ -199,6 +200,7 @@ def _read_ollama_stream_response(
             if not item:
                 continue
             chunks += 1
+            thinking_chars += len(str(item.get("thinking") or ""))
             piece = item.get("response")
             if piece:
                 if first_token_at is None:
@@ -212,6 +214,7 @@ def _read_ollama_stream_response(
         "stream": True,
         "stream_chunks": chunks,
         "done": bool(final_payload.get("done")),
+        "thinking_chars": thinking_chars,
     }
     if first_token_at is not None:
         meta["first_token_seconds"] = round(first_token_at - started_at, 3)
@@ -229,7 +232,7 @@ def llm_generate(
     *,
     prompt: str,
     think: bool | str | None = None,
-    response_format: Literal["json"] | None = None,
+    response_format: Literal["json"] | dict[str, Any] | None = None,
     options: dict[str, Any] | None = None,
     stream: bool | None = None,
     idle_timeout_seconds: int | None = None,
@@ -256,8 +259,8 @@ def llm_generate(
         }
         if think is not None:
             payload["think"] = think
-        if response_format == "json":
-            payload["format"] = "json"
+        if response_format is not None:
+            payload["format"] = response_format
         if ollama_options := _ollama_options(options):
             payload["options"] = ollama_options
     elif mode == "openai_chat":
@@ -289,6 +292,12 @@ def llm_generate(
                         result = {
                             "text": str(data.get("response", "")).strip(),
                             "usage": _extract_llm_usage(data, mode=mode),
+                            "meta": {
+                                "stream": False,
+                                "done": bool(data.get("done")),
+                                "done_reason": str(data.get("done_reason") or ""),
+                                "thinking_chars": len(str(data.get("thinking") or "")),
+                            },
                         }
                     else:
                         result = {"text": str(data).strip(), "usage": _extract_llm_usage(data, mode=mode)}

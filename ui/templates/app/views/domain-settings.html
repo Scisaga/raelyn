@@ -1,10 +1,30 @@
           <div x-show="activeView==='domain-settings'" x-transition.opacity class="raelyn-view h-full overflow-auto raelyn-scrollbar">
             <div class="mx-auto w-full max-w-5xl px-5 py-8 sm:px-8 lg:py-10">
               <header class="flex flex-col gap-5 border-b border-slate-800 pb-7 sm:flex-row sm:items-end sm:justify-between">
-                <div class="min-w-0">
-                  <div class="text-[10px] uppercase tracking-[0.2em] text-cyan-400/70">Domain observation</div>
-                  <h1 class="mt-2 truncate font-serif text-2xl font-semibold text-slate-100" x-text="currentDomainLabel()"></h1>
-                  <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-500">管理当前观测域的持续观测、处理与产出覆盖及基础信息。</p>
+                <div class="flex min-w-0 items-center gap-4">
+                  <button
+                    type="button"
+                    class="group relative h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-slate-700 bg-slate-900 text-sm font-semibold text-slate-300 outline-none transition hover:border-cyan-400/60 focus-visible:ring-2 focus-visible:ring-cyan-300/50"
+                    title="更换观测域头图"
+                    aria-label="更换观测域头图"
+                    @click="$refs.domainAvatarInput.click()"
+                  >
+                    <img
+                      x-show="playlistDetail?.avatar_asset"
+                      class="h-full w-full object-cover"
+                      :src="playlistDetail?.avatar_asset ? assetContentUrl(playlistDetail.avatar_asset) : ''"
+                      alt=""
+                      @error="clearAssetRef(playlistDetail, 'avatar_asset')"
+                    />
+                    <span x-show="!playlistDetail?.avatar_asset" class="flex h-full w-full items-center justify-center" x-text="domainAvatarLabel(playlistDetail || currentDomain())"></span>
+                    <span class="absolute inset-0 flex items-center justify-center bg-slate-950/70 text-[10px] text-slate-100 opacity-0 transition group-hover:opacity-100 group-focus-visible:opacity-100">更换头图</span>
+                  </button>
+                  <input x-ref="domainAvatarInput" type="file" class="hidden" accept="image/png,image/jpeg,image/webp" @change="playlistUploadAvatar($event)" />
+                  <div class="min-w-0">
+                    <div class="text-[10px] uppercase tracking-[0.2em] text-cyan-400/70">Domain observation</div>
+                    <h1 class="mt-2 truncate font-serif text-2xl font-semibold text-slate-100" x-text="currentDomainLabel()"></h1>
+                    <p class="mt-2 max-w-2xl text-sm leading-6 text-slate-500">管理当前观测域的持续观测、处理与产出覆盖及基础信息。</p>
+                  </div>
                 </div>
                 <div class="flex shrink-0 gap-2">
                   <button type="button" class="rounded-md border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800" @click="openCurrentDomainLibrary()">管理资料</button>
@@ -97,20 +117,6 @@
                   <input class="rounded-md border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-slate-100 outline-none focus:border-cyan-500/50" x-model="domainSettingsNameDraft" placeholder="完整观测域名称" />
                   <textarea class="min-h-24 rounded-md border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm leading-6 text-slate-100 outline-none focus:border-cyan-500/50" x-model="domainSettingsDescriptionDraft" placeholder="观测目标与范围"></textarea>
                   <button type="button" class="justify-self-end rounded-md bg-emerald-400 px-3 py-2 text-xs font-semibold text-slate-950 disabled:cursor-wait disabled:opacity-50" :disabled="!domainSettingsNameDraft.trim() || domainSettingsSaving" @click="saveDomainSettingsIdentity()" x-text="domainSettingsSaving ? '保存中…' : '保存基础信息'"></button>
-                </div>
-              </section>
-
-              <section class="grid gap-6 border-b border-slate-800 py-7 lg:grid-cols-[12rem_minmax(0,1fr)]">
-                <div>
-                  <h2 class="text-base font-semibold text-slate-100">视觉标识</h2>
-                  <p class="mt-1 text-xs leading-5 text-slate-500">更换观测域头像和背景。</p>
-                </div>
-                <div class="flex flex-wrap items-center gap-3">
-                  <button type="button" class="rounded-md border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800" @click="$refs.domainAvatarInput.click()">更换头像</button>
-                  <input x-ref="domainAvatarInput" type="file" class="hidden" accept="image/png,image/jpeg,image/webp" @change="playlistUploadAvatar($event)" />
-                  <button type="button" class="rounded-md border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800" @click="$refs.domainBackgroundInput.click()">更换背景</button>
-                  <input x-ref="domainBackgroundInput" type="file" class="hidden" accept="image/png,image/jpeg,image/webp" @change="playlistUploadBackground($event)" />
-                  <button type="button" class="rounded-md px-3 py-2 text-xs text-slate-500 hover:bg-slate-800" x-show="playlistDetail?.background_asset" @click="playlistClearBackground()">清除背景</button>
                 </div>
               </section>
 

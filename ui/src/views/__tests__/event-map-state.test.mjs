@@ -1092,7 +1092,7 @@ test("时间窗宽度只允许 3、6、9、12 个月", () => {
   assert.equal(ctx.playlistEventMapWindowMonths, 12);
 });
 
-test("今日与本周焦点按事件发生日期取事件，并最多投影十张关联视频卡", async () => {
+test("24H焦点按视频发布时间请求，本周保留事件日期，并最多投影十张关联视频卡", async () => {
   const applied = [];
   const calls = [];
   const today = new Date();
@@ -1139,8 +1139,14 @@ test("今日与本周焦点按事件发生日期取事件，并最多投影十�
   assert.ok(calls.every((path) => path.includes("normalized_key=openai")));
   assert.ok(calls.every((path) => path.includes("topic_id=topic-1")));
   assert.ok(calls.every((path) => path.includes("limit=10")));
-  assert.ok(calls.every((path) => path.includes("event_date_start=")));
-  assert.ok(calls.every((path) => path.includes("event_date_end=")));
+  const recentParams = new URL(calls[0], "http://localhost").searchParams;
+  const weekParams = new URL(calls[1], "http://localhost").searchParams;
+  assert.equal(recentParams.get("scope"), "24h");
+  assert.equal(recentParams.has("event_date_start"), false);
+  assert.equal(recentParams.has("event_date_end"), false);
+  assert.equal(weekParams.has("scope"), false);
+  assert.ok(weekParams.has("event_date_start"));
+  assert.equal(weekParams.get("event_date_end"), todayIso);
   assert.ok(calls.every((path) => path.includes(`window_start=${todayIso.slice(0, 7)}-01`)));
   assert.ok(calls.every((path) => path.includes(`window_end=${todayIso}`)));
   assert.ok(calls.every((path) => !path.includes("source_date_start=")));
@@ -1247,7 +1253,7 @@ test("多个事件关联同一视频时合并成一张卡片并保留全部事�
   assert.deepEqual(normalized.point_indices, [2, 7, 9, 11]);
 });
 
-test("所选主题没有今日事件时保持主题边界，不以全域或其他日期事件补齐", async () => {
+test("所选主题没有24H事件时保持主题边界，不以全域或其他日期视频补齐", async () => {
   const applied = [];
   const calls = [];
   const today = new Date();
@@ -1370,7 +1376,7 @@ test("筛选或主题在防抖期间变化时旧焦点响应不得提交", async
   assert.deepEqual(applied.at(-1).point_indices, []);
 });
 
-test("事件焦点按钮只显示最多十个，并在提示中说明证据排序与模糊日期排除", () => {
+test("事件焦点提示区分24H视频发布时间与本周事件日期", () => {
   const ctx = context({ snapshot_id: "snapshot-1", building: true }, {
     playlistEventMapTodayHighlights: {
       matched_event_total: 18,
@@ -1385,13 +1391,28 @@ test("事件焦点按钮只显示最多十个，并在提示中说明证据排�
 
   assert.equal(ctx.playlistEventMapHighlightProcessing("today"), true);
   assert.equal(ctx.playlistEventMapHighlightStatusLabel("today"), "10/16");
-  assert.match(ctx.playlistEventMapHighlightStatusHint("today"), /按事件发生日期筛选/);
+  assert.match(ctx.playlistEventMapHighlightStatusHint("today"), /按视频平台发布时间筛选过去 24 小时的视频/);
   assert.match(ctx.playlistEventMapHighlightStatusHint("today"), /多信源佐证强度排序/);
   assert.match(ctx.playlistEventMapHighlightStatusHint("today"), /每个媒体最多 2 个视频/);
   assert.match(ctx.playlistEventMapHighlightStatusHint("today"), /同一视频只显示一张卡片并连接全部入选事件/);
   assert.match(ctx.playlistEventMapHighlightStatusHint("today"), /2 个事件没有可播放关联视频/);
-  assert.match(ctx.playlistEventMapHighlightStatusHint("today"), /排除 3 个只有月\/年级日期/);
+  assert.doesNotMatch(ctx.playlistEventMapHighlightStatusHint("today"), /排除.*月\/年/);
   assert.match(ctx.playlistEventMapHighlightStatusHint("today"), /星域后台任务正在运行/);
+  ctx.playlistEventMapWeekHighlights = ctx.playlistEventMapTodayHighlights;
+  assert.match(ctx.playlistEventMapHighlightStatusHint("week"), /按事件发生日期筛选/);
+  assert.match(ctx.playlistEventMapHighlightStatusHint("week"), /排除 3 个只有月\/年级日期/);
+});
+
+test("24H视频焦点不受事件窗口所在自然日限制，日期窗口仍随请求生效", () => {
+  const ctx = context({}, {
+    playlistEventMapWindowStart: "2020-01-01",
+    playlistEventMapWindowEnd: "2020-12-31",
+  });
+  assert.deepEqual(ctx.playlistEventMapHighlightRange("today"), { scope: "24h" });
+  assert.equal(ctx.playlistEventMapHighlightRange("week"), null);
+  const key = JSON.parse(ctx.playlistEventMapHighlightsRequestKey());
+  assert.equal(key.windowStart, "2020-01-01");
+  assert.equal(key.windowEnd, "2020-12-31");
 });
 
 test("没有后台任务时事件焦点不显示运行指示", () => {
@@ -1603,7 +1624,7 @@ test("analysis 空闲时常驻 compact manifest 单飞轮询，同快照不重�
   });
 });
 
-test("星域轮询在快照未切换时也会刷新今日与本周事件焦点", async () => {
+test("星域轮询在快照未切换时也会刷新24H与本周事件焦点", async () => {
   await withFakePollingEnvironment(async ({ startNextTimer }) => {
     const refreshes = [];
     const manifest = { snapshot_id: "snapshot-1", status: "ready", build_status: "idle", building: false, backfill_job: null };
@@ -1969,6 +1990,13 @@ test("时间轴数据柱使用平直顶边", () => {
   const template = readFileSync(new URL("../../../templates/app/views/field-v2.html", import.meta.url), "utf8");
   assert.match(template, /playlistEventMapTimelineBarStyle\(item\)/);
   assert.doesNotMatch(template, /rounded-t/);
+});
+
+test("真实事件详情不显示冗余主题面包屑", () => {
+  const template = readFileSync(new URL("../../../templates/app/views/field-v2.html", import.meta.url), "utf8");
+  const model = readFileSync(new URL("../event-map-model.js", import.meta.url), "utf8");
+  assert.doesNotMatch(template, /playlistEventMapCanonicalBreadcrumb|<span x-show="index>0">\/<\/span>/);
+  assert.doesNotMatch(model, /playlistEventMapCanonicalBreadcrumb/);
 });
 
 test("三维事件星图不再保留 Atlas、全期参照或实体卫星链", () => {

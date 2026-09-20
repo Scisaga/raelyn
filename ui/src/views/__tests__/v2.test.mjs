@@ -1102,6 +1102,8 @@ test("观测域选择使用侧栏二级页替换主导航，并与故事页头�
   assert.match(modal, /createPlaylistContext === 'domain' \? '新建观测域'/);
   assert.match(modal, /role="dialog" aria-modal="true"/);
   assert.match(modal, /搜索信源（回车添加第一个匹配项）/);
+  assert.match(modal, /头图（方形，≤2MB）/);
+  assert.doesNotMatch(modal, /createPlaylistBackgroundFile|背景（cover 填充/);
   assert.match(modal, /:disabled="createPlaylistSubmitting"/);
 });
 
@@ -1171,6 +1173,10 @@ test("观测域设置是独立页面，首屏不等待详情与删除影响", as
   assert.match(page, /role="switch"/);
   assert.match(page, /简报生成/);
   assert.match(page, /briefGenerationGranularityDraft/);
+  assert.match(page, /aria-label="更换观测域头图"/);
+  assert.match(page, /playlistDetail\?\.avatar_asset/);
+  assert.match(page, /@click="\$refs\.domainAvatarInput\.click\(\)"/);
+  assert.doesNotMatch(page, /视觉标识|domainBackgroundInput|playlistUploadBackground|playlistClearBackground/);
   assert.doesNotMatch(modals, /briefGenerationSettingsOpen/);
   assert.doesNotMatch(modals, /domainSettingsOpen/);
 });
@@ -1656,6 +1662,11 @@ test("首访从最早事件开始，回访恢复位置，有新增时优先定�
     events_added: [{ canonical_id: "event-3", title: "新增事件" }],
   };
   assert.equal(ctx.storySuggestedStartIndex(), 3);
+
+  ctx.storyReferenceFocusCanonicalId = "event-1";
+  assert.equal(ctx.storySuggestedStartIndex(), 1, "简报指定阶段应优先于未读位置和新增事件");
+  assert.equal(ctx.storyIsReferenceFocus(nodes[1]), true);
+  assert.equal(ctx.storyIsReferenceFocus(nodes[2]), false);
 });
 
 test("历史快照不能清除当前未读，支持状态会归一化 evidence 子项", async () => {
@@ -2421,7 +2432,10 @@ test("故事时间线限制阅读宽度并保持高亮、关系和箭头对齐",
   const stories = await readFile(new URL("../../../templates/app/views/stories.html", import.meta.url), "utf8");
 
   assert.match(stories, /mx-auto w-full max-w-6xl px-5 py-6/);
-  assert.match(stories, /article class="scroll-mt-16 px-3 py-4 outline-none"/);
+  assert.match(stories, /article class="scroll-mt-16 border-l-2 px-3 py-4 outline-none"/);
+  assert.match(stories, /storyIsReferenceFocus\(node\)/);
+  assert.match(stories, /简报引用阶段/);
+  assert.match(stories, /border-l-cyan-300 bg-cyan-400/);
   assert.match(stories, /svg class="self-center shrink-0 text-slate-600"/);
   assert.match(stories, /class="ml-9 mt-2 space-y-2"/);
   assert.match(stories, /flex items-center gap-2 border-b[^>]+px-3 py-2[^>]+tabular-nums/);

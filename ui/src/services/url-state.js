@@ -48,7 +48,10 @@ export function createUrlStateMethods({ settingsTabs }) {
         } : null;
         this.storySelectedId = searchParams.get("story_id") || this.storySelectedId || "";
       }
-      if (viewKey === "stories") this.storySelectedId = searchParams.get("story_id") || this.storySelectedId || "";
+      if (viewKey === "stories") {
+        this.storySelectedId = searchParams.get("story_id") || this.storySelectedId || "";
+        this.storyReferenceFocusCanonicalId = searchParams.get("focus_canonical_id") || "";
+      }
       if (viewKey === "briefs") this.briefV2SelectedId = searchParams.get("brief_id") || this.briefV2SelectedId || "";
       if (viewKey === "library") {
         const tab = searchParams.get("tab") || this.libraryTab || "sources";
@@ -141,7 +144,13 @@ export function createUrlStateMethods({ settingsTabs }) {
         if (this.playlistEventMapWindowStart) searchParams.set("window_start", String(this.playlistEventMapWindowStart).slice(0, 10));
         if (this.playlistEventMapWindowEnd) searchParams.set("window_end", String(this.playlistEventMapWindowEnd).slice(0, 10));
       }
-      if (viewKey === "stories" && this.storySelectedId) searchParams.set("story_id", String(this.storySelectedId));
+      if (viewKey === "stories" && this.storySelectedId) {
+        searchParams.set("story_id", String(this.storySelectedId));
+        if (this.storySelectedSnapshotId) searchParams.set("snapshot_id", String(this.storySelectedSnapshotId));
+        if (this.storyReferenceFocusCanonicalId) {
+          searchParams.set("focus_canonical_id", String(this.storyReferenceFocusCanonicalId));
+        }
+      }
       if (viewKey === "briefs" && this.briefV2SelectedId) searchParams.set("brief_id", String(this.briefV2SelectedId));
       if (viewKey === "library") {
         searchParams.set("tab", this.libraryTab || "sources");

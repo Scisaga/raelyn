@@ -54,6 +54,7 @@
 
 - 连接池配置只影响非 SQLite 数据库；SQLite 会继续使用 SQLAlchemy 对应 URL 的默认池实现。
 - 当前运行形态会启动 API、scheduler 和多个角色 worker，DB 连接上限约为 `进程数 * (DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW)`。默认值用于单用户部署，避免每个进程沿用 SQLAlchemy 默认连接池后保留过多 PostgreSQL backend。
+- 同步、下载和事件抽取的会话门控会从同一 Engine 池额外借用一条连接，并在同一物理连接上领取、释放 advisory lock。配置池容量时需同时容纳业务 Session、门控与心跳/用量记录；默认 `2 + 2` 保持不变。门控不重建 Engine，不重置外部服务认证会话。
 - S3 传输配置只作用于落盘文件的 `upload_file` / `download_file`；代理流式读取和小对象 `get_object` 不启用 multipart 线程。
 - 当前 4 块 HDD 的生产默认值采用单文件并发 `2` 与 64 MiB 分片，避免一个大文件独占过多磁盘寻道和连接。若同时运行多个 download/process worker，总并发仍会按活跃传输数叠加，调大前应同时观察磁盘等待与 MinIO 负载。
 - S3 client 在调用它的 API 或 worker 进程内按操作创建，不放入模块级全局缓存，也不会跨 fork/进程共享已建立的连接或认证状态。修改上述环境变量后需要重启对应进程才会生效。
@@ -102,6 +103,7 @@
 - `YTDLP_POT_BGUTIL_BASE_URL`
   - 可选；bgutil PO Token Provider HTTP server 地址。空值表示不启用。
   - 本机运行常用 `http://127.0.0.1:4416`；Docker Compose 的 app 容器内使用 `http://host.docker.internal:4416`。
+  - bgutil Python 插件与 HTTP server 当前均锁定 `2.0.0`，升级时必须同步更新。Compose 显式监听 `127.0.0.1`、`::1` 和 `host.docker.internal` 对应的 Docker 内部网关，不监听宿主机 LAN 地址或通配地址；该网关应只供可信的本机容器访问。
 - `YTDLP_YOUTUBE_IMPERSONATE`
   - 默认 `chrome`，仅用于 YouTube 的 `yt-dlp` 同步 / 下载请求。
   - 依赖 `curl_cffi`；空值表示不启用浏览器 impersonation。
@@ -133,7 +135,10 @@
   - 关闭时不会删除已有 `brief` / `daily_brief` 数据，也不影响手动 `POST /api/briefs/generate` 和 `POST /api/briefs/generate_range`。
 - `BRIEF_LLM_MAX_INPUT_TOKENS`
   - 简报最终合成与每次分段摘要的输入预算，默认 `24000`。输入超过预算时，`brief.generate_period` 会在同一个 Job 内按来源顺序执行有界、串行的事实摘要，再合成最终简报；不在单个任务内增加 LLM 并发。
-  - 使用 Ollama `/api/generate` 时，实际预算还会限制为 `LLM_OLLAMA_NUM_CTX` 的 70%，为最终输出预留上下文。分段摘要或最终正文缺少真实来源、缺少提示词规定的章节，或退化成通用助手回答时，任务会明确失败，不再把内容标记为 `ready`。
+  - 使用 Ollama `/api/generate` 时，实际预算取配置值、`LLM_OLLAMA_NUM_CTX` 的 70%、上下文减去最大阶段输出预算三者的最小值；不足 2048 token 时明确失败。默认实际输入预算仍为 22937。分段摘要或最终正文缺少真实来源、缺少提示词规定的章节，或退化成通用助手回答时，任务会明确失败，不再把内容标记为 `ready`。
+- `BRIEF_OLLAMA_NUM_PREDICT`
+  - Ollama 最终简报的输出 token 硬上限，默认 `8000`，必须为正整数。分段摘要保持 `2500`。两阶段均使用 `think=false` 和 JSON schema：摘要最多 8 条、每条最多 120 字，来源只能选自输入 URL；最终响应必须包含模板规定的全部章节，由应用渲染为 Markdown。未声明规定章节的自定义模板使用单个 `markdown` 字段保存正文。
+  - 每次响应记录阶段、输入/输出 token、结束原因、正文和思考内容字符数。明确截断的响应不会被当作完整摘要或简报接收，也不会以相同额度修复/重试。修改配置后重启 AI worker。依据见 [有限输出预算实验](llm-output-budget-experiment.md)。
 - `STATS_CACHE_TTL_SECONDS`
   - `/api/stats` 的进程内缓存 TTL，默认 `60` 秒；设置为 `0` 可关闭缓存。
 - `YOUTUBE_SYNC_CONCURRENCY`
@@ -189,7 +194,7 @@
 - `EVENT_EXTRACTION_OLLAMA_STREAM`
   - 当有效 LLM URL 为 Ollama `/api/generate` 时，事件抽取是否使用流式响应，默认 `true`。
 - `EVENT_EXTRACTION_OLLAMA_NUM_PREDICT`
-  - Ollama 事件抽取请求的 `options.num_predict`，默认 `4000`，用于限制 JSON 生成不会无限延长。当无法解析的响应以 `done_reason=length` 结束，或输出 token 数达到该上限时，任务会明确记录为输出截断；不再使用相同上限调用 JSON 修复，也不重复执行确定性相同的 job attempt。
+  - Ollama 事件抽取请求的 `options.num_predict`，默认 `4000`，必须为正整数，`0` / `-1` 会在配置加载时被拒绝。JSON schema 同时限制视频记录数量、允许的 video_id 和每视频最多 4 个事件，解析器拒绝重复 video_id。当无法解析的响应以 `done_reason=length` 结束，或输出 token 数达到该上限时，任务会明确记录为输出截断；不再使用相同上限调用 JSON 修复，也不重复执行确定性相同的 job attempt。
 - `EVENT_EXTRACTION_OLLAMA_IDLE_TIMEOUT_SECONDS`
   - Ollama 事件抽取流式读取时的无输出读超时，默认 `120`。超过该时间没有任何流式输出会失败并进入任务重试/重排链路。
 - `EVENT_EXTRACTION_OLLAMA_BUSY_DEFER_SECONDS`

@@ -1010,7 +1010,7 @@ export class EventMapController {
     this.target.appendChild(this.labelsRoot);
     this.mediaRoot = document.createElement("div");
     this.mediaRoot.className = "event-map-media-layer absolute inset-0 z-20 overflow-hidden pointer-events-none";
-    this.mediaRoot.setAttribute("aria-label", "今日与本周事件视频");
+    this.mediaRoot.setAttribute("aria-label", "24H与本周事件视频");
     this.mediaConnectors = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     this.mediaConnectors.classList.add("event-map-media-connectors");
     this.mediaConnectors.setAttribute("aria-hidden", "true");
@@ -1476,7 +1476,7 @@ export class EventMapController {
       copy.className = "event-map-video-card__copy";
       const scope = document.createElement("span");
       scope.className = "event-map-video-card__scope";
-      const scopeLabel = this.timeHighlightData.scope === "week" ? "本周事件" : "今日事件";
+      const scopeLabel = this.timeHighlightData.scope === "week" ? "本周事件" : "24H事件";
       const representativeRank = Number(item?.representative_rank || position + 1);
       const mediaName = String(item?.primary_video?.media_name || "未知来源");
       const eventDate = eventMapEventDateLabel(item);

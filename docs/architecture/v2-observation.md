@@ -41,7 +41,7 @@ event_map_state.current_snapshot_id
 - `event_map_story_identity` / `event_map_story_history_revision`：保存稳定故事身份及跨快照识别版本；身份只在相同故事算法版本、相同叙事锚点和稳定成员重叠下延续。`stable_title` 在身份首次形成时冻结，`last_material_snapshot_id / last_material_changed_at` 只随事实结构的实质变化推进。
 - `event_map_story_history_evidence`：正规化故事边到来源修订的关系，支持来源记录反查具体故事关系。
 - `story_read_state`：保存关注状态、最后显式标记已读的快照与故事位置；打开详情或只更新位置不改变未读。
-- `brief.snapshot_id` / `brief.generation_basis` / `brief_reference`：固定简报的生成口径和可导航引用。
+- `brief.snapshot_id` / `brief.generation_basis` / `brief_reference`：固定简报的生成口径和引用来源版本。故事引用以稳定 story identity 为导航目标，并保存目标 canonical 作为当前故事中的阅读焦点；引用快照只承担 provenance 与显式历史审计，不依赖三维场景继续可渲染。
 
 变化记录保存 before/after 修订。故事首次形成、成员或顺序、关系或判定依据、支持记录、显式纠正与成熟度变化是阅读器使用的实质变化；标题/摘要重写、质量分波动和相同结果复核只进入技术审计。显式、带证据的 `corrects` 故事边会形成独立 correction 变化，普通文本修订不推断为纠正。retire 对象的链接固定到最后包含它的历史快照，星域变化因此仍能打开对象并展示本次差异。
 
@@ -73,7 +73,7 @@ event_map_state.current_snapshot_id
 - 自动 schema 迁移不会取消、暂停或删除既有任务，也不会删除历史视频、资产或来源记录。
 - V2 发布不修改当前 job 的 claim、lease、priority、worker role 或执行 token。
 - 快照发布仍在同一事务内写完对象、历史和变化后再切换 current 指针；读者不会看到半成品。
-- Web 历史深链接将 `snapshot_id` 贯穿 manifest、主题、故事航迹和主题简报反查；显式历史快照不可用时返回错误，不自动展示 current 数据。
+- Web 的显式历史深链接将 `snapshot_id` 贯穿 manifest、主题、故事航迹和主题简报反查；显式选择历史版本时不可用就返回错误，不自动展示 current 数据。普通故事入口和简报中的故事引用按稳定身份读取最新可用修订，不携带历史快照；后者另以 canonical ID 定位引用阶段。
 
 ## 读取接口
 
@@ -82,7 +82,7 @@ event_map_state.current_snapshot_id
 - `/api/domains/{domain_id}/changes`：稳定变化游标。
 - `/api/domains/{domain_id}/observation/feed`：新发生、认知变化、故事更新和待验证；协议字段仍为 `newly_occurred / newly_mapped / story_updates / needs_review`。
 - `/api/domains/{domain_id}/canonicals`：当前快照的类型化线性事件视图。
-- `/api/domains/{domain_id}/event-highlights`：先在固定快照中按 canonical 的冻结发生日筛选今日或本周事件，再叠加观察窗口、类型、实体和主题条件；视频只是每个入选事件的关联展示资源，不以发布时间反向决定事件是否属于今日。日级焦点只接受 `second/day` 精度，月、年和未知精度不会扩展成每天的“今日事件”。响应返回全部精确匹配事件的点索引用于星图高亮，再按多信源佐证与时间可靠性做可审计排序，为其中最多十个有可播放来源的唯一 canonical 返回空间视频卡，同一媒体最多占两张；达到媒体上限的事件只是不生成卡片，其真实点仍保持高亮。该顺序不称为尚无冻结字段支撑的市场影响重要度。
+- `/api/domains/{domain_id}/event-highlights`：`scope=24h` 按服务端当前时刻的 `[now-24h, now]` 平台发布时间选择当前观测域的视频，再关联固定快照中的 canonical；高亮与视频卡使用同一发布时间范围，未知或未来发布时间不入选，不按事件发生日及其精度排除。默认 `scope=event_date` 保留冻结事件发生日筛选，供“本周事件”使用，且只接受 `second/day` 精度。两种口径均叠加观察窗口、类型、实体和主题条件。响应返回全部匹配事件的点索引用于星图高亮，再按多信源佐证与时间可靠性做可审计排序，为其中最多十个有可播放来源的唯一 canonical 返回空间视频卡，同一媒体最多占两张；达到媒体上限的事件只是不生成卡片，其真实点仍保持高亮。该顺序不称为尚无冻结字段支撑的市场影响重要度。
 - `/api/domains/{domain_id}/canonicals/{canonical_id}/history`：canonical 修订与谱系。
 - `/api/domains/{domain_id}/topics/{topic_id}`：当前或显式历史快照的主题层级、成员和代表事件。
 - `/api/domains/{domain_id}/stories`：current ready 快照的稳定故事阅读队列；支持 `attention/followed/established/emerging/all`、搜索和分页，按最近实质变化稳定排序。首次没有基线时只推荐最近成熟故事，不制造全库未读。
