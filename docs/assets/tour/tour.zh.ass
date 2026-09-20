@@ -1,0 +1,29 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1440
+PlayResY: 960
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: TV.709
+
+[V4+ Styles]
+Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+Style: Tour,Microsoft YaHei UI,44,&H00F2F7FF,&H00F2F7FF,&HA00A0D12,&HA00A0D12,0,0,0,0,100,100,0.4,0,3,8,0,2,120,120,52,1
+
+[Events]
+Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
+Dialogue: 0,0:00:00.30,0:00:05.90,Tour,,0,0,0,,这里是 Raelyn，你的私人语义观测站\NRaelyn让持续发生的事件，不再散落在信息洪流里
+Dialogue: 0,0:00:06.00,0:00:11.80,Tour,,0,0,0,,从视频中提取事实，再把分散的相关事件\N汇聚成一片可回放、可探索的星域
+Dialogue: 0,0:00:11.90,0:00:15.20,Tour,,0,0,0,,事件按语义聚合，海量信息自然形成结构
+Dialogue: 0,0:00:15.30,0:00:18.60,Tour,,0,0,0,,从任意星群深入事件，都能回到原始来源和证据
+Dialogue: 0,0:00:18.70,0:00:22.10,Tour,,0,0,0,,这些有据可查的事件关联，又会进一步串联成故事
+Dialogue: 0,0:00:22.20,0:00:25.30,Tour,,0,0,0,,故事跨快照持续演进，并始终可以回溯到证据
+Dialogue: 0,0:00:25.40,0:00:29.30,Tour,,0,0,0,,选定一段时间，观测简报就把它整理成可引用的完整脉络
+Dialogue: 0,0:00:29.40,0:00:33.70,Tour,,0,0,0,,其中的每个解释，都能追溯到原始视频、转写文本和上下文
+Dialogue: 0,0:00:33.80,0:00:37.00,Tour,,0,0,0,,持续监测的所有信源，也会统一汇入资料库
+Dialogue: 0,0:00:37.10,0:00:40.40,Tour,,0,0,0,,素材由此沉淀为可检索、可追溯的长期记忆
+Dialogue: 0,0:00:40.50,0:00:44.60,Tour,,0,0,0,,从采集、处理到分析，整个工作流程始终清晰可观测
+Dialogue: 0,0:00:44.70,0:00:47.60,Tour,,0,0,0,,调用、模型用量、下载和存储统一记账
+Dialogue: 0,0:00:47.70,0:00:50.30,Tour,,0,0,0,,让长期观测的成本，始终清晰可控
+Dialogue: 0,0:00:50.40,0:00:53.70,Tour,,0,0,0,,通过 MCP，智能体也能进入同一个语义世界
+Dialogue: 0,0:00:53.80,0:00:57.20,Tour,,0,0,0,,欢迎在 GitHub 上探索 Raelyn\N{\fs28}https://github.com/scisaga/raelyn

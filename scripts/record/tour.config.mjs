@@ -7,7 +7,7 @@ export const output = {
   // 原始界面录屏与最终输出都按 1440×960 准备。
   viewport: { width: 1440, height: 960 },
   fps: 30,
-  // 无头环境按帧主动采样；最终 1.5× 后约 12 个独立画面/秒，与 README GIF 一致。
+  // 无头环境按帧主动采样；最终 1.5× 后约 12 个独立画面/秒，README GIF 的帧率由此推出。
   captureFps: 8,
   // 操作按 1.5 倍时长录制，最终组装时再以 1.5 倍速播放。
   playbackRate: 1.5,
@@ -69,18 +69,28 @@ export const music = {
 };
 
 export const subtitles = {
-  // 烧进画面：GIF 无音轨，README 内嵌视频静音自动播放。
-  fontName: "Noto Sans CJK SC",
-  // 英文版沿用同一字族：系统未必装了独立的 Noto Sans，而 CJK 版自带的拉丁
-  // 字形与中文版完全一致，两版成片看起来是同一部片子。
-  fontNameEn: "Noto Sans CJK SC",
-  // 直接生成带 PlayRes 的 ASS，所以这里就是真实像素高度。
-  // 实测 libass 下中文字宽约 0.66×fontSize：48 → 约 32px/字，22 字约占画面宽一半，
-  // 视频缩到 README 正文栏（约 830px）时仍有约 18px，可读。
-  fontSize: 48,
-  marginV: 56,
-  // 左右安全边距，强制长句在画面内换行而不是顶到边缘。
-  marginH: 140,
+  // MP4 默认使用软字幕；ASS 保留人工确认过的中英文硬字幕样式。
+  styles: {
+    zh: {
+      fontName: "Microsoft YaHei UI",
+      fontSize: 44,
+      spacing: 0.4,
+      outlineColour: "&HA00A0D12",
+      backColour: "&HA00A0D12",
+      marginH: 120,
+      marginV: 52,
+      urlFontSize: 28,
+    },
+    en: {
+      fontName: "Noto Sans CJK SC",
+      fontSize: 48,
+      spacing: 0.6,
+      outlineColour: "&HA00A0D12",
+      backColour: "&HA0000000",
+      marginH: 140,
+      marginV: 56,
+    },
+  },
   // 单条字幕最短停留，低于此值会在构建时报警。
   minHoldSeconds: 1.2,
 };
@@ -95,7 +105,8 @@ export const subtitles = {
 // act      归属叙事幕，仅用于清单分组，不插入额外画面。
 // joinPrev 与上一镜头之间的转场时长，null 表示用 transition.duration。
 // perform  抓帧期间执行的必要点击或滚动（可选），拿到 { page, ui, cursor, sleep }。
-// caption  { at, zh, en, hold } 相对本镜头起点的字幕。
+// caption  { at, zh, en, hold, crossShot? } 相对本镜头起点的字幕；只有人工对时确实需要
+//          跨过镜头边界时才设置 crossShot。
 // narration { at, zh, hold } 相对本镜头起点的中文配音演讲稿；不与画面字幕共用文案。
 // ---------------------------------------------------------------------------
 export const shots = [
@@ -131,8 +142,8 @@ export const shots = [
     // 录制器沿用产品自身的窗口计算，但逐帧推进状态，不等待 wall-clock 定时器。
     selectors: ["timelinePlay"],
     captions: [
-      { at: 0.3, hold: 5.1, zh: "Raelyn：你的私人语义观测站", en: "Raelyn: your private semantic observatory" },
-      { at: 6.0, hold: 5.5, zh: "把视频事实凝结成可回放的事件星域", en: "Facts from video become a replayable event starfield." },
+      { at: 0.3, hold: 5.6, zh: "这里是 Raelyn，你的私人语义观测站\nRaelyn让持续发生的事件，不再散落在信息洪流里", en: "This is Raelyn, your private semantic observatory.\nIt keeps unfolding events from getting lost in the stream." },
+      { at: 6.0, hold: 5.8, zh: "从视频中提取事实，再把分散的相关事件\n汇聚成一片可回放、可探索的星域", en: "It extracts facts from video and gathers related events\ninto a starfield you can replay and explore." },
     ],
     narration: [
       { at: 0.3, hold: 10.8, zh: "Raelyn 是什么？一座属于你的私人语义观测站。它把公开视频里的事实，变成可回放、可追踪的事件世界。" },
@@ -146,8 +157,8 @@ export const shots = [
     duration: 7.0,
     joinPrev: 0.3,
     captions: [
-      { at: 0.2, hold: 3.1, zh: "语义邻近，让海量事件形成结构", en: "Semantic proximity gives structure to countless events." },
-      { at: 3.6, hold: 3.1, zh: "从星群抵达事件，也回到来源与证据", en: "Drill from a star cluster to an event and its evidence." },
+      { at: 0.2, hold: 3.3, zh: "事件按语义聚合，海量信息自然形成结构", en: "Events cluster by meaning, giving information structure." },
+      { at: 3.6, hold: 3.3, zh: "从任意星群深入事件，都能回到原始来源和证据", en: "Drill into any cluster and return to its sources and evidence." },
     ],
     narration: [
       { at: 0.2, hold: 6.2, zh: "信息不再只是列表。你可以从全局结构，一路抵达事件与证据。" },
@@ -172,8 +183,8 @@ export const shots = [
       await sleep(1.4);
     },
     captions: [
-      { at: 0.3, hold: 3.2, zh: "故事由有证据的延续、回应与纠正构成", en: "Stories are built from evidence-backed links between events." },
-      { at: 3.8, hold: 2.9, zh: "稳定身份跨越快照，每条关系回到证据", en: "Each story persists across snapshots and returns to evidence." },
+      { at: 0.3, hold: 3.4, zh: "这些有据可查的事件关联，又会进一步串联成故事", en: "Evidence-backed links connect these events into stories." },
+      { at: 3.8, hold: 3.1, zh: "故事跨快照持续演进，并始终可以回溯到证据", en: "Stories evolve across snapshots, always tied to evidence." },
     ],
     narration: [
       { at: 0.2, hold: 6.2, zh: "有证据的事件彼此连接，长成持续演化、随时可以回溯的故事。" },
@@ -255,8 +266,8 @@ export const shots = [
       }
     },
     captions: [
-      { at: 0.3, hold: 3.5, zh: "观测简报把时间切片变成可引用的脉络", en: "Observation briefs turn slices of time into citable context." },
-      { at: 4.3, hold: 3.7, zh: "从解释回到视频、转写与上下文", en: "Trace explanations back to video, transcripts, and context." },
+      { at: 0.3, hold: 3.9, zh: "选定一段时间，观测简报就把它整理成可引用的完整脉络", en: "Choose a time span. Observation briefs turn it\ninto a complete, citable narrative." },
+      { at: 4.3, hold: 4.3, crossShot: true, zh: "其中的每个解释，都能追溯到原始视频、转写文本和上下文", en: "Explanations lead back to video, transcripts, and context." },
     ],
     narration: [
       { at: 0.2, hold: 7.8, zh: "简报不是结论的终点。每个判断，都保留回到原始记录与上下文的路径。" },
@@ -283,8 +294,8 @@ export const shots = [
       await sleep(0.6);
     },
     captions: [
-      { at: 0.2, hold: 3.0, zh: "持续监听的信源汇入统一资料库", en: "Continuously watched sources flow into one library." },
-      { at: 3.5, hold: 3.1, zh: "资料成为可检索、可追溯的长期记忆", en: "Material becomes searchable, traceable long-term memory." },
+      { at: 0.2, hold: 3.2, zh: "持续监测的所有信源，也会统一汇入资料库", en: "Every source under continuous watch flows into one library." },
+      { at: 3.5, hold: 3.3, zh: "素材由此沉淀为可检索、可追溯的长期记忆", en: "Material becomes searchable, traceable long-term memory." },
     ],
     narration: [
       { at: 0.2, hold: 6.1, zh: "所有信源与材料持续沉淀，成为可检索、可追溯的长期记忆。" },
@@ -320,7 +331,7 @@ export const shots = [
       await sleep(2.5);
     },
     captions: [
-      { at: 0.2, hold: 4.1, zh: "任务从采集到分析持续运行，全程可观测", en: "Work from collection to analysis stays observable." },
+      { at: 0.2, hold: 4.1, zh: "从采集、处理到分析，整个工作流程始终清晰可观测", en: "Work from collection to analysis stays fully observable." },
     ],
     narration: [
       { at: 0.1, hold: 4.0, zh: "后台持续运转，也始终透明可控。" },
@@ -345,8 +356,8 @@ export const shots = [
       await sleep(1.0);
     },
     captions: [
-      { at: 0.2, hold: 2.6, zh: "调用、Token、下载与存储进入资源账本", en: "Calls, model tokens, downloads, and storage enter one ledger." },
-      { at: 3.1, hold: 2.6, zh: "长期观测的成本始终清晰、可控", en: "The cost of long-term observation stays clear and controlled." },
+      { at: 0.2, hold: 2.9, zh: "调用、模型用量、下载和存储统一记账", en: "Calls, model usage, downloads, and storage share one ledger." },
+      { at: 3.2, hold: 2.6, zh: "让长期观测的成本，始终清晰可控", en: "Long-term observation costs stay clear and controlled." },
     ],
     narration: [
       { at: 0.1, hold: 5.5, zh: "每一次资源消耗都有尺度，让长期运行清晰可控。" },
@@ -390,8 +401,8 @@ export const shots = [
       await sleep(0.8);
     },
     captions: [
-      { at: 0.2, hold: 4.4, zh: "MCP 向智能体开放同一语义世界", en: "MCP opens the same semantic world to agents." },
-      { at: 5.0, hold: 2.0, zh: "https://github.com/scisaga/raelyn", en: "https://github.com/scisaga/raelyn" },
+      { at: 0.2, hold: 3.3, zh: "通过 MCP，智能体也能进入同一个语义世界", en: "Through MCP, agents enter the same semantic world." },
+      { at: 3.6, hold: 3.4, zh: "欢迎在 GitHub 上探索 Raelyn\nhttps://github.com/scisaga/raelyn", en: "Explore Raelyn on GitHub\nhttps://github.com/scisaga/raelyn" },
     ],
     narration: [
       { at: 0.1, hold: 4.7, zh: "最终，智能体也能进入同一语义世界，沿着证据继续探索。" },

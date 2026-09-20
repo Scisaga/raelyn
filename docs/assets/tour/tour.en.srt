@@ -1,0 +1,63 @@
+1
+00:00:00,300 --> 00:00:05,900
+This is Raelyn, your private semantic observatory.
+It keeps unfolding events from getting lost in the stream.
+
+2
+00:00:06,000 --> 00:00:11,800
+It extracts facts from video and gathers related events
+into a starfield you can replay and explore.
+
+3
+00:00:11,900 --> 00:00:15,200
+Events cluster by meaning, giving information structure.
+
+4
+00:00:15,300 --> 00:00:18,600
+Drill into any cluster and return to its sources and evidence.
+
+5
+00:00:18,700 --> 00:00:22,100
+Evidence-backed links connect these events into stories.
+
+6
+00:00:22,200 --> 00:00:25,300
+Stories evolve across snapshots, always tied to evidence.
+
+7
+00:00:25,400 --> 00:00:29,300
+Choose a time span. Observation briefs turn it
+into a complete, citable narrative.
+
+8
+00:00:29,400 --> 00:00:33,700
+Explanations lead back to video, transcripts, and context.
+
+9
+00:00:33,800 --> 00:00:37,000
+Every source under continuous watch flows into one library.
+
+10
+00:00:37,100 --> 00:00:40,400
+Material becomes searchable, traceable long-term memory.
+
+11
+00:00:40,500 --> 00:00:44,600
+Work from collection to analysis stays fully observable.
+
+12
+00:00:44,700 --> 00:00:47,600
+Calls, model usage, downloads, and storage share one ledger.
+
+13
+00:00:47,700 --> 00:00:50,300
+Long-term observation costs stay clear and controlled.
+
+14
+00:00:50,400 --> 00:00:53,700
+Through MCP, agents enter the same semantic world.
+
+15
+00:00:53,800 --> 00:00:57,200
+Explore Raelyn on GitHub
+https://github.com/scisaga/raelyn

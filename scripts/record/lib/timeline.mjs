@@ -55,8 +55,8 @@ export function collectCaptions(timeline, { minHoldSeconds = 1.2 } = {}) {
     for (const cap of seg.captions) {
       const start = seg.start + (cap.at || 0);
       const hold = Math.max(minHoldSeconds, cap.hold || minHoldSeconds);
-      // 不让字幕越过本镜头结束，越界就截到镜头尾。
-      const end = Math.min(seg.end, start + hold);
+      // 默认不让字幕越过本镜头；人工对时确认需要覆盖转场时可显式放开，仍不越过成片。
+      const end = Math.min(itemEndLimit(cap, seg, timeline), start + hold);
       if (end - start < minHoldSeconds * 0.75) {
         console.warn(`[warn] 字幕过短被压缩: ${seg.id} "${cap.zh}"`);
       }
@@ -65,6 +65,10 @@ export function collectCaptions(timeline, { minHoldSeconds = 1.2 } = {}) {
   }
   entries.sort((a, b) => a.start - b.start);
   return entries;
+}
+
+function itemEndLimit(item, segment, timeline) {
+  return item.crossShot ? timeline.duration : segment.end;
 }
 
 // 配音演讲稿条目：与画面字幕分开维护，但使用同一镜头绝对时间线。

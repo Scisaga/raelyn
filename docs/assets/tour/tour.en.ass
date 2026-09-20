@@ -1,0 +1,29 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1440
+PlayResY: 960
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: TV.709
+
+[V4+ Styles]
+Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+Style: Tour,Noto Sans CJK SC,48,&H00F2F7FF,&H00F2F7FF,&HA00A0D12,&HA0000000,0,0,0,0,100,100,0.6,0,3,8,0,2,140,140,56,1
+
+[Events]
+Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
+Dialogue: 0,0:00:00.30,0:00:05.90,Tour,,0,0,0,,This is Raelyn, your private semantic observatory.\NIt keeps unfolding events from getting lost in the stream.
+Dialogue: 0,0:00:06.00,0:00:11.80,Tour,,0,0,0,,It extracts facts from video and gathers related events\Ninto a starfield you can replay and explore.
+Dialogue: 0,0:00:11.90,0:00:15.20,Tour,,0,0,0,,Events cluster by meaning, giving information structure.
+Dialogue: 0,0:00:15.30,0:00:18.60,Tour,,0,0,0,,Drill into any cluster and return to its sources and evidence.
+Dialogue: 0,0:00:18.70,0:00:22.10,Tour,,0,0,0,,Evidence-backed links connect these events into stories.
+Dialogue: 0,0:00:22.20,0:00:25.30,Tour,,0,0,0,,Stories evolve across snapshots, always tied to evidence.
+Dialogue: 0,0:00:25.40,0:00:29.30,Tour,,0,0,0,,Choose a time span. Observation briefs turn it\Ninto a complete, citable narrative.
+Dialogue: 0,0:00:29.40,0:00:33.70,Tour,,0,0,0,,Explanations lead back to video, transcripts, and context.
+Dialogue: 0,0:00:33.80,0:00:37.00,Tour,,0,0,0,,Every source under continuous watch flows into one library.
+Dialogue: 0,0:00:37.10,0:00:40.40,Tour,,0,0,0,,Material becomes searchable, traceable long-term memory.
+Dialogue: 0,0:00:40.50,0:00:44.60,Tour,,0,0,0,,Work from collection to analysis stays fully observable.
+Dialogue: 0,0:00:44.70,0:00:47.60,Tour,,0,0,0,,Calls, model usage, downloads, and storage share one ledger.
+Dialogue: 0,0:00:47.70,0:00:50.30,Tour,,0,0,0,,Long-term observation costs stay clear and controlled.
+Dialogue: 0,0:00:50.40,0:00:53.70,Tour,,0,0,0,,Through MCP, agents enter the same semantic world.
+Dialogue: 0,0:00:53.80,0:00:57.20,Tour,,0,0,0,,Explore Raelyn on GitHub\Nhttps://github.com/scisaga/raelyn

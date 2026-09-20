@@ -50,10 +50,10 @@ test("项目地址只作为最后一条画面字幕，不进入配音稿", () =>
   assert.doesNotMatch(narration, new RegExp(projectUrl.replaceAll(".", "\\.")));
 });
 
-test("所有画面字幕都保持单行", () => {
+test("所有画面字幕都不超过两行", () => {
   for (const caption of shots.flatMap((shot) => shot.captions || [])) {
-    assert.doesNotMatch(caption.zh, /\r|\n/);
-    assert.doesNotMatch(caption.en, /\r|\n/);
+    assert.ok(caption.zh.split(/\r?\n/).length <= 2);
+    assert.ok(caption.en.split(/\r?\n/).length <= 2);
   }
 });
 

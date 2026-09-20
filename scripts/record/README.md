@@ -79,7 +79,7 @@ ffmpeg 后处理”路径，同时避免低码率 webm、无意义鼠标轨迹�
 浏览器播放器不一定展示 MP4 内嵌字幕，网页播放时应把 SRT 转成 WebVTT 后通过 `<track>`
 加载；VLC、mpv、IINA 等本地播放器可以直接切换字幕轨。
 
-**画面字幕与配音稿分开。** `captions` 是内嵌成片的中英单行信息层；
+**画面字幕与配音稿分开。** `captions` 是内嵌成片的中英信息层，按人工对时最多两行；
 `narration` 是供朗读的中文演讲稿，用更短的连续句串起叙事。两者共享镜头时间线，但不互相
 复制。结尾项目地址只出现在 `captions`，不朗读。`make-narration.mjs` 目前只生成审阅稿和
 录音对时 SRT；录音、TTS 以及把人声混入成片尚未执行，`compose-tour.mjs` 也不会自动生成
@@ -182,13 +182,22 @@ node record-tour.mjs --shot playlist
 **只想改配音演讲稿。** 改 `tour.config.mjs` 里对应镜头的 `narration`，然后
 `node make-narration.mjs`；它只刷新文字稿和对时 SRT，不会重录镜头或合成配音。
 
-**要出 GIF。** 先有完整视频，再从母版里截片段即可，例如取星域回放那 9 秒：
+**要出 GIF。** 先有完整视频，再从成片里截片段。仓库根 `README.md` 首屏那张导览 GIF
+取成片 4–18 秒（星域回放 → 主题聚合 → 事件下钻），再按 1.4 倍速压到 10 秒，保持
+1440×960 原始尺寸不缩放：
 
 ```bash
-ffmpeg -ss 1.4 -t 9 -i out/tour-master.mp4 \
-  -vf "fps=12,scale=1000:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=192[p];[b][p]paletteuse=dither=bayer" \
-  -loop 0 out/hero.gif
+ffmpeg -y -ss 4 -t 14 -i out/raelyn-tour-1440x960.mp4 \
+  -vf "setpts=PTS/1.4,fps=50/3,scale=1440:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=256:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \
+  -loop 0 ../../docs/assets/tour/raelyn-tour-zh-2026.gif
 ```
+
+`fps=50/3` 由录制参数推出：采样 8fps、播放 1.5 倍速，成片约 12 个独立画面/秒，再叠 1.4
+倍速约 16.7 个/秒，GIF 取同一帧率才不丢画面。改 `setpts` 倍数时必须同步改 `fps`。
+
+原尺寸 GIF 约 44MB。GitHub 只对**外部域名**图片走 Camo 代理（5MB 上限），仓库内相对
+路径图片直接由 raw 提供，不受该限制，因此首屏可以正常渲染；代价是首次加载较慢。
+需要更小体积时优先降 `scale`（1200 宽约 34MB）；降 `max_colors` 对星域噪点几乎没有效果。
 
 ## 文件
 

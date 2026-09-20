@@ -82,7 +82,7 @@ function assTime(seconds) {
   return `${h}:${m}:${s}.${c}`;
 }
 
-function toAss(entries, key, fontName) {
+function toAss(entries, key, style) {
   const header = [
     "[Script Info]",
     "ScriptType: v4.00+",
@@ -96,13 +96,16 @@ function toAss(entries, key, fontName) {
     "[V4+ Styles]",
     "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
     // BorderStyle=3 是半透明衬底盒，保证任何画面下都读得清；Outline=8 是盒的内边距。
-    `Style: Tour,${fontName},${subtitles.fontSize},&H00F2F7FF,&H00F2F7FF,&HA00A0D12,&HA0000000,0,0,0,0,100,100,0.6,0,3,8,0,2,${subtitles.marginH},${subtitles.marginH},${subtitles.marginV},1`,
+    `Style: Tour,${style.fontName},${style.fontSize},&H00F2F7FF,&H00F2F7FF,${style.outlineColour},${style.backColour},0,0,0,0,100,100,${style.spacing},0,3,8,0,2,${style.marginH},${style.marginH},${style.marginV},1`,
     "",
     "[Events]",
     "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
   ];
   const events = entries.map((e) => {
-    const text = String(e[key] || "").replace(/\n/g, "\\N");
+    let text = String(e[key] || "").replace(/\n/g, "\\N");
+    if (style.urlFontSize) {
+      text = text.replace(/\\N(?=https:\/\/)/g, `\\N{\\fs${style.urlFontSize}}`);
+    }
     return `Dialogue: 0,${assTime(e.start)},${assTime(e.end)},Tour,,0,0,0,,${text}`;
   });
   return `${header.join("\n")}\n${events.join("\n")}\n`;
@@ -116,8 +119,8 @@ async function main() {
   await writeFile(path.join(OUT, "timeline.json"), JSON.stringify(timeline, null, 2), "utf8");
   await writeFile(path.join(OUT, "tour.zh.srt"), toSrt(entries, "zh"), "utf8");
   await writeFile(path.join(OUT, "tour.en.srt"), toSrt(entries, "en"), "utf8");
-  await writeFile(path.join(OUT, "tour.zh.ass"), toAss(entries, "zh", subtitles.fontName), "utf8");
-  await writeFile(path.join(OUT, "tour.en.ass"), toAss(entries, "en", subtitles.fontNameEn), "utf8");
+  await writeFile(path.join(OUT, "tour.zh.ass"), toAss(entries, "zh", subtitles.styles.zh), "utf8");
+  await writeFile(path.join(OUT, "tour.en.ass"), toAss(entries, "en", subtitles.styles.en), "utf8");
   await writeFile(
     path.join(OUT, "subtitle-script.md"),
     toReviewMarkdown(entries, timeline.duration),
@@ -126,9 +129,6 @@ async function main() {
 
   // 可读性体检：过长的单条字幕在 1440 宽画面上会折行遮挡产品。
   for (const e of entries) {
-    if (/\r|\n/.test(e.zh) || /\r|\n/.test(e.en)) {
-      throw new Error(`画面字幕必须保持单行: ${e.segment}`);
-    }
     const zhLen = Math.max(...String(e.zh || "").split("\n").map(
       (line) => /^https:\/\//.test(line) ? 0 : [...line].length,
     ));
