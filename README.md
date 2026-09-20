@@ -126,6 +126,9 @@ docker compose up --build
 之后，同步发现、下载、字幕处理和转写会自动进入任务系统。不同能力的前置条件彼此独立：
 
 - 平台字幕可用时，资料库、来源播放与转写不需要推理服务；没有字幕时才需要 ASR。
+
+> **推荐的本地 ASR 后端**：平台字幕不可用时，可搭配 [qwen3-asr-openai](https://github.com/Scisaga/qwen3-asr-openai) 使用。它将 Qwen3-ASR 封装为可自托管的 OpenAI-compatible 转写服务；Raelyn 还会读取其后端副本与队列状态，避免在推理资源饱和时继续领取转写任务。该服务独立部署，不包含在 Raelyn Docker Compose 中。
+
 - 事件抽取与简报生成需要 LLM；只有具有事件时间、证据与足够置信度的已接受事件，完成 Embedding 后才会进入新的星域快照。
 - 从转写首次生成或更新星域，需要 `ai`、`embedding`、`analysis` Worker 正常运行；浏览已有的 ready 快照不要求这些 Worker 持续在线。
 
