@@ -183,21 +183,22 @@ node record-tour.mjs --shot playlist
 `node make-narration.mjs`；它只刷新文字稿和对时 SRT，不会重录镜头或合成配音。
 
 **要出 GIF。** 先有完整视频，再从成片里截片段。仓库根 `README.md` 首屏那张导览 GIF
-取成片 4–18 秒（星域回放 → 主题聚合 → 事件下钻），再按 1.4 倍速压到 10 秒，保持
-1440×960 原始尺寸不缩放：
+取成片 4–18 秒（星域回放 → 主题聚合 → 事件下钻），再按 1.4 倍速压到 10 秒；输出缩到
+960×640，并把调色板压到 64 色：
 
 ```bash
 ffmpeg -y -ss 4 -t 14 -i out/raelyn-tour-1440x960.mp4 \
-  -vf "setpts=PTS/1.4,fps=50/3,scale=1440:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=256:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \
+  -vf "setpts=PTS/1.4,fps=50/3,scale=960:-2:flags=lanczos,split[a][b];[a]palettegen=max_colors=64:reserve_transparent=0:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \
   -loop 0 ../../docs/assets/tour/raelyn-tour-zh-2026.gif
 ```
 
 `fps=50/3` 由录制参数推出：采样 8fps、播放 1.5 倍速，成片约 12 个独立画面/秒，再叠 1.4
 倍速约 16.7 个/秒，GIF 取同一帧率才不丢画面。改 `setpts` 倍数时必须同步改 `fps`。
 
-原尺寸 GIF 约 44MB。GitHub 只对**外部域名**图片走 Camo 代理（5MB 上限），仓库内相对
-路径图片直接由 raw 提供，不受该限制，因此首屏可以正常渲染；代价是首次加载较慢。
-需要更小体积时优先降 `scale`（1200 宽约 34MB）；降 `max_colors` 对星域噪点几乎没有效果。
+960×640、64 色的 GIF 约 16MB，比 1440×960、256 色原版缩小约 65%，在 README 正文宽度
+下仍保持界面文字与星域结构可读。GIF 只读取源文件的视频流，不渲染内嵌字幕轨。
+`reserve_transparent=0` 把完整 64 色都用于不透明画面；固定
+`bayer` 抖动避免星点与渐变在有限色阶下形成明显色带。
 
 ## 文件
 
