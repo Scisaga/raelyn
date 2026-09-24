@@ -374,6 +374,7 @@ export function createAppInitMethods() {
 
     async init() {
       try {
+        this.playlistEventMapRestoreWheelMode();
         this._initShellListeners();
         this._initShellRouteState();
         this._preloadInitialFieldRenderer();

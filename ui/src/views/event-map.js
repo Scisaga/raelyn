@@ -911,6 +911,7 @@ export class EventMapController {
       onTopic = null,
       onViewport = null,
       resolveVideoSource = null,
+      wheelMode = "auto",
     },
     modules
   ) {
@@ -922,6 +923,7 @@ export class EventMapController {
     this.onTopic = onTopic;
     this.onViewport = onViewport;
     this.resolveVideoSource = resolveVideoSource;
+    this.wheelMode = wheelMode;
     this.modules = modules;
     this.THREE = modules.THREE;
     this.destroyed = false;
@@ -1004,6 +1006,7 @@ export class EventMapController {
     this.target.style.position = "absolute";
     this.target.style.inset = "0";
     this.target.style.overflow = "hidden";
+    this.target.style.touchAction = "none";
     this.labelsRoot = document.createElement("div");
     this.labelsRoot.className = "event-map-label-layer absolute inset-0 z-10 overflow-hidden pointer-events-none";
     this.labelsRoot.setAttribute("aria-hidden", "false");
@@ -1333,6 +1336,9 @@ export class EventMapController {
   }
 
   setupInteractions() {
+    this.gestureScale = null;
+    this.lastWheelAt = -Infinity;
+    this.wheelInputType = "discrete";
     this.handleControlsStart = () => {
       this.introActive = false;
       this.mediaCardsInteracting = true;
@@ -1373,9 +1379,60 @@ export class EventMapController {
       this.errorOverlay.classList.remove("flex");
       this.invalidate();
     };
+    // WheelEvent 不暴露设备类型：连续的小步进按触控板滑动处理，离散滚轮保留缩放。
+    this.handleWheel = (event) => {
+      if (this.gestureScale !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      const recent = event.timeStamp - this.lastWheelAt < 180;
+      const discreteStep = event.deltaMode !== 0 || (event.deltaX === 0 && Math.abs(event.deltaY) >= 100);
+      const continuous = !event.ctrlKey && this.wheelMode === "auto" && !discreteStep && (
+        event.deltaX !== 0 || Math.abs(event.deltaY) < 60 || (recent && this.wheelInputType === "continuous")
+      );
+      if (!event.ctrlKey) {
+        this.lastWheelAt = event.timeStamp;
+        this.wheelInputType = continuous ? "continuous" : "discrete";
+      }
+      if (!continuous && event.target === this.renderer.domElement) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1;
+      this.handleControlsStart();
+      if (!continuous) {
+        const scale = Math.pow(0.95, -this.controls.zoomSpeed * event.deltaY * unit * (event.ctrlKey ? 0.1 : 0.01));
+        this.controls.dollyIn(scale);
+      } else {
+        const radiansPerPixel = 2 * Math.PI / this.renderer.domElement.clientHeight;
+        if (event.deltaX) this.controls.rotateLeft(-event.deltaX * unit * radiansPerPixel);
+        if (event.deltaY) this.controls.rotateUp(-event.deltaY * unit * radiansPerPixel);
+      }
+      this.handleControlsEnd();
+    };
+    this.handleGestureStart = (event) => {
+      event.preventDefault();
+      this.gestureScale = event.scale;
+      this.handleControlsStart();
+    };
+    this.handleGestureChange = (event) => {
+      event.preventDefault();
+      const scale = event.scale / this.gestureScale;
+      this.gestureScale = event.scale;
+      this.controls.dollyIn(1 / scale);
+    };
+    this.handleGestureEnd = (event) => {
+      event.preventDefault();
+      this.gestureScale = null;
+      this.handleControlsEnd();
+    };
     this.controls.addEventListener("start", this.handleControlsStart);
     this.controls.addEventListener("change", this.handleControlsChange);
     this.controls.addEventListener("end", this.handleControlsEnd);
+    this.target.addEventListener("wheel", this.handleWheel, { capture: true, passive: false });
+    this.target.addEventListener("gesturestart", this.handleGestureStart, { passive: false });
+    this.target.addEventListener("gesturechange", this.handleGestureChange, { passive: false });
+    this.target.addEventListener("gestureend", this.handleGestureEnd, { passive: false });
     this.renderer.domElement.addEventListener("pointerdown", this.handlePointerDown);
     this.renderer.domElement.addEventListener("pointerup", this.handlePointerUp);
     this.renderer.domElement.addEventListener("dblclick", this.handleDoubleClick);
@@ -1383,6 +1440,12 @@ export class EventMapController {
     this.renderer.domElement.addEventListener("webglcontextrestored", this.handleContextRestored);
     this.resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => this.resize()) : null;
     this.resizeObserver?.observe(this.target);
+  }
+
+  setWheelMode(mode) {
+    this.wheelMode = mode;
+    this.lastWheelAt = -Infinity;
+    this.wheelInputType = "discrete";
   }
 
   applyTimeHighlightMask() {
@@ -2890,6 +2953,10 @@ export class EventMapController {
     this.controls?.removeEventListener("change", this.handleControlsChange);
     this.controls?.removeEventListener("end", this.handleControlsEnd);
     this.controls?.dispose();
+    this.target.removeEventListener("wheel", this.handleWheel, true);
+    this.target.removeEventListener("gesturestart", this.handleGestureStart);
+    this.target.removeEventListener("gesturechange", this.handleGestureChange);
+    this.target.removeEventListener("gestureend", this.handleGestureEnd);
     this.renderer?.domElement.removeEventListener("pointerdown", this.handlePointerDown);
     this.renderer?.domElement.removeEventListener("pointerup", this.handlePointerUp);
     this.renderer?.domElement.removeEventListener("dblclick", this.handleDoubleClick);

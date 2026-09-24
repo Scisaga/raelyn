@@ -14,9 +14,11 @@ const EVENT_MAP_HIGHLIGHT_REFRESH_INTERVAL_MS = 15000;
 const EVENT_MAP_PREVIEW_LIMIT = 4_096;
 const EVENT_MAP_PREVIEW_REVEAL_TARGET = 0.94;
 const EVENT_MAP_PREVIEW_REVEAL_MS = 4_600;
+// 自动识别取代旧的“全部滚轮旋转”设置，首次升级使用新的默认手势。
+const EVENT_MAP_WHEEL_MODE_KEY = "raelyn.ui.eventMapWheelMode.v2";
 
 const EVENT_MAP_LEVELS = {
-  overview: { label: "语义星域", hint: "点的疏密表示当前观察窗口的事件聚集程度，颜色表示事件语义；拖动旋转，滚轮缩放。" },
+  overview: { label: "语义星域", hint: "点的疏密表示当前观察窗口的事件聚集程度，颜色表示事件语义；双指滑动或拖动旋转，捏合缩放。" },
   topic: { label: "主题探索", hint: "二级主题标签来自结构化实体和事件类型；继续放大可浏览真实事件。" },
   event: { label: "事件近景", hint: "每颗星是一件真实事件；点击后核验记录、实体、故事与原始证据。" },
 };
@@ -116,11 +118,28 @@ function normalizeTimeline(manifest) {
 export function createPlaylistEventMapMethods() {
   return {
     playlistEventMapController() { return rawEventMapController(this._playlistEventMapController); },
+    playlistEventMapRestoreWheelMode() {
+      try {
+        this.playlistEventMapWheelMode = localStorage.getItem(EVENT_MAP_WHEEL_MODE_KEY) === "zoom" ? "zoom" : "auto";
+      } catch {
+        this.playlistEventMapWheelMode = "auto";
+      }
+    },
+    playlistEventMapSetWheelMode(mode) {
+      this.playlistEventMapWheelMode = mode;
+      this.playlistEventMapController()?.setWheelMode(mode);
+      try {
+        localStorage.setItem(EVENT_MAP_WHEEL_MODE_KEY, mode);
+      } catch {
+        // 存储不可用时仍保留本次页面内的选择。
+      }
+    },
     playlistEventMapControllerOptions(target, scene, manifest) {
       return {
         target,
         scene,
         manifest,
+        wheelMode: this.playlistEventMapWheelMode,
         onSelect: (index, canonicalId) => this.playlistEventMapSelectCanonical(index, canonicalId),
         onTopic: (_index, topic) => this.playlistEventMapSelectTopic(topic),
         onViewport: (summary) => this.playlistEventMapHandleViewportSummary(summary),

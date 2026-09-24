@@ -44,6 +44,7 @@ export function createPlaylistsModule() {
       renderedTopicLabelCount: 0,
       ready: false,
     },
+    playlistEventMapWheelMode: "auto",
     playlistEventMapObjectGuideOpen: false,
     playlistEventMapSearchOpen: false,
     playlistEventMapFiltersOpen: false,
