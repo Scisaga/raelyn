@@ -10,7 +10,7 @@
 
 - YouTube 普通 `media.sync_videos` 和 `video.download.youtube` 当前都应使用已保存的 `YTDLP_COOKIES_YOUTUBE`。只有在相同 yt-dlp 版本、相同出口、相同目标类型下做过最小实测，并证明无 cookies 路径稳定成功时，才能讨论局部关闭 cookies。
 - 当 provider 已因 `ytdlp_cookies_*`、`youtube_bot_check` 或 `youtube_auth_check` 暂停时，scheduler 可投递 `media.sync_videos public_discovery=true`，显式无 cookies 抓公开视频 flat 列表。该降级只用于发现公开视频，不解除下载、字幕回补或 `video.enrich_metadata.youtube` 的 provider pause 门控。
-- YouTube 的 `yt-dlp` 资料同步、频道头像下载和视频同步 / 下载可显式使用 `YTDLP_PROXY`；这只影响 YouTube yt-dlp 访问出口，不代表 ASR / LLM / Embedding 或其他头像抓取也走代理。
+- YouTube 的 `yt-dlp` 资料同步、频道头像下载和视频同步 / 下载可显式使用 `YTDLP_PROXY`；Codex CLI 也显式使用同一配置，空值直连。ASR、HTTP LLM、Embedding 与其他头像抓取仍直连，完整边界见[配置说明](configuration.md#高优先级代理规则)。
 - 不要从“cookies 会被轮换 / 会增加账号风险”推导出“cookies 不需要”。正确结论是：降低同步频率、降低并发、保持导出 cookies 的浏览器环境干净，并增加 PO Token Provider / impersonation，而不是盲目切到无 cookies。
 - `video.download.youtube` 默认使用 `YTDLP_COOKIES_YOUTUBE`，并通过 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 启用浏览器 impersonation；当前实测这是比单纯重启代理更接近浏览器成功路径的组合。
 - YouTube 频道 flat 列表有时只返回 `id/title/url/duration`，不返回 `timestamp/upload_date`，也可能先把视频标成 `subscriber_only`。`media.sync_videos` 不再在同步循环里内联单视频 metadata 解析：普通缺失时间的视频投递低优先级 `video.enrich_metadata.youtube`；新发现或最近 7 天再次观测到的 `members_only` 视频则不受 flat 条目是否已有发布时间影响，立即投递优先级 8 的可用性监测。同一监测任务在详情仍受限时持续重排，详情明确返回 `public/unlisted` 后原子恢复为待下载并补投优先级 7 的下载任务，避免会员先享视频转公开后永久缺席播放列表。
@@ -52,7 +52,7 @@
 
 YouTube 的 `yt-dlp` 资料同步、频道头像下载和视频同步 / 下载请求可显式使用 `YTDLP_PROXY`，同步和下载应保持同一出口。应用不会把 shell、systemd 或容器环境中的 `HTTP_PROXY` / `HTTPS_PROXY` 当成 YouTube 代理配置；需要代理时必须配置 `YTDLP_PROXY`。
 
-YouTube 频道资料同步从 yt-dlp 返回的 `thumbnails` 中优先选择 `avatar_uncropped`，没有该标识时才选择方形频道图，避免把横幅当头像。所选头像属于本次 yt-dlp 资料同步的一部分，字节下载复用同一 `YTDLP_PROXY`、Cookies 和浏览器模拟配置；非 yt-dlp 的资料 / 头像抓取、B 站请求、ASR、LLM、Embedding 和健康检查仍默认直连，并且不应隐式继承进程环境代理。
+YouTube 频道资料同步从 yt-dlp 返回的 `thumbnails` 中优先选择 `avatar_uncropped`，没有该标识时才选择方形频道图，避免把横幅当头像。所选头像属于本次 yt-dlp 资料同步的一部分，字节下载复用同一 `YTDLP_PROXY`、Cookies 和浏览器模拟配置；Codex CLI 子进程同样只按 `YTDLP_PROXY` 显式注入代理，空值直连，不继承任意环境代理或应用凭据。非 yt-dlp 的资料 / 头像抓取、B 站请求、ASR、HTTP LLM、Embedding 和 HTTP 健康检查仍默认直连，并且不应隐式继承进程环境代理。
 
 ## Cookies 导出
 
@@ -71,11 +71,13 @@ YouTube 频道资料同步从 yt-dlp 返回的 `thumbnails` 中优先选择 `ava
 
 只有当 yt-dlp 明确返回 `provided YouTube account cookies are no longer valid`、`cookies are no longer valid` 或 cookies 文件格式错误时，系统才把失败归类为 `YTDLP_COOKIES_YOUTUBE` 失效 / 无效。
 
-遇到 `Sign in to confirm you are not a bot`、`请登录，以便我们确认你不是聊天机器人`、`[youtube:tab] ... Playlists that require authentication ... without a successful webpage download` 或类似鉴权检查失败时，系统会把 YouTube provider 暂停，但归类为 `youtube_bot_check` / `youtube_auth_check`，避免把出口 IP、请求频率、PO Token、导出会话不一致等问题误报成 cookies 失效。暂停的目的仍然是避免 `scheduler` 因 `last_video_sync_at` 未推进而每分钟反复投递同一个失败同步 / 下载任务。
+遇到 `Sign in to confirm you're not a bot`、`请登录，以便我们确认你不是聊天机器人` 时，系统会立即把 YouTube provider 暂停，归类为 `youtube_bot_check`，避免把出口 IP、请求频率、PO Token、导出会话不一致等问题误报成 cookies 失效。明确 cookies 无效的信号优先于其他错误，人机验证信号优先于通用频道鉴权检查。
 
-其中 `youtube_auth_check` 可能由一次频道页瞬时下载失败触发：首次失败且任务仍有剩余 attempt 时，worker 只按任务退避重试，不立即暂停整个 YouTube provider；最终尝试仍失败才持久化 provider pause。`youtube_bot_check` 和明确 cookies 无效仍立即暂停，避免在真实风控下继续请求。
+`[youtube:tab] ... Playlists that require authentication ... without a successful webpage download` 是 yt-dlp 在认证 Cookie 已加载、但频道网页的 `ytcfg` 未取得时追加的通用检查，不能单独证明 cookies 失效，见 [当前锁定版本的上游实现](https://github.com/yt-dlp/yt-dlp/blob/2026.08.19/yt_dlp/extractor/youtube/_tab.py#L984-L1012)。若同次调用捕获了频道网页下载的网络超时、连接中断、DNS/TLS 错误或 HTTP 5xx，按普通网络失败进入既有任务级退避重试；即使重试耗尽，也只让当前 job 失败并推进媒体同步冷却，不暂停整个 YouTube，不要求更新 cookies。curl 28 即使只报告 `Operation too slow` 也属于超时，错误码依据见 [libcurl 官方说明](https://curl.se/libcurl/c/libcurl-errors.html)。HTTP 401/403/429 等访问受限信号不会被其他尝试中的网络错误覆盖。
 
-鉴权检查错误会同时保留捕获到的底层诊断：HTTP 状态码、curl 错误码、超时、连接中断、DNS/TLS 错误或频道初始数据缺失。诊断只输出固定类别和数字码，不复制可能携带代理凭据、Cookie 或签名 URL 的原始日志；没有明确证据时显示“未捕获明确底层原因”。这只补齐排障证据，不改变 cookies、代理、`authcheck`、重试次数或 provider pause 策略。
+缺少明确网络故障依据的频道鉴权检查仍归类为 `youtube_auth_check`：首次失败且任务仍有剩余 attempt 时，worker 按任务退避重试；最终尝试仍失败才持久化 provider pause。这样保留真实访问限制下的暂停保护，并避免 `scheduler` 因 `last_video_sync_at` 未推进而反复投递同一个失败任务。
+
+网络失败和鉴权检查错误都会保留底层诊断：HTTP 状态码、curl 错误码、超时、连接中断、DNS/TLS 错误或频道初始数据缺失。诊断只输出固定类别和数字码，不复制可能携带代理凭据、Cookie 或签名 URL 的原始日志；没有明确证据时显示“未捕获明确底层原因”。分类不会重建认证会话、清空 cookies、切换代理或跳过 `authcheck`，任务重试预算保持不变。
 
 provider 暂停期间，若 `SYNC_PUBLIC_DISCOVERY_ENABLED=true`，自动同步会为到期媒体投递低波峰的 public discovery 任务，默认抓最新 `SYNC_PUBLIC_DISCOVERY_MAX_ENTRIES=200` 条。若无 cookies flat 抓取仍被平台挡住，任务只更新该媒体同步冷却并记录 `public_discovery_blocked`，不会覆盖原 provider pause。保存有效非空 cookies 后，配置 API 会清除对应 provider pause，并为该 provider 的受监控媒体补投 `force=true, max_entries=SYNC_COOKIE_RECOVERY_MAX_ENTRIES, download_priority=8` 的 catch-up 同步，默认 `200`。恢复任务按媒体稳定顺序均匀排在一个 `SYNC_INTERVAL_MINUTES` 周期内；同一媒体已有 pending 同步（包括 public discovery）时会原地转换为认证恢复并重新排期，避免 Cookie 更新后立即形成全量扫描波峰。
 
@@ -120,7 +122,7 @@ yt-dlp 官方 PO Token Guide 当前推荐用 PO Token Provider plugin，尤其�
 
 本项目只接入 bgutil HTTP server 模式，不使用每次调用 yt-dlp 都拉起脚本的模式。HTTP server 模式更适合持续同步 / 下载任务，也更容易统一观测和重启。
 
-bgutil 插件与 HTTP server 当前均锁定 `2.0.0`。旧版 `<2.0.0` 存在 HTTP 服务远程代码执行风险，见 [上游安全公告 GHSA-qpv9-8xfj-xx9m](https://github.com/Brainicism/bgutil-ytdlp-pot-provider/security/advisories/GHSA-qpv9-8xfj-xx9m)。升级必须同时更新两端，主版本不一致时插件会拒绝生成 token。`2.0.0` Docker 镜像仍默认传入 `--host 0.0.0.0`，因此 Compose 显式覆盖为本机回环和 Docker 内部网关；独立原生部署只需监听回环地址。具体命令见 [运行与部署](run-and-deploy.md#可选youtube-po-token-providerbgutil)。
+bgutil 插件与 HTTP server 当前均锁定 `2.0.2`，该版本修复了服务端依赖中的已知漏洞，见 [上游发布说明](https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/tag/2.0.2)。旧版 `<2.0.0` 存在 HTTP 服务远程代码执行风险，见 [上游安全公告 GHSA-qpv9-8xfj-xx9m](https://github.com/Brainicism/bgutil-ytdlp-pot-provider/security/advisories/GHSA-qpv9-8xfj-xx9m)。升级必须同时更新两端，主版本不一致时插件会拒绝生成 token。Compose 显式将监听地址设置为本机回环和 Docker 内部网关；独立原生部署只需监听回环地址。具体命令见 [运行与部署](run-and-deploy.md#可选youtube-po-token-providerbgutil)。
 
 启用方式：
 
@@ -150,7 +152,7 @@ yt-dlp 官方 README 把 `curl_cffi` 列为推荐的浏览器 impersonation 支�
 - 本地 `yt-dlp` 版本已更新到 `2026.08.19`，对应 PyPI 包版本 `2026.8.19`；`yt-dlp-ejs` 当前为 `0.8.0`。
 - 当前配置已有 `YTDLP_REMOTE_COMPONENTS=ejs:github`，用于 YouTube EJS / JS challenge 组件。
 - 当前支持通过 `YTDLP_POT_BGUTIL_BASE_URL` 启用 bgutil PO Token Provider HTTP server。
-- 当前 bgutil Python 插件与 Docker HTTP server 均为 `2.0.0`，`curl_cffi` 为 `0.16.3`。
+- 当前 bgutil Python 插件与 Docker HTTP server 均为 `2.0.2`，`curl_cffi` 为 `0.16.3`。
 - 当前 YouTube 同步 / 下载固定注入已保存的 YouTube cookies；不再提供全局无 cookies 下载开关。
 - 历史 `_download_without_cookies` 任务参数只作为兼容清理对象存在，不允许作为新的自动重试策略。
 - 当前 YouTube `yt-dlp` 调用默认启用 `YTDLP_YOUTUBE_IMPERSONATE=chrome`。

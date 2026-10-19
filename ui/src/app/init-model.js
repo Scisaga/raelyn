@@ -287,7 +287,7 @@ export function createAppInitMethods() {
       this.initMediaSession();
       if (!healthReady) await this._refreshHealthStatus();
       this._resumeProtectedRealtime();
-      await this.loadDomains().catch(() => []);
+      await this.loadDomains({ compact: this.activeView === "operations" }).catch(() => []);
       await this._refreshProtectedData({ statsReady });
     },
 
@@ -299,7 +299,7 @@ export function createAppInitMethods() {
       this.initMediaSession();
       if (!healthReady) await this._refreshHealthStatus();
       this._resumeProtectedRealtime();
-      await this.loadDomains().catch(() => []);
+      await this.loadDomains({ compact: this.activeView === "operations" }).catch(() => []);
       await this._refreshProtectedData({ statsReady });
     },
 

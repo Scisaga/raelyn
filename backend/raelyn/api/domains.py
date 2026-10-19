@@ -20,21 +20,20 @@ from raelyn.services.domain_observation_control import set_domain_observation_en
 from raelyn.services.media_sources import resolve_media_url
 from raelyn.services.v2_observation import (
     canonical_directory,
-    canonical_history,
+    canonical_detail,
     cursor_payload,
     domain_bootstrap_directory,
     domain_directory,
     domain_observation,
     event_highlights,
     evidence_context,
-    list_changes,
     object_brief_references,
     observation_feed,
     semantic_search,
     source_semantic_references,
     story_directory,
     story_edge_support,
-    story_history,
+    story_detail,
     structured_brief,
     topic_detail,
     update_observation_cursor,
@@ -60,7 +59,6 @@ class ObservationCursorUpdate(BaseModel):
     filter_state: dict[str, Any] | None = None
     selected_object_type: Literal["canonical", "story", "topic", "evidence"] | None = None
     selected_object_id: uuid.UUID | None = None
-    last_change_id: uuid.UUID | None = None
 
 
 class StoryReadUpdate(BaseModel):
@@ -257,30 +255,6 @@ def put_observation_cursor(playlist_id: uuid.UUID, payload: ObservationCursorUpd
             raise HTTPException(status_code=400, detail=str(error)) from error
 
 
-@router.get("/domains/{playlist_id}/changes")
-def get_changes(
-    playlist_id: uuid.UUID,
-    after_snapshot_id: uuid.UUID | None = None,
-    object_type: str | None = None,
-    change_type: str | None = None,
-    cursor: uuid.UUID | None = None,
-    limit: int = Query(default=100, ge=1, le=500),
-) -> dict[str, Any]:
-    with session_scope() as session:
-        try:
-            return list_changes(
-                session,
-                playlist_id=playlist_id,
-                after_snapshot_id=after_snapshot_id,
-                object_type=object_type,
-                change_type=change_type,
-                cursor_id=cursor,
-                limit=limit,
-            )
-        except LookupError as error:
-            raise _not_found(error) from error
-        except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @router.get("/domains/{playlist_id}/observation/feed")
@@ -295,11 +269,14 @@ def get_observation_feed(
             raise _not_found(error) from error
 
 
-@router.get("/domains/{playlist_id}/canonicals/{canonical_id}/history")
-def get_canonical_history(playlist_id: uuid.UUID, canonical_id: uuid.UUID) -> dict[str, Any]:
+@router.get("/domains/{playlist_id}/canonicals/{canonical_id}")
+def get_canonical_detail(
+    playlist_id: uuid.UUID, canonical_id: uuid.UUID,
+    snapshot_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
     with session_scope() as session:
         try:
-            return canonical_history(session, playlist_id, canonical_id)
+            return canonical_detail(session, playlist_id, canonical_id, snapshot_id=snapshot_id)
         except LookupError as error:
             raise _not_found(error) from error
 
@@ -407,14 +384,14 @@ def get_domain_topic(
 
 
 @router.get("/domains/{playlist_id}/stories/{story_identity_id}")
-def get_story_history(
+def get_story_detail(
     playlist_id: uuid.UUID,
     story_identity_id: uuid.UUID,
     snapshot_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     with session_scope() as session:
         try:
-            return story_history(
+            return story_detail(
                 session,
                 playlist_id,
                 story_identity_id,

@@ -16,7 +16,7 @@ def create_mcp_server(*, include_actions: bool = True) -> FastMCP:
     mcp = FastMCP(
         name="raelyn",
         instructions=(
-            "Read Raelyn observation domains, semantic field changes, stable canonical and story history, "
+            "Read Raelyn observation domains, current semantic fields, stable canonical and story details, "
             "structured briefs, evidence, sources, transcripts, and jobs. Semantic objects use the same "
             "stable identities and time bases as the Web and REST interfaces."
         ),

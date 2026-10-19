@@ -18,6 +18,10 @@ _state = threading.local()
 _DEFAULT_MIN_INTERVAL_SECONDS = 2.0
 
 
+def current_worker_job_id() -> uuid.UUID | None:
+    return _coerce_uuid(getattr(_state, "current_job_id", None))
+
+
 def configure_worker_activity(*, worker_id: str, role: str | None = None) -> None:
     _state.worker_id = str(worker_id or "").strip()
     _state.role = str(role or "").strip() or "all"

@@ -99,7 +99,7 @@ def should_defer_provider_pause_for_retry(
     next_attempt: int,
     max_attempts: int,
 ) -> bool:
-    """仅将可能由频道页瞬时失败触发的鉴权检查暂停延迟到最终尝试。"""
+    """仅将缺少明确网络故障依据的频道鉴权检查暂停延迟到最终尝试。"""
     if not isinstance(err, ProviderPauseRequestError):
         return False
     if err.provider != "youtube" or err.reason != "youtube_auth_check":

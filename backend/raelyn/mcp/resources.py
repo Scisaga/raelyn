@@ -101,17 +101,11 @@ def register_resources(mcp: FastMCP) -> None:
         except Exception as exc:
             _raise_resource_error(exc)
 
-    @mcp.resource("raelyn://domain/{playlist_id}/changes", mime_type="application/json")
-    def domain_changes_resource(playlist_id: str):
-        try:
-            return queries.get_domain_changes(playlist_id)
-        except Exception as exc:
-            _raise_resource_error(exc)
 
     @mcp.resource("raelyn://domain/{playlist_id}/canonical/{canonical_id}", mime_type="application/json")
-    def canonical_history_resource(playlist_id: str, canonical_id: str):
+    def canonical_detail_resource(playlist_id: str, canonical_id: str):
         try:
-            return queries.get_canonical_history(playlist_id, canonical_id)
+            return queries.get_canonical_detail(playlist_id, canonical_id)
         except Exception as exc:
             _raise_resource_error(exc)
 
@@ -123,9 +117,9 @@ def register_resources(mcp: FastMCP) -> None:
             _raise_resource_error(exc)
 
     @mcp.resource("raelyn://domain/{playlist_id}/story/{story_identity_id}", mime_type="application/json")
-    def story_history_resource(playlist_id: str, story_identity_id: str):
+    def story_detail_resource(playlist_id: str, story_identity_id: str):
         try:
-            return queries.get_story_history(playlist_id, story_identity_id)
+            return queries.get_story_detail(playlist_id, story_identity_id)
         except Exception as exc:
             _raise_resource_error(exc)
 

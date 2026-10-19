@@ -1,93 +1,133 @@
+"""使用真实路由与隔离 SQLite 验证 AI 接入配置，不调用推理服务。"""
 from __future__ import annotations
 
 import sys
 import unittest
-from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-from raelyn.api.config_api import InferenceSettingsPayload
-from raelyn.api.config_api import put_inference_config
-from raelyn.api.config_api import test_inference_config
-from raelyn.models import AppConfig
-from raelyn.services.inference import VOLCENGINE_INFERENCE_CONFIG_KEY
+from raelyn.tests.test_codex_inference import run_isolated_inference_case
 
 
-class _FakeSession:
-    def __init__(self, *items: AppConfig):
-        self.items = {item.key: item for item in items}
+_API_SETUP = """
+import asyncio
+import httpx
+from fastapi import FastAPI
+from raelyn.api.config_api import router
 
-    def get(self, _model, key):
-        return self.items.get(key)
+app = FastAPI()
+app.include_router(router, prefix="/api")
 
-    def add(self, item):
-        self.items[item.key] = item
+async def request(method, path, payload=None):
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test", trust_env=False) as client:
+        return await client.request(method, path, json=payload)
 
-
-@contextmanager
-def _session_scope(session: _FakeSession):
-    yield session
+def api(method, path, payload=None):
+    return asyncio.run(request(method, path, payload))
+"""
 
 
 class InferenceConfigApiTests(unittest.TestCase):
-    def test_put_inference_config_persists_mode_and_returns_masked_status(self) -> None:
-        session = _FakeSession()
-        payload = InferenceSettingsPayload(
-            mode="volcengine",
-            volcengine={
-                "api_key": "ark-secret",
-                "llm_model": "doubao-seed",
-                "asr_model": "bigmodel",
-                "asr_app_key": "app-secret",
-                "asr_access_key": "access-secret",
-            },
-        )
+    def run_api_case(self, script: str) -> None:
+        run_isolated_inference_case(self, _API_SETUP + script)
 
-        with patch("raelyn.api.config_api.session_scope", lambda: _session_scope(session)):
-            result = put_inference_config(payload)
+    def test_get_inference_config_defaults_to_local_and_reports_codex_settings(self) -> None:
+        self.run_api_case("""
+response = api("GET", "/api/config/inference")
+assert response.status_code == 200
+data = response.json()
+assert data["mode"] == "local"
+assert data["local_llm_provider"] == "local"
+assert data["local_llm_provider_source"] == "env"
+assert data["codex"]["model"] == ""
+assert data["codex"]["timeout_seconds"] == 43
+""")
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(session.items["inference_mode"].value["value"], "volcengine")
-        self.assertEqual(session.items[VOLCENGINE_INFERENCE_CONFIG_KEY].value["api_key"], "ark-secret")
-        self.assertTrue(result["data"]["volcengine"]["api_key_present"])
-        self.assertNotEqual(result["data"]["volcengine"]["api_key_masked"], "ark-secret")
+    def test_put_inference_config_switches_to_codex_and_back_through_real_route(self) -> None:
+        self.run_api_case("""
+response = api("PUT", "/api/config/inference", {"mode": "local", "local_llm_provider": "codex"})
+assert response.status_code == 200, response.text
+saved = response.json()
+assert saved["ok"] is True
+assert saved["data"]["local_llm_provider"] == "codex"
+assert saved["data"]["local_llm_provider_source"] == "app_config"
+assert api("GET", "/api/config/inference").json()["local_llm_provider"] == "codex"
+with SessionLocal() as session:
+    assert session.get(AppConfig, "local_llm_provider").value == {"value": "codex"}
+    assert get_effective_llm_config(session).provider == "codex"
+    assert get_effective_asr_config(session).provider == "local"
+response = api("PUT", "/api/config/inference", {"mode": "local", "local_llm_provider": "local"})
+assert response.status_code == 200, response.text
+assert response.json()["data"]["local_llm_provider"] == "local"
+assert api("GET", "/api/config/inference").json()["local_llm_provider"] == "local"
+with SessionLocal() as session:
+    assert get_effective_llm_config(session).provider == "local"
+    assert get_effective_llm_config(session).url == "http://127.0.0.1:11434/api/generate"
+    assert get_effective_asr_config(session).provider == "local"
+""")
 
-    def test_test_inference_config_uses_existing_secrets_when_input_blank(self) -> None:
-        session = _FakeSession(
-            AppConfig(
-                key=VOLCENGINE_INFERENCE_CONFIG_KEY,
-                value={
-                    "api_key": "stored-ark",
-                    "llm_model": "stored-model",
-                    "asr_model": "bigmodel",
-                    "asr_app_key": "stored-app",
-                    "asr_access_key": "stored-access",
-                },
-            )
-        )
-        payload = InferenceSettingsPayload(mode="volcengine", volcengine={"api_key": "", "llm_model": "draft-model"})
+    def test_put_without_local_provider_preserves_saved_selection(self) -> None:
+        self.run_api_case("""
+assert api("PUT", "/api/config/inference", {"mode": "local", "local_llm_provider": "codex"}).status_code == 200
+response = api("PUT", "/api/config/inference", {"mode": "local"})
+assert response.status_code == 200, response.text
+assert response.json()["data"]["local_llm_provider"] == "codex"
+assert api("GET", "/api/config/inference").json()["local_llm_provider"] == "codex"
+""")
 
-        with (
-            patch("raelyn.api.config_api.session_scope", lambda: _session_scope(session)),
-            patch("raelyn.api.config_api.test_llm_connection", return_value={"ok": True, "error": None}) as llm_test,
-            patch("raelyn.api.config_api.test_asr_connection", return_value={"ok": True, "error": None}) as asr_test,
-        ):
-            result = test_inference_config(payload)
+    def test_invalid_provider_is_rejected_without_overwriting_saved_selection(self) -> None:
+        self.run_api_case("""
+assert api("PUT", "/api/config/inference", {"mode": "local", "local_llm_provider": "codex"}).status_code == 200
+for path, payload in [
+    ("/api/config/inference", {"mode": "local", "local_llm_provider": "unknown"}),
+    ("/api/config/local_llm_provider", {"value": {"value": "unknown"}}),
+]:
+    response = api("PUT", path, payload)
+    assert response.status_code in (400, 422), response.text
+assert api("GET", "/api/config/inference").json()["local_llm_provider"] == "codex"
+""")
 
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["volcengine"]["api_key_present"])
-        self.assertTrue(result["volcengine"]["asr_app_key_present"])
-        self.assertTrue(result["volcengine"]["asr_access_key_present"])
-        llm_cfg = llm_test.call_args.args[0]
-        asr_cfg = asr_test.call_args.args[0]
-        self.assertEqual(llm_cfg.api_key, "stored-ark")
-        self.assertEqual(llm_cfg.model, "draft-model")
-        self.assertEqual(asr_cfg.app_key, "stored-app")
-        self.assertEqual(asr_cfg.access_key, "stored-access")
+    def test_volcengine_secrets_are_masked_preserved_and_independent_of_local_provider(self) -> None:
+        self.run_api_case("""
+# 合成凭据只用于隔离配置库的脱敏与保留验证，不发送给任何服务。
+secrets = {"api_key": "test-ark-secret", "asr_app_key": "test-app-secret", "asr_access_key": "test-access-secret"}
+response = api("PUT", "/api/config/inference", {
+    "mode": "volcengine", "local_llm_provider": "codex",
+    "volcengine": {**secrets, "llm_model": "test-hosted-model", "asr_model": "bigmodel"},
+})
+assert response.status_code == 200, response.text
+data = response.json()["data"]
+assert data["mode"] == "volcengine"
+assert data["local_llm_provider"] == "codex"
+for name, secret in secrets.items():
+    assert data["volcengine"][name + "_present"] is True
+    assert secret not in response.text
+    assert data["volcengine"][name + "_masked"].endswith(secret[-4:])
+response = api("PUT", "/api/config/inference", {
+    "mode": "volcengine", "volcengine": {"llm_model": "test-draft-model", **dict.fromkeys(secrets, "")},
+})
+assert response.status_code == 200, response.text
+assert response.json()["data"]["volcengine"]["llm_model"] == "test-draft-model"
+assert response.json()["data"]["local_llm_provider"] == "codex"
+with SessionLocal() as session:
+    stored = session.get(AppConfig, "volcengine_inference_config").value
+    assert all(stored[name] == secret for name, secret in secrets.items())
+    assert get_effective_llm_config(session).provider == "volcengine_ark"
+    assert get_effective_asr_config(session).provider == "volcengine_speech"
+response = api("PUT", "/api/config/inference", {"mode": "local"})
+assert response.status_code == 200, response.text
+assert response.json()["data"]["local_llm_provider"] == "codex"
+with SessionLocal() as session:
+    assert get_effective_llm_config(session).provider == "codex"
+    assert get_effective_asr_config(session).provider == "local"
+for response in (api("GET", "/api/config"), api("GET", "/api/config/inference")):
+    assert response.status_code == 200
+    assert all(secret not in response.text for secret in secrets.values())
+""")
 
 
 if __name__ == "__main__":

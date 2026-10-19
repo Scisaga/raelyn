@@ -334,12 +334,12 @@
                   </div>
                 </div>
 
-                <div x-show="settingsTab==='inference'" class="h-full overflow-auto raelyn-scrollbar">
+                <div x-show="settingsTab==='inference'" class="h-full overflow-auto raelyn-scrollbar" @input="inferenceTestResult=null">
                   <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-3">
                     <div>
                       <div class="text-sm font-semibold text-slate-100">AI 接入方式</div>
                       <div class="text-xs text-slate-400 mt-1">
-                        普通用户推荐使用火山引擎；高级用户继续通过 <code class="text-slate-200">.env</code> 维护本地自托管配置。
+                        选择本地服务或火山引擎。本地服务可使用本地 LLM 或 Codex 完成文本 AI 任务。
                       </div>
                     </div>
                     <div class="shrink-0 flex items-center gap-2">
@@ -367,14 +367,16 @@
                         <button
                           class="rounded-lg px-3 py-1.5 text-sm font-semibold transition-all"
                           :class="inferenceMode==='local' ? 'bg-emerald-500/12 text-emerald-200 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.24)]' : 'text-slate-300 hover:bg-slate-800/70 hover:text-slate-100'"
-                          @click="inferenceMode='local'"
+                          @click="setInferenceMode('local')"
+                          :disabled="inferenceLoading || inferenceSaving || inferenceTesting"
                         >
                           本地服务
                         </button>
                         <button
                           class="rounded-lg px-3 py-1.5 text-sm font-semibold transition-all"
                           :class="inferenceMode==='volcengine' ? 'bg-emerald-500/12 text-emerald-200 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.24)]' : 'text-slate-300 hover:bg-slate-800/70 hover:text-slate-100'"
-                          @click="inferenceMode='volcengine'"
+                          @click="setInferenceMode('volcengine')"
+                          :disabled="inferenceLoading || inferenceSaving || inferenceTesting"
                         >
                           火山引擎
                         </button>
@@ -384,28 +386,83 @@
 
                     <div x-show="inferenceMode==='local'" class="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)] items-start">
                       <div class="space-y-2">
-                        <div class="text-sm font-semibold text-slate-100">本地自托管</div>
+                        <div class="text-sm font-semibold text-slate-100">本地服务</div>
                         <div class="text-xs leading-6 text-slate-400">
-                          本地服务直接读取服务启动时的 <code class="text-slate-200">.env</code> 与本地推理服务配置。保存后不会修改 <code class="text-slate-200">.env</code>，只会把当前模式切回本地。
+                          LLM 负责事件抽取、转写润色和简报等文本任务。切换 LLM 后端时，语音转写 ASR 继续使用本地服务。
                         </div>
+                        <div class="text-[11px] leading-6 text-slate-500">保存后对新的 AI 调用生效，不会修改 <code class="text-slate-300">.env</code>。</div>
                       </div>
-                      <div class="grid gap-3 md:grid-cols-2">
-                        <div class="rounded-lg border border-slate-800 bg-slate-950/20 p-3">
-                          <div class="flex items-center justify-between gap-2">
-                            <div class="text-sm text-slate-100">ASR</div>
-                            <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.asr.ok)" x-text="serviceText(services.asr)"></span>
+                      <div class="space-y-4">
+                        <div class="flex flex-wrap items-center gap-3">
+                          <div class="inline-flex items-center gap-1 rounded-xl border border-slate-800 bg-slate-950/50 p-1" role="group" aria-label="本地 LLM 后端">
+                            <button
+                              class="rounded-lg px-3 py-1.5 text-sm font-semibold transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                              :class="localLlmProvider==='local' ? 'bg-emerald-500/12 text-emerald-200 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.24)]' : 'text-slate-300 hover:bg-slate-800/70 hover:text-slate-100'"
+                              :aria-pressed="localLlmProvider==='local'"
+                              :disabled="inferenceLoading || inferenceSaving || inferenceTesting"
+                              @click="setLocalLlmProvider('local')"
+                            >本地 LLM</button>
+                            <button
+                              class="rounded-lg px-3 py-1.5 text-sm font-semibold transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                              :class="localLlmProvider==='codex' ? 'bg-emerald-500/12 text-emerald-200 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.24)]' : 'text-slate-300 hover:bg-slate-800/70 hover:text-slate-100'"
+                              :aria-pressed="localLlmProvider==='codex'"
+                              :disabled="inferenceLoading || inferenceSaving || inferenceTesting"
+                              @click="setLocalLlmProvider('codex')"
+                            >Codex</button>
                           </div>
-                          <div class="mt-2 text-[11px] text-slate-500">provider: <span class="text-slate-300" x-text="services.asr.provider || 'local'"></span></div>
-                          <div class="mt-1 text-[11px] text-slate-500">source: <span class="text-slate-300" x-text="inferenceModeSourceText(services.asr.source || 'env')"></span></div>
+                          <div class="text-[11px] text-slate-500">LLM 配置来源：<span class="text-slate-300" x-text="inferenceModeSourceText(localLlmProviderSource)"></span></div>
                         </div>
-                        <div class="rounded-lg border border-slate-800 bg-slate-950/20 p-3">
-                          <div class="flex items-center justify-between gap-2">
-                            <div class="text-sm text-slate-100">LLM</div>
-                            <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="servicePillClass(services.llm.ok)" x-text="serviceText(services.llm)"></span>
+                        <div x-show="localLlmProvider==='codex'" class="text-xs leading-6 text-slate-400">
+                          请先让管理员在服务器上，以服务运行账号安装并登录 Codex，再点击“测试连接”验证文本生成。<span class="text-slate-300" x-text="codexModel || 'Codex 默认模型'"></span> · 超时 <span class="tabular-nums" x-text="codexTimeoutSeconds"></span> 秒。
+                        </div>
+                        <div class="grid gap-3 md:grid-cols-2">
+                          <div class="rounded-lg border border-slate-800 bg-slate-950/20 p-3">
+                            <div class="flex items-center justify-between gap-2">
+                              <div class="text-sm text-slate-100">ASR</div>
+                              <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="localInferenceServiceStatus('asr').pending ? 'border-slate-700 bg-slate-950/30 text-slate-400' : servicePillClass(localInferenceServiceStatus('asr').ok)" x-text="localInferenceServiceText('asr')"></span>
+                            </div>
+                            <div class="mt-2 text-[11px] text-slate-500">语音转写：<span class="text-slate-300">本地服务</span></div>
+                            <div class="mt-1 text-[11px] text-slate-500">来源：<span class="text-slate-300" x-text="inferenceModeSourceText(localInferenceServiceStatus('asr').source)"></span></div>
                           </div>
-                          <div class="mt-2 text-[11px] text-slate-500">provider: <span class="text-slate-300" x-text="services.llm.provider || 'local'"></span></div>
-                          <div class="mt-1 text-[11px] text-slate-500">source: <span class="text-slate-300" x-text="inferenceModeSourceText(services.llm.source || 'env')"></span></div>
+                          <div class="rounded-lg border border-slate-800 bg-slate-950/20 p-3">
+                            <div class="flex items-center justify-between gap-2">
+                              <div class="text-sm text-slate-100" x-text="localLlmProvider==='codex' ? 'LLM · Codex' : 'LLM · 本地服务'"></div>
+                              <span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]" :class="localInferenceServiceStatus('llm').pending ? 'border-slate-700 bg-slate-950/30 text-slate-400' : servicePillClass(localInferenceServiceStatus('llm').ok)" x-text="localInferenceServiceText('llm')"></span>
+                            </div>
+                            <div class="mt-2 text-[11px] text-slate-500">来源：<span class="text-slate-300" x-text="inferenceModeSourceText(localInferenceServiceStatus('llm').source)"></span></div>
+                            <div x-show="localLlmProvider==='codex'" class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
+                              <span>安装：<span class="text-slate-300" x-text="localInferenceServiceStatus('llm').installed===true ? '已安装' : localInferenceServiceStatus('llm').installed===false ? '未安装' : '待检测'"></span></span>
+                              <span>登录：<span class="text-slate-300" x-text="localInferenceServiceStatus('llm').authenticated===true ? '已登录' : localInferenceServiceStatus('llm').authenticated===false ? '未登录' : '待检测'"></span></span>
+                            </div>
+                            <div class="mt-2 text-[11px] leading-5 text-rose-200 break-words" x-show="localInferenceServiceStatus('llm').error" x-text="localInferenceServiceStatus('llm').error"></div>
+                          </div>
                         </div>
+                        <section x-show="localLlmProvider==='codex' && codexBudget?.enabled" class="overflow-hidden rounded-lg border border-slate-800 bg-slate-950/20" aria-label="Codex 每日订阅额度">
+                          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-3 py-3">
+                            <div class="text-sm font-semibold text-slate-100">Codex 订阅额度</div>
+                            <span class="rounded-full border px-2 py-0.5 text-[11px]" :class="codexBudgetPaused() ? 'border-amber-500/25 bg-amber-500/15 text-amber-200' : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200'" x-text="(codexBudgetPaused() ? 'AI 已挂起 · ' : '') + codexBudgetStatusLabel()"></span>
+                          </div>
+                          <div class="space-y-3 p-3">
+                            <div class="text-[11px] text-slate-500">今日用量与每日上限均以周订阅总额度为基准，不是 token 数。</div>
+                            <dl class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                              <div><dt class="text-[11px] text-slate-500">今日已用</dt><dd class="mt-1 font-mono tabular-nums text-lg text-slate-200" x-text="codexBudgetPercent(codexBudgetDailyValue('used_percent'))"></dd></div>
+                              <div><dt class="text-[11px] text-slate-500">每日上限</dt><dd class="mt-1 font-mono tabular-nums text-lg text-slate-200" x-text="codexBudgetPercent(codexBudget?.daily_limit_percent)"></dd></div>
+                              <div><dt class="text-[11px] text-slate-500">今日可用剩余</dt><dd class="mt-1 font-mono tabular-nums text-lg text-slate-200" x-text="codexBudgetPercent(codexBudgetDailyValue('remaining_percent'))"></dd></div>
+                              <div><dt class="text-[11px] text-slate-500">本周已用</dt><dd class="mt-1 font-mono tabular-nums text-lg text-slate-200" x-text="codexBudgetPercent(codexBudget?.weekly_used_percent)"></dd></div>
+                            </dl>
+                            <div class="text-[11px] text-slate-400"><span x-show="codexBudget?.reserve_percent > 0">含 <span class="font-mono tabular-nums" x-text="codexBudget?.reserve_percent"></span> 个百分点预留，</span>今日可用 <span class="font-mono tabular-nums text-slate-300" x-text="codexBudgetPercent(codexBudget?.effective_limit_percent)"></span>；可用额度用完后等待次日恢复。</div>
+                            <div x-show="codexBudgetDailyValue('used_percent') != null" class="h-1.5 overflow-hidden rounded-full bg-slate-800" role="progressbar" aria-label="今日 Codex 可用额度使用进度" aria-valuemin="0" :aria-valuemax="codexBudget?.effective_limit_percent" :aria-valuenow="codexBudgetDailyValue('used_percent')">
+                              <div class="h-full rounded-full transition-all" :class="codexBudgetPaused() ? 'bg-amber-400' : 'bg-emerald-400'" :style="'width:' + codexBudgetProgress() + '%'"></div>
+                            </div>
+                            <p class="text-xs leading-6" :class="codexBudgetPaused() ? 'text-amber-200' : 'text-slate-400'" x-text="codexBudgetNotice()"></p>
+                            <div class="border-t border-slate-800 pt-3 text-[11px] leading-6 text-slate-500">
+                              <div x-show="codexBudgetPaused()"><span x-text="codexBudgetResumeLabel()"></span>：<span class="font-mono tabular-nums text-slate-300" x-text="codexBudgetResumeText()"></span></div>
+                              <div>本周额度重置：<span class="font-mono tabular-nums text-slate-400" x-text="codexBudgetTime(codexBudget?.weekly_resets_at) + '（北京时间）'"></span></div>
+                              <div>最近额度检查：<span class="font-mono tabular-nums text-slate-400" x-text="codexBudgetTime(codexBudget?.last_checked_at) + '（北京时间）'"></span></div>
+                              <div>首次用量基线：<span class="font-mono tabular-nums text-slate-400" x-text="codexBudgetTime(codexBudget?.baseline_started_at) + '（北京时间）'"></span>；账户内其他 Codex 使用也计入当日用量。</div>
+                            </div>
+                          </div>
+                        </section>
                       </div>
                     </div>
 

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from types import SimpleNamespace
 import uuid
 from typing import Any, Literal
 from urllib.parse import urlencode
 
-from sqlalchemy import String, and_, case, cast, func, or_, select
+from sqlalchemy import String, and_, case, cast, func, or_, select, text, true
 from sqlalchemy.orm import Session, aliased
 
 from raelyn.api.asset_refs import build_asset_ref
@@ -16,19 +15,14 @@ from raelyn.models import (
     BriefReference,
     DomainObservationCursor,
     EventMapCanonical,
-    EventMapCanonicalHistoryMember,
-    EventMapCanonicalHistoryRevision,
     EventMapCanonicalIdentity,
     EventMapCanonicalLineage,
     EventMapCanonicalMember,
-    EventMapChange,
     EventMapEntityIndex,
     EventMapRecordRevision,
     EventMapSnapshot,
     EventMapState,
     EventMapStory,
-    EventMapStoryHistoryEvidence,
-    EventMapStoryHistoryRevision,
     EventMapStoryIdentity,
     EventMapStoryMember,
     EventMapStoryEdge,
@@ -55,16 +49,6 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
-_MATERIAL_STORY_CHANGE_TYPES = frozenset(
-    {
-        "story_added",
-        "story_members_changed",
-        "story_relations_changed",
-        "story_evidence_changed",
-        "story_correction_added",
-        "story_maturity_changed",
-    }
-)
 
 _STORY_RELATION_LABELS = {
     "continuation": "阶段推进",
@@ -88,16 +72,6 @@ def _datetime_after(left: Any, right: Any) -> bool:
     return bool(left_value > right_value)
 
 
-def _material_story_edge_value(edge: dict[str, Any]) -> dict[str, Any]:
-    value = dict(edge)
-    value.pop("score", None)
-    value.pop("evidence_revision_ids", None)
-    evidence = dict(value.get("evidence") or {})
-    evidence.pop("cosine", None)
-    evidence.pop("claim_overlap", None)
-    evidence.pop("supporting_revision_ids", None)
-    value["evidence"] = evidence
-    return value
 
 
 def _web_url(
@@ -219,14 +193,7 @@ def domain_directory(session: Session) -> list[dict[str, Any]]:
     for playlist in playlists:
         snapshot = current_snapshot(session, playlist.id)
         cursor = session.get(DomainObservationCursor, playlist.id)
-        change_count = 0
-        if snapshot is not None:
-            statement = select(func.count()).select_from(EventMapChange).where(
-                EventMapChange.playlist_id == playlist.id
-            )
-            if cursor and cursor.observed_at:
-                statement = statement.where(EventMapChange.observed_at > cursor.observed_at)
-            change_count = int(session.execute(statement).scalar_one() or 0)
+        change_count = _current_update_count(session, snapshot, cursor.observed_at if cursor else None)
         preview_points: list[dict[str, Any]] = []
         if snapshot is not None and int(snapshot.canonical_count or 0) > 0:
             stride = max(1, int(snapshot.canonical_count or 0) // 96)
@@ -361,7 +328,6 @@ def cursor_payload(cursor: DomainObservationCursor | None, playlist_id: uuid.UUI
             "filter_state": None,
             "selected_object_type": None,
             "selected_object_id": None,
-            "last_change_id": None,
         }
     return {
         "playlist_id": str(cursor.playlist_id),
@@ -375,7 +341,6 @@ def cursor_payload(cursor: DomainObservationCursor | None, playlist_id: uuid.UUI
         "filter_state": cursor.filter_state,
         "selected_object_type": cursor.selected_object_type,
         "selected_object_id": str(cursor.selected_object_id) if cursor.selected_object_id else None,
-        "last_change_id": str(cursor.last_change_id) if cursor.last_change_id else None,
         "updated_at": _iso(cursor.updated_at),
     }
 
@@ -384,37 +349,35 @@ def domain_observation(session: Session, playlist_id: uuid.UUID) -> dict[str, An
     playlist = session.get(Playlist, playlist_id)
     if playlist is None:
         raise LookupError("domain not found")
+    if session.get_bind().dialect.name == "postgresql":
+        # 在线统计不承担首次 LLVM/JIT 初始化与编译耗时；设置随当前事务结束恢复。
+        session.execute(text("SET LOCAL jit = off"))
     snapshot = current_snapshot(session, playlist_id)
     cursor = session.get(DomainObservationCursor, playlist_id)
     observed_after = cursor.observed_at if cursor else None
-    change_statement = select(func.count()).select_from(EventMapChange).where(
-        EventMapChange.playlist_id == playlist_id
-    )
-    if observed_after:
-        change_statement = change_statement.where(EventMapChange.observed_at > observed_after)
-    unobserved = int(session.execute(change_statement).scalar_one() or 0)
+    unobserved = _current_update_count(session, snapshot, observed_after)
     media_ids = select(PlaylistMedia.media_id).where(PlaylistMedia.playlist_id == playlist_id)
-    total_videos = int(
-        session.execute(select(func.count(Video.id)).where(Video.media_id.in_(media_ids))).scalar_one() or 0
+    domain_videos = (
+        select(Video.id.label("video_id"), Video.status)
+        .where(Video.media_id.in_(media_ids))
+        .cte("domain_videos")
+        .prefix_with("MATERIALIZED", dialect="postgresql")
     )
-    transcript_videos = int(
-        session.execute(
-            select(func.count(func.distinct(Asset.video_id))).where(
-                Asset.video_id.in_(select(Video.id).where(Video.media_id.in_(media_ids))),
-                Asset.type == "transcript",
-                Asset.format == "txt",
-            )
-        ).scalar_one()
-        or 0
-    )
+    source_counts = select(
+        domain_videos.c.status.label("video_status"),
+        func.count(domain_videos.c.video_id).label("status_video_count"),
+    ).group_by(domain_videos.c.status).subquery()
     extraction_spec = event_extraction_spec(session)
+    # 分母和抽取分类复用同一个域内去重集合，不扫描无关域的转写。
     transcript_video_ids = (
         select(func.distinct(Asset.video_id).label("video_id"))
+        .join(domain_videos, domain_videos.c.video_id == Asset.video_id)
         .where(
-            Asset.video_id.in_(select(Video.id).where(Video.media_id.in_(media_ids))),
             Asset.type == "transcript",
             Asset.format == "txt",
         )
+        .cte("domain_transcript_videos")
+        .prefix_with("MATERIALIZED", dialect="postgresql")
     )
     is_current_spec = and_(
         VideoEventExtractionRun.prompt_version == extraction_spec.prompt_version,
@@ -472,14 +435,15 @@ def domain_observation(session: Session, playlist_id: uuid.UUID) -> dict[str, An
                 )
             ).label("legacy_succeeded"),
         )
-        .where(VideoEventExtractionRun.video_id.in_(transcript_video_ids))
+        .join(transcript_video_ids, transcript_video_ids.c.video_id == VideoEventExtractionRun.video_id)
         .group_by(VideoEventExtractionRun.video_id)
         .subquery()
     )
-    extraction_counts = session.execute(
+    extraction_counts = (
         select(
-            func.coalesce(func.sum(extraction_flags.c.current_succeeded), 0),
-            func.coalesce(func.sum(extraction_flags.c.current_with_events), 0),
+            select(func.count()).select_from(transcript_video_ids).scalar_subquery().label("transcript_videos"),
+            func.coalesce(func.sum(extraction_flags.c.current_succeeded), 0).label("current_extracted"),
+            func.coalesce(func.sum(extraction_flags.c.current_with_events), 0).label("current_with_events"),
             func.coalesce(
                 func.sum(
                     case(
@@ -494,7 +458,7 @@ def domain_observation(session: Session, playlist_id: uuid.UUID) -> dict[str, An
                     )
                 ),
                 0,
-            ),
+            ).label("current_failed"),
             func.coalesce(
                 func.sum(
                     case(
@@ -510,47 +474,60 @@ def domain_observation(session: Session, playlist_id: uuid.UUID) -> dict[str, An
                     )
                 ),
                 0,
-            ),
-        ).select_from(extraction_flags)
-    ).one()
-    current_extracted = int(extraction_counts[0] or 0)
-    current_with_events = int(extraction_counts[1] or 0)
-    current_failed = int(extraction_counts[2] or 0)
-    legacy_only = int(extraction_counts[3] or 0)
-    current_zero_events = max(0, current_extracted - current_with_events)
-    no_successful_result = max(
-        0,
-        transcript_videos - current_extracted - current_failed - legacy_only,
+            ).label("legacy_only"),
+        )
+        .select_from(extraction_flags)
+        .subquery()
     )
-    missing_transcript = max(0, total_videos - transcript_videos)
-    total_events = int(
-        session.execute(
-            select(func.count(MarketEvent.id))
-            .join(Video, Video.id == MarketEvent.source_video_id)
-            .where(Video.media_id.in_(media_ids))
-        ).scalar_one()
-        or 0
+    domain_event_ids = (
+        select(MarketEvent.id.label("event_id"))
+        .join(domain_videos, domain_videos.c.video_id == MarketEvent.source_video_id)
+        .cte("domain_events")
+        .prefix_with("MATERIALIZED", dialect="postgresql")
     )
-    verified_events = int(
-        session.execute(
-            select(func.count(func.distinct(MarketEventEvidence.event_id)))
-            .join(MarketEvent, MarketEvent.id == MarketEventEvidence.event_id)
-            .join(Video, Video.id == MarketEvent.source_video_id)
-            .where(
-                Video.media_id.in_(media_ids),
-                MarketEventEvidence.evidence_json["verified"].as_boolean().is_(True),
-            )
-        ).scalar_one()
-        or 0
+    verified_event_ids = (
+        select(MarketEventEvidence.event_id)
+        .join(domain_event_ids, domain_event_ids.c.event_id == MarketEventEvidence.event_id)
+        .where(MarketEventEvidence.evidence_json["verified"].as_boolean().is_(True))
+        .distinct()
+        .cte("verified_events")
+        .prefix_with("MATERIALIZED", dialect="postgresql")
     )
+    event_counts = (
+        select(
+            func.count(domain_event_ids.c.event_id).label("total_events"),
+            func.count(verified_event_ids.c.event_id).label("verified_events"),
+        )
+        .select_from(domain_event_ids)
+        .outerjoin(
+            verified_event_ids,
+            verified_event_ids.c.event_id == domain_event_ids.c.event_id,
+        )
+        .subquery()
+    )
+    # 聚合结果各一行，状态分组最多几行；所有覆盖统计共享同一次域内视频扫描。
+    rows = session.execute(
+        select(extraction_counts, event_counts, source_counts)
+        .select_from(extraction_counts)
+        .join(event_counts, true())
+        .outerjoin(source_counts, true())
+    ).mappings().all()
+    counts = rows[0]
     status_reasons = {
-        str(status or "unknown"): int(count or 0)
-        for status, count in session.execute(
-            select(Video.status, func.count(Video.id))
-            .where(Video.media_id.in_(media_ids))
-            .group_by(Video.status)
-        ).all()
+        str(row["video_status"] or "unknown"): int(row["status_video_count"])
+        for row in rows if row["status_video_count"] is not None
     }
+    total_videos = sum(status_reasons.values())
+    transcript_videos = int(counts["transcript_videos"])
+    current_extracted = int(counts["current_extracted"])
+    current_with_events = int(counts["current_with_events"])
+    current_failed = int(counts["current_failed"])
+    legacy_only = int(counts["legacy_only"])
+    current_zero_events = max(0, current_extracted - current_with_events)
+    no_successful_result = max(0, transcript_videos - current_extracted - current_failed - legacy_only)
+    missing_transcript = max(0, total_videos - transcript_videos)
+    total_events = int(counts["total_events"])
+    verified_events = int(counts["verified_events"])
     skipped = dict(snapshot.skipped_reason_counts or {}) if snapshot else {"snapshot_not_ready": total_events}
     coverage = {
         "source_processing": {
@@ -640,7 +617,6 @@ def update_observation_cursor(
         "filter_state",
         "selected_object_type",
         "selected_object_id",
-        "last_change_id",
     }
     for key, value in values.items():
         if key in allowed:
@@ -652,219 +628,92 @@ def update_observation_cursor(
     return cursor
 
 
-def change_payload(change: EventMapChange) -> dict[str, Any]:
-    snapshot_context = change.to_snapshot_id if change.after_revision is not None else change.from_snapshot_id
-    return {
-        "id": str(change.id),
-        "playlist_id": str(change.playlist_id),
-        "from_snapshot_id": str(change.from_snapshot_id) if change.from_snapshot_id else None,
-        "to_snapshot_id": str(change.to_snapshot_id),
-        "object_type": change.object_type,
-        "object_id": str(change.object_id),
-        "change_type": change.change_type,
-        "occurred_at": _iso(change.occurred_at),
-        "observed_at": _iso(change.observed_at),
-        "before_revision": change.before_revision,
-        "after_revision": change.after_revision,
-        "evidence_revision_ids": change.evidence_revision_ids or [],
-        "time_basis": {
-            "occurred_at": "event_occurrence" if change.occurred_at else None,
-            "observed_at": "system_cognition",
-        },
-        "web_url": _web_url(
-            change.playlist_id,
-            object_type=change.object_type if change.object_type in {"canonical", "story"} else None,
-            object_id=change.object_id,
-            snapshot_id=snapshot_context,
-        ),
-    }
 
 
-def list_changes(
-    session: Session,
-    *,
-    playlist_id: uuid.UUID,
-    after_snapshot_id: uuid.UUID | None = None,
-    object_type: str | None = None,
-    change_type: str | None = None,
-    cursor_id: uuid.UUID | None = None,
-    limit: int = 100,
-) -> dict[str, Any]:
-    if session.get(Playlist, playlist_id) is None:
-        raise LookupError("domain not found")
-    statement = select(EventMapChange).where(EventMapChange.playlist_id == playlist_id)
-    if after_snapshot_id:
-        baseline = session.execute(
-            select(EventMapSnapshot.finished_at).where(EventMapSnapshot.id == after_snapshot_id)
-        ).scalar_one_or_none()
-        if baseline is None:
-            baseline = session.execute(
-                select(func.min(EventMapChange.observed_at)).where(
-                    EventMapChange.playlist_id == playlist_id,
-                    EventMapChange.to_snapshot_id != after_snapshot_id,
-                )
-            ).scalar_one_or_none()
-        if baseline:
-            statement = statement.where(EventMapChange.observed_at > baseline)
-    if object_type:
-        statement = statement.where(EventMapChange.object_type == object_type)
-    if change_type:
-        statement = statement.where(EventMapChange.change_type == change_type)
-    if cursor_id:
-        cursor_row = session.get(EventMapChange, cursor_id)
-        if cursor_row is None or cursor_row.playlist_id != playlist_id:
-            raise ValueError("invalid change cursor")
-        statement = statement.where(
-            or_(
-                EventMapChange.observed_at < cursor_row.observed_at,
-                and_(EventMapChange.observed_at == cursor_row.observed_at, EventMapChange.id < cursor_row.id),
-            )
-        )
-    rows = session.execute(
-        statement.order_by(EventMapChange.observed_at.desc(), EventMapChange.id.desc()).limit(limit + 1)
-    ).scalars().all()
-    has_more = len(rows) > limit
-    rows = rows[:limit]
-    return {
-        "items": [change_payload(row) for row in rows],
-        "next_cursor": str(rows[-1].id) if has_more and rows else None,
-        "time_basis": "system_cognition",
-    }
+
+
+def _current_update_count(session: Session, snapshot: EventMapSnapshot | None, observed_after: datetime | None) -> int:
+    if snapshot is None:
+        return 0
+    canonical = select(func.count()).select_from(EventMapCanonical).join(
+        EventMapCanonicalIdentity, EventMapCanonicalIdentity.id == EventMapCanonical.canonical_id,
+    ).where(EventMapCanonical.snapshot_id == snapshot.id)
+    story = select(func.count()).select_from(EventMapStory).join(
+        EventMapStoryIdentity, EventMapStoryIdentity.id == EventMapStory.story_identity_id,
+    ).where(EventMapStory.snapshot_id == snapshot.id)
+    if observed_after is not None:
+        canonical = canonical.where(EventMapCanonicalIdentity.updated_at > observed_after)
+        story = story.where(EventMapStoryIdentity.last_material_changed_at > observed_after)
+    return int(session.scalar(canonical) or 0) + int(session.scalar(story) or 0)
 
 
 def observation_feed(session: Session, playlist_id: uuid.UUID, *, limit: int = 30) -> dict[str, Any]:
-    snapshot = current_snapshot(session, playlist_id)
     if session.get(Playlist, playlist_id) is None:
         raise LookupError("domain not found")
+    snapshot = current_snapshot(session, playlist_id)
     cursor = session.get(DomainObservationCursor, playlist_id)
-    observed_after = cursor.observed_at if cursor and cursor.observed_at else None
-    event_after = cursor.event_time_end if cursor and cursor.event_time_end else None
-
-    occurred: list[dict[str, Any]] = []
-    if snapshot and event_after:
-        rows = session.execute(
-            select(EventMapCanonical)
-            .where(
-                EventMapCanonical.snapshot_id == snapshot.id,
-                EventMapCanonical.event_time_start > event_after,
-            )
-            .order_by(EventMapCanonical.event_time_start.desc(), EventMapCanonical.canonical_id.desc())
-            .limit(limit)
-        ).scalars().all()
-        occurred = [
-            {
-                "object_type": "canonical",
-                "object_id": str(row.canonical_id),
-                "title": row.title,
-                "occurred_at": _iso(row.event_time_start),
-                "observed_at": _iso(snapshot.finished_at),
-                "time_basis": "event_occurrence",
-                "web_url": _web_url(playlist_id, object_type="canonical", object_id=row.canonical_id, snapshot_id=snapshot.id),
-            }
-            for row in rows
-        ]
-
-    statement = select(EventMapChange).where(EventMapChange.playlist_id == playlist_id)
-    if observed_after:
-        statement = statement.where(EventMapChange.observed_at > observed_after)
-    changes = session.execute(
-        statement.order_by(EventMapChange.observed_at.desc(), EventMapChange.id.desc()).limit(limit * 4)
-    ).scalars().all()
-    mapped = [change_payload(row) for row in changes if row.change_type.startswith("canonical_")][:limit]
-    stories = [change_payload(row) for row in changes if row.object_type == "story"][:limit]
-
-    review: list[dict[str, Any]] = []
-    if snapshot:
-        rows = session.execute(
-            select(EventMapCanonical)
-            .where(
-                EventMapCanonical.snapshot_id == snapshot.id,
-                EventMapCanonical.has_uncertainty.is_(True),
-            )
-            .order_by(EventMapCanonical.event_time_start.desc())
-            .limit(limit)
-        ).scalars().all()
-        review = [
-            {
-                "object_type": "canonical",
-                "object_id": str(row.canonical_id),
-                "title": row.title,
-                "reasons": row.uncertainty_flags or [],
-                "observed_at": _iso(snapshot.finished_at),
-                "time_basis": "system_cognition",
-                "web_url": _web_url(playlist_id, object_type="canonical", object_id=row.canonical_id, snapshot_id=snapshot.id),
-            }
-            for row in rows
-        ]
-    return {
-        "newly_occurred": occurred,
-        "newly_mapped": mapped,
-        "story_updates": stories,
-        "needs_review": review,
-        "definitions": {
-            "newly_occurred": "事件发生时间晚于用户观察窗口终点",
-            "newly_mapped": "系统在用户上次观察后首次纳入或修订",
-            "story_updates": "稳定故事身份在系统认知时间上的修订",
-            "needs_review": "当前快照中带不确定性标记的真实对象",
-        },
+    observed_after = cursor.observed_at if cursor else None
+    event_after = cursor.event_time_end if cursor else None
+    result: dict[str, Any] = {"newly_occurred": [], "newly_mapped": [], "story_updates": [], "needs_review": []}
+    result["definitions"] = {
+        "newly_occurred": "当前事件中发生时间晚于观察窗口终点的内容",
+        "newly_mapped": "当前事件中自上次观察后收录或更新的内容",
+        "story_updates": "当前故事中自上次观察后有实质更新的内容",
+        "needs_review": "当前带不确定性标记的事件",
     }
+    if snapshot is None:
+        return result
+    def item(row: EventMapCanonical, observed_at: Any) -> dict[str, Any]:
+        return {"id": str(row.canonical_id), "snapshot_id": str(snapshot.id), "object_type": "canonical", "object_id": str(row.canonical_id),
+                "title": row.title, "occurred_at": _iso(row.event_time_start), "observed_at": _iso(observed_at),
+                "web_url": _web_url(playlist_id, object_type="canonical", object_id=row.canonical_id)}
+    if event_after is not None:
+        result["newly_occurred"] = [item(row, snapshot.finished_at) for row in session.execute(
+            select(EventMapCanonical).where(EventMapCanonical.snapshot_id == snapshot.id,
+                EventMapCanonical.event_time_start > event_after)
+            .order_by(EventMapCanonical.event_time_start.desc(), EventMapCanonical.canonical_id.asc()).limit(limit)
+        ).scalars()]
+    mapped = select(EventMapCanonical, EventMapCanonicalIdentity.updated_at).join(
+        EventMapCanonicalIdentity, EventMapCanonicalIdentity.id == EventMapCanonical.canonical_id,
+    ).where(EventMapCanonical.snapshot_id == snapshot.id)
+    stories = select(EventMapStory, EventMapStoryIdentity).join(
+        EventMapStoryIdentity, EventMapStoryIdentity.id == EventMapStory.story_identity_id,
+    ).where(EventMapStory.snapshot_id == snapshot.id)
+    if observed_after is not None:
+        mapped = mapped.where(EventMapCanonicalIdentity.updated_at > observed_after)
+        stories = stories.where(EventMapStoryIdentity.last_material_changed_at > observed_after)
+    result["newly_mapped"] = [item(row, observed_at) for row, observed_at in session.execute(
+        mapped.order_by(EventMapCanonicalIdentity.updated_at.desc(), EventMapCanonical.canonical_id.asc()).limit(limit)
+    )]
+    result["story_updates"] = [
+        {"id": str(identity.id), "snapshot_id": str(snapshot.id), "object_type": "story", "object_id": str(identity.id),
+         "title": identity.stable_title, "occurred_at": _iso(row.event_time_end),
+         "observed_at": _iso(identity.last_material_changed_at),
+         "web_url": f"/stories?domain_id={playlist_id}&story_id={identity.id}"}
+        for row, identity in session.execute(stories.order_by(
+            EventMapStoryIdentity.last_material_changed_at.desc(), EventMapStoryIdentity.id.asc()).limit(limit))
+    ]
+    result["needs_review"] = [dict(item(row, snapshot.finished_at), reasons=row.uncertainty_flags or [])
+        for row in session.execute(select(EventMapCanonical).where(
+            EventMapCanonical.snapshot_id == snapshot.id, EventMapCanonical.has_uncertainty.is_(True),
+        ).order_by(EventMapCanonical.event_time_start.desc(), EventMapCanonical.canonical_id.asc()).limit(limit)).scalars()]
+    return result
 
 
-def canonical_history(session: Session, playlist_id: uuid.UUID, canonical_id: uuid.UUID) -> dict[str, Any]:
-    identity = session.get(EventMapCanonicalIdentity, canonical_id)
-    if identity is None or identity.playlist_id != playlist_id:
-        raise LookupError("canonical not found")
-    revisions = session.execute(
-        select(EventMapCanonicalHistoryRevision)
-        .where(
-            EventMapCanonicalHistoryRevision.playlist_id == playlist_id,
-            EventMapCanonicalHistoryRevision.canonical_id == canonical_id,
-        )
-        .order_by(EventMapCanonicalHistoryRevision.observed_at.asc(), EventMapCanonicalHistoryRevision.id.asc())
-    ).scalars().all()
-    lineage = session.execute(
-        select(EventMapCanonicalLineage).where(
-            or_(
-                EventMapCanonicalLineage.predecessor_canonical_id == canonical_id,
-                EventMapCanonicalLineage.successor_canonical_id == canonical_id,
-            )
-        ).order_by(EventMapCanonicalLineage.created_at.asc())
-    ).scalars().all()
-    changes = session.execute(
-        select(EventMapChange)
-        .where(
-            EventMapChange.playlist_id == playlist_id,
-            EventMapChange.object_type == "canonical",
-            EventMapChange.object_id == canonical_id,
-        )
-        .order_by(EventMapChange.observed_at.asc(), EventMapChange.id.asc())
-    ).scalars().all()
+def canonical_detail(
+    session: Session, playlist_id: uuid.UUID, canonical_id: uuid.UUID,
+    *, snapshot_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    snapshot = observation_snapshot(session, playlist_id, snapshot_id)
+    if snapshot is None:
+        raise LookupError("current domain projection is unavailable")
+    row = session.get(EventMapCanonical, (snapshot.id, canonical_id))
+    if row is None:
+        raise LookupError("canonical not found in current domain projection")
     return {
-        "canonical_id": str(canonical_id),
-        "status": identity.status,
-        "created_snapshot_id": str(identity.created_snapshot_id) if identity.created_snapshot_id else None,
-        "retired_snapshot_id": str(identity.retired_snapshot_id) if identity.retired_snapshot_id else None,
-        "revisions": [
-            {
-                "id": str(row.id),
-                "snapshot_id": str(row.snapshot_id),
-                "occurred_at": _iso(row.occurred_at),
-                "observed_at": _iso(row.observed_at),
-                "revision": row.revision,
-            }
-            for row in revisions
-        ],
-        "lineage": [
-            {
-                "snapshot_id": str(row.snapshot_id),
-                "predecessor_canonical_id": str(row.predecessor_canonical_id),
-                "successor_canonical_id": str(row.successor_canonical_id),
-                "relation_type": row.relation_type,
-                "confidence": row.confidence,
-            }
-            for row in lineage
-        ],
-        "changes": [change_payload(row) for row in changes],
+        **_readable_story_node(row),
+        "snapshot_id": str(snapshot.id),
+        "representative_revision_id": str(row.representative_revision_id),
         "web_url": _web_url(playlist_id, object_type="canonical", object_id=canonical_id),
     }
 
@@ -1632,30 +1481,6 @@ def story_directory(
         ).scalars():
             edges_by_story.setdefault(edge.story_id, []).append(edge)
 
-    material_types_by_identity: dict[uuid.UUID, list[str]] = {identity_id: [] for identity_id in identity_ids}
-    if identity_ids:
-        material_rows = session.execute(
-            select(EventMapChange)
-            .where(
-                EventMapChange.playlist_id == playlist_id,
-                EventMapChange.object_type == "story",
-                EventMapChange.object_id.in_(identity_ids),
-                EventMapChange.change_type.in_(_MATERIAL_STORY_CHANGE_TYPES),
-            )
-            .order_by(EventMapChange.observed_at.desc(), EventMapChange.id.asc())
-        ).scalars().all()
-        snapshot_by_identity = {
-            identity.id: identity.last_material_snapshot_id
-            for _story, identity, _read_state in rows
-        }
-        for change in material_rows:
-            expected_snapshot_id = snapshot_by_identity.get(change.object_id)
-            if expected_snapshot_id is not None and change.to_snapshot_id != expected_snapshot_id:
-                continue
-            values = material_types_by_identity.setdefault(change.object_id, [])
-            if change.change_type not in values:
-                values.append(change.change_type)
-
     output: list[dict[str, Any]] = []
     for story, identity, read_state in rows:
         identity_id = identity.id
@@ -1706,7 +1531,6 @@ def story_directory(
                 "support_record_count": len(support_revision_ids),
                 "last_material_snapshot_id": str(identity.last_material_snapshot_id) if identity.last_material_snapshot_id else None,
                 "last_material_changed_at": _iso(last_material_at),
-                "material_change_types": material_types_by_identity.get(identity_id) or ["story_added"],
                 "baseline_suggestion": recommended,
                 "recommended": recommended,
                 "followed": bool(read_state.followed) if read_state else False,
@@ -1728,122 +1552,10 @@ def story_directory(
     }
 
 
-def _story_revision_delta(
-    previous: EventMapStoryHistoryRevision | None,
-    current: EventMapStoryHistoryRevision,
-) -> dict[str, Any]:
-    """生成相邻两次故事识别结果的内容差异；历史正文仍保持不可变。"""
-    previous_member_list = [str(value) for value in (previous.member_ids or [])] if previous else []
-    current_member_list = [str(value) for value in (current.member_ids or [])]
-    previous_members = set(previous_member_list)
-    current_members = set(current_member_list)
-    previous_evidence = {str(value) for value in (previous.evidence_revision_ids or [])} if previous else set()
-    current_evidence = {str(value) for value in (current.evidence_revision_ids or [])}
-
-    def edge_key(edge: dict[str, Any]) -> str:
-        return "|".join(
-            (
-                str(edge.get("source_canonical_id") or ""),
-                str(edge.get("target_canonical_id") or ""),
-                str(edge.get("relation_type") or ""),
-            )
-        )
-
-    previous_edges = {edge_key(dict(edge)): dict(edge) for edge in (previous.edges or [])} if previous else {}
-    current_edges = {edge_key(dict(edge)): dict(edge) for edge in (current.edges or [])}
-    retained_edge_keys = previous_edges.keys() & current_edges.keys()
-    support_assignments_changed = bool(
-        previous
-        and any(
-            {str(value) for value in (previous_edges[key].get("evidence_revision_ids") or [])}
-            != {str(value) for value in (current_edges[key].get("evidence_revision_ids") or [])}
-            for key in retained_edge_keys
-        )
-    )
-    return {
-        "baseline": previous is None,
-        "members_added": sorted(current_members - previous_members),
-        "members_removed": sorted(previous_members - current_members),
-        "member_order_changed": bool(
-            previous
-            and previous_members == current_members
-            and previous_member_list != current_member_list
-        ),
-        "edges_added": [current_edges[key] for key in sorted(current_edges.keys() - previous_edges.keys())],
-        "edges_removed": [previous_edges[key] for key in sorted(previous_edges.keys() - current_edges.keys())],
-        "relation_details_changed": bool(
-            previous
-            and any(
-                _material_story_edge_value(previous_edges[key])
-                != _material_story_edge_value(current_edges[key])
-                for key in retained_edge_keys
-            )
-        ),
-        "support_assignments_changed": support_assignments_changed,
-        "evidence_added": sorted(current_evidence - previous_evidence),
-        "evidence_removed": sorted(previous_evidence - current_evidence),
-        "title_changed": bool(previous and previous.title != current.title),
-        "summary_changed": bool(previous and previous.summary != current.summary),
-        "time_range_changed": bool(
-            previous
-            and (
-                previous.event_time_start != current.event_time_start
-                or previous.event_time_end != current.event_time_end
-            )
-        ),
-        "definition_changed": bool(
-            previous
-            and (
-                previous.story_type != current.story_type
-                or previous.anchor_key != current.anchor_key
-                or previous.maturity != current.maturity
-                or previous.quality_score != current.quality_score
-            )
-        ),
-        "maturity_changed": bool(previous and previous.maturity != current.maturity),
-        "quality_score_changed": bool(previous and previous.quality_score != current.quality_score),
-    }
 
 
-def _story_revision_payload(
-    row: EventMapStoryHistoryRevision,
-    previous: EventMapStoryHistoryRevision | None,
-) -> dict[str, Any]:
-    return {
-        "id": str(row.id),
-        "snapshot_id": str(row.snapshot_id),
-        "story_id": str(row.story_id),
-        "title": row.title,
-        "summary": row.summary,
-        "story_type": row.story_type,
-        "anchor_key": row.anchor_key,
-        "maturity": row.maturity,
-        "quality_score": row.quality_score,
-        "event_time_start": _iso(row.event_time_start),
-        "event_time_end": _iso(row.event_time_end),
-        "member_ids": row.member_ids or [],
-        "edges": row.edges or [],
-        "evidence_revision_ids": row.evidence_revision_ids or [],
-        "method_version": row.method_version,
-        "observed_at": _iso(row.observed_at),
-        "delta": _story_revision_delta(previous, row),
-    }
 
 
-def _story_delta_is_material(delta: dict[str, Any]) -> bool:
-    return bool(
-        delta.get("baseline")
-        or delta.get("members_added")
-        or delta.get("members_removed")
-        or delta.get("member_order_changed")
-        or delta.get("edges_added")
-        or delta.get("edges_removed")
-        or delta.get("relation_details_changed")
-        or delta.get("evidence_added")
-        or delta.get("evidence_removed")
-        or delta.get("support_assignments_changed")
-        or delta.get("maturity_changed")
-    )
 
 
 def _readable_story_node(row: Any) -> dict[str, Any]:
@@ -1898,462 +1610,66 @@ def _readable_story_edge(
     }
 
 
-def _named_story_delta(
-    previous: EventMapStoryHistoryRevision | None,
-    current: EventMapStoryHistoryRevision,
-    *,
-    canonical_by_key: dict[tuple[uuid.UUID, uuid.UUID], Any],
-    evidence_labels: dict[uuid.UUID, dict[str, Any]],
-    include_baseline: bool,
-) -> dict[str, Any]:
-    delta = _story_revision_delta(previous, current)
-    if previous is None and not include_baseline:
-        return {
-            "baseline": True,
-            "has_material_changes": False,
-            "returned_to_previous_state": False,
-            "intervening_material_change_count": 0,
-            "from_snapshot_id": None,
-            "to_snapshot_id": str(current.snapshot_id),
-            "first_added_canonical_id": None,
-            "change_types": [],
-            "member_order_changed": False,
-            "events_added": [],
-            "events_removed": [],
-            "relations_added": [],
-            "relations_removed": [],
-            "relations_changed": [],
-            "support_records_added": [],
-            "support_records_removed": [],
-            "support_records_added_count": 0,
-            "support_records_removed_count": 0,
-            "support_assignments_changed": False,
-            "maturity_change": None,
-        }
 
-    def named_event(value: str, snapshot_value: uuid.UUID) -> dict[str, Any]:
-        canonical_id = uuid.UUID(str(value))
-        row = canonical_by_key.get((snapshot_value, canonical_id))
-        return {
-            "canonical_id": str(canonical_id),
-            "title": row.title if row else "历史事件",
-            "occurred_at": _iso(row.event_time_start) if row else None,
-        }
 
-    previous_snapshot_id = previous.snapshot_id if previous is not None else current.snapshot_id
-    current_rows = {
-        canonical_id: row
-        for (candidate_snapshot_id, canonical_id), row in canonical_by_key.items()
-        if candidate_snapshot_id == current.snapshot_id
-    }
-    previous_rows = {
-        canonical_id: row
-        for (candidate_snapshot_id, canonical_id), row in canonical_by_key.items()
-        if candidate_snapshot_id == previous_snapshot_id
-    }
-    current_member_position = {
-        str(canonical_id): position
-        for position, canonical_id in enumerate(current.member_ids or [])
-    }
-    previous_member_position = {
-        str(canonical_id): position
-        for position, canonical_id in enumerate(previous.member_ids or [])
-    } if previous is not None else {}
-    events_added = [
-        named_event(value, current.snapshot_id)
-        for value in sorted(
-            delta["members_added"],
-            key=lambda item: (current_member_position.get(str(item), len(current_member_position)), str(item)),
-        )
-    ]
-    events_removed = [
-        named_event(value, previous_snapshot_id)
-        for value in sorted(
-            delta["members_removed"],
-            key=lambda item: (previous_member_position.get(str(item), len(previous_member_position)), str(item)),
-        )
-    ]
-    relations_added = [
-        value
-        for edge in delta["edges_added"]
-        for value in [_readable_story_edge(edge, current_rows)]
-        if value is not None
-    ]
-    relations_removed = [
-        value
-        for edge in delta["edges_removed"]
-        for value in [_readable_story_edge(edge, previous_rows)]
-        if value is not None
-    ]
-    relations_changed: list[dict[str, Any]] = []
-    if delta["relation_details_changed"] and previous is not None:
-        previous_edges = {
-            (
-                str(edge.get("source_canonical_id")),
-                str(edge.get("target_canonical_id")),
-                str(edge.get("relation_type")),
-            ): edge
-            for edge in (previous.edges or [])
-        }
-        for edge in current.edges or []:
-            key = (
-                str(edge.get("source_canonical_id")),
-                str(edge.get("target_canonical_id")),
-                str(edge.get("relation_type")),
-            )
-            if (
-                key in previous_edges
-                and _material_story_edge_value(previous_edges[key])
-                != _material_story_edge_value(edge)
-            ):
-                readable = _readable_story_edge(edge, current_rows)
-                if readable is not None:
-                    relations_changed.append(readable)
-
-    change_types: list[str] = []
-    if previous is None:
-        # 故事形成是一条完整更新，不把它拆成“成员/关系/证据全新增”重复讲述。
-        change_types.append("story_added")
-    else:
-        if delta["members_added"] or delta["members_removed"] or delta["member_order_changed"]:
-            change_types.append("story_members_changed")
-        if delta["edges_added"] or delta["edges_removed"] or delta["relation_details_changed"]:
-            change_types.append("story_relations_changed")
-        if any(
-            str(edge.get("relation_type")) == "corrects"
-            and bool(edge.get("evidence_revision_ids"))
-            for edge in delta["edges_added"]
-        ):
-            change_types.append("story_correction_added")
-        if delta["evidence_added"] or delta["evidence_removed"] or delta["support_assignments_changed"]:
-            change_types.append("story_evidence_changed")
-        if delta["maturity_changed"]:
-            change_types.append("story_maturity_changed")
-
-    def named_support(value: str) -> dict[str, Any]:
-        revision_id = uuid.UUID(str(value))
-        label = evidence_labels.get(revision_id) or {}
-        return {
-            "record_revision_id": str(revision_id),
-            "title": label.get("title") or "来源记录",
-            "source_title": label.get("source_title"),
-        }
-
-    first_added_canonical_id = None
-    if events_added:
-        added_ids = {item["canonical_id"] for item in events_added}
-        first_added_canonical_id = min(
-            added_ids,
-            key=lambda item: (
-                _iso(current_rows[uuid.UUID(item)].event_time_start) or ""
-                if uuid.UUID(item) in current_rows
-                else "",
-                current_member_position.get(item, len(current_member_position)),
-                item,
-            ),
-        )
-    support_added = [named_support(value) for value in delta["evidence_added"]]
-    support_removed = [named_support(value) for value in delta["evidence_removed"]]
+def _story_edge_payload(row: EventMapStoryEdge) -> dict[str, Any]:
     return {
-        "baseline": previous is None,
-        "has_material_changes": bool(change_types),
-        "returned_to_previous_state": False,
-        "intervening_material_change_count": 0,
-        "from_snapshot_id": str(previous.snapshot_id) if previous else None,
-        "to_snapshot_id": str(current.snapshot_id),
-        "first_added_canonical_id": first_added_canonical_id,
-        "change_types": change_types,
-        "member_order_changed": bool(delta["member_order_changed"]),
-        "events_added": events_added,
-        "events_removed": events_removed,
-        "relations_added": relations_added,
-        "relations_removed": relations_removed,
-        "relations_changed": relations_changed,
-        "support_records_added": support_added,
-        "support_records_removed": support_removed,
-        "support_records_added_count": len(support_added),
-        "support_records_removed_count": len(support_removed),
-        "support_assignments_changed": bool(delta["support_assignments_changed"]),
-        "maturity_change": (
-            {"before": previous.maturity, "after": current.maturity}
-            if previous is not None and delta["maturity_changed"]
-            else None
-        ),
+        "edge_id": str(row.edge_id),
+        "source_canonical_id": str(row.source_canonical_id),
+        "target_canonical_id": str(row.target_canonical_id),
+        "relation_type": row.relation_type,
+        "direction": row.direction,
+        "status": row.status,
+        "evidence_revision_ids": list(row.evidence_revision_ids or []),
+        "evidence": dict(row.evidence_json or {}),
     }
 
 
-def story_history(
-    session: Session,
-    playlist_id: uuid.UUID,
-    identity_id: uuid.UUID,
-    *,
-    snapshot_id: uuid.UUID | None = None,
+def story_detail(
+    session: Session, playlist_id: uuid.UUID, identity_id: uuid.UUID,
+    *, snapshot_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     identity = session.get(EventMapStoryIdentity, identity_id)
     if identity is None or identity.playlist_id != playlist_id:
         raise LookupError("story not found")
-    revisions = session.execute(
-        select(EventMapStoryHistoryRevision)
-        .where(
-            EventMapStoryHistoryRevision.playlist_id == playlist_id,
-            EventMapStoryHistoryRevision.story_identity_id == identity_id,
-        )
-        .order_by(EventMapStoryHistoryRevision.observed_at.asc(), EventMapStoryHistoryRevision.id.asc())
+    snapshot = observation_snapshot(session, playlist_id, snapshot_id)
+    if snapshot is None:
+        raise LookupError("current domain projection is unavailable")
+    story = session.execute(select(EventMapStory).where(
+        EventMapStory.snapshot_id == snapshot.id,
+        EventMapStory.story_identity_id == identity_id,
+    )).scalar_one_or_none()
+    if story is None:
+        raise LookupError("story not found in current domain projection")
+    nodes = session.execute(select(EventMapCanonical).join(EventMapStoryMember, and_(
+        EventMapStoryMember.snapshot_id == EventMapCanonical.snapshot_id,
+        EventMapStoryMember.canonical_id == EventMapCanonical.canonical_id,
+    )).where(EventMapStoryMember.snapshot_id == snapshot.id,
+             EventMapStoryMember.story_id == story.story_id)
+        .order_by(EventMapCanonical.event_time_start.asc(), EventMapStoryMember.position.asc())
     ).scalars().all()
-    if not revisions:
-        raise LookupError("story history not found")
-    changes = session.execute(
-        select(EventMapChange)
-        .where(
-            EventMapChange.playlist_id == playlist_id,
-            EventMapChange.object_type == "story",
-            EventMapChange.object_id == identity_id,
-        )
-        .order_by(EventMapChange.observed_at.asc(), EventMapChange.id.asc())
-    ).scalars().all()
-    read_state = session.get(StoryReadState, identity_id)
-
-    active_snapshot = current_snapshot(session, playlist_id)
-    if snapshot_id is not None:
-        selected_revision = next(
-            (revision for revision in reversed(revisions) if revision.snapshot_id == snapshot_id),
-            None,
-        )
-        if selected_revision is None:
-            raise LookupError("story not found in domain snapshot")
-    else:
-        selected_revision = next(
-            (
-                revision
-                for revision in reversed(revisions)
-                if active_snapshot is not None and revision.snapshot_id == active_snapshot.id
-            ),
-            revisions[-1],
-        )
-    selected_index = revisions.index(selected_revision)
-    visible_revisions = revisions[: selected_index + 1]
-
-    snapshot_ids = {row.snapshot_id for row in visible_revisions}
-    canonical_ids = {
-        uuid.UUID(str(value))
-        for revision in visible_revisions
-        for value in (revision.member_ids or [])
-    }
-    canonical_by_key: dict[tuple[uuid.UUID, uuid.UUID], Any] = {}
-    if snapshot_ids and canonical_ids:
-        canonical_rows = session.execute(
-            select(EventMapCanonical).where(
-                EventMapCanonical.snapshot_id.in_(snapshot_ids),
-                EventMapCanonical.canonical_id.in_(canonical_ids),
-            )
-        ).scalars().all()
-        canonical_by_key = {(row.snapshot_id, row.canonical_id): row for row in canonical_rows}
-        archived_rows = session.execute(
-            select(EventMapCanonicalHistoryRevision).where(
-                EventMapCanonicalHistoryRevision.playlist_id == playlist_id,
-                EventMapCanonicalHistoryRevision.snapshot_id.in_(snapshot_ids),
-                EventMapCanonicalHistoryRevision.canonical_id.in_(canonical_ids),
-            )
-        ).scalars().all()
-        for archived in archived_rows:
-            key = (archived.snapshot_id, archived.canonical_id)
-            if key in canonical_by_key:
-                continue
-            payload = dict(archived.revision or {})
-            uncertainty_flags = list(payload.get("uncertainty_flags") or [])
-            canonical_by_key[key] = SimpleNamespace(
-                snapshot_id=archived.snapshot_id,
-                canonical_id=archived.canonical_id,
-                point_index=int(payload.get("point_index") or 0),
-                title=payload.get("title"),
-                summary=payload.get("summary"),
-                event_time_start=payload.get("event_time_start"),
-                event_time_end=payload.get("event_time_end"),
-                time_precision=payload.get("time_precision") or "unknown",
-                event_type=payload.get("event_type") or "unknown",
-                member_count=int(payload.get("member_count") or 0),
-                has_uncertainty=bool(uncertainty_flags),
-                uncertainty_flags=uncertainty_flags,
-            )
-
-    evidence_revision_ids = {
-        uuid.UUID(str(value))
-        for revision in visible_revisions
-        for value in (revision.evidence_revision_ids or [])
-    }
-    evidence_labels: dict[uuid.UUID, dict[str, Any]] = {}
-    if evidence_revision_ids:
-        label_rows = session.execute(
-            select(EventMapRecordRevision, Video)
-            .outerjoin(Video, Video.id == EventMapRecordRevision.source_video_id)
-            .where(EventMapRecordRevision.id.in_(evidence_revision_ids))
-        ).all()
-        evidence_labels = {
-            revision.id: {
-                "title": revision.title or (video.title if video else None),
-                "source_title": video.title if video else None,
-            }
-            for revision, video in label_rows
-        }
-
-    selected_member_ids = [uuid.UUID(str(value)) for value in (selected_revision.member_ids or [])]
-    selected_member_position = {
-        canonical_id: position
-        for position, canonical_id in enumerate(selected_member_ids)
-    }
-    selected_canonicals = {
-        canonical_id: canonical_by_key[(selected_revision.snapshot_id, canonical_id)]
-        for canonical_id in selected_member_ids
-        if (selected_revision.snapshot_id, canonical_id) in canonical_by_key
-    }
-    selected_nodes = sorted(
-        selected_canonicals.values(),
-        key=lambda row: (
-            _iso(row.event_time_start) or "",
-            selected_member_position.get(row.canonical_id, len(selected_member_position)),
-            str(row.canonical_id),
-        ),
-    )
-    readable_edges = [
-        value
-        for edge in (selected_revision.edges or [])
-        for value in [_readable_story_edge(dict(edge), selected_canonicals)]
-        if value is not None
-    ]
+    canonical_by_id = {row.canonical_id: row for row in nodes}
+    edges = session.execute(select(EventMapStoryEdge).where(
+        EventMapStoryEdge.snapshot_id == snapshot.id,
+        EventMapStoryEdge.story_id == story.story_id,
+    ).order_by(EventMapStoryEdge.edge_id.asc())).scalars().all()
     trajectory = {
-        "snapshot_id": str(selected_revision.snapshot_id),
-        "nodes": [_readable_story_node(row) for row in selected_nodes],
-        "edges": readable_edges,
+        "snapshot_id": str(snapshot.id),
+        "nodes": [_readable_story_node(row) for row in nodes],
+        "edges": [value for row in edges
+                  if (value := _readable_story_edge(_story_edge_payload(row), canonical_by_id)) is not None],
     }
-
-    revision_payloads = [
-        _story_revision_payload(row, visible_revisions[index - 1] if index else None)
-        for index, row in enumerate(visible_revisions)
-    ]
-    material_history: list[dict[str, Any]] = []
-    for index, revision in enumerate(visible_revisions):
-        previous = visible_revisions[index - 1] if index else None
-        named_delta = _named_story_delta(
-            previous,
-            revision,
-            canonical_by_key=canonical_by_key,
-            evidence_labels=evidence_labels,
-            include_baseline=True,
-        )
-        if named_delta["has_material_changes"]:
-            material_history.append(
-                {
-                    "revision_id": str(revision.id),
-                    "snapshot_id": str(revision.snapshot_id),
-                    "observed_at": _iso(revision.observed_at),
-                    **named_delta,
-                }
-            )
-
-    is_historical = active_snapshot is None or selected_revision.snapshot_id != active_snapshot.id
-    reading_update = _named_story_delta(
-        None,
-        selected_revision,
-        canonical_by_key=canonical_by_key,
-        evidence_labels=evidence_labels,
-        include_baseline=False,
-    )
-    if not is_historical and read_state is not None and read_state.last_read_snapshot_id is not None:
-        read_revision = next(
-            (row for row in visible_revisions if row.snapshot_id == read_state.last_read_snapshot_id),
-            None,
-        )
-        if read_revision is None and read_state.last_read_at is not None:
-            read_revision = next(
-                (
-                    row
-                    for row in reversed(visible_revisions)
-                    if not _datetime_after(row.observed_at, read_state.last_read_at)
-                ),
-                None,
-            )
-        reading_update = _named_story_delta(
-            read_revision,
-            selected_revision,
-            canonical_by_key=canonical_by_key,
-            evidence_labels=evidence_labels,
-            include_baseline=False,
-        )
-        if read_revision is not None:
-            read_index = visible_revisions.index(read_revision)
-            visible_revision_index = {
-                str(revision.id): index
-                for index, revision in enumerate(visible_revisions)
-            }
-            intervening_material = [
-                item
-                for item in material_history
-                if visible_revision_index[item["revision_id"]] > read_index
-            ]
-            reading_update["intervening_material_change_count"] = len(intervening_material)
-            if intervening_material and not reading_update["has_material_changes"]:
-                reading_update["has_material_changes"] = True
-                reading_update["returned_to_previous_state"] = True
-                reading_update["change_types"] = list(
-                    dict.fromkeys(
-                        change_type
-                        for item in intervening_material
-                        for change_type in item.get("change_types") or []
-                    )
-                )
-    elif is_historical:
-        reading_update = {
-            **reading_update,
-            "baseline": False,
-            "has_material_changes": False,
-            "returned_to_previous_state": False,
-            "intervening_material_change_count": 0,
-            "change_types": [],
-            "member_order_changed": False,
-        }
-
-    selected_payload = revision_payloads[-1]
-    latest_progress = trajectory["nodes"][-1] if trajectory["nodes"] else None
-    selected_support_revision_ids = {
-        str(revision_id)
-        for edge in (selected_revision.edges or [])
-        for revision_id in (edge.get("evidence_revision_ids") or [])
-    }
-    material_transition_count = sum(
-        1
-        for index, revision in enumerate(visible_revisions[1:], start=1)
-        if _story_delta_is_material(_story_revision_delta(visible_revisions[index - 1], revision))
-    )
-    audit_summary = {
-        "recognition_count": len(visible_revisions),
-        "unchanged_review_count": max(0, len(visible_revisions) - 1 - material_transition_count),
-        "first_observed_at": _iso(visible_revisions[0].observed_at),
-        "last_observed_at": _iso(visible_revisions[-1].observed_at),
-        "algorithm_versions": sorted({row.method_version for row in visible_revisions}),
-    }
-    selected_material = material_history[-1]
+    support_ids = {str(value) for row in edges for value in (row.evidence_revision_ids or [])}
+    read_state = session.get(StoryReadState, identity_id)
+    cursor = session.get(DomainObservationCursor, playlist_id)
+    active = current_snapshot(session, playlist_id)
+    is_previous_projection = active is None or active.id != snapshot.id
     unread = False
-    if not is_historical:
+    if not is_previous_projection:
         if read_state is not None:
-            unread = read_state.last_read_at is None or _datetime_after(
-                identity.last_material_changed_at,
-                read_state.last_read_at,
-            )
-        else:
-            cursor = session.get(DomainObservationCursor, playlist_id)
-            if cursor is not None and cursor.observed_at is not None and selected_revision.maturity == "established":
-                formed_at = session.execute(
-                    select(EventMapChange.observed_at)
-                    .where(
-                        EventMapChange.playlist_id == playlist_id,
-                        EventMapChange.object_type == "story",
-                        EventMapChange.object_id == identity_id,
-                        EventMapChange.change_type == "story_added",
-                    )
-                    .order_by(EventMapChange.observed_at.asc(), EventMapChange.id.asc())
-                    .limit(1)
-                ).scalar_one_or_none()
-                unread = _datetime_after(formed_at or identity.created_at, cursor.observed_at)
+            unread = read_state.last_read_at is None or _datetime_after(identity.last_material_changed_at, read_state.last_read_at)
+        elif cursor is not None and cursor.observed_at is not None and story.maturity == "established":
+            unread = _datetime_after(identity.last_material_changed_at, cursor.observed_at)
     return {
         "story_identity_id": str(identity_id),
         "stable_title": identity.stable_title,
@@ -2362,43 +1678,29 @@ def story_history(
         "last_read_snapshot_id": str(read_state.last_read_snapshot_id) if read_state and read_state.last_read_snapshot_id else None,
         "last_read_at": _iso(read_state.last_read_at) if read_state else None,
         "last_position": read_state.last_position if read_state else None,
-        "last_material_snapshot_id": selected_material["snapshot_id"],
-        "last_material_changed_at": selected_material["observed_at"],
-        "is_historical": is_historical,
-        "can_mark_read": not is_historical,
+        "last_material_snapshot_id": str(identity.last_material_snapshot_id) if identity.last_material_snapshot_id else None,
+        "last_material_changed_at": _iso(identity.last_material_changed_at),
+        "is_historical": is_previous_projection,
+        "can_mark_read": not is_previous_projection,
         "unread": unread,
-        "selected_revision": selected_payload,
-        "latest_progress": latest_progress,
-        "maturity": selected_revision.maturity,
-        "event_time_start": _iso(selected_revision.event_time_start),
-        "event_time_end": _iso(selected_revision.event_time_end),
-        "event_count": len(trajectory["nodes"]),
-        "relation_count": len(trajectory["edges"]),
-        "support_record_count": len(selected_support_revision_ids),
+        "selected_revision": {
+            "story_id": str(story.story_id), "snapshot_id": str(snapshot.id),
+            "title": story.title, "summary": story.summary,
+            "maturity": story.maturity,
+            "event_time_start": _iso(story.event_time_start),
+            "event_time_end": _iso(story.event_time_end),
+            "member_ids": [str(row.canonical_id) for row in nodes],
+            "observed_at": _iso(snapshot.finished_at),
+        },
+        "latest_progress": trajectory["nodes"][-1] if nodes else None,
+        "maturity": story.maturity,
+        "event_time_start": _iso(story.event_time_start),
+        "event_time_end": _iso(story.event_time_end),
+        "event_count": len(nodes), "relation_count": len(edges),
+        "support_record_count": len(support_ids),
         "trajectory": trajectory,
-        "current_trajectory": trajectory,
-        "reading_update": reading_update,
-        "material_history": material_history,
-        "audit_summary": audit_summary,
-        "revisions": revision_payloads,
-        "changes": [
-            change_payload(row)
-            for row in changes
-            if row.to_snapshot_id in snapshot_ids
-        ],
-        "brief_references": object_brief_references(
-            session,
-            playlist_id=playlist_id,
-            object_type="story",
-            object_id=identity_id,
-            snapshot_id=selected_revision.snapshot_id,
-        ),
-        "web_url": _web_url(
-            playlist_id,
-            object_type="story",
-            object_id=identity_id,
-            snapshot_id=selected_revision.snapshot_id,
-        ),
+        "brief_references": object_brief_references(session, playlist_id=playlist_id, object_type="story", object_id=identity_id),
+        "web_url": f"/stories?domain_id={playlist_id}&story_id={identity_id}",
     }
 
 
@@ -2417,83 +1719,28 @@ def story_edge_support(
     identity = session.get(EventMapStoryIdentity, identity_id)
     if identity is None or identity.playlist_id != playlist_id:
         raise LookupError("story not found")
-    revision_statement = (
-        select(EventMapStoryHistoryRevision)
-        .where(
-            EventMapStoryHistoryRevision.playlist_id == playlist_id,
-            EventMapStoryHistoryRevision.story_identity_id == identity_id,
-        )
-        .order_by(EventMapStoryHistoryRevision.observed_at.desc(), EventMapStoryHistoryRevision.id.desc())
-    )
-    revision_statement = revision_statement.where(EventMapStoryHistoryRevision.snapshot_id == snapshot_id)
-    revision = session.execute(revision_statement.limit(1)).scalar_one_or_none()
-    if revision is None:
-        raise LookupError("story not found in domain snapshot")
-    raw_edge = next(
-        (dict(value) for value in (revision.edges or []) if str(value.get("edge_id")) == str(edge_id)),
-        None,
-    )
-    if raw_edge is None:
+    snapshot = observation_snapshot(session, playlist_id, snapshot_id)
+    if snapshot is None:
+        raise LookupError("domain projection is unavailable")
+    story = session.execute(select(EventMapStory).where(
+        EventMapStory.snapshot_id == snapshot.id,
+        EventMapStory.story_identity_id == identity_id,
+    )).scalar_one_or_none()
+    if story is None:
+        raise LookupError("story not found in domain projection")
+    edge = session.get(EventMapStoryEdge, (snapshot.id, edge_id))
+    if edge is None or edge.story_id != story.story_id:
         raise LookupError("story relation not found")
-
-    canonical_ids = {
-        uuid.UUID(str(raw_edge["source_canonical_id"])),
-        uuid.UUID(str(raw_edge["target_canonical_id"])),
-    }
-    canonical_by_id: dict[uuid.UUID, Any] = {
-        row.canonical_id: row
-        for row in session.execute(
-            select(EventMapCanonical).where(
-                EventMapCanonical.snapshot_id == revision.snapshot_id,
-                EventMapCanonical.canonical_id.in_(canonical_ids),
-            )
-        ).scalars()
-    }
-    archived_rows = session.execute(
-        select(EventMapCanonicalHistoryRevision).where(
-            EventMapCanonicalHistoryRevision.playlist_id == playlist_id,
-            EventMapCanonicalHistoryRevision.snapshot_id == revision.snapshot_id,
-            EventMapCanonicalHistoryRevision.canonical_id.in_(canonical_ids),
-        )
-    ).scalars().all()
-    for archived in archived_rows:
-        if archived.canonical_id in canonical_by_id:
-            continue
-        payload = dict(archived.revision or {})
-        uncertainty_flags = list(payload.get("uncertainty_flags") or [])
-        canonical_by_id[archived.canonical_id] = SimpleNamespace(
-            canonical_id=archived.canonical_id,
-            point_index=int(payload.get("point_index") or 0),
-            title=payload.get("title"),
-            summary=payload.get("summary"),
-            event_time_start=payload.get("event_time_start"),
-            event_time_end=payload.get("event_time_end"),
-            time_precision=payload.get("time_precision") or "unknown",
-            event_type=payload.get("event_type") or "unknown",
-            member_count=int(payload.get("member_count") or 0),
-            has_uncertainty=bool(uncertainty_flags),
-            uncertainty_flags=uncertainty_flags,
-        )
+    raw_edge = _story_edge_payload(edge)
+    canonical_ids = {edge.source_canonical_id, edge.target_canonical_id}
+    canonical_by_id = {row.canonical_id: row for row in session.execute(
+        select(EventMapCanonical).where(EventMapCanonical.snapshot_id == snapshot.id,
+                                       EventMapCanonical.canonical_id.in_(canonical_ids))
+    ).scalars()}
     readable_edge = _readable_story_edge(raw_edge, canonical_by_id)
     if readable_edge is None:
         raise LookupError("story relation events not found")
-
-    normalized_revision_ids = session.execute(
-        select(EventMapStoryHistoryEvidence.record_revision_id)
-        .where(
-            EventMapStoryHistoryEvidence.history_revision_id == revision.id,
-            EventMapStoryHistoryEvidence.playlist_id == playlist_id,
-            EventMapStoryHistoryEvidence.story_identity_id == identity_id,
-            EventMapStoryHistoryEvidence.snapshot_id == revision.snapshot_id,
-            EventMapStoryHistoryEvidence.edge_id == edge_id,
-        )
-        .distinct()
-    ).scalars().all()
-    support_revision_ids = sorted(
-        set(normalized_revision_ids)
-        or {uuid.UUID(str(value)) for value in (raw_edge.get("evidence_revision_ids") or [])},
-        key=str,
-    )
+    support_revision_ids = sorted({uuid.UUID(str(value)) for value in (edge.evidence_revision_ids or [])}, key=str)
 
     record_rows = []
     if support_revision_ids:
@@ -2617,7 +1864,7 @@ def story_edge_support(
         )
     return {
         "story_identity_id": str(identity_id),
-        "snapshot_id": str(revision.snapshot_id),
+        "snapshot_id": str(snapshot.id),
         "support_granularity": "record_revision",
         "edge": readable_edge,
         "records": records,
@@ -2641,16 +1888,17 @@ def update_story_read_state(
         raise LookupError("story not found")
     active_snapshot = current_snapshot(session, playlist_id)
     if mark_read:
+        if active_snapshot is None:
+            raise ValueError("current domain projection is unavailable")
         if snapshot_id is None:
             snapshot_id = active_snapshot.id if active_snapshot else None
         elif active_snapshot is None or snapshot_id != active_snapshot.id:
             raise ValueError("historical story revision cannot clear the current unread state")
     if snapshot_id is not None:
         revision = session.execute(
-            select(EventMapStoryHistoryRevision.id).where(
-                EventMapStoryHistoryRevision.playlist_id == playlist_id,
-                EventMapStoryHistoryRevision.story_identity_id == identity_id,
-                EventMapStoryHistoryRevision.snapshot_id == snapshot_id,
+            select(EventMapStory.story_id).where(
+                EventMapStory.story_identity_id == identity_id,
+                EventMapStory.snapshot_id == snapshot_id,
             )
         ).scalar_one_or_none()
         if revision is None:
@@ -2789,43 +2037,57 @@ def _story_evidence_references(
     *,
     playlist_id: uuid.UUID,
     revision_ids: list[uuid.UUID],
+    snapshot_id: uuid.UUID | None,
 ) -> list[dict[str, Any]]:
-    if not revision_ids:
+    if not revision_ids or snapshot_id is None:
         return []
+    selected_revision_ids = {str(value) for value in revision_ids}
     rows = session.execute(
-        select(EventMapStoryHistoryEvidence, EventMapStoryHistoryRevision)
+        select(
+            EventMapStory.story_identity_id,
+            EventMapStory.title,
+            EventMapStoryEdge.edge_id,
+            EventMapStoryEdge.source_canonical_id,
+            EventMapStoryEdge.target_canonical_id,
+            EventMapStoryEdge.relation_type,
+            EventMapStoryEdge.evidence_revision_ids,
+        )
         .join(
-            EventMapStoryHistoryRevision,
-            EventMapStoryHistoryRevision.id == EventMapStoryHistoryEvidence.history_revision_id,
+            EventMapStoryEdge,
+            and_(
+                EventMapStoryEdge.snapshot_id == EventMapStory.snapshot_id,
+                EventMapStoryEdge.story_id == EventMapStory.story_id,
+            ),
         )
         .where(
-            EventMapStoryHistoryEvidence.playlist_id == playlist_id,
-            EventMapStoryHistoryEvidence.record_revision_id.in_(revision_ids),
+            EventMapStory.snapshot_id == snapshot_id,
+            or_(
+                *[
+                    EventMapStoryEdge.evidence_revision_ids.contains([revision_id])
+                    for revision_id in sorted(selected_revision_ids)
+                ]
+            ),
         )
-        .order_by(EventMapStoryHistoryRevision.observed_at.desc())
+        .order_by(EventMapStory.story_identity_id, EventMapStoryEdge.edge_id)
     ).all()
     output: list[dict[str, Any]] = []
-    seen: set[tuple[uuid.UUID, uuid.UUID]] = set()
-    for evidence, revision in rows:
-        key = (evidence.story_identity_id, evidence.edge_id)
-        if key in seen:
-            continue
-        seen.add(key)
+    for row in rows:
+        evidence_revision_id = min(set(row.evidence_revision_ids) & selected_revision_ids)
         output.append(
             {
-                "story_identity_id": str(evidence.story_identity_id),
-                "story_title": revision.title,
-                "edge_id": str(evidence.edge_id),
-                "source_canonical_id": str(evidence.source_canonical_id),
-                "target_canonical_id": str(evidence.target_canonical_id),
-                "relation_type": evidence.relation_type,
-                "evidence_revision_id": str(evidence.record_revision_id),
-                "snapshot_id": str(evidence.snapshot_id),
+                "story_identity_id": str(row.story_identity_id),
+                "story_title": row.title,
+                "edge_id": str(row.edge_id),
+                "source_canonical_id": str(row.source_canonical_id),
+                "target_canonical_id": str(row.target_canonical_id),
+                "relation_type": row.relation_type,
+                "evidence_revision_id": evidence_revision_id,
+                "snapshot_id": str(snapshot_id),
                 "web_url": _web_url(
                     playlist_id,
                     object_type="story",
-                    object_id=evidence.story_identity_id,
-                    snapshot_id=evidence.snapshot_id,
+                    object_id=row.story_identity_id,
+                    snapshot_id=snapshot_id,
                 ),
             }
         )
@@ -2849,14 +2111,15 @@ def evidence_context(session: Session, playlist_id: uuid.UUID, revision_id: uuid
         raise LookupError("evidence does not belong to domain")
     media = session.get(Media, video.media_id)
     current_transcript_asset = pick_transcript_asset(session, video.id, variant="plain")
+    snapshot = current_snapshot(session, playlist_id)
     canonical_ids = session.execute(
-        select(EventMapCanonicalHistoryMember.canonical_id)
+        select(EventMapCanonicalMember.canonical_id)
         .where(
-            EventMapCanonicalHistoryMember.playlist_id == playlist_id,
-            EventMapCanonicalHistoryMember.record_revision_id == revision_id,
+            EventMapCanonicalMember.snapshot_id == snapshot.id,
+            EventMapCanonicalMember.record_revision_id == revision_id,
         )
         .distinct()
-    ).scalars().all()
+    ).scalars().all() if snapshot is not None else []
     brief_refs = session.execute(
         select(BriefReference, Brief)
         .join(Brief, Brief.id == BriefReference.brief_id)
@@ -2913,6 +2176,7 @@ def evidence_context(session: Session, playlist_id: uuid.UUID, revision_id: uuid
             session,
             playlist_id=playlist_id,
             revision_ids=[revision_id],
+            snapshot_id=snapshot.id if snapshot is not None else None,
         ),
         "brief_references": [
             brief_reference_payload(row, playlist_id, brief=brief)
@@ -2946,39 +2210,38 @@ def source_semantic_references(session: Session, playlist_id: uuid.UUID, video_i
             BriefReference.evidence_revision_id.in_(revision_ids),
         )
     ).all() if revision_ids else []
-    canonical_history = session.execute(
-        select(
-            EventMapCanonicalHistoryMember.canonical_id,
-            EventMapCanonicalHistoryRevision.revision,
-        )
+    snapshot = current_snapshot(session, playlist_id)
+    canonicals = session.execute(
+        select(EventMapCanonical.canonical_id, EventMapCanonical.title)
         .join(
-            EventMapCanonicalHistoryRevision,
-            EventMapCanonicalHistoryRevision.id == EventMapCanonicalHistoryMember.history_revision_id,
+            EventMapCanonicalMember,
+            and_(
+                EventMapCanonicalMember.snapshot_id == EventMapCanonical.snapshot_id,
+                EventMapCanonicalMember.canonical_id == EventMapCanonical.canonical_id,
+            ),
         )
         .where(
-            EventMapCanonicalHistoryMember.playlist_id == playlist_id,
-            EventMapCanonicalHistoryMember.record_revision_id.in_(revision_ids),
+            EventMapCanonical.snapshot_id == snapshot.id,
+            EventMapCanonicalMember.record_revision_id.in_(revision_ids),
         )
-        .order_by(EventMapCanonicalHistoryRevision.observed_at.desc())
-    ).all() if revision_ids else []
-    canonical_by_id: dict[uuid.UUID, dict[str, Any]] = {}
-    for canonical_id, revision in canonical_history:
-        if canonical_id not in canonical_by_id:
-            canonical_by_id[canonical_id] = dict(revision or {})
+        .distinct()
+        .order_by(EventMapCanonical.canonical_id)
+    ).all() if revision_ids and snapshot is not None else []
     return {
         "video_id": str(video_id),
         "canonical_references": [
             {
                 "canonical_id": str(canonical_id),
-                "title": payload.get("title"),
+                "title": title,
                 "web_url": _web_url(playlist_id, object_type="canonical", object_id=canonical_id),
             }
-            for canonical_id, payload in canonical_by_id.items()
+            for canonical_id, title in canonicals
         ],
         "story_references": _story_evidence_references(
             session,
             playlist_id=playlist_id,
             revision_ids=revision_ids,
+            snapshot_id=snapshot.id if snapshot is not None else None,
         ),
         "brief_references": [
             brief_reference_payload(row, playlist_id, brief=brief)

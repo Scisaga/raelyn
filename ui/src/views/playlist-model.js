@@ -3106,6 +3106,9 @@ export function createPlaylistViewMethods() {
           '<span class="raelyn-brief-reference-copy">',
           `<span class="raelyn-brief-reference-type">${meta.type}</span>`,
           `<span class="raelyn-brief-reference-title">${formatInlineEsc(this._escapeHtml(label))}</span>`,
+          reference?.context?.quoted_object?.summary
+            ? `<span class="mt-1 block text-xs leading-5 text-slate-500">${this._escapeHtml(reference.context.quoted_object.summary)}</span>`
+            : "",
           "</span>",
           `<span class="raelyn-brief-reference-actions">${videoAction}${mainAction}</span>`,
           "</div>",

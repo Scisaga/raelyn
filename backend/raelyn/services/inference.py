@@ -18,6 +18,7 @@ from raelyn.models import AppConfig
 
 
 INFERENCE_MODE_CONFIG_KEY = "inference_mode"
+LOCAL_LLM_PROVIDER_CONFIG_KEY = "local_llm_provider"
 VOLCENGINE_INFERENCE_CONFIG_KEY = "volcengine_inference_config"
 
 LOCAL_INFERENCE_MODE = "local"
@@ -27,6 +28,9 @@ INFERENCE_MODES = {LOCAL_INFERENCE_MODE, VOLCENGINE_INFERENCE_MODE}
 VOLCENGINE_LLM_PROVIDER = "volcengine_ark"
 VOLCENGINE_ASR_PROVIDER = "volcengine_speech"
 LOCAL_PROVIDER = "local"
+CODEX_PROVIDER = "codex"
+CODEX_DEFAULT_MODEL = "codex-default"
+LOCAL_LLM_PROVIDERS = {LOCAL_PROVIDER, CODEX_PROVIDER}
 
 
 @dataclass(frozen=True)
@@ -118,6 +122,29 @@ def get_inference_mode(session: Session | None = None) -> tuple[str, str]:
         return LOCAL_INFERENCE_MODE, "env"
 
 
+def get_local_llm_provider(session: Session | None = None) -> tuple[str, str]:
+    def _load(current: Session) -> tuple[str, str]:
+        value = _get_app_config_value(current, LOCAL_LLM_PROVIDER_CONFIG_KEY)
+        if value is None:
+            return settings.local_llm_provider, "env"
+        provider = str(value.get("value") if isinstance(value, dict) else value).strip().lower()
+        if provider not in LOCAL_LLM_PROVIDERS:
+            raise ValueError("local_llm_provider.value must be one of: local, codex")
+        return provider, "app_config"
+
+    return _with_session(session, _load)
+
+
+def save_local_llm_provider(session: Session, provider: str) -> None:
+    if provider not in LOCAL_LLM_PROVIDERS:
+        raise ValueError("local_llm_provider.value must be one of: local, codex")
+    item = session.get(AppConfig, LOCAL_LLM_PROVIDER_CONFIG_KEY)
+    if item is None:
+        session.add(AppConfig(key=LOCAL_LLM_PROVIDER_CONFIG_KEY, value={"value": provider}))
+    else:
+        item.value = {"value": provider}
+
+
 def _normalize_timeout(value: Any, default: int) -> int:
     try:
         parsed = int(value)
@@ -151,7 +178,21 @@ def _volcengine_config_from_env() -> dict[str, Any]:
     }
 
 
-def _build_local_llm_config(*, source: str) -> EffectiveLlmConfig:
+def _build_local_llm_config(*, source: str, provider: str = LOCAL_PROVIDER) -> EffectiveLlmConfig:
+    if provider == CODEX_PROVIDER:
+        from raelyn.services.codex import codex_model_name
+
+        return EffectiveLlmConfig(
+            mode=LOCAL_INFERENCE_MODE,
+            provider=CODEX_PROVIDER,
+            source=source,
+            url="codex://local",
+            model=codex_model_name(model=settings.codex_model),
+            api_key="",
+            headers_json="",
+            timeout_seconds=settings.codex_timeout_seconds,
+            configured=bool(settings.codex_command.strip()),
+        )
     url = str(settings.llm_url or "").strip()
     model = str(settings.llm_model or "").strip()
     return EffectiveLlmConfig(
@@ -253,7 +294,11 @@ def get_effective_llm_config(session: Session | None = None) -> EffectiveLlmConf
     if mode == VOLCENGINE_INFERENCE_MODE:
         volc, source = get_volcengine_config(session)
         return _build_volcengine_llm_config(volc, source=source)
-    return _build_local_llm_config(source=mode_source)
+    provider, provider_source = get_local_llm_provider(session)
+    return _build_local_llm_config(
+        source="app_config" if "app_config" in (mode_source, provider_source) else "env",
+        provider=provider,
+    )
 
 
 def get_effective_asr_config(session: Session | None = None) -> EffectiveAsrConfig:
@@ -265,11 +310,22 @@ def get_effective_asr_config(session: Session | None = None) -> EffectiveAsrConf
 
 
 def build_inference_status(session: Session | None = None) -> dict[str, Any]:
+    from raelyn.services.codex_budget import get_codex_budget_status
+
     mode, mode_source = get_inference_mode(session)
+    local_provider, local_provider_source = get_local_llm_provider(session)
     volc, volc_source = get_volcengine_config(session)
     return {
         "mode": mode,
         "mode_source": mode_source,
+        "local_llm_provider": local_provider,
+        "local_llm_provider_source": local_provider_source,
+        "codex": {
+            "model": str(settings.codex_model or "").strip(),
+            "timeout_seconds": settings.codex_timeout_seconds,
+            "event_extraction_reasoning_effort": settings.codex_event_extraction_reasoning_effort,
+            "budget": get_codex_budget_status(session),
+        },
         "volcengine": {
             "source": volc_source,
             "api_key_masked": mask_secret(volc.get("api_key")),
@@ -330,6 +386,17 @@ def _headers_from_json(raw: str) -> dict[str, str]:
 
 def check_llm_health(config: EffectiveLlmConfig | None = None) -> dict[str, Any]:
     cfg = config or get_effective_llm_config()
+    if cfg.provider == CODEX_PROVIDER:
+        from raelyn.services.codex import codex_health
+
+        return {
+            **codex_health(command=settings.codex_command),
+            "provider": cfg.provider,
+            "mode": cfg.mode,
+            "source": cfg.source,
+            "url": cfg.url,
+            "model": cfg.model,
+        }
     if not cfg.configured:
         return {
             "ok": False,
@@ -476,6 +543,21 @@ def _tiny_silence_wav_base64() -> str:
 
 def test_llm_connection(config: EffectiveLlmConfig | None = None) -> dict[str, Any]:
     cfg = config or get_effective_llm_config()
+    if cfg.provider == CODEX_PROVIDER:
+        from raelyn.services.codex import codex_test_connection
+
+        return {
+            **codex_test_connection(
+                command=settings.codex_command,
+                model="" if cfg.model == CODEX_DEFAULT_MODEL else cfg.model,
+                timeout_seconds=min(cfg.timeout_seconds, 60),
+            ),
+            "provider": cfg.provider,
+            "mode": cfg.mode,
+            "source": cfg.source,
+            "url": cfg.url,
+            "model": cfg.model,
+        }
     base = check_llm_health(cfg)
     if not cfg.configured:
         return base
@@ -552,7 +634,14 @@ def test_asr_connection(config: EffectiveAsrConfig | None = None) -> dict[str, A
 def build_effective_llm_config_from_payload(payload: dict[str, Any]) -> EffectiveLlmConfig:
     mode = _normalize_inference_mode_value(payload.get("mode"))
     if mode != VOLCENGINE_INFERENCE_MODE:
-        return _build_local_llm_config(source="env")
+        provider = payload.get("local_llm_provider")
+        if provider is None:
+            provider, source = get_local_llm_provider()
+        else:
+            if provider not in LOCAL_LLM_PROVIDERS:
+                raise ValueError("local_llm_provider must be one of: local, codex")
+            source = "request"
+        return _build_local_llm_config(source=source, provider=provider)
     volc = _normalize_volcengine_config(payload.get("volcengine"))
     return _build_volcengine_llm_config(volc, source="request")
 

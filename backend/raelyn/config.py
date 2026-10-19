@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field
@@ -149,6 +150,12 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_headers_json: str = ""
     llm_timeout_seconds: int = 600
+    local_llm_provider: Literal["local", "codex"] = "local"
+    codex_command: str = "codex"
+    codex_model: str = ""
+    codex_timeout_seconds: int = Field(default=600, ge=1)
+    codex_event_extraction_reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    codex_daily_weekly_limit_percent: float = Field(default=50.0, ge=0, le=100)
     # 所有 Ollama /api/generate 请求统一使用同一上下文，避免同模型因 num_ctx 变化反复重载。
     llm_ollama_num_ctx: int = Field(
         default=32768,

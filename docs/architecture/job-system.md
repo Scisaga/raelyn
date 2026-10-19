@@ -39,6 +39,8 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 
 `(job_id, status=running, worker_id, execution_token)` 共同构成本次执行的所有权条件。`worker_id` 只标识进程，无法区分同一 job 被回收、重领前后的两个逻辑执行，因此不能单独作为写入授权依据。
 
+专职 AI worker（包含只领取 AI 子集的 worker）首先按真实内容时间降序、缺失时间置后，再按原优先级、任务阶段、排期、创建时间与 ID 排序：视频润色与单视频抽取使用 `Video.published_at`，批量抽取使用成员的最新发布时间，简报使用本地业务日，月份范围使用不晚于今天的范围结束日，回填父任务使用来源视频的最新发布时间。新建或重投的旧任务不因此冒充新内容。非 AI、混合角色和 ALL worker 沿用原排序；所有角色仍使用原子领取、暂停与租约门控。JSON 参数中的 UUID / 日期转换在 PostgreSQL 16 以 `pg_input_is_valid` 验证，部署数据库需保持 PostgreSQL 16 或以上。
+
 ## 租约 / 心跳与回收
 
 - Worker 执行长任务时周期性刷新 `lease_expires_at`。进度和 lease 更新都必须按 `(job_id, status=running, worker_id, execution_token)` 做 CAS；受影响行数为 0 表示本次执行已经失去所有权，handler 必须退出。
@@ -52,17 +54,18 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - `video.backfill_subtitles.*` 属于 provider-facing 下载角色任务：它只执行 yt-dlp subtitle-only 抓取，不下载媒体文件，但仍复用 provider 下载并发门控、平台暂停、cookies 失效暂停和长执行心跳语义。
 - `media.sync_videos` 在 yt-dlp flat 列表提取期间复用 yt-dlp 的真实分页 / 条目日志刷新执行活动心跳，并在提取完成后和逐条处理循环中继续刷新；这使万级频道全量枚举不会因单次提取超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 被误判卡死，同时真实无日志、无进展的阻塞仍会由 watchdog 回收。YouTube 缺失发布时间的单视频详情解析已拆到 `video.enrich_metadata.youtube`，避免同步任务在批量补 metadata 时长期不推进 `active_at`。
 - 同步发现或历史补漏产生下载任务时，以单条视频的 `published_at` 决定最终优先级；最近 24 小时的视频至少为优先级 8，不随全量历史任务降到优先级 5。发布时间稍后由 `video.enrich_metadata.youtube` 补齐时，通过既有 `schedule_video_download` 语义提升 pending 任务并写入优先级提升事件，不绕过原子领取或 provider 下载门控。
-- 自动事件抽取在 AI 角色队列中按视频 `published_at` 提升当前时间焦点：过去 24 小时至少为优先级 20，本周内较早视频至少为优先级 15；两档都高于历史抽取、转写润色和自动简报积压。重复投递命中已有 pending 抽取任务时只提升优先级并记录事件，不重置参数、排期或重试预算。该优先级会继续传给事件 embedding 与星域 dirty outbox，使最新事件尽快进入下一版快照。
+- 自动事件抽取按视频 `published_at` 设置优先级：过去 24 小时至少为 20，本周内较早视频至少为 15。专职 AI 队列先按真实内容时间排序，这些优先级只在相同内容时间比较。重复投递命中已有 pending 抽取任务时只提升优先级并记录事件，不重置参数、排期或重试预算。该优先级会继续传给事件 embedding 与星域 dirty outbox，使最新事件尽快进入下一版快照。
 - `video.enrich_metadata.youtube` 的普通 metadata 补全使用低优先级，自身通过可终止子进程给 yt-dlp 详情解析设置 45 秒硬超时；子进程只向父进程回传 compact metadata，避免完整 yt-dlp `info` 大对象在进程队列中阻塞。`members_only` 可用性监测使用优先级 8；详情仍受限时，同一个 Job 通过 `scheduled_for` 按视频年龄从 10 分钟逐步退避到 24 小时并持续复核，明确变为 `public/unlisted` 后才成功收口并补投下载。普通缺失时间补全达到 `max_attempts` 后仍不自动反复投递。
 - provider-facing worker（同步 / 下载）会在本进程内启动执行 watchdog；当 `current_job_id` 指向同步或下载任务且 `active_at` 超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进时，worker 主动退出，让 supervisor 重启并释放 PostgreSQL session 级 advisory lock。
 - 保存新的平台 cookies 并恢复 provider 时，catch-up `media.sync_videos` 不会集中变为可领取；配置 API 会把它们均匀排在一个正常同步周期内，并将同媒体已有的 pending 同步（包括 public discovery）原地转换为认证恢复任务。恢复调度仍落在 `job.scheduled_for` 单一事实源中，不依赖 API 进程内计时器。
-- YouTube 频道/播放列表的 `youtube_auth_check` 可能由一次瞬时网页下载失败触发。worker 在当前任务仍有剩余 attempt 时只按既有退避重试，不持久化 provider pause；仅最终尝试仍返回同一错误时才暂停 YouTube。明确 cookies 无效、`youtube_bot_check` 与其他 provider 风控仍立即暂停，避免重复请求扩大风控。
+- YouTube 频道网页下载的超时、连接中断、DNS/TLS 错误或 HTTP 5xx 即使附带 yt-dlp 的通用 `authcheck` 提示，也按普通网络失败执行任务级退避；耗尽重试只让当前任务失败并推进媒体同步冷却，不持久化 provider pause 或 cookies 告警。缺少明确网络故障依据的 `youtube_auth_check` 才沿用最终尝试失败后暂停 YouTube 的策略；明确 cookies 无效、`youtube_bot_check` 与其他 provider 风控仍立即暂停。HTTP 401/403/429 等访问受限信号不会被其他重试中的网络错误覆盖。
 - `scheduler` 或 `worker` 启动时可执行回收扫描：
   - `status=running AND lease_expires_at < now()` 视为失联，转回 `pending` 或标记为 `failed`
   - 对下载等 provider-facing 任务，如果进程心跳新鲜但执行心跳超过 `WORKER_EXECUTION_STALE_AFTER_SECONDS` 未推进，也视为主执行循环卡死并转回 `pending`
   - 对 `media.sync_profile` / `media.sync_videos`，若进程心跳仍新鲜但执行心跳过期，按一次同步尝试失败处理：增加 `attempt`、按既有退避重试，且不使用 orphan priority bump；达到 `max_attempts` 后标记 `failed`
   - `media.sync_videos` 无论因普通异常还是执行心跳过期达到终止失败，都会推进对应媒体的 `last_video_sync_at` 作为冷却时间，避免同一媒体立即被 scheduler 重新投递并堵塞同步队列
   - 回收动作应记录原因，便于后续排障
+- 星域构建的临时空间不足 5 GiB 时，在取得构建资源锁之前用 `JobReschedule` 延后原任务 5 分钟；不转为终止失败后不断创建新构建任务。2026-10 满盘审计确认旧行为在同一域产生了 45,119 次空间门槛失败。
 - requeue / reschedule 必须清空旧 `execution_token`，下次 claim 再生成新 UUID；`succeeded / failed / canceled` 等终态收尾也必须清空 token。
 - Worker 在 handler 返回或抛错后的收尾阶段仍需用领取时捕获的 token 锁定并核对 owner。若 job 已被回收或重领，只退出本次执行，不得覆盖新执行的 job 状态、结果或错误。
 
@@ -77,7 +80,10 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - 对纯 JSON 语法错误，每个抽取批次在当前任务尝试内最多额外调用一次 LLM 修复语法；修复成功后仍执行完整协议校验，修复失败才进入既有 worker 重试。缺少 `videos[]`、缺少预期 `video_id` 等已能解析但违反协议的响应不会触发修复调用，避免模型借“修复”重新生成业务内容。
 - 事件抽取响应在 JSON 解析失败时会检查 LLM 结束原因与输出 token 数；`done_reason=length` 或输出达到 `num_predict` 表示内容已被截断，不属于可保真修复的 JSON 语法错误。该情况会持久化 failed run 并将当前 job 收口为终止失败，避免相同生成上限下重复修复和重试。
 - `events: []` 是合法的零事件结果，会写入 `succeeded` run；空 `plain` transcript 继续按 `skipped` 成功收口，不强制失败或重试。单条事件字段不合法仍只丢弃该条并记录 warning，不能把内容质量问题扩大成整个响应的结构失败。
-- 事件提示词或模型升级只改变后续抽取的复用口径，不在 API、scheduler 或 worker 启动时隐式扫描并重投全部历史视频。需要迁移历史结果时显式创建 `playlist.backfill_events(force=false)`；其子任务只复用精确匹配当前 `source_hash / prompt_version / extraction_model` 的成功运行，因此旧版本结果不会被误算成当前 v5 已完成。
+- 事件抽取默认 `force=false, missing_only=true`，只补从未有 `succeeded` 抽取运行的视频，包括仅失败的视频及新视频；历史任意模型、提示词或转写版本的成功运行都保留，合法零事件同样算成功。父任务、月份范围、批量与单视频任务传递同一策略；自动投递与未显式指定该参数的任务也默认仅补缺失。即使后续出现失败，只要该视频历史曾成功，默认补漏也不会重抽。
+- 事件提示词或模型升级不在 API、scheduler 或 worker 启动时隐式扫描并重投全部历史视频。主动迁移历史结果需显式创建 `playlist.backfill_events(force=false, missing_only=false)`，子任务此时才按当前 `source_hash / prompt_version / extraction_model` 精确复用；旧口径成功仍不算当前口径覆盖。`force=true` 优先于 `missing_only`，明确取消播放列表相关活跃事件管线任务，忽略成功缓存重新抽取；历史任务记录和当前 ready 快照保留，事件在新抽取成功后按原事务替换。
+- Codex 事件抽取与 JSON 修复使用独立的 `CODEX_EVENT_EXTRACTION_REASONING_EFFORT`，默认 `high`，显式覆盖通用 `think=false` 到 `low` 的映射；Ollama 原开关不变。该档位进入 `prompt_version` 的 `:codex-reasoning-{effort}` 后缀，在 `missing_only=false` 时不会把旧低档位结果复用为新档位成功；默认 `missing_only=true` 则继续保留旧档位成功，不因此重抽。checkpoint 已按实际模型参数隔离，变更档位不提前删除旧事件。
+- `video.polish_transcript` 的 LLM 调用、CLI 启动与网络失败向 worker 传播，按现有 `attempt/max_attempts` 有限重试，耗尽后记录为 failed；失败期间保留原始 plain transcript。LLM 未配置、域已停用、输入缺失或已有润色产物仍按现有业务条件 skipped。
 - `brief.generate_period` 会先估算完整提示词输入；超过 `BRIEF_LLM_MAX_INPUT_TOKENS` 时，在当前 Job 内按来源顺序串行生成有来源链接的事实摘要，必要时执行有限轮次归并，再进行最终简报合成。该流程不创建进程内并发，也不改变原有 period 去重锚点。单个分段若偶发返回空白、过短或缺少真实来源的内容，会把上一次的校验错误显式带入原分段的串行重试；连续无效，或最终输出缺少真实来源、缺少模板规定章节、退化成通用助手回答时，当前 Job 以终止失败收口，不写入新的 `ready` 简报。
 - Ollama 简报采用 `structured_brief_v2`：分段摘要通过 schema 保留最多 8 条、每条不超过 120 字的关键事实及输入中的真实 URL；最终生成按模板章节返回非空 Markdown 内容，再按模板顺序渲染。两阶段关闭显式思考，分别保留 2500 / 8000 的输出硬上限。每次调用持久化结束原因、token 数和正文/思考字符数，明确截断立即终止；不得把达到上限的部分输出标记为有效摘要或 ready 简报。非 Ollama 接口继续使用原 Markdown 生成流程；所有最终简报均拒绝不属于真实输入的来源 URL。
 
@@ -88,6 +94,15 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - 已经 `running` 的任务保持原样，继续执行到正常结束或走现有协作式取消语义
 - `ALL` worker 也必须遵守角色暂停门控，不能绕过已暂停的具体角色
 - 专属 role worker 在对应角色已暂停时，应在查询 `job` 热表前直接跳过 claim，避免大量 pending 积压时“暂停但空转扫描队列”。
+
+### Codex 每日额度暂停
+
+- 额度事实源是 `app_config.codex_daily_budget`，暂停使用 `worker_role_pause.ai`，专属原因码 `codex_daily_quota`。`CODEX_DAILY_WEEKLY_LIMIT_PERCENT` 默认 50 个周额度百分点，零预留；按 `TIMEZONE` 自然日累计官方账户整数额度的可见增长，首次启用建立基线。该口径包含同账号其它客户端消耗，不以 token 推算额度。
+- AI 主循环即使暂停仍定期检查额度；每次实际 Codex 生成在进程锁与 PostgreSQL session advisory lock 内串行执行额度前后检查。锁使用独立 AUTOCOMMIT 连接，不在 LLM 等待期间持有额度状态事务。API / system 轮询只读持久化状态，不向官方发请求。
+- 官方 `resetsAt` 表示重置时刻，不是稳定窗口 ID；同一周的秒级漂移保留首次观察到的窗口标识与已有差分基准。新窗口开始时间（重置时刻减官方窗口长度）能证明在相邻成功观察之间发生重置时才换周；不因时间值轻微变化重复计入整周用量。
+- 达到每日上限后停止新领取与后续请求，次日本地零点后重新检查恢复；官方周额度耗尽等周重置，读取失败则暂停并重查。只有本模块自己的暂停可以自动解除，不覆盖人工或维护暂停。设置页、全局提示与任务页展示额度和暂停信息。
+- 中途到额度门槛抛 `JobReschedule`，不增加 attempt。已完成的单次响应以 job ID 与请求/模型/格式摘要保存到 `tmp/codex-checkpoints`，目录 0700、文件 0600；后续同请求复用真实正文与 usage，但不重复记录外部调用用量。只有仍拥有执行权的 worker 在提交成功、取消或其它失败后清理；额度延后与过期执行者不清。它是续跑缓存，不是 Codex 会话历史。
+- 后台 Codex 调用使用 ephemeral 会话，SQLite 与日志均在单次临时目录，结束后删除；只复用认证目录。官方额度按请求完成后更新，允许观察到单次调用越过每日阈值；不消费额外重置权益或绕过官方周限制。
 
 ## 观测域持续观测开关
 
@@ -119,7 +134,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 - ready 切换后由独立的 `playlist.prune_event_map_snapshots` analysis job 做保留清理；它按播放列表去重、每次只删除一个旧快照并再次投递自己，current、上一版 ready 与所有运行中 staging 始终受保护。清理不进入 API 请求线程，也不扩大 ready 原子切换事务。
 - 快照构建发现同域仍有 `playlist.mark_event_map_dirty` 处于 `pending/running` 时，以 `superseded_by_active_dirty` 收口且不再投递新的构建任务；必须先让 dirty outbox 任务推进 generation 并负责后续构建，避免过期的构建计划时间反复抢占 analysis worker。
 - 应用启动迁移会先查询目录并跳过已经存在的索引和已经生效的表级分析参数；没有旧分析任务时也不会执行空 `UPDATE job`。这样启动进程不会在持有 job 表锁时等待事件地图大表 DDL 锁，避免与正在清理/构建的 analysis worker 形成锁顺序死锁。
-- 启动迁移的 schema 变更与 V2 历史回填使用两个连续事务：schema 先提交并释放关系锁，再从仍保留的 ready 快照幂等写入新增历史表。初始化 advisory lock 在两个事务期间保持，用于阻止多个启动进程重复迁移，但不能以长事务阻塞运行中 worker 对业务表的写入。
+- 启动仅迁移当前业务结构，不归档或回填星域历史。初始化使用 session 级 advisory lock 串行迁移；结构事务完成后及时提交并释放关系锁。
 
 事件 embedding 全量迁移同样使用执行级所有权：每批先在无写事务状态调用 embedding 服务，再以 `status=running + worker_id + execution_token` 锁回 Job，复核事件仍为 accepted 且文本 checksum 未变化后，单事务更新向量行与 Job checkpoint。失权、取消或批次写入异常都不会提交当前批；此前批次已经独立提交，重试从“不存在目标模型 ready 向量”的事件继续扫描。迁移完成前不逐事件投递地图 dirty，完成后才按播放列表各投递一次全量地图重建信号。
 
@@ -165,7 +180,7 @@ Worker 领取任务必须通过 DB 原子更新完成，以避免重复执行。
 `job` 是 API、WebSocket、worker claim 和租约回收共享的热表。当前兼容迁移会补充以下查询索引：
 
 - `job_active_list_order_idx`：支撑任务页和 `/api/ws/jobs` 的 `pending/running` 实时列表，按运行中优先、开始时间、计划时间和创建时间取前 N 条。
-- `job_pending_claim_order_idx`：支撑 worker 领取 `pending` 任务，按优先级、处理阶段等级、计划时间和创建时间取候选任务。
+- `job_pending_claim_order_idx`：支撑 `pending` 任务的默认优先级、处理阶段、计划时间与创建时间排序；专职 AI 领取另按来源内容时间先排序。
 - `job_status_type_idx`：支撑 `/api/jobs/counts` 与 `/api/jobs/type_counts` 的状态 / 类型聚合。
 - `job_finished_status_finished_at_idx`：支撑已完成任务列表和 24 小时成功 / 失败统计。
 - `job_running_lease_idx` / `job_running_worker_idx`：支撑租约过期回收和孤儿 `running` 任务回收。

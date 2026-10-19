@@ -164,22 +164,55 @@ def _raise_if_cookie_invalid_messages(msgs: list[str], *, provider: str | None =
         raise YtdlpCookiesInvalidError(reason, f"{cfg_name} 无效，请在 UI -> 设置 更新 {label} cookies.txt。", provider=p)
 
 
+def _youtube_network_error_labels(message: str) -> list[str]:
+    combined = _normalize_msg(message)
+    curl_codes = set(re.findall(r"curl:\s*\((\d+)\)", combined))
+    details: list[str] = []
+    # curl 28 也可能只报告 Operation too slow，不能仅靠 timeout 文本识别。
+    for patterns, codes, label in (
+        (("timed out", "timeout"), {"28"}, "网络超时"),
+        (
+            ("connection reset", "connection closed", "connection refused", "remote end closed connection without response"),
+            {"7", "52", "55", "56"},
+            "连接中断或被拒绝",
+        ),
+        (("could not resolve", "name resolution"), {"5", "6"}, "DNS 解析失败"),
+        (("certificate verify failed", "ssl certificate problem"), {"60"}, "TLS 证书校验失败"),
+        (("ssl connect error",), {"35"}, "TLS 握手失败"),
+    ):
+        if curl_codes.intersection(codes) or any(pattern in combined for pattern in patterns):
+            details.append(label)
+    return details
+
+
 def _youtube_authcheck_diagnostics(msgs: list[str]) -> str:
     # 只保留固定类别和数字错误码；yt-dlp 原始日志可能含代理凭据和签名 URL。
     combined = _normalize_msg("\n".join(msgs))
     details = [f"HTTP {code}" for code in dict.fromkeys(re.findall(r"http(?: error)?[ :]+([45]\d\d)\b", combined))]
     details.extend(f"curl {code}" for code in dict.fromkeys(re.findall(r"curl:\s*\((\d+)\)", combined)))
+    details.extend(_youtube_network_error_labels(combined))
     for patterns, label in (
-        (("timed out", "timeout"), "网络超时"),
-        (("connection reset", "connection closed", "connection refused"), "连接中断或被拒绝"),
-        (("could not resolve", "name resolution"), "DNS 解析失败"),
-        (("certificate verify failed", "ssl certificate problem"), "TLS 证书校验失败"),
         (("unable to download webpage",), "频道网页下载失败"),
         (("unable to extract initial data", "unable to extract yt initial data"), "频道页初始数据缺失"),
     ):
         if any(pattern in combined for pattern in patterns):
             details.append(label)
     return "、".join(details) or "未捕获明确底层原因"
+
+
+def _is_youtube_webpage_network_error(msgs: list[str]) -> bool:
+    combined = _normalize_msg("\n".join(msgs))
+    # 明确的访问受限不能被其他重试中的网络错误覆盖。
+    if re.search(r"http(?: error)?[ :]+(?:401|403|429)\b", combined):
+        return False
+    webpage_errors = "\n".join(
+        msg for msg in (_normalize_msg(item) for item in msgs)
+        if "youtube:tab" in msg and "unable to download webpage" in msg
+    )
+    return bool(
+        _youtube_network_error_labels(webpage_errors)
+        or re.search(r"http(?: error)?[ :]+5\d\d\b", webpage_errors)
+    )
 
 
 def _raise_if_youtube_bot_check_messages(
@@ -194,17 +227,6 @@ def _raise_if_youtube_bot_check_messages(
     combined = "\n".join([str(msg or "") for msg in msgs if str(msg or "").strip()]).strip()
     if not combined:
         return
-    if _is_youtube_tab_authcheck_error(combined):
-        raise ProviderPauseRequestError(
-            provider="youtube",
-            reason="youtube_auth_check",
-            message=(
-                "YouTube同步任务已暂停：YouTube 频道/播放列表鉴权检查失败，但这不一定是 cookies 失效。"
-                "若不是私有内容，请优先检查 cookies 导出会话、YTDLP_PROXY 出口、bgutil PO Token Provider 和同步频率。"
-                f"底层诊断：{_youtube_authcheck_diagnostics(msgs)}。"
-                f"环境信息：pot_provider={_youtube_pot_provider_desc()}，impersonate={_youtube_impersonate_desc()}。"
-            ),
-        )
     if _is_youtube_bot_check_error(RuntimeError(combined)):
         cookie_part = (
             "YouTube 无 cookies 下载仍触发人机验证。"
@@ -218,6 +240,20 @@ def _raise_if_youtube_bot_check_messages(
                 f"YouTube下载任务已暂停：{cookie_part}"
                 "更常见原因是出口 IP、请求频率、浏览器导出会话与运行出口不一致，或 PO Token 生成/使用失败。"
                 "请检查 YTDLP_PROXY、bgutil PO Token Provider、cookies 导出方式和下载/同步并发。"
+                f"环境信息：pot_provider={_youtube_pot_provider_desc()}，impersonate={_youtube_impersonate_desc()}。"
+            ),
+        )
+    if _is_youtube_tab_authcheck_error(combined):
+        # yt-dlp 在已加载认证 Cookie 但网页/ytcfg 下载失败时也抛出 authcheck；这不证明 Cookie 失效。
+        if _is_youtube_webpage_network_error(msgs):
+            raise RuntimeError(f"YouTube 频道/播放列表网络请求失败：{_youtube_authcheck_diagnostics(msgs)}。")
+        raise ProviderPauseRequestError(
+            provider="youtube",
+            reason="youtube_auth_check",
+            message=(
+                "YouTube同步任务已暂停：YouTube 频道/播放列表鉴权检查失败，但这不一定是 cookies 失效。"
+                "若不是私有内容，请优先检查 cookies 导出会话、YTDLP_PROXY 出口、bgutil PO Token Provider 和同步频率。"
+                f"底层诊断：{_youtube_authcheck_diagnostics(msgs)}。"
                 f"环境信息：pot_provider={_youtube_pot_provider_desc()}，impersonate={_youtube_impersonate_desc()}。"
             ),
         )

@@ -204,32 +204,6 @@ class DbMigrationHelperTests(unittest.TestCase):
         finally:
             engine.dispose()
 
-    def test_init_db_commits_schema_transaction_before_history_backfill(self) -> None:
-        engine = create_engine("sqlite:///:memory:")
-        backfill_started_inside_schema_transaction: list[bool] = []
-
-        def _record_backfill(session) -> int:
-            bind = session.get_bind()
-            backfill_started_inside_schema_transaction.append(bool(bind.in_transaction()))
-            return 0
-
-        try:
-            with (
-                patch.object(db_module, "engine", engine),
-                patch.object(Base.metadata, "create_all") as create_all,
-                patch.object(db_module, "_migrate_schema") as migrate_schema,
-                patch(
-                    "raelyn.services.event_map_snapshot.bootstrap_v2_event_map_history",
-                    side_effect=_record_backfill,
-                ),
-            ):
-                db_module.init_db()
-
-            create_all.assert_called_once()
-            migrate_schema.assert_called_once()
-            self.assertEqual(backfill_started_inside_schema_transaction, [False])
-        finally:
-            engine.dispose()
 
 
 if __name__ == "__main__":

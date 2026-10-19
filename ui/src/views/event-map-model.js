@@ -288,7 +288,7 @@ export function createPlaylistEventMapMethods() {
       }
       return response.arrayBuffer();
     },
-    async playlistEventMapLoadManifest({ silent = false, compact = false, includeCoverage = null, snapshotId = "", signal = null, commitGuard = null, commitStatus = true } = {}) {
+    async playlistEventMapLoadManifest({ silent = false, compact = false, includeCoverage = null, snapshotId = null, signal = null, commitGuard = null, commitStatus = true } = {}) {
       const pid = String(this.playlistPageId || this.selectedPlaylistId || "").trim(); if (!pid) return null;
       const lifecycleGeneration = Number(this._playlistEventMapLifecycleGeneration || 0);
       if (!silent) this.playlistEventMapStatusLoading = true;
@@ -296,7 +296,8 @@ export function createPlaylistEventMapMethods() {
         const params = new URLSearchParams();
         if (compact) params.set("compact", "true");
         if (includeCoverage !== null) params.set("include_coverage", includeCoverage ? "true" : "false");
-        const pinnedSnapshotId = String(snapshotId || (this.activeView === "field" && this.fieldRequestedSnapshotId) || "");
+        // 未传版本时沿用显式历史导航；空字符串明确请求 current。
+        const pinnedSnapshotId = String(snapshotId ?? ((this.activeView === "field" && this.fieldRequestedSnapshotId) || ""));
         if (pinnedSnapshotId) params.set("snapshot_id", pinnedSnapshotId);
         const manifest = await this.api(
           `/playlists/${encodeURIComponent(pid)}/events/map/manifest${params.size ? `?${params}` : ""}`,
@@ -518,14 +519,17 @@ export function createPlaylistEventMapMethods() {
         const rendererPromise = this.playlistEventMapPreloadRenderer();
         // compact manifest 未就绪时也先下载 Three.js；真正创建网格时仍会感知导入失败。
         rendererPromise.catch(() => {});
-        const anticipatedSnapshotId = String(
-          (forceLatest ? "" : requestedSnapshotId)
-          || this.playlistEventMapStatus?.snapshot_id
-          || this.currentDomain?.()?.snapshot?.id
-          || ""
-        );
         const existingController = this.playlistEventMapController();
-        const bootManifest = await this.playlistEventMapLoadManifest({ silent: true, compact: true, snapshotId: forceLatest ? "" : anticipatedSnapshotId, signal: requestController.signal, commitGuard: snapshotCommitStillCurrent, commitStatus: !deferManifestStatus }); if (!snapshotCommitStillCurrent()) return;
+        // 普通入口由服务端解析 current，目录与状态缓存中的快照可能已被回收。
+        const bootManifest = await this.playlistEventMapLoadManifest({
+          silent: true,
+          compact: true,
+          snapshotId: forceLatest ? "" : requestedSnapshotId,
+          signal: requestController.signal,
+          commitGuard: snapshotCommitStillCurrent,
+          commitStatus: !deferManifestStatus,
+        });
+        if (!snapshotCommitStillCurrent()) return;
         if (!bootManifest) return;
         const snapshotId = String(bootManifest?.snapshot_id || "");
         if (!snapshotId || bootManifest?.status !== "ready") {
@@ -1468,10 +1472,21 @@ export function createPlaylistEventMapMethods() {
     playlistEventMapClearAllFilters() { const refreshList = Boolean(this.fieldLinearView); this.playlistEventMapClearEntityFilter({ refreshList: false }); if (this.playlistEventMapTypeFilter) { this.playlistEventMapTypeFilter = ""; this.playlistEventMapHandleTypeFilterChange({ refreshList: false }); } if (refreshList) void this.fieldLoadLinearItems?.(); },
     playlistEventMapLegendItems() { const items = this.playlistEventMapViewportSummary?.sceneLevel === "event" ? ["金色＝选中事件", "绿色＝实体命中"] : ["点密度＝事件聚集程度", "颜色＝事件语义族"]; if (this.playlistEventMapTopicFocus) items.push("主题选中＝加亮与细金边"); return items; },
     playlistEventMapMetaLabel() { const manifest = this.playlistEventMapManifest || {}; if (!Number(manifest.canonical_count || 0)) return "暂无可进入地图的真实事件"; return `${this.formatInteger(manifest.canonical_count)} 个真实事件 · ${this.formatInteger(manifest.record_count || 0)} 条记录 · 当前窗口 ${this.formatInteger(this.playlistEventMapVisibleCount || 0)}`; },
-    playlistEventMapEmptyLabel() { const manifest = this.playlistEventMapManifest || {}; if (this.playlistEventMapError) return this.playlistEventMapError; if (this.playlistEventMapLoading) return "事件语义星域加载中…"; if (["pending", "running"].includes(String(manifest.build_status || manifest.status || ""))) return "首个事件语义星域快照正在构建。"; if (manifest.build_status === "failed" || manifest.status === "failed") return manifest.build_error || manifest.last_error || "事件语义星域构建失败。"; if (!manifest.snapshot_id) return "尚未构建事件语义星域快照。"; if (!Number(manifest.canonical_count || 0)) return "没有同时具备事件发生时间和语义向量的已确认事件。"; return this.playlistEventMapScene && !this.playlistEventMapVisibleCount ? "当前时间窗口没有可显示的真实事件。" : ""; },
+    playlistEventMapEmptyLabel() {
+      const manifest = this.playlistEventMapManifest || {};
+      const error = this.playlistEventMapError || this.playlistEventMapStatusError;
+      if (error) return error;
+      if (this.playlistEventMapLoading) return "事件语义星域加载中…";
+      if (["pending", "running"].includes(String(manifest.build_status || manifest.status || ""))) return "首个事件语义星域快照正在构建。";
+      if (manifest.build_status === "failed" || manifest.status === "failed") return manifest.build_error || manifest.last_error || "事件语义星域构建失败。";
+      if (!manifest.snapshot_id) return "尚未构建事件语义星域快照。";
+      if (!Number(manifest.canonical_count || 0)) return "没有同时具备事件发生时间和语义向量的已确认事件。";
+      return this.playlistEventMapScene && !this.playlistEventMapVisibleCount ? "当前时间窗口没有可显示的真实事件。" : "";
+    },
     playlistEventMapStatusBadgeLabel() {
       const manifest = this.playlistEventMapStatus || this.playlistEventMapManifest || {};
       if (this.playlistEventMapLoading && !manifest.snapshot_id) return "星域加载中";
+      if (this.playlistEventMapError || this.playlistEventMapStatusError) return "星域读取失败";
       if (manifest.building || ["pending", "running"].includes(String(manifest.build_status || ""))) {
         return manifest.snapshot_id ? "星域后台更新中" : "首次生成中";
       }
@@ -1483,6 +1498,7 @@ export function createPlaylistEventMapMethods() {
     playlistEventMapStatusBadgeHint() {
       const manifest = this.playlistEventMapStatus || this.playlistEventMapManifest || {};
       if (this.playlistEventMapLoading && !manifest.snapshot_id) return "正在下载首个可交互的星域快照。";
+      if (this.playlistEventMapError || this.playlistEventMapStatusError) return this.playlistEventMapError || this.playlistEventMapStatusError;
       if (manifest.building || ["pending", "running"].includes(String(manifest.build_status || ""))) {
         return manifest.snapshot_id
           ? "当前星域可以正常浏览；后台正在把新增或重新分析的事件生成到下一版快照。"

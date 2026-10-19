@@ -125,7 +125,10 @@ def video_extract_events(session: Session, job: Job) -> dict | None:
         return {"skipped": "video not found"}
     if not video_has_enabled_observation(session, video_id):
         return {"skipped": "domain observation is disabled"}
-    return extract_video_events(session, video_id=video_id, force=bool(job.params.get("force", False)), job=job)
+    return extract_video_events(
+        session, video_id=video_id, force=bool(job.params.get("force", False)),
+        missing_only=bool(job.params.get("missing_only", True)), job=job,
+    )
 
 
 @registry.register("video.extract_events_batch")
@@ -149,6 +152,7 @@ def video_extract_events_batch(session: Session, job: Job) -> dict | None:
         session,
         video_ids=video_ids,
         force=bool(job.params.get("force", False)),
+        missing_only=bool(job.params.get("missing_only", True)),
         job=job,
     )
 
@@ -163,6 +167,7 @@ def playlist_backfill_events(session: Session, job: Job) -> dict | None:
         session,
         playlist_id=playlist_id,
         force=bool(job.params.get("force", False)),
+        missing_only=bool(job.params.get("missing_only", True)),
         job=job,
     )
 
@@ -179,6 +184,7 @@ def playlist_backfill_events_range(session: Session, job: Job) -> dict | None:
         range_start=_parse_event_backfill_range_date(job.params.get("range_start"), name="range_start"),
         range_end=_parse_event_backfill_range_date(job.params.get("range_end"), name="range_end"),
         force=bool(job.params.get("force", False)),
+        missing_only=bool(job.params.get("missing_only", True)),
         job=job,
     )
 

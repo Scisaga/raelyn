@@ -4,7 +4,7 @@
 			              <div class="raelyn-toolbar-band shrink-0 flex flex-wrap items-center justify-between gap-3 px-4 py-3" x-show="activeView==='operations'">
 			                <div class="min-w-0">
 			                  <div class="text-sm font-semibold text-slate-100" x-text="operationsContextTitle()"></div>
-			                  <div class="mt-0.5 truncate text-[11px] text-slate-500" x-text="operationsContextDetail()"></div>
+			                  <div class="mt-0.5 truncate text-[11px] text-slate-500" :class="domainObservationError ? 'text-rose-300' : ''" x-text="domainObservationError ? '覆盖率读取失败：'+domainObservationError : domainObservationLoading ? '正在读取当前观测域覆盖率…' : operationsContextDetail()"></div>
 			                </div>
 			                <button type="button" class="rounded-md border border-slate-700 bg-slate-900/60 px-3 py-1.5 text-xs text-slate-300 hover:border-cyan-500/35 hover:text-cyan-100" @click="returnFromOperations()">返回观测现场</button>
 			              </div>
@@ -233,6 +233,12 @@
                         <span x-show="workersError" class="text-[11px] text-rose-300 truncate" x-text="workersError"></span>
                       </div>
 
+                      <div x-show="jobsTab==='active' && codexBudget?.enabled" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
+                        <span>Codex 今日已用 / 可用：<span class="font-mono tabular-nums text-slate-300" x-text="codexBudgetPercent(codexBudgetDailyValue('used_percent')) + ' / ' + codexBudgetPercent(codexBudget?.effective_limit_percent)"></span>（周总额度<span x-show="codexBudget?.reserve_percent > 0">，另含 <span x-text="codexBudget?.reserve_percent"></span> 个百分点预留</span>）</span>
+                        <span>AI 任务按新到旧处理</span>
+                        <button type="button" class="text-slate-300 underline decoration-slate-600 underline-offset-2 hover:text-emerald-200" @click="gotoInferenceSettings()">查看额度</button>
+                      </div>
+
                       <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400" x-show="jobsTab==='active'">
                         <span class="text-slate-500">任务构成:</span>
                         <template x-for="item in jobsActiveTypeStats" :key="item.type">
@@ -288,10 +294,25 @@
 		              </div>
 		              <div class="flex-1 min-h-0 overflow-auto raelyn-scrollbar">
                     <div
-                      x-show="hasProviderPause('youtube') || hasProviderPause('bilibili') || (pause && pause.paused)"
+                      x-show="hasProviderPause('youtube') || hasProviderPause('bilibili') || (pause && pause.paused) || codexBudgetPaused()"
                       class="border-b border-slate-800 bg-slate-950/30 px-4 py-3"
                     >
                       <div class="flex flex-col gap-2">
+                        <button
+                          type="button"
+                          x-show="codexBudgetPaused()"
+                          class="w-full rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-3 text-left text-sm text-amber-100 hover:bg-amber-500/15"
+                          @click="gotoInferenceSettings()"
+                        >
+                          <div class="flex flex-wrap items-center justify-between gap-3">
+                            <div class="min-w-0">
+                              <div class="font-medium" x-text="'AI 已挂起 · ' + codexBudgetStatusLabel()"></div>
+                              <div class="mt-1 text-xs leading-6 text-amber-200/90" x-text="codexBudgetNotice()"></div>
+                              <div class="mt-1 font-mono tabular-nums text-[11px] text-amber-200/80" x-text="codexBudgetResumeLabel() + '：' + codexBudgetResumeText()"></div>
+                            </div>
+                            <span class="text-xs text-amber-100">查看 Codex 额度</span>
+                          </div>
+                        </button>
                         <button
                           type="button"
                           x-show="hasProviderPause('youtube')"

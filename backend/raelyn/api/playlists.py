@@ -167,6 +167,7 @@ class PlaylistEventBackfillJobOut(BaseModel):
     enqueued: int = 0
     skipped: int = 0
     force: bool = False
+    missing_only: bool = True
     range_finished: int = 0
     range_pending: int = 0
     range_running: int = 0
@@ -196,6 +197,7 @@ class PlaylistEventsSummaryOut(BaseModel):
 
 class PlaylistEventsExtractRequest(BaseModel):
     force: bool = False
+    missing_only: bool = True
 
 
 class MarketEventEntityOut(BaseModel):
@@ -723,6 +725,7 @@ def _playlist_event_backfill_job_out(session, job: Job) -> PlaylistEventBackfill
         enqueued=int(progress.get("enqueued") or result.get("enqueued") or 0),
         skipped=int(progress.get("skipped") or result.get("skipped") or 0),
         force=bool(result.get("force") or (job.params or {}).get("force")),
+        missing_only=bool((job.params or {}).get("missing_only", True)) and not bool((job.params or {}).get("force")),
         range_finished=int(progress.get("range_finished") or 0),
         range_pending=int(progress.get("range_pending") or 0),
         range_running=int(progress.get("range_running") or 0),
@@ -1091,6 +1094,7 @@ def extract_playlist_events(
                 session,
                 playlist_id=playlist_id,
                 force=bool(data.force),
+                missing_only=bool(data.missing_only),
                 priority=1,
             )
         except ValueError as error:

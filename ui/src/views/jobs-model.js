@@ -273,7 +273,6 @@ export function createJobsViewMethods() {
 
           const filtered = jobs.filter((job) => job && job.id && !hidden[String(job.id)]);
           this.jobListActive = filtered;
-          this.ensureJobContextForList(filtered);
           this._cleanupJobsOptimisticActive();
           this.refreshJobsActiveCount();
           this.refreshJobsActiveTypeStats();
@@ -317,7 +316,6 @@ export function createJobsViewMethods() {
 
         const filtered = jobs.filter((job) => job && job.id && !hidden[String(job.id)]);
         this.jobListActive = filtered;
-        this.ensureJobContextForList(filtered);
         this._cleanupJobsOptimisticActive();
         this.refreshJobsActiveTypeStats();
       } catch {
@@ -443,7 +441,6 @@ export function createJobsViewMethods() {
         const hidden = this.jobsHiddenDoneIds || {};
         const all = Array.isArray(items) ? items : [];
         this.jobListDone = all.filter((job) => job && job.id && !hidden[String(job.id)]);
-        this.ensureJobContextForList(this.jobListDone);
       } finally {
         this.jobsDoneLoading = false;
       }
@@ -509,7 +506,7 @@ export function createJobsViewMethods() {
     },
 
     workerRoleControllable(roleInfo) {
-      return !!(roleInfo && roleInfo.controllable);
+      return !!(roleInfo && roleInfo.controllable) && !(roleInfo.role === "ai" && this.codexBudgetPaused());
     },
 
     workerRolePaused(roleInfo) {
@@ -1136,23 +1133,9 @@ export function createJobsViewMethods() {
     jobPlaylistLabel(job) {
       const playlistId = this.jobPlaylistId(job);
       if (!playlistId) return "";
-      const playlist = this.jobPlaylistById && this.jobPlaylistById[playlistId] ? this.jobPlaylistById[playlistId] : null;
+      const playlist = (this.domains || []).find((domain) => String(domain.id) === playlistId);
       const name = playlist && playlist.name ? String(playlist.name).trim() : "";
       return name || this._shortId(playlistId);
-    },
-
-    ensureJobContextForList(list) {
-      const jobs = Array.isArray(list) ? list : [];
-      const videoIds = new Set();
-      const playlistIds = new Set();
-      for (const job of jobs) {
-        const videoId = this.jobVideoId(job);
-        if (videoId) videoIds.add(videoId);
-        const playlistId = this.jobPlaylistId(job);
-        if (playlistId) playlistIds.add(playlistId);
-      }
-      for (const videoId of videoIds) this._ensureJobVideo(videoId);
-      for (const playlistId of playlistIds) this._ensureJobPlaylist(playlistId);
     },
 
     async _ensureJobVideo(videoId) {
@@ -1173,28 +1156,6 @@ export function createJobsViewMethods() {
           delete this._jobVideoFetchInFlight[normalized];
         } catch {
           this._jobVideoFetchInFlight[normalized] = false;
-        }
-      }
-    },
-
-    async _ensureJobPlaylist(playlistId) {
-      const normalized = String(playlistId || "").trim();
-      if (!normalized || (this.jobPlaylistById && this.jobPlaylistById[normalized])) return;
-      if (this._jobPlaylistFetchInFlight && this._jobPlaylistFetchInFlight[normalized]) return;
-      this._jobPlaylistFetchInFlight[normalized] = true;
-      try {
-        const playlist = await this.api(`/playlists/${encodeURIComponent(normalized)}`);
-        if (playlist && typeof playlist === "object") {
-          if (!this.jobPlaylistById) this.jobPlaylistById = {};
-          this.jobPlaylistById[normalized] = playlist;
-        }
-      } catch {
-        // best-effort
-      } finally {
-        try {
-          delete this._jobPlaylistFetchInFlight[normalized];
-        } catch {
-          this._jobPlaylistFetchInFlight[normalized] = false;
         }
       }
     },

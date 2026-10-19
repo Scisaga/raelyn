@@ -257,7 +257,6 @@ codex mcp add raelyn \
                           <div><code class="text-slate-200">raelyn://brief/{brief_id}/structured</code></div>
                           <div><code class="text-slate-200">raelyn://job/{job_id}</code></div>
                           <div><code class="text-cyan-200">raelyn://domain/{domain_id}/observation</code></div>
-                          <div><code class="text-cyan-200">raelyn://domain/{domain_id}/changes</code></div>
                           <div><code class="text-cyan-200">raelyn://domain/{domain_id}/canonical/{canonical_id}</code></div>
                           <div><code class="text-cyan-200">raelyn://domain/{domain_id}/topic/{topic_id}</code></div>
                           <div><code class="text-cyan-200">raelyn://domain/{domain_id}/story/{story_identity_id}</code></div>
@@ -336,27 +335,21 @@ codex mcp add raelyn \
                           </tr>
                           <tr>
                             <td class="px-4 py-2 align-top text-cyan-200"><code>list_domains</code></td>
-                            <td class="px-4 py-2 align-top text-slate-400">列出观测域与未读变化。</td>
+                            <td class="px-4 py-2 align-top text-slate-400">列出观测域与未读进展。</td>
                             <td class="hidden md:table-cell px-4 py-2 align-top text-cyan-200"><code>get_domain_observation</code></td>
                             <td class="hidden md:table-cell px-4 py-2 align-top text-slate-400">读取观察游标与四类覆盖率。</td>
                           </tr>
                           <tr>
-                            <td class="px-4 py-2 align-top text-cyan-200"><code>get_domain_changes</code></td>
-                            <td class="px-4 py-2 align-top text-slate-400">读取稳定变化游标与双时间语义。</td>
-                            <td class="hidden md:table-cell px-4 py-2 align-top text-cyan-200"><code>get_canonical_history</code></td>
-                            <td class="hidden md:table-cell px-4 py-2 align-top text-slate-400">读取真实事件修订与谱系。</td>
-                          </tr>
-                          <tr>
-                            <td class="px-4 py-2 align-top text-cyan-200"><code>get_domain_topic</code></td>
-                            <td class="px-4 py-2 align-top text-slate-400">读取主题层级、成员计数与代表事件。</td>
-                            <td class="hidden md:table-cell px-4 py-2 align-top"></td>
-                            <td class="hidden md:table-cell px-4 py-2 align-top text-slate-400"></td>
+                            <td class="px-4 py-2 align-top text-cyan-200"><code>get_canonical_detail</code></td>
+                            <td class="px-4 py-2 align-top text-slate-400">读取当前真实事件与代表证据。</td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top text-cyan-200"><code>get_domain_topic</code></td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top text-slate-400">读取主题层级、成员计数与代表事件。</td>
                           </tr>
                           <tr>
                             <td class="px-4 py-2 align-top text-cyan-200"><code>list_domain_stories</code></td>
                             <td class="px-4 py-2 align-top text-slate-400">列出稳定故事、关注与未读状态。</td>
-                            <td class="hidden md:table-cell px-4 py-2 align-top text-cyan-200"><code>get_story_history</code></td>
-                            <td class="hidden md:table-cell px-4 py-2 align-top text-slate-400">读取故事修订、变化与航迹。</td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top text-cyan-200"><code>get_story_detail</code></td>
+                            <td class="hidden md:table-cell px-4 py-2 align-top text-slate-400">读取当前故事航迹与支持证据。</td>
                           </tr>
                           <tr>
                             <td class="px-4 py-2 align-top text-cyan-200"><code>get_structured_brief</code></td>

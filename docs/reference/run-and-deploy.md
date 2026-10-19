@@ -141,6 +141,8 @@ Scheduler 不直接扫描库存，也不在调度循环中持有长数据库事�
 默认配置还会向 yt-dlp Python API 传入 `YTDLP_REMOTE_COMPONENTS=ejs:github`，对应 CLI 里的 `--remote-components ejs:github`。
 EJS 只解决 YouTube JS / n challenge；若 cookies 很快再次触发“确认你不是聊天机器人”，还需要启用 PO Token Provider。
 
+频道页出现 `curl 28`、连接中断、DNS/TLS 错误或 HTTP 5xx 时按网络失败排障；即使后续附带 yt-dlp 的通用频道鉴权检查提示，也不触发 cookies 告警或暂停整个 YouTube。任务按既有预算重试，终止失败后进入媒体同步冷却。明确 cookies 失效、人机验证和访问受限的处理见 [YouTube 错误分类](youtube-ytdlp-strategy.md#失败处理)。应用此分类修复需暂停 `sync` / `download_youtube` 的新任务领取、等待当前任务结束，再重启对应 worker 并恢复领取。
+
 如果日志出现类似：
 
 - `n challenge solving failed`
@@ -164,7 +166,7 @@ YTDLP_YOUTUBE_IMPERSONATE=chrome
 
 当 YouTube cookies 保存后仍快速触发 bot check 或部分 403 时，启用 bgutil PO Token Provider。项目依赖中已包含 `bgutil-ytdlp-pot-provider` 插件，但仍需要单独运行 bgutil HTTP server。
 
-当前 Python 插件和服务端镜像均锁定 `2.0.0`。`<2.0.0` 的 HTTP 服务受 [GHSA-qpv9-8xfj-xx9m](https://github.com/Brainicism/bgutil-ytdlp-pot-provider/security/advisories/GHSA-qpv9-8xfj-xx9m) 影响；升级时需要同时更新 `backend/requirements.txt`、`backend/requirements.lock.txt` 与 Compose 镜像。两端主版本不同会被插件拒绝。
+当前 Python 插件和服务端镜像均锁定 `2.0.2`，该版本更新了服务端存在已知漏洞的依赖，见 [上游发布说明](https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/tag/2.0.2)。`<2.0.0` 的 HTTP 服务受 [GHSA-qpv9-8xfj-xx9m](https://github.com/Brainicism/bgutil-ytdlp-pot-provider/security/advisories/GHSA-qpv9-8xfj-xx9m) 影响；升级时需要同时更新 `backend/requirements.txt`、`backend/requirements.lock.txt` 与 Compose 镜像。两端主版本不同会被插件拒绝。
 
 Docker Compose 会自动启动 `bgutil-pot` 服务，并给 app 注入：
 
@@ -174,7 +176,7 @@ YTDLP_POT_BGUTIL_BASE_URL=http://host.docker.internal:4416
 
 `docker-compose.yml` 中的 `bgutil-pot` 使用 `restart: unless-stopped`，避免宿主机或 Docker daemon 重启后 provider 长期停在 exited 状态。
 
-`2.0.0-node` 镜像默认命令仍是 `--host 0.0.0.0`。Compose 显式覆盖为 `--host 127.0.0.1,::1,host.docker.internal`，并通过 `host-gateway` 将最后一个名称映射到 Docker 内部网关，使宿主机原生进程和 Compose app 都可访问，而无需监听 LAN 地址或通配地址。Docker 内部网关只应供可信的本机容器访问，不应向外部网络转发 `4416`。
+Compose 显式设置 `--host 127.0.0.1,::1,host.docker.internal`，并通过 `host-gateway` 将最后一个名称映射到 Docker 内部网关，使宿主机原生进程和 Compose app 都可访问，而无需监听 LAN 地址或通配地址。Docker 内部网关只应供可信的本机容器访问，不应向外部网络转发 `4416`。
 
 如果 `YTDLP_PROXY` 是宿主机上的本地代理，例如 `socks5://127.0.0.1:8887`，bgutil Docker 容器也必须能访问宿主机网络；否则 provider 生成 PO Token 时会在容器内访问自己的 `127.0.0.1` 并失败。Docker Compose 中的 `bgutil-pot` 使用 host 网络以保持这条路径一致。
 
@@ -183,7 +185,7 @@ YTDLP_POT_BGUTIL_BASE_URL=http://host.docker.internal:4416
 本机运行时可单独启动 provider server，例如：
 
 ```bash
-docker run --name bgutil-provider -d --init --net=host brainicism/bgutil-ytdlp-pot-provider:2.0.0-node --host 127.0.0.1,::1
+docker run --name bgutil-provider -d --init --net=host brainicism/bgutil-ytdlp-pot-provider:2.0.2-node --host 127.0.0.1,::1
 ```
 
 然后在 `.env` 中配置：
@@ -200,9 +202,35 @@ NO_PROXY=127.0.0.1,localhost .venv/bin/python -m yt_dlp -v "https://www.youtube.
 
 输出应包含类似 `bgutil:http`；真正生成 token 时还应出现 `Generating a ... PO Token ... via bgutil HTTP server`。启用后需重启 `download_youtube` / `sync` worker。
 
-升级前先下载依赖和镜像，停止应用进程后再同步安装插件、重建 `bgutil-pot`，最后重启应用，避免新旧主版本交叉运行。只改 Python 依赖时可用 `SKIP_UI_BUILD=1 ./scripts/dev/devctl.sh start` 跳过 UI 构建。验证至少包括：直连 `/ping` 返回 `2.0.0`、Compose 网络内能访问 `host.docker.internal:4416`、监听地址没有 `0.0.0.0` / `::`，以及通过原有 Cookies 和 `YTDLP_PROXY` 完成一次真实 PO Token 生成。重启会清空 provider 的进程内 token 缓存，但不会替换应用保存的 YouTube Cookies。
+升级前先下载依赖和镜像，在运行中心暂停 `download_youtube` 与 `sync` worker 领取新任务，并等待正在运行的任务结束。随后同步安装插件、重建 `bgutil-pot`，重启这两类 worker，再恢复任务领取，避免升级过程中混用插件与服务端版本；API、Scheduler 和其他 worker 可继续运行。若使用 `devctl.sh start` 拉起执行进程，可用 `SKIP_UI_BUILD=1` 跳过 UI 构建。验证至少包括：直连 `/ping` 返回 `2.0.2`、Compose 网络内能访问 `host.docker.internal:4416`、监听地址没有 `0.0.0.0` / `::`，以及通过原有 Cookies 和 `YTDLP_PROXY` 完成一次真实 PO Token 生成和媒体下载。重启会清空 provider 的进程内 token 缓存，但不会替换应用保存的 YouTube Cookies。
+
+若当前网络无法直连 Docker Hub，可从官方固定发布 tag 构建服务端镜像。必须记录上游 commit，保留官方 `package-lock.json` 并用 `npm ci` 安装依赖；复用已有基础镜像时，应核对 Node.js 版本满足上游要求，并移除镜像中的旧 `node_modules` / `build` 后再复制新产物，避免目录合并留下旧依赖。原生模块需使用对应版本的官方预编译包或完成源码编译，切换前先在独立本机端口验证 `/ping` 与模块加载。该构建方式只用于镜像下载受限的部署环境，不改变采集的 Cookies、代理出口或并发配置。
+
+上游服务的调试日志会输出完整 PO Token、IntegrityToken 和内容绑定。本机源码镜像已将这些日志及代理细节脱敏，只保留生成阶段与错误原因；Token 生成、HTTP 响应与缓存协议保持不变。
 
 ### 配置
+
+历史视频补漏可调用 `POST /api/media/sync?scope=all`，仅覆盖开启监控且未删除中的来源。全量请求会将已排队的近期同步原地升级为 `max_entries=0, enqueue_existing_downloads=true`，不受旧的 200 条追赶窗口限制；保留重试预算和更高优先级，运行中的同步不改写。全量任务完成只说明来源列表扫描与缺失下载投递完成，视频下载、转写和仅补缺失的事件抽取仍按各自队列推进。
+
+已有视频的下载补投只覆盖 `discovered` 且无视频资产、无活跃下载任务的记录；会员内容遵守现有开关。终止失败项需先核对失败原因，再通过既有任务重试入口恢复，不能把会员、年龄、私享或下架限制当作一般漏投批量重试。
+
+#### 本地 LLM 选择 Codex
+
+在“设置 → AI 接入 → 本地服务”选择“Codex”，先测试连接，再保存。Codex 接收现有文本任务的输入，处理事件抽取、转写润色和简报；ASR 和事件向量仍使用各自服务，星域更新需要这些依赖正常工作。
+
+API 与 AI worker 必须使用已经安装并登录 Codex CLI 的同一运行账号，并分别以进程实际使用的账号和 `PATH` 执行 `codex --version`、`codex login status` 核对；后台服务的 `PATH` 可能与交互终端不同，可将 `CODEX_COMMAND` 设为 CLI 的绝对路径。登录按 [Codex 官方认证说明](https://developers.openai.com/codex/auth) 完成；网页不接收或保存 Codex Token。应用复用 CLI 登录态，不替换认证文件、不重新登录。`CODEX_MODEL` 可覆盖用户配置模型，`CODEX_TIMEOUT_SECONDS` 默认 600 秒。选择 Codex 且命令非空即视为已配置；命令无法找到时实际任务报错并进入有限重试，健康检查仍报告 `installed=false`。
+
+调用使用 [Codex 非交互模式](https://developers.openai.com/codex/noninteractive)，每次在独立临时目录处理文字输入，不加载仓库指令，不提供 shell、网页、MCP、插件等工具。输入经 stdin 传入，业务只采用最终回答和用量，不把 CLI 调试日志写入任务错误；退出后清理临时产物，超时终止进程组。单次调用关闭实验功能的启动提示，实际错误、工具调用和失败状态仍按失败处理。事件抽取与其 JSON 修复独立使用 `CODEX_EVENT_EXTRACTION_REASONING_EFFORT=high`；其它 `think=false` 调用映射为单次 `low`（[当前模型档位说明](https://developers.openai.com/api/docs/models/gpt-6.1-sol)），`think=true` 或未指定时沿用 CLI 默认。抽取档位会进入 `prompt_version` 后缀，原低档位结果不会命中新档位的精确成功缓存；默认 `missing_only=true` 仍保留已有任意档位成功，不自动升级旧结果。主动迁移历史范围须显式设置 `force=false, missing_only=false`，需要忽略全部成功缓存时使用 `force=true`。该策略按当前抽取要求选择，尚未以项目对照评估证明质量增益；耗时与额度变化以实际用量观测，仍受每日门控控制。子进程不继承应用凭据或任意环境代理，只按 `YTDLP_PROXY` 显式注入代理，空值直连；应用不会将原有 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 及其小写形式直接透传。普通状态轮询只检查安装/登录，“测试连接”会通过同一代理配置验证真实生成。
+
+后台调用使用 `--ephemeral`，并将会话 SQLite 与日志放在该次临时目录，结束后随目录删除，不在开发会话列表保留业务会话；账号认证目录仍复用原配置。额度查询只读取账户额度，不创建会话。此生命周期依据见 [Codex App Server](https://learn.chatgpt.com/docs/app-server) 与 [配置目录说明](https://learn.chatgpt.com/docs/config-file/environment-variables)。
+
+`CODEX_DAILY_WEEKLY_LIMIT_PERCENT` 默认 `50`，表示每天最多使用周额度的 50 个百分点，无额外预留。应用按 `TIMEZONE` 自然日累计官方账户额度的可见增长，首次启用建立基线，同账号其它客户端消耗也会计入；官方只提供整数、请求完成后更新，单次调用可能跨过阈值，不用 token 数估算订阅额度。达到上限后仅挂起 AI worker 的任务领取与后续 Codex 调用，下载等角色继续工作；次日零点后由 AI worker 定期检查并自动继续。周额度耗尽则等官方重置，额度读取失败则先暂停、定期重查；均保留人工暂停。设置页、全局提示和任务页显示今日用量、上限、暂停原因与预计恢复或下次检查时间。修改上限后重载 API / AI worker，设 `0` 可关闭每日限制。
+
+一个 Job 中已经成功的 Codex 响应保存在权限受限的本地 checkpoint。额度耗尽通过既有 `JobReschedule` 延后原任务，不消耗失败重试次数；次日用完全相同的请求续跑时复用已付结果，不重复计入调用用量，完成、取消或其它失败在提交任务状态后清理 checkpoint。因此保留 `tmp/codex-checkpoints` 到任务结束，不能当作会话历史清理。
+
+首次部署该选项需重载 API、AI worker，以及读取 LLM 配置并投递后续任务的上游 worker / scheduler。重载 worker 前暂停对应角色的新任务领取，等待在途任务结束后重启，再恢复领取。保存选择后，后续 LLM 调用读取运行时配置，已经发出的请求按原后端完成；需要整项长任务保持同一后端时，切换前先等待该任务结束。专职 AI 队列先按真实内容时间从新到旧，同内容时间再按优先级、任务阶段与排期；重新投递旧视频不会将它当作新视频。其它角色沿用原优先级排序。切换不会自动重投历史 failed 任务，需通过既有重试入口按范围恢复。
+
+当前标准 Docker 镜像未内置 Codex CLI，也未挂载账号认证。容器部署若要使用该选项，需要自行扩展镜像、安装兼容 CLI，并为实际运行账号配置认证目录；不能把宿主机显示“已登录”视为容器已就绪，也不要把认证文件打进镜像。
 
 ```bash
 cp .env.example .env
@@ -220,9 +248,10 @@ source ./scripts/dev/load-env.sh
 
 #### 高优先级代理规则
 
-- YouTube 的 `yt-dlp` 资料同步、频道头像下载和视频同步/下载请求可通过 `.env` 中的 `YTDLP_PROXY` 显式使用代理。
-- 非 `yt-dlp` 的资料/头像抓取、B 站请求、ASR、LLM、Embedding 与健康检查不使用 `YTDLP_PROXY`。
-- 应用默认不隐式读取 shell、systemd 或容器环境中的 `HTTP_PROXY` / `HTTPS_PROXY`；如果这些变量存在，也不能假设 ASR / LLM / Embedding 或 B 站请求会走代理。
+- YouTube 的 `yt-dlp` 资料同步、频道头像下载、视频同步/下载请求与 Codex CLI 可通过 `.env` 中的 `YTDLP_PROXY` 显式使用代理，空值直连。
+- Codex 子进程不继承任意环境代理或应用凭据；应用只根据 `YTDLP_PROXY` 为其显式注入代理，保留 CLI 自身的已登录认证态。
+- 非 `yt-dlp` 的资料/头像抓取、B 站请求、ASR、HTTP LLM、Embedding 与 HTTP 健康检查不使用 `YTDLP_PROXY`，继续直连。
+- 应用不将 shell、systemd 或容器环境中的 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 及其小写形式作为默认代理来源；这些变量的存在不会改变其他 HTTP 服务的直连行为。
 - 如果 YouTube cookies 是在代理出口下导出的，建议让 `YTDLP_PROXY` 使用同一个出口，避免 cookies 使用 IP 与导出 IP 不一致。
 
 #### 可选：配置平台 Cookies（YouTube / bilibili）
@@ -234,7 +263,7 @@ B 站资料同步不再调用会返回 `-799` / 412 的旧 `/x/space/acc/info` A
 YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“公开采集默认不用 cookies”。当前 YouTube 普通同步 / 下载都会使用已保存的 `YTDLP_COOKIES_YOUTUBE`；只有 provider 因 cookies / bot check / auth check 暂停时，`media.sync_videos` 才可按 `SYNC_PUBLIC_DISCOVERY_ENABLED=true` 进入 `public_discovery` 降级模式，显式无 cookies 抓公开视频 flat 列表。该模式只减少漏入库风险，下载、字幕和 metadata 补全仍等 provider 恢复后执行。完整判断与排障步骤见 [YouTube yt-dlp 同步与 Cookies 策略](youtube-ytdlp-strategy.md)。
 当前实测的下载路径在无 cookies 时会直接触发 `LOGIN_REQUIRED`，因此 YouTube 下载任务固定使用已保存的 `YTDLP_COOKIES_YOUTUBE`，并通过 `YTDLP_YOUTUBE_IMPERSONATE=chrome` 尽量贴近浏览器请求形态。
 如果错误只是 `Sign in to confirm you're not a bot` 或频道 / 播放列表鉴权检查失败，系统会暂停 YouTube provider，但不再直接归类为 `YTDLP_COOKIES_YOUTUBE` 失效；只有 yt-dlp 明确报 cookies no longer valid 或 cookies 格式错误时，才提示更新 cookies。
-保存有效非空 YouTube / B 站 cookies 后，系统会清除对应 provider pause，并为该 provider 的受监控媒体补投一次 `max_entries=SYNC_COOKIE_RECOVERY_MAX_ENTRIES` 的同步追赶任务，默认 `200`。这些恢复任务会均匀分布在一个 `SYNC_INTERVAL_MINUTES` 周期内；已有 pending 同步（包括 public discovery）会原地转换为认证恢复并重新排期，避免 Cookie 更新后集中扫描全部媒体。
+保存有效非空 YouTube / B 站 cookies 后，系统会清除对应 provider pause，并为该 provider 的受监控媒体补投一次 `max_entries=SYNC_COOKIE_RECOVERY_MAX_ENTRIES` 的同步追赶任务，默认 `200`。这些恢复任务会均匀分布在一个 `SYNC_INTERVAL_MINUTES` 周期内；已有 pending 近期同步（包括 public discovery）会原地转换为认证恢复并重新排期，避免 Cookie 更新后集中扫描全部媒体。已排队的全量同步保留 `max_entries=0`、已有视频下载补投、更高下载优先级和更早排期，仅切回认证采集；不重置任务的重试预算。该修复只需重载 API，不需要重启同步或下载 worker。
 若失败信息是 `ERROR: unable to download video data: HTTP Error 403: Forbidden`，先检查格式选择器是否优先选中了 YouTube DASH video-only。2026-05-18 实测中，Bloomberg 样本的 360p+ DASH video-only URL 返回 403，但 HLS / combined MP4 format `96` 可下载；默认配置已改为优先 combined MP4/HLS。
 格式选择与验证步骤见 [yt-dlp 视频 / 音频格式选择策略](ytdlp-format-selection.md)。
 
@@ -286,7 +315,11 @@ YouTube cookies 不能被当成唯一稳定保障，但也不能被理解成“�
 ```
 
 默认按内容时间轴抽取最近 365 天。可用 `--since YYYY-MM-DD --until YYYY-MM-DD` 指定本地日期闭区间，用 `--dry-run` 先查看命中视频数。
-脚本会向数据库 `job` 表投递 `video.extract_events` 任务；播放列表页面的历史回填仍会使用 `video.extract_events_batch` 管理短视频任务，但每次 LLM 请求只包含 1 个视频。脚本默认按 `--progress-every` 的批大小分批提交，避免长时间运行时已投递任务不可见。
+脚本会向数据库 `job` 表投递 `video.extract_events` 任务，未指定补漏参数的单视频任务在执行时默认 `missing_only=true`；播放列表页面的历史回填仍会使用 `video.extract_events_batch` 管理短视频任务，但每次 LLM 请求只包含 1 个视频。脚本默认按 `--progress-every` 的批大小分批提交，避免长时间运行时已投递任务不可见。
+
+播放列表 API `POST /api/playlists/{playlist_id}/events/extract` 的默认 body 为 `{"force":false,"missing_only":true}`：只补从未成功的视频，包括仅失败的视频及新视频；任意模型、提示词或转写版本已有 `succeeded` 运行的视频都保留，合法零事件也算成功。父任务、月份范围、批量和单视频子任务沿用同一策略，自动投递的新视频任务也默认只补缺失；`backfill_job.missing_only` 可回读该策略。
+
+主动迁移旧成功结果时，显式传入 `{"force":false,"missing_only":false}`，按当前 `source_hash / prompt_version / extraction_model` 精确复用，其余视频按当前口径抽取。只有明确需要全部重抽时才传入 `{"force":true}`：先取消该播放列表活跃的抽取、embedding 与地图任务，保留历史任务记录和现有 ready 快照，再忽略成功缓存重新抽取；`force=true` 优先于 `missing_only`。仅调整 Codex 模型或独立 `high` 档位不会把默认补漏扩大为历史全量重抽。
 
 事件 embedding 模型全量原位迁移：
 
@@ -318,7 +351,7 @@ PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.repair_video_event_pipelin
 该工具必须在本次终态与重试修复代码部署后运行。第一条命令默认只读 dry-run，输出待回填的下载状态数和待重新投递的事件抽取数；确认数量后才执行带 `--yes` 的第二条命令。
 
 - 下载侧只处理“最新下载 job 已终止失败、视频仍为 `discovered/downloading`、没有 `video` asset、也没有 pending/running 下载 job”的记录，将状态改为 `failed` 并带回最新错误；不会新增下载任务。
-- 事件侧只处理“最新 `video_event_extraction_run` 为 `failed`、视频仍存在、也没有 pending/running 抽取 job”的记录，投递或复用 `video.extract_events(force=false)`，避免在成功解析前删除旧事件。
+- 事件侧只处理“最新 `video_event_extraction_run` 为 `failed`、视频仍存在、也没有 pending/running 抽取 job”的记录，投递或复用默认 `force=false, missing_only=true` 的单视频任务，避免在成功解析前删除旧事件。若该视频另有任意历史成功运行，执行时会保留成功结果并跳过，不因最新失败再次重抽。
 - 同一数据库状态下可重复执行；已修复下载状态会退出候选，已有 active job 和 pending dedupe 会阻止紧邻重复执行扩张队列。若重新投递的抽取任务再次终止失败，后续维护运行仍会把它重新识别为候选。
 
 YouTube 257 字节空音频存量修复：
@@ -430,6 +463,14 @@ WSL 提示：如果你的 `npm` 指向 Windows 安装路径（如 `/mnt/c/Progra
 
 真实依赖验证必须显式开启。转写润色实测使用 `RAELYN_RUN_LLM_LIVE=1`；只读复用业务库中的用量、资产或事件星域数据时使用 `RAELYN_RUN_REAL_DB_TESTS=1`。两类测试都应定向运行，不要把开关写入常驻 `.env`。
 
+运行中心覆盖率定向验证使用最大真实观测域，在同一只读快照下核对来源、转写、抽取分类与事件证据；缺少上游产物时 skip，不插入测试业务数据。先按常规启动 API 完成索引迁移，再运行：
+
+```bash
+bash -c 'source scripts/dev/load-env.sh; PYTHONPATH=backend RAELYN_RUN_REAL_DB_TESTS=1 ./.venv/bin/python -m unittest raelyn.tests.test_observation_coverage_real_integration'
+```
+
+真实浏览器首屏回归见 [UI 运行中心定向验证](../../ui/README.md#运行中心定向验证)。
+
 远程连接器必须使用公网可达的 HTTPS 地址。`MCP_ROUTE_SECRET` 是 capability URL 的凭证部分：反向代理不要记录该路径的完整 access log，也不要把真实地址放进截图、文档或工单；怀疑泄露时生成新值并重启 API。该方式用于当前单用户 / 受信任小团队边界，不替代多用户 OAuth 身份认证。
 
 任务入队与会话锁的 PostgreSQL 定向集成验证：
@@ -493,3 +534,28 @@ PYTHONPATH=backend ./.venv/bin/python -m unittest raelyn.tests.test_llm_budget_i
 ```
 
 响应按提示词、schema、模型名称、上下文与生成参数的散列缓存。省略 `RAELYN_RUN_LLM_BUDGET_LIVE` 时只校验已有真实响应，缺少产物则 skip；需要对可变模型别名的新权重重新实测时，采集到新的独立目录。验证范围包括全部事件分段的 JSON/视频唯一性/事件数/证据来源，以及简报摘要、章节、链接和 token 上限。
+
+
+## 星域历史清理与磁盘恢复
+
+旧版每次构建都归档整份场景，当前版已停止写入五张历史/变化表。新安装不会创建这些表；部署时不再启动全量历史回填。常规投影保留仍为每域 current 和前一 ready 投影。
+
+已有旧库需要迁移时，先暂停 analysis worker 并确认没有 running 星域构建任务，再运行以下一次性步骤。备份目录必须位于有空间的数据盘。第一步仅保留现存投影及简报真正引用的归档，CSV gzip 备份带 SHA-256 清单；TRUNCATE 后回写同一个事务内执行，直接释放旧关系文件。第二步应在当前版本 API/worker 已部署后运行，将引用摘要和关系依据存入引用行，核对引用和证据完整性后删除历史表。
+
+```bash
+PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.compact_event_map_history \
+  --backup-dir /mnt/data1/raelyn-maintenance/event-map-history
+# 部署当前代码后完成引用迁移与旧表删除。
+PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.finalize_current_event_map
+```
+
+原始视频、转写、事件记录与证据版本不参与上述清理。禁止对满盘数据库做全库 VACUUM FULL。
+
+本地 `devctl` 的 scheduler 使用 `run-supervised-scheduler.sh` 守护；子进程退出后 5 秒重启。它解决 PostgreSQL 暂时恢复或断连导致调度永久停止的问题，不改变 provider 认证、客户端连接或 worker 的手动暂停状态。Docker 入口继续使用原有的关键进程退出与容器重启策略。
+
+满盘导致的失败任务可用以下恢复命令审计和重试。相同业务去重键只重试最新失败，已被后续成功覆盖或已有 pending/running 任务的范围只保留审计，重复运行不会重新投递这些范围；未扫描的监测信源补投正常扫描。该命令会恢复全部手动暂停的 worker，仅在运维已明确授权恢复执行时运行。审计文件包含原错误，目录和文件权限分别为 700 / 600，不应贴到公开日志。
+
+```bash
+PYTHONPATH=backend ./.venv/bin/python -m raelyn.tools.recover_disk_full_jobs \
+  --since 2026-10-05T00:00:00+08:00 --audit-dir /mnt/data1/raelyn-maintenance
+```

@@ -48,7 +48,7 @@ from raelyn.services.embeddings import (
     embedding_spec,
     validate_embedding_vector,
 )
-from raelyn.services.inference import get_effective_llm_config
+from raelyn.services.inference import CODEX_PROVIDER, get_effective_llm_config
 from raelyn.services.domain_observation_control import video_has_enabled_observation
 from raelyn.services.job_cancellation import JobCancelRequested, raise_if_job_cancel_requested, request_job_cancel
 from raelyn.services.llm import llm_enabled, llm_generate
@@ -455,6 +455,9 @@ def _generate_event_extraction_llm(
         "options": _event_extraction_llm_options(session),
         "usage_operation": "event_extraction",
     }
+    if get_effective_llm_config(session).provider == CODEX_PROVIDER:
+        # Ollama 的 think 开关不代表 Codex 的推理预算，抽取与 JSON 修复单独配置。
+        kwargs["reasoning_effort"] = settings.codex_event_extraction_reasoning_effort
     if _effective_llm_is_ollama_generate(session):
         if expected_video_ids:
             kwargs["response_format"] = event_extraction_response_schema(expected_video_ids)
@@ -488,10 +491,15 @@ def event_extraction_spec(session: Session | None = None) -> EventExtractionSpec
 
     version_prompt_text = COMPACT_EVENT_EXTRACTION_PROMPT if _effective_llm_is_ollama_generate(session) else prompt_text
     prompt_hash = _sha256_text(version_prompt_text)[:12]
-    model = str(get_effective_llm_config(session).model or settings.llm_model or "").strip()
+    llm_config = get_effective_llm_config(session)
+    model = str(llm_config.model or settings.llm_model or "").strip()
+    prompt_version = f"{EVENT_EXTRACTION_PROMPT_BASE_VERSION}:{prompt_hash}"
+    if llm_config.provider == CODEX_PROVIDER:
+        # 推理档位属于抽取口径；保持 model 为真实模型名，不复用旧低档位成功结果。
+        prompt_version += f":codex-reasoning-{settings.codex_event_extraction_reasoning_effort}"
     return EventExtractionSpec(
         model=model,
-        prompt_version=f"{EVENT_EXTRACTION_PROMPT_BASE_VERSION}:{prompt_hash}",
+        prompt_version=prompt_version,
         prompt_text=prompt_text,
         chunk_max_chars=_event_extraction_chunk_max_chars(session),
     )
@@ -1305,6 +1313,13 @@ def _delete_video_events(session: Session, *, video_id: uuid.UUID) -> None:
     session.execute(delete(MarketEvent).where(MarketEvent.id.in_(event_ids)))
 
 
+def _any_succeeded_event_extraction_run_clause(video_id: Any) -> Any:
+    return select(VideoEventExtractionRun.id).where(
+        VideoEventExtractionRun.video_id == video_id,
+        VideoEventExtractionRun.status == "succeeded",
+    ).exists()
+
+
 def _succeeded_event_extraction_run(
     session: Session,
     *,
@@ -1610,6 +1625,7 @@ def _enqueue_single_event_fallbacks(
     *,
     videos: list[_PreparedEventVideo],
     force: bool,
+    missing_only: bool,
     priority: int,
     parent_job_id: uuid.UUID | None,
     reason: str,
@@ -1626,7 +1642,7 @@ def _enqueue_single_event_fallbacks(
         enqueue_job(
             session,
             type_="video.extract_events",
-            params={"video_id": str(prepared.video.id), "force": bool(force)},
+            params={"video_id": str(prepared.video.id), "force": bool(force), "missing_only": missing_only},
             priority=priority,
             parent_job_id=str(parent_job_id) if parent_job_id else None,
         )
@@ -1639,11 +1655,13 @@ def extract_video_events_batch(
     *,
     video_ids: list[uuid.UUID],
     force: bool = False,
+    missing_only: bool = True,
     job: Job | None = None,
     fallback_to_single: bool = True,
 ) -> dict[str, Any]:
     if not llm_enabled():
         return {"skipped": "llm not configured"}
+    missing_only = bool(missing_only and not force)
 
     job_id = getattr(job, "id", None) if job else None
     claimed_worker_id = str(getattr(job, "worker_id", "") or "").strip() if job else ""
@@ -1654,7 +1672,17 @@ def extract_video_events_batch(
         _set_event_extraction_progress(job_id, claimed_worker_id, claimed_execution_token, 0)
 
     unique_video_ids = list(dict.fromkeys([uuid.UUID(str(item)) for item in video_ids]))
+    preserved_video_ids: set[uuid.UUID] = set()
+    if missing_only:
+        preserved_video_ids = set(session.scalars(select(Video.id).where(
+            Video.id.in_(unique_video_ids), _any_succeeded_event_extraction_run_clause(Video.id),
+        )))
+        unique_video_ids = [video_id for video_id in unique_video_ids if video_id not in preserved_video_ids]
     prepared, skipped_rows = _prepare_event_videos(session, video_ids=unique_video_ids, spec=spec)
+    skipped_rows.extend(
+        {"video_id": str(video_id), "reason": "previous extraction succeeded"}
+        for video_id in preserved_video_ids
+    )
     if not prepared:
         reason = skipped_rows[0]["reason"] if len(skipped_rows) == 1 else "no extractable videos"
         return {"skipped": reason, "skipped_rows": skipped_rows}
@@ -1724,6 +1752,7 @@ def extract_video_events_batch(
                         session,
                         videos=[prepared_video],
                         force=force,
+                        missing_only=missing_only,
                         priority=job_priority,
                         parent_job_id=job_id,
                         reason="long transcript requires chunked single extraction",
@@ -1747,6 +1776,7 @@ def extract_video_events_batch(
                     session,
                     videos=[prepared_video],
                     force=force,
+                    missing_only=missing_only,
                     priority=job_priority,
                     parent_job_id=job_id,
                     reason="video exceeds short-video batch source budget",
@@ -1778,6 +1808,23 @@ def extract_video_events_batch(
                 claimed_execution_token,
                 _event_extraction_llm_progress(idx, len(batches)),
             )
+        if missing_only:
+            succeeded_ids = set(session.scalars(select(Video.id).where(
+                Video.id.in_([item[0].video.id for item in batch]),
+                _any_succeeded_event_extraction_run_clause(Video.id),
+            )))
+            session.commit()
+            for video_id in succeeded_ids - preserved_video_ids:
+                skipped_rows.append({"video_id": str(video_id), "reason": "previous extraction succeeded"})
+                for row in parsed_event_rows.pop(video_id, []):
+                    if row[5] == "accepted":
+                        accepted -= 1
+                    else:
+                        draft -= 1
+            preserved_video_ids.update(succeeded_ids)
+            batch = [item for item in batch if item[0].video.id not in preserved_video_ids]
+            if not batch:
+                continue
         video_sources: dict[str, list[_EventSource]] = {}
         source_by_id: dict[str, _EventSource] = {}
         batch_videos: list[_PreparedEventVideo] = []
@@ -1835,6 +1882,7 @@ def extract_video_events_batch(
                     session,
                     videos=affected_videos,
                     force=force,
+                    missing_only=missing_only,
                     priority=job_priority,
                     parent_job_id=job_id,
                     reason="batch response has invalid structure",
@@ -1905,6 +1953,7 @@ def extract_video_events_batch(
                     session,
                     videos=[prepared_video],
                     force=force,
+                    missing_only=missing_only,
                     priority=job_priority,
                     parent_job_id=job_id,
                     reason="batch video returned events without legal provenance",
@@ -2042,11 +2091,15 @@ def extract_video_events_batch(
     }
 
 
-def extract_video_events(session: Session, *, video_id: uuid.UUID, force: bool = False, job: Job | None = None) -> dict[str, Any]:
+def extract_video_events(
+    session: Session, *, video_id: uuid.UUID, force: bool = False,
+    missing_only: bool = True, job: Job | None = None,
+) -> dict[str, Any]:
     return extract_video_events_batch(
         session,
         video_ids=[video_id],
         force=force,
+        missing_only=missing_only,
         job=job,
         fallback_to_single=False,
     )
@@ -2057,6 +2110,7 @@ def schedule_video_event_extraction(
     *,
     video_id: uuid.UUID,
     force: bool = False,
+    missing_only: bool = True,
     priority: int = 0,
     parent_job_id: str | None = None,
 ) -> uuid.UUID | None:
@@ -2066,12 +2120,15 @@ def schedule_video_event_extraction(
         return None
     if not video_has_enabled_observation(session, video_id):
         return None
+    missing_only = bool(missing_only and not force)
+    if missing_only and session.scalar(select(_any_succeeded_event_extraction_run_clause(video_id))):
+        return None
     video = session.get(Video, video_id)
     effective_priority = event_extraction_priority(video, priority=priority) if video is not None else int(priority or 0)
     job_id = enqueue_job(
         session,
         type_="video.extract_events",
-        params={"video_id": str(video_id), "force": force},
+        params={"video_id": str(video_id), "force": force, "missing_only": missing_only},
         priority=effective_priority,
         parent_job_id=parent_job_id,
     )
@@ -2237,6 +2294,7 @@ def request_playlist_event_backfill(
     *,
     playlist_id: uuid.UUID,
     force: bool = False,
+    missing_only: bool = True,
     priority: int = 0,
 ) -> Job:
     playlist = session.get(Playlist, playlist_id)
@@ -2249,7 +2307,7 @@ def request_playlist_event_backfill(
     job_id = enqueue_job(
         session,
         type_="playlist.backfill_events",
-        params={"playlist_id": str(playlist_id), "force": bool(force)},
+        params={"playlist_id": str(playlist_id), "force": bool(force), "missing_only": bool(missing_only and not force)},
         priority=priority,
     )
     job = session.get(Job, job_id)
@@ -2277,12 +2335,16 @@ def _playlist_timeline_bounds(session: Session, playlist_id: uuid.UUID) -> tuple
     return row[0], row[1]
 
 
-def backfill_playlist_events(session: Session, *, playlist_id: uuid.UUID, force: bool = False, job: Job | None = None) -> dict[str, Any]:
+def backfill_playlist_events(
+    session: Session, *, playlist_id: uuid.UUID, force: bool = False,
+    missing_only: bool = True, job: Job | None = None,
+) -> dict[str, Any]:
     playlist = session.get(Playlist, playlist_id)
     if not playlist:
         return {"skipped": "playlist not found"}
     if playlist.observation_enabled is False:
         return {"skipped": "domain observation is disabled"}
+    missing_only = bool(missing_only and not force)
     job_id = getattr(job, "id", None) if job else None
     claimed_worker_id = str(getattr(job, "worker_id", "") or "").strip() if job else ""
     claimed_execution_token = getattr(job, "execution_token", None) if job else None
@@ -2314,6 +2376,7 @@ def backfill_playlist_events(session: Session, *, playlist_id: uuid.UUID, force:
             params={
                 "playlist_id": str(playlist_id),
                 "force": bool(force),
+                "missing_only": missing_only,
                 "range_start": range_start.isoformat(),
                 "range_end": range_end.isoformat(),
             },
@@ -2339,6 +2402,7 @@ def backfill_playlist_events(session: Session, *, playlist_id: uuid.UUID, force:
         "enqueued": enqueued,
         "skipped": 0,
         "force": bool(force),
+        "missing_only": missing_only,
     }
 
 
@@ -2349,6 +2413,7 @@ def backfill_playlist_events_range(
     range_start: date,
     range_end: date,
     force: bool = False,
+    missing_only: bool = True,
     job: Job | None = None,
 ) -> dict[str, Any]:
     playlist = session.get(Playlist, playlist_id)
@@ -2356,6 +2421,7 @@ def backfill_playlist_events_range(
         return {"skipped": "playlist not found"}
     if playlist.observation_enabled is False:
         return {"skipped": "domain observation is disabled"}
+    missing_only = bool(missing_only and not force)
     if range_start >= range_end:
         raise ValueError("range_start must be before range_end")
     job_id = getattr(job, "id", None) if job else None
@@ -2385,6 +2451,7 @@ def backfill_playlist_events_range(
                 timeline_at >= start_at,
                 timeline_at < end_at,
                 has_plain_transcript,
+                ~_any_succeeded_event_extraction_run_clause(Video.id) if missing_only else True,
             )
             .order_by(timeline_at.asc(), Video.created_at.asc(), Video.id.asc())
         )
@@ -2409,7 +2476,7 @@ def backfill_playlist_events_range(
         enqueue_job(
             session,
             type_="video.extract_events_batch",
-            params={"video_ids": [str(video_id) for video_id, _source_chars in pending_batch], "force": bool(force)},
+            params={"video_ids": [str(video_id) for video_id, _source_chars in pending_batch], "force": bool(force), "missing_only": missing_only},
             priority=video_extract_priority,
             parent_job_id=str(job.id) if job else None,
         )
@@ -2467,7 +2534,7 @@ def backfill_playlist_events_range(
             enqueue_job(
                 session,
                 type_="video.extract_events",
-                params={"video_id": str(video_id), "force": bool(force)},
+                params={"video_id": str(video_id), "force": bool(force), "missing_only": missing_only},
                 priority=video_extract_priority,
                 parent_job_id=str(job.id) if job else None,
             )
@@ -2501,6 +2568,7 @@ def backfill_playlist_events_range(
         "single_jobs_enqueued": single_enqueued,
         "skipped": skipped,
         "force": bool(force),
+        "missing_only": missing_only,
     }
 
 

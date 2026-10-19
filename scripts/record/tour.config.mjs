@@ -23,21 +23,21 @@ export const target = {
   // 录制用的观测域：数据最完整的一个。
   domainId: "a811f131-365e-44fe-8872-983a280299c7",
   domainName: "你需要关注的财经资讯",
-  // 当前 ready 快照（283,719 真实事件 / 401 主题 / 19,359 故事）。
-  snapshotId: "c1e5f7d2-bf52-44d0-a734-88b6ca97e4e1",
+  // 当前 ready 快照（338,211 真实事件 / 451 主题 / 24,518 故事）。
+  snapshotId: "2aa94108-ff93-49ba-913b-5311b676fb09",
 };
 
 // 分镜中引用的真实对象。全部来自 target.snapshot，均落在默认 12 个月观察窗内，
 // 主题选用大宗商品而非地缘政治，避免公开演示片带上政治指向。
 export const content = {
   // 一级星域（level 0）：Gold · 黄金 · commodities。
-  topicL0: "276dda5e-9167-5ab2-b9a3-f04d17585885",
+  topicL0: "b92aff8c-b56f-5fde-b47b-63c6e7f60e82",
   // 二级主题（level 1）：同族下钻。
-  topicL1: "5e6544a5-c4d0-52fe-96d5-4e4781051124",
+  topicL1: "26dbdaf1-d2b1-504c-a0ba-f869b2dada0a",
   // 星点：白银价格突破 66 美元（2025-12-17，4 条来源记录保守归并）。
   canonical: "638f5aae-3d49-5e0b-a3cd-36cc8cc786cd",
   // 故事：国际金价 23 个真实事件，2026-03-31 → 2026-09-14，established / q=0.899。
-  storyId: "43bfc07c-f0d9-50ba-8e7d-7418deccce26",
+  storyId: "ef421776-5eaa-57c7-baf5-a9405dc9eab7",
   storyIdentityId: "5ae872f2-7ae8-5718-94bf-630507775756",
   // 播放列表：该日 90 条可播放记录 + 一篇带 24 条结构化引用的简报。
   playlistDate: "2026-09-10",
@@ -47,8 +47,8 @@ export const content = {
   // 后半段切换到 CME Group 的 WTI Crude Oil 视频，并从 12 秒处开始播放。
   playlistSecondVideoId: "48dacf65-bac4-44e0-9eb6-621f137a6ddb",
   // 观察窗：显式给定，避免录制当天与日后重录出现不同的默认窗口。
-  windowStart: "2025-09-20",
-  windowEnd: "2026-09-20",
+  windowStart: "2025-10-10",
+  windowEnd: "2026-10-10",
 };
 
 export const transition = {

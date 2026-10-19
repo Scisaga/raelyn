@@ -39,9 +39,10 @@
 - 文档或模块注释中的标题直接写 `业务目的`，不要写成“业务目的（一句话）”。
 
 ## 高优先级代理规则
-- YouTube 的 `yt-dlp` 同步/下载请求可显式使用 `YTDLP_PROXY`。
-- 其他外部请求默认都不走代理，也不得隐式读取进程环境中的 `HTTP_PROXY` / `HTTPS_PROXY`，包括非 `yt-dlp` 的资料/头像抓取、B 站请求、ASR、LLM、Embedding 与健康检查。
-- `HTTP_PROXY` / `HTTPS_PROXY` 只代表进程环境变量；除非具体代码显式读取并声明，否则不能把它当成应用代理配置。
+- YouTube 的 `yt-dlp` 请求与 Codex CLI 可显式使用 `YTDLP_PROXY`。
+- Codex 子进程不继承任意环境代理或应用凭据；只按 `YTDLP_PROXY` 显式注入代理，空值直连。复用 CLI 自身的已登录认证态，不向子进程转交应用的 API、数据库、对象存储等凭据。
+- 其他外部请求默认都不走代理，也不得隐式读取进程环境中的 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 及其小写形式，包括非 `yt-dlp` 的资料/头像抓取、B 站请求、ASR、HTTP LLM、Embedding 与 HTTP 健康检查。
+- `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 只代表进程环境变量，不能作为应用的默认代理配置。Codex CLI 的代理环境仅由应用根据 `YTDLP_PROXY` 显式生成。
 - 修改代理行为必须按行为变更处理：先确认调用路径与客户端库行为，再同步更新代码、测试、`.env.example`、配置说明和运行说明。
 
 ## 测试与验证

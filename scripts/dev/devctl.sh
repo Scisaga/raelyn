@@ -695,7 +695,7 @@ case "$cmd" in
     start_scaled_workers "embedding"
     start_scaled_workers "analysis"
     start_scaled_workers "ai"
-    start_one "scheduler" "$SCHED_PID_FILE" "$SCHED_LOG" bash scripts/dev/run-scheduler.sh
+    start_one "scheduler" "$SCHED_PID_FILE" "$SCHED_LOG" bash scripts/dev/run-supervised-scheduler.sh
     do_status
     ;;
   stop)

@@ -30,6 +30,8 @@ from raelyn.models import Asset, Job, Media, Video, WorkerHeartbeat
 from raelyn.services.job_cancellation import JobCancelRequested, finalize_canceled_job
 from raelyn.services.log_timestamps import install_if_needed
 from raelyn.services.asr import inspect_asr_backend_defer
+from raelyn.services.codex_budget import refresh_codex_budget
+from raelyn.services.codex_checkpoint import clear_checkpoints
 from raelyn.services.provider_cookies import cookie_config_name, cookie_provider_label, normalize_cookie_provider
 from raelyn.services.provider_pause import (
     ProviderPauseRequestError,
@@ -57,6 +59,14 @@ def _worker_id() -> str:
     # Add a short per-process nonce to avoid collisions across restarts where PIDs may repeat.
     nonce = uuid.uuid4().hex[:8]
     return f"{host}:{pid}:{nonce}"
+
+
+def _clear_codex_job_checkpoints(job_id: uuid.UUID) -> None:
+    try:
+        clear_checkpoints(job_id)
+    except OSError:
+        # 业务终态已经提交；清理失败只记录，不把成功任务改成失败。
+        print(f"[worker] Codex checkpoint cleanup failed job_id={job_id}", flush=True)
 
 
 def _parse_csv(value: str | None) -> list[str]:
@@ -456,6 +466,8 @@ def run_loop() -> None:
 
     while True:
         touch_current_worker_activity()
+        if role == "ai":
+            refresh_codex_budget()
         now = time.time()
         if now - last_reap > 15:
             with session_scope() as session:
@@ -521,6 +533,8 @@ def run_loop() -> None:
                     job.worker_id = None
                     job.execution_token = None
                     job_log(session, job, job.error_message or "failed", level="error")
+                    session.commit()
+                    _clear_codex_job_checkpoints(job_id)
                     continue
 
                 if cancel_requested:
@@ -536,6 +550,8 @@ def run_loop() -> None:
                         continue
                     if cancel_requested:
                         finalize_canceled_job(session, job, message="canceled before run", reason="cancel_requested")
+                        session.commit()
+                        _clear_codex_job_checkpoints(job_id)
                         continue
 
                 try:
@@ -554,6 +570,8 @@ def run_loop() -> None:
                         continue
                     if cancel_requested:
                         finalize_canceled_job(session, job, message="canceled after handler completed", reason="cancel_requested")
+                        session.commit()
+                        _clear_codex_job_checkpoints(job_id)
                         continue
 
                     youtube_download_succeeded = (
@@ -583,6 +601,8 @@ def run_loop() -> None:
                     job.lease_expires_at = None
                     job.execution_token = None
                     job_log(session, job, "succeeded")
+                    session.commit()
+                    _clear_codex_job_checkpoints(job_id)
                 except JobCancelRequested:
                     job, _cancel_requested = _lock_owned_running_job(
                         session,
@@ -595,6 +615,8 @@ def run_loop() -> None:
                         print(f"[worker] discarded stale cancellation id={job_id} type={job_type}", flush=True)
                         continue
                     finalize_canceled_job(session, job, message="canceled while running", reason="cancel_requested")
+                    session.commit()
+                    _clear_codex_job_checkpoints(job_id)
                 except JobTerminalFailure as e:
                     job, cancel_requested = _lock_owned_running_job(
                         session,
@@ -608,9 +630,13 @@ def run_loop() -> None:
                         continue
                     if cancel_requested:
                         finalize_canceled_job(session, job, message="canceled after terminal failure", reason="cancel_requested")
+                        session.commit()
+                        _clear_codex_job_checkpoints(job_id)
                         continue
 
                     _finalize_terminal_failure(session, job=job, reason=e.reason)
+                    session.commit()
+                    _clear_codex_job_checkpoints(job_id)
                 except JobReschedule as e:
                     job, cancel_requested = _lock_owned_running_job(
                         session,
@@ -624,6 +650,8 @@ def run_loop() -> None:
                         continue
                     if cancel_requested:
                         finalize_canceled_job(session, job, message="canceled while rescheduling", reason="cancel_requested")
+                        session.commit()
+                        _clear_codex_job_checkpoints(job_id)
                         continue
 
                     job.status = "pending"
@@ -653,6 +681,8 @@ def run_loop() -> None:
                         continue
                     if cancel_requested:
                         finalize_canceled_job(session, job, message="canceled after handler error", reason="cancel_requested")
+                        session.commit()
+                        _clear_codex_job_checkpoints(job_id)
                         continue
 
                     next_attempt = int(job.attempt or 0) + 1
@@ -732,6 +762,8 @@ def run_loop() -> None:
                             max_attempts=job.max_attempts,
                             backoff_seconds=backoff,
                         ):
+                            session.commit()
+                            _clear_codex_job_checkpoints(job_id)
                             continue
                         job.status = "pending"
                         job.scheduled_for = retry_at
@@ -762,6 +794,8 @@ def run_loop() -> None:
                         )
                         _mark_download_video_terminal_failure(session, job=job)
                         job_log(session, job, "failed; no more retries", level="error", data={"attempt": job.attempt})
+                    session.commit()
+                    _clear_codex_job_checkpoints(job_id)
 
         time.sleep(sleep_seconds)
 

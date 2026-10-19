@@ -18,14 +18,13 @@ from raelyn.services.transcripts import pick_transcript_asset, read_text_asset, 
 from raelyn.services.video_time import normalize_time_basis, resolve_video_timeline, timeline_time_expr
 from raelyn.services.video_meta import parse_published_at
 from raelyn.services.v2_observation import (
-    canonical_history,
+    canonical_detail,
     domain_directory,
     domain_observation,
     evidence_context,
-    list_changes as list_semantic_changes,
     semantic_search,
     story_directory,
-    story_history,
+    story_detail,
     structured_brief,
     topic_detail,
 )
@@ -1154,40 +1153,16 @@ def get_domain_observation(playlist_id: str | uuid.UUID) -> dict[str, Any]:
         return serialize_for_mcp(domain_observation(session, playlist_uuid))
 
 
-def get_domain_changes(
-    playlist_id: str | uuid.UUID,
-    *,
-    after_snapshot_id: str | uuid.UUID | None = None,
-    object_type: str | None = None,
-    change_type: str | None = None,
-    cursor: str | uuid.UUID | None = None,
-    limit: int = 100,
-) -> dict[str, Any]:
-    playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
-    after_uuid = _parse_uuid(after_snapshot_id, "after_snapshot_id") if after_snapshot_id else None
-    cursor_uuid = _parse_uuid(cursor, "cursor") if cursor else None
-    with session_scope() as session:
-        return serialize_for_mcp(
-            list_semantic_changes(
-                session,
-                playlist_id=playlist_uuid,
-                after_snapshot_id=after_uuid,
-                object_type=object_type,
-                change_type=change_type,
-                cursor_id=cursor_uuid,
-                limit=_clamp_limit(limit, default=100, maximum=500),
-            )
-        )
 
 
-def get_canonical_history(
+def get_canonical_detail(
     playlist_id: str | uuid.UUID,
     canonical_id: str | uuid.UUID,
 ) -> dict[str, Any]:
     playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
     canonical_uuid = _parse_uuid(canonical_id, "canonical_id")
     with session_scope() as session:
-        return serialize_for_mcp(canonical_history(session, playlist_uuid, canonical_uuid))
+        return serialize_for_mcp(canonical_detail(session, playlist_uuid, canonical_uuid))
 
 
 def get_domain_topic(
@@ -1217,14 +1192,14 @@ def list_domain_stories(playlist_id: str | uuid.UUID) -> list[dict[str, Any]]:
         return serialize_for_mcp(story_directory(session, playlist_uuid)["items"])
 
 
-def get_story_history(
+def get_story_detail(
     playlist_id: str | uuid.UUID,
     story_identity_id: str | uuid.UUID,
 ) -> dict[str, Any]:
     playlist_uuid = _parse_uuid(playlist_id, "playlist_id")
     story_uuid = _parse_uuid(story_identity_id, "story_identity_id")
     with session_scope() as session:
-        return serialize_for_mcp(story_history(session, playlist_uuid, story_uuid))
+        return serialize_for_mcp(story_detail(session, playlist_uuid, story_uuid))
 
 
 def get_structured_brief(brief_id: str | uuid.UUID) -> dict[str, Any]:

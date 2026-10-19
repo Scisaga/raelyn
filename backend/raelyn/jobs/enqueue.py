@@ -131,8 +131,10 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
             return None, params2
         force = bool(params2.get("force", False))
         params2["force"] = force
+        missing_only = bool(params2.get("missing_only", True) and not force)
+        params2["missing_only"] = missing_only
         model = str(settings.llm_model or "").strip() or "default"
-        mode = "force" if force else "missing"
+        mode = "force" if force else "unextracted" if missing_only else "missing"
         return f"video_event_extract:{video_id}:{model}:{mode}", params2
 
     if type_ == "video.extract_events_batch":
@@ -154,8 +156,10 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
         params2["video_ids"] = video_ids
         force = bool(params2.get("force", False))
         params2["force"] = force
+        missing_only = bool(params2.get("missing_only", True) and not force)
+        params2["missing_only"] = missing_only
         model = str(settings.llm_model or "").strip() or "default"
-        mode = "force" if force else "missing"
+        mode = "force" if force else "unextracted" if missing_only else "missing"
         digest = uuid.uuid5(uuid.NAMESPACE_URL, ",".join(video_ids))
         return f"video_event_extract_batch:{digest}:{model}:{mode}", params2
 
@@ -275,7 +279,9 @@ def _normalize_dedupe_key_and_params(type_: str, params: dict[str, Any]) -> tupl
             return None, params2
         force = bool(params2.get("force", False))
         params2["force"] = force
-        mode = "force" if force else "missing"
+        missing_only = bool(params2.get("missing_only", True) and not force)
+        params2["missing_only"] = missing_only
+        mode = "force" if force else "unextracted" if missing_only else "missing"
         model = str(settings.llm_model or "").strip() or "default"
         if type_ == "playlist.backfill_events_range":
             range_start = _parse_iso_date(params2.get("range_start"))

@@ -214,31 +214,11 @@ def register_tools(mcp: FastMCP, *, include_actions: bool = True) -> None:
         except Exception as exc:
             _raise_tool_error(exc)
 
-    @mcp.tool(name="get_domain_changes", structured_output=True)
-    def get_domain_changes(
-        playlist_id: str,
-        after_snapshot_id: str | None = None,
-        object_type: str | None = None,
-        change_type: str | None = None,
-        cursor: str | None = None,
-        limit: int = 100,
-    ) -> dict[str, Any]:
-        try:
-            return queries.get_domain_changes(
-                playlist_id,
-                after_snapshot_id=after_snapshot_id,
-                object_type=object_type,
-                change_type=change_type,
-                cursor=cursor,
-                limit=limit,
-            )
-        except Exception as exc:
-            _raise_tool_error(exc)
 
-    @mcp.tool(name="get_canonical_history", structured_output=True)
-    def get_canonical_history(playlist_id: str, canonical_id: str) -> dict[str, Any]:
+    @mcp.tool(name="get_canonical_detail", structured_output=True)
+    def get_canonical_detail(playlist_id: str, canonical_id: str) -> dict[str, Any]:
         try:
-            return queries.get_canonical_history(playlist_id, canonical_id)
+            return queries.get_canonical_detail(playlist_id, canonical_id)
         except Exception as exc:
             _raise_tool_error(exc)
 
@@ -256,10 +236,10 @@ def register_tools(mcp: FastMCP, *, include_actions: bool = True) -> None:
         except Exception as exc:
             _raise_tool_error(exc)
 
-    @mcp.tool(name="get_story_history", structured_output=True)
-    def get_story_history(playlist_id: str, story_identity_id: str) -> dict[str, Any]:
+    @mcp.tool(name="get_story_detail", structured_output=True)
+    def get_story_detail(playlist_id: str, story_identity_id: str) -> dict[str, Any]:
         try:
-            return queries.get_story_history(playlist_id, story_identity_id)
+            return queries.get_story_detail(playlist_id, story_identity_id)
         except Exception as exc:
             _raise_tool_error(exc)
 

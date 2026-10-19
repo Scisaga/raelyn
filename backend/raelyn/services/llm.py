@@ -8,7 +8,8 @@ from urllib.parse import urlparse
 import httpx
 
 from raelyn.config import settings
-from raelyn.services.inference import get_effective_llm_config
+from raelyn.jobs.reschedule import JobReschedule
+from raelyn.services.inference import CODEX_DEFAULT_MODEL, CODEX_PROVIDER, get_effective_llm_config
 from raelyn.services.usage import record_external_service_usage
 
 
@@ -232,6 +233,7 @@ def llm_generate(
     *,
     prompt: str,
     think: bool | str | None = None,
+    reasoning_effort: str = "",
     response_format: Literal["json"] | dict[str, Any] | None = None,
     options: dict[str, Any] | None = None,
     stream: bool | None = None,
@@ -243,16 +245,18 @@ def llm_generate(
 
     cfg = get_effective_llm_config()
     url = cfg.url.strip()
-    mode = _llm_mode(url)
+    mode = "codex" if cfg.provider == CODEX_PROVIDER else _llm_mode(url)
     timeout = _timeout(
         total_timeout_seconds=cfg.timeout_seconds,
         idle_timeout_seconds=idle_timeout_seconds if stream else None,
     )
     model = cfg.model.strip()
 
-    if mode == "ollama_generate":
+    if mode == "codex":
+        payload: dict[str, Any] = {"model": model}
+    elif mode == "ollama_generate":
         use_stream = bool(stream) if stream is not None else False
-        payload: dict[str, Any] = {
+        payload = {
             "model": model or "qwen2.5:7b",
             "prompt": prompt,
             "stream": use_stream,
@@ -272,45 +276,59 @@ def llm_generate(
             raise RuntimeError("LLM_MODEL is required for /completions endpoints")
         payload = {"model": model, "prompt": prompt, "stream": False}
 
-    headers = {"Content-Type": "application/json", **_headers()}
+    headers = {} if mode == "codex" else {"Content-Type": "application/json", **_headers()}
     started_at = time.perf_counter()
     try:
-        with httpx.Client(timeout=timeout, headers=headers, trust_env=False) as client:
-            if mode == "ollama_generate" and payload.get("stream") is True:
-                result = _read_ollama_stream_response(
-                    client=client,
-                    url=url,
-                    payload=payload,
-                    total_timeout_seconds=cfg.timeout_seconds,
-                )
-            else:
-                resp = client.post(url, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-                if mode == "ollama_generate":
-                    if isinstance(data, dict):
+        if mode == "codex":
+            from raelyn.services.codex import codex_generate
+
+            result = codex_generate(
+                prompt=prompt,
+                model="" if model == CODEX_DEFAULT_MODEL else model,
+                reasoning_effort=reasoning_effort or ("low" if think is False else ""),
+                response_format=response_format,
+                timeout_seconds=cfg.timeout_seconds,
+                command=settings.codex_command,
+            )
+        else:
+            with httpx.Client(timeout=timeout, headers=headers, trust_env=False) as client:
+                if mode == "ollama_generate" and payload.get("stream") is True:
+                    result = _read_ollama_stream_response(
+                        client=client,
+                        url=url,
+                        payload=payload,
+                        total_timeout_seconds=cfg.timeout_seconds,
+                    )
+                else:
+                    resp = client.post(url, json=payload)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    if mode == "ollama_generate":
+                        if isinstance(data, dict):
+                            result = {
+                                "text": str(data.get("response", "")).strip(),
+                                "usage": _extract_llm_usage(data, mode=mode),
+                                "meta": {
+                                    "stream": False,
+                                    "done": bool(data.get("done")),
+                                    "done_reason": str(data.get("done_reason") or ""),
+                                    "thinking_chars": len(str(data.get("thinking") or "")),
+                                },
+                            }
+                        else:
+                            result = {"text": str(data).strip(), "usage": _extract_llm_usage(data, mode=mode)}
+                    elif mode == "openai_chat":
                         result = {
-                            "text": str(data.get("response", "")).strip(),
+                            "text": _extract_openai_chat_content(data).strip(),
                             "usage": _extract_llm_usage(data, mode=mode),
-                            "meta": {
-                                "stream": False,
-                                "done": bool(data.get("done")),
-                                "done_reason": str(data.get("done_reason") or ""),
-                                "thinking_chars": len(str(data.get("thinking") or "")),
-                            },
                         }
                     else:
-                        result = {"text": str(data).strip(), "usage": _extract_llm_usage(data, mode=mode)}
-                elif mode == "openai_chat":
-                    result = {
-                        "text": _extract_openai_chat_content(data).strip(),
-                        "usage": _extract_llm_usage(data, mode=mode),
-                    }
-                else:
-                    result = {
-                        "text": _extract_openai_completion_text(data).strip(),
-                        "usage": _extract_llm_usage(data, mode=mode),
-                    }
+                        result = {
+                            "text": _extract_openai_completion_text(data).strip(),
+                            "usage": _extract_llm_usage(data, mode=mode),
+                        }
+    except JobReschedule:
+        raise
     except Exception:
         if usage_operation:
             record_external_service_usage(
@@ -325,7 +343,7 @@ def llm_generate(
             )
         raise
 
-    if usage_operation:
+    if usage_operation and not (result.get("meta") or {}).get("cached_checkpoint"):
         usage = result.get("usage") if isinstance(result, dict) else None
         usage = usage if isinstance(usage, dict) else {}
         input_tokens = _as_int(usage.get("input_tokens"))
@@ -335,7 +353,7 @@ def llm_generate(
             service="llm",
             operation=usage_operation,
             provider=cfg.provider,
-            model=str(payload.get("model") or model),
+            model=str((result.get("meta") or {}).get("model") or payload.get("model") or model),
             succeeded=True,
             input_tokens=input_tokens,
             output_tokens=output_tokens,

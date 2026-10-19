@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 import uuid
 
-from sqlalchemy import and_, delete, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
 from raelyn.models import (
@@ -14,7 +14,7 @@ from raelyn.models import (
     EventMapRecordRevision,
     EventMapState,
     EventMapStory,
-    EventMapStoryHistoryEvidence,
+    EventMapStoryEdge,
     Video,
 )
 
@@ -143,49 +143,73 @@ def attach_structured_brief_references(
             event_time_end=canonical.event_time_end,
             context={
                 "source_video_id": str(revision.source_video_id),
+                "quoted_object": {
+                    "type": "canonical",
+                    "title": canonical.title,
+                    "summary": canonical.summary,
+                    "event_type": canonical.event_type,
+                    "event_time_start": canonical.event_time_start.isoformat() if canonical.event_time_start else None,
+                    "event_time_end": canonical.event_time_end.isoformat() if canonical.event_time_end else None,
+                },
                 "time_basis": "event_occurrence",
                 "web_url": (
                     f"/field?domain_id={brief.playlist_id}&canonical_id={canonical.canonical_id}"
-                    f"&snapshot_id={snapshot_id}"
                 ),
             },
         )
 
     selected_revision_ids = [revision.id for _, revision in selected]
     story_rows = session.execute(
-        select(EventMapStory, EventMapStoryHistoryEvidence)
+        select(EventMapStory, EventMapStoryEdge)
         .join(
-            EventMapStoryHistoryEvidence,
+            EventMapStoryEdge,
             and_(
-                EventMapStoryHistoryEvidence.snapshot_id == EventMapStory.snapshot_id,
-                EventMapStoryHistoryEvidence.story_identity_id == EventMapStory.story_identity_id,
+                EventMapStoryEdge.snapshot_id == EventMapStory.snapshot_id,
+                EventMapStoryEdge.story_id == EventMapStory.story_id,
             ),
         )
         .where(
             EventMapStory.snapshot_id == snapshot_id,
-            EventMapStoryHistoryEvidence.record_revision_id.in_(selected_revision_ids),
+            or_(*(EventMapStoryEdge.evidence_revision_ids.contains([str(value)]) for value in selected_revision_ids)),
         )
         .order_by(
             EventMapStory.event_time_end.desc(),
             EventMapStory.story_id.asc(),
-            EventMapStoryHistoryEvidence.target_canonical_id.asc(),
-            EventMapStoryHistoryEvidence.edge_id.asc(),
+            EventMapStoryEdge.target_canonical_id.asc(),
+            EventMapStoryEdge.edge_id.asc(),
         )
     ).all()
     seen_stories: set[uuid.UUID] = set()
+    revisions_by_id = {str(revision.id): revision for _, revision in selected}
     for story, evidence in story_rows:
         identity_id = story.story_identity_id or story.story_id
         if identity_id in seen_stories or len(seen_stories) >= 4:
             continue
         seen_stories.add(identity_id)
+        support_id = min(set(map(str, evidence.evidence_revision_ids or [])) & set(revisions_by_id))
+        source_revision = revisions_by_id[support_id]
         add_reference(
             object_type="story",
             object_id=identity_id,
             label=f"故事 · {story.title}",
-            evidence_revision_id=evidence.record_revision_id,
+            evidence_revision_id=source_revision.id,
             event_time_start=story.event_time_start,
             event_time_end=story.event_time_end,
             context={
+                "source_video_id": str(source_revision.source_video_id),
+                "quoted_object": {
+                    "type": "story", "title": story.title, "summary": story.summary,
+                    "maturity": story.maturity,
+                    "event_time_start": story.event_time_start.isoformat() if story.event_time_start else None,
+                    "event_time_end": story.event_time_end.isoformat() if story.event_time_end else None,
+                    "relation": {
+                        "source_canonical_id": str(evidence.source_canonical_id),
+                        "target_canonical_id": str(evidence.target_canonical_id),
+                        "relation_type": evidence.relation_type,
+                        "evidence_revision_ids": list(evidence.evidence_revision_ids or []),
+                        "evidence": dict(evidence.evidence_json or {}),
+                    },
+                },
                 "edge_id": str(evidence.edge_id),
                 "relation_type": evidence.relation_type,
                 "source_canonical_id": str(evidence.source_canonical_id),
@@ -212,7 +236,6 @@ def attach_structured_brief_references(
                 "time_basis": "event_occurrence",
                 "web_url": (
                     f"/field?domain_id={brief.playlist_id}&mode=verify&evidence_id={revision.id}"
-                    f"&snapshot_id={snapshot_id}"
                 ),
             },
         )

@@ -38,7 +38,7 @@ services:
       "
 
   bgutil-pot:
-    image: brainicism/bgutil-ytdlp-pot-provider:2.0.0-node
+    image: brainicism/bgutil-ytdlp-pot-provider:2.0.2-node
     init: true
     restart: unless-stopped
     network_mode: host

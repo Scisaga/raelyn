@@ -11,7 +11,7 @@ V2 的核心观测闭环已经建立：
 - 星域成为默认入口，观测域成为全局上下文；
 - 用户观察游标可以恢复快照、事件时间窗、模式、筛选和选择对象；
 - 变化集明确区分事件发生时间与系统认知时间；
-- canonical 和 story 具有跨快照稳定身份、长期修订和变化历史；
+- canonical 和 story 具有跨快照稳定身份、当前内容与实质更新时间；
 - 故事目录、关注、已读状态和当前完整航迹可直接消费；
 - 简报保存生成快照、生成口径，以及 canonical、story、evidence、source 四类结构化引用；
 - 证据、来源记录、canonical 和简报可以双向定位；
@@ -30,13 +30,13 @@ V2 的核心观测闭环已经建立：
 | 契约 | 当前实现 |
 | --- | --- |
 | Observation Cursor | `domain_observation_cursor` 与 `/api/domains/{id}/observation/cursor` |
-| Field Change Set | `event_map_change` 与稳定 `(observed_at, id)` 游标 |
-| Canonical History | 长期修订、正规化成员索引、merge/split lineage |
-| Story Identity / Revision | 稳定身份、修订、变化、关注、阅读位置和当前航迹 |
+| Current Updates | 当前身份更新时间与观察游标，不存 before/after 变化正文 |
+| Canonical Detail | 当前真实事件、成员证据与稳定身份 |
+| Story Identity / Detail | 稳定身份、实质更新时间、关注、阅读位置和当前航迹 |
 | Domain Observation Feed | 新发生、认知变化、故事更新、待验证四个独立集合 |
 | Structured Brief References | `brief.snapshot_id`、`generation_basis`、`brief_reference` |
 | Evidence Navigation | 来源记录、字符区间、精确分段播放与反向引用 |
-| Semantic MCP Objects | 观测域、变化、canonical、topic、story、brief、evidence 与分组搜索 |
+| Semantic MCP Objects | 观测域、当前详情、canonical、topic、story、brief、evidence 与分组搜索 |
 
 ## 仍需增强的产品能力
 
@@ -80,7 +80,7 @@ V2 的核心观测闭环已经建立：
 
 - `market_event_embedding.vector` 仍以 JSONB 保存，影响快照构建输入吞吐但不影响地图显示；
 - 冷客户端首次请求仍由 API 从类型化列编码场景，可在实测 CPU 成为瓶颈后固化为不可变对象存储资产；
-- 长期修订和变化集增长后需要基于真实数据量评估分区、归档和全文索引，而不是提前拆出第二套数据库。
+- 星域只保留当前与前一 ready 投影，简报只冻结实际引用；不再通过保存整份历史场景追溯引用。
 
 这些迁移必须采用双写/双读或加法投影，不得通过暂停现有任务、删除任务、重抽全部事件或删除历史视频完成。
 

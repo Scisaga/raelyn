@@ -96,7 +96,7 @@ test("对象详情与星域变化复用同一轨道并提供明确返回动作",
     },
   });
 
-  assert.equal(directDetail.fieldObservationRailActionLabel(), "星域变化");
+  assert.equal(directDetail.fieldObservationRailActionLabel(), "近期内容");
   assert.equal(directDetail.fieldInspectorCloseLabel(), "关闭");
 
   directDetail.fieldToggleObservationRail();
@@ -345,17 +345,14 @@ test("域目录延后返回时，即使已经离开星域也会修正失效的�
   assert.equal(ctx._initialFieldDomainRestoredFromStorage, false);
 });
 
-test("canonical 深链接通过当前快照历史定位", async () => {
+test("canonical 深链接直接读取当前投影定位", async () => {
   const calls = [];
   const selected = [];
   const ctx = context({
     async api(path) {
       calls.push(path);
       return {
-        revisions: [
-          { snapshot_id: "snapshot-0", revision: { point_index: 1 } },
-          { snapshot_id: "snapshot-1", revision: { point_index: 37 } },
-        ],
+        snapshot_id: "snapshot-1", point_index: 37,
       };
     },
     async playlistEventMapSelectCanonical(index, id) {
@@ -366,19 +363,19 @@ test("canonical 深链接通过当前快照历史定位", async () => {
   await ctx.fieldOpenCanonical("canonical-1", null);
 
   assert.equal(calls.length, 1);
-  assert.match(calls[0], /\/domains\/domain-1\/canonicals\/canonical-1\/history$/);
+  assert.match(calls[0], /\/domains\/domain-1\/canonicals\/canonical-1\?snapshot_id=snapshot-1$/);
   assert.deepEqual(selected, [[37, "canonical-1"]]);
 });
 
-test("canonical 历史与搜索的空 point_index 都不会误选第 0 点", async () => {
+test("canonical 详情与搜索的空 point_index 都不会误选第 0 点", async () => {
   const calls = [];
   const selected = [];
   const ctx = context({
     activeView: "field",
     async api(path) {
       calls.push(path);
-      if (path.includes("/history")) {
-        return { revisions: [{ snapshot_id: "snapshot-1", revision: { point_index: null } }] };
+      if (path.includes("/canonicals/")) {
+        return { snapshot_id: "snapshot-1", point_index: null };
       }
       return { items: [{ canonical_id: "canonical-1", point_index: null }] };
     },
@@ -390,7 +387,7 @@ test("canonical 历史与搜索的空 point_index 都不会误选第 0 点", asy
   await ctx.fieldOpenCanonical("canonical-1", null);
 
   assert.equal(calls.length, 2);
-  assert.match(calls[0], /\/history$/);
+  assert.match(calls[0], /\/canonicals\/canonical-1\?snapshot_id=snapshot-1$/);
   assert.match(calls[1], /\/events\/map\/search\?/);
   assert.deepEqual(selected, []);
 });
@@ -502,7 +499,7 @@ test("故事定位期间出现更新选择时，不再覆盖详情标签和镜�
       this.storySelectedId = id;
       this._storyDetailRequestToken += 1;
       this.storyDetail = {
-        revisions: [{ snapshot_id: "snapshot-1", member_ids: ["canonical-old"] }],
+        selected_revision: { snapshot_id: "snapshot-1", member_ids: ["canonical-old"] },
         current_trajectory: {
           snapshot_id: "snapshot-1",
           nodes: [{ canonical_id: "canonical-old", point_index: 8 }],
@@ -554,7 +551,7 @@ test("故事轨迹取景忽略空 point_index", async () => {
       this.storySelectedId = id;
       this._storyDetailRequestToken += 1;
       this.storyDetail = {
-        revisions: [{ snapshot_id: "snapshot-1", member_ids: ["canonical-8"] }],
+        selected_revision: { snapshot_id: "snapshot-1", member_ids: ["canonical-8"] },
         current_trajectory: {
           snapshot_id: "snapshot-1",
           nodes: [
@@ -574,27 +571,6 @@ test("故事轨迹取景忽略空 point_index", async () => {
   await ctx.fieldOpenStory("story-1");
 
   assert.deepEqual(fitted, [[8]]);
-});
-
-test("故事识别记录区分首次识别、真实变化与重复观测", () => {
-  const ctx = context();
-  assert.equal(ctx.storyRevisionDeltaLabel({ delta: { baseline: true } }), "首次识别到这条故事");
-  assert.equal(
-    ctx.storyRevisionDeltaLabel({
-      delta: {
-        members_added: ["a"],
-        members_removed: ["b"],
-        edges_added: [{ edge_id: "e" }],
-        edges_removed: [],
-        evidence_added: ["v"],
-        evidence_removed: [],
-      },
-    }),
-    "新增 1 个事件 · 移除 1 个事件 · 新增 1 条关系 · 新增 1 份支持记录"
-  );
-  assert.equal(ctx.storyRevisionDeltaLabel({ delta: {} }), "本次识别未发现实质变化");
-  assert.equal(ctx.storyRevisionDeltaLabel({ delta: { title_changed: true, summary_changed: true } }), "本次识别未发现实质变化");
-  assert.match(ctx.storyRevisionDeltaExplanation({ delta: {} }), /事实结构没有变化/);
 });
 
 test("故事目录默认读取值得阅读，并让四类队列各自保存搜索和分页", async () => {
@@ -1606,79 +1582,14 @@ test("故事实质更新时间按浏览器本地时区展示同一时刻", () =>
   assert.match(utc, /^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}$/);
 });
 
-test("仅顺序或关系依据变化也会形成可读更新，不显示空更新块", () => {
-  const ctx = context({
-    storyDetail: {
-      reading_update: {
-        baseline: false,
-        has_material_changes: true,
-        member_order_changed: true,
-        relations_changed: [{ relation_type: "continuation", source_title: "事件甲", target_title: "事件乙" }],
-      },
-    },
-  });
-
-  assert.equal(ctx.storyHasReadingUpdate(), true);
-  assert.deepEqual(ctx.storyReadingUpdateItems(), [
-    "调整「阶段推进」依据：事件甲 → 事件乙",
-    "事件发生顺序已调整",
-  ]);
-});
-
-test("支持记录并集不变但关系归属调整时仍显示可读更新", () => {
-  const ctx = context({
-    storyDetail: {
-      reading_update: {
-        baseline: false,
-        has_material_changes: true,
-        support_assignments_changed: true,
-        support_records_added_count: 0,
-        support_records_removed_count: 0,
-      },
-    },
-  });
-
-  assert.equal(ctx.storyHasReadingUpdate(), true);
-  assert.deepEqual(ctx.storyReadingUpdateItems(), ["支持记录与关系的对应已调整"]);
-});
-
-test("故事结构恢复到上次阅读状态时只说明恢复，不伪造净增减", () => {
-  const ctx = context({
-    storyDetail: {
-      reading_update: {
-        baseline: false,
-        has_material_changes: true,
-        returned_to_previous_state: true,
-        events_added: [{ title: "不应显示为新增" }],
-        support_records_removed_count: 2,
-      },
-    },
-  });
-
-  assert.equal(ctx.storyHasReadingUpdate(), true);
-  assert.deepEqual(ctx.storyReadingUpdateItems(), [
-    "期间发生过实质变化，当前故事结构已恢复到上次阅读时的状态",
-  ]);
-});
-
-test("首访从最早事件开始，回访恢复位置，有新增时优先定位首个新增事件", () => {
+test("首访从最早事件开始，回访恢复位置，简报指定阶段优先", () => {
   const nodes = [0, 1, 2, 3].map((index) => ({ canonical_id: `event-${index}`, event_time_start: `2026-01-0${index + 1}` }));
-  const ctx = context({ storyDetail: { trajectory: { nodes, edges: [] }, last_position: 2, reading_update: { baseline: true } } });
+  const ctx = context({ storyDetail: { trajectory: { nodes, edges: [] }, last_position: null } });
   assert.equal(ctx.storySuggestedStartIndex(), 0);
-
-  ctx.storyDetail.reading_update = { baseline: false, has_material_changes: false };
+  ctx.storyDetail.last_position = 2;
   assert.equal(ctx.storySuggestedStartIndex(), 2);
-
-  ctx.storyDetail.reading_update = {
-    baseline: false,
-    has_material_changes: true,
-    first_added_position: 3,
-    events_added: [{ canonical_id: "event-3", title: "新增事件" }],
-  };
-  assert.equal(ctx.storySuggestedStartIndex(), 3);
-
   ctx.storyReferenceFocusCanonicalId = "event-1";
-  assert.equal(ctx.storySuggestedStartIndex(), 1, "简报指定阶段应优先于未读位置和新增事件");
+  assert.equal(ctx.storySuggestedStartIndex(), 1);
   assert.equal(ctx.storyIsReferenceFocus(nodes[1]), true);
   assert.equal(ctx.storyIsReferenceFocus(nodes[2]), false);
 });
@@ -1732,8 +1643,7 @@ test("首访推荐按真实基线语义可显式标记已读，并保留整页�
     async loadStories() { directoryReloads += 1; },
   });
 
-  assert.equal(ctx.storyHasReadingUpdate(), false);
-  assert.equal(ctx.storyCanMarkRead(), true);
+    assert.equal(ctx.storyCanMarkRead(), true);
   await ctx.storyMarkCurrentUpdateRead();
   assert.deepEqual(JSON.parse(calls[0][1].body), { mark_read: true, snapshot_id: "snapshot-current" });
   assert.equal(ctx.storyDetail.unread, false);
@@ -1826,42 +1736,6 @@ test("星域中的故事请求固定到 URL 指定的历史快照", async () => 
   assert.equal(url.searchParams.get("snapshot_id"), "snapshot-history");
 });
 
-test("星域变化中的退休对象切到最后包含它的快照并保留本次变化", async () => {
-  const calls = [];
-  const ctx = context({
-    activeView: "field",
-    _syncUrl() { calls.push("sync"); },
-    async playlistEventMapLoadView(options) {
-      calls.push(["load", options]);
-      this.playlistEventMapSnapshotId = this.fieldRequestedSnapshotId;
-    },
-    async fieldOpenCanonical(id, pointIndex, options) {
-      calls.push(["canonical", id, pointIndex, options.selectionToken, options.requestGuard()]);
-      return true;
-    },
-  });
-  const change = {
-    id: "change-1",
-    object_type: "canonical",
-    object_id: "canonical-retired",
-    change_type: "canonical_retired",
-    from_snapshot_id: "snapshot-previous",
-    to_snapshot_id: "snapshot-1",
-    before_revision: { title: "退休前事件" },
-    after_revision: null,
-  };
-
-  await ctx.fieldOpenFeedItem(change);
-
-  assert.equal(ctx.fieldRequestedSnapshotId, "snapshot-previous");
-  assert.deepEqual(calls, [
-    "sync",
-    ["load", { silent: false, schedulePolling: false, selectionToken: 1 }],
-    ["canonical", "canonical-retired", undefined, 1, true],
-  ]);
-  assert.equal(ctx.fieldSelectedChange, change);
-});
-
 test("星域变化连续选择时后一次完成结果不会被旧变化覆盖", async () => {
   const pendingSelections = new Map();
   const ctx = context({
@@ -1876,15 +1750,15 @@ test("星域变化连续选择时后一次完成结果不会被旧变化覆盖",
     id: "change-a",
     object_type: "canonical",
     object_id: "canonical-a",
-    to_snapshot_id: "snapshot-1",
-    after_revision: { point_index: 11 },
+    snapshot_id: "snapshot-1",
+    point_index: 11,
   };
   const secondChange = {
     id: "change-b",
     object_type: "canonical",
     object_id: "canonical-b",
-    to_snapshot_id: "snapshot-1",
-    after_revision: { point_index: 22 },
+    snapshot_id: "snapshot-1",
+    point_index: 22,
   };
 
   const first = ctx.fieldOpenFeedItem(firstChange);
@@ -1927,15 +1801,13 @@ test("旧星域变化的跨快照加载返回后不会重新领取选择权", as
     id: "change-a",
     object_type: "canonical",
     object_id: "canonical-a",
-    from_snapshot_id: "snapshot-a",
-    after_revision: null,
+    snapshot_id: "snapshot-a",
   };
   const secondChange = {
     id: "change-b",
     object_type: "canonical",
     object_id: "canonical-b",
-    from_snapshot_id: "snapshot-b",
-    after_revision: null,
+    snapshot_id: "snapshot-b",
   };
 
   const first = ctx.fieldOpenFeedItem(firstChange);
@@ -1980,15 +1852,13 @@ test("两个变化卡跳往同一历史快照时复用下载，旧请求不回�
     id: "change-a",
     object_type: "canonical",
     object_id: "canonical-a",
-    from_snapshot_id: "snapshot-history",
-    after_revision: null,
+    snapshot_id: "snapshot-history",
   };
   const secondChange = {
     id: "change-b",
     object_type: "canonical",
     object_id: "canonical-b",
-    from_snapshot_id: "snapshot-history",
-    after_revision: null,
+    snapshot_id: "snapshot-history",
   };
 
   const first = ctx.fieldOpenFeedItem(firstChange);
@@ -2035,8 +1905,7 @@ test("返回当前加载中改去另一历史快照后，取消时仍恢复原�
     id: "change-other",
     object_type: "canonical",
     object_id: "canonical-other",
-    from_snapshot_id: "snapshot-other",
-    after_revision: null,
+    snapshot_id: "snapshot-other",
   };
 
   const pending = ctx.fieldOpenFeedItem(change);
@@ -2077,8 +1946,7 @@ test("历史导航连续改目标后回到当前选择时，恢复整条导航�
     id: `change-${id}`,
     object_type: "canonical",
     object_id: `canonical-${id}`,
-    from_snapshot_id: snapshotId,
-    after_revision: null,
+    snapshot_id: snapshotId,
   });
 
   const first = ctx.fieldOpenFeedItem(historyChange("h", "snapshot-history"));
@@ -2123,8 +1991,7 @@ test("历史变化卡加载中改选当前星点时，保留当前快照与更�
     id: "change-history",
     object_type: "canonical",
     object_id: "canonical-history",
-    from_snapshot_id: "snapshot-history",
-    after_revision: null,
+    snapshot_id: "snapshot-history",
   };
 
   const pending = ctx.fieldOpenFeedItem(change);
@@ -2170,15 +2037,14 @@ test("历史变化卡加载中打开当前快照变化时，由旧导航恢复�
     id: "change-history",
     object_type: "canonical",
     object_id: "canonical-history",
-    from_snapshot_id: "snapshot-history",
-    after_revision: null,
+    snapshot_id: "snapshot-history",
   };
   const currentChange = {
     id: "change-current",
     object_type: "canonical",
     object_id: "canonical-current",
-    to_snapshot_id: "snapshot-1",
-    after_revision: { point_index: 22 },
+    snapshot_id: "snapshot-1",
+    point_index: 22,
   };
 
   const pendingHistory = ctx.fieldOpenFeedItem(historyChange);
@@ -2209,8 +2075,8 @@ test("变化卡等待完整点集时出现新选择，不再用预览索引打�
     id: "change-old",
     object_type: "canonical",
     object_id: "canonical-old",
-    to_snapshot_id: "snapshot-1",
-    after_revision: { point_index: 37 },
+    snapshot_id: "snapshot-1",
+    point_index: 37,
   };
 
   const pending = ctx.fieldOpenFeedItem(change);
@@ -2232,7 +2098,7 @@ test("变化列表打开故事时复用外层选择代次", async () => {
       this.storySelectedId = id;
       this._storyDetailRequestToken += 1;
       this.storyDetail = {
-        revisions: [{ snapshot_id: "snapshot-1", member_ids: ["canonical-1"] }],
+        selected_revision: { snapshot_id: "snapshot-1", member_ids: ["canonical-1"] },
         current_trajectory: { snapshot_id: "snapshot-1", nodes: [], edges: [] },
       };
     },
@@ -2287,7 +2153,7 @@ test("V2 主界面区分主视图、临时工具与星域上下文", async () =>
   assert.doesNotMatch(template, /当前条件|playlistEventMapFilterChips|搜索与筛选/);
   assert.doesNotMatch(template, /3D 空间|平面俯视|playlistEventMapCameraMode|playlistEventMapSetCameraMode/);
   assert.match(template, /三维语义空间 · 左键旋转/);
-  assert.match(template, /星域变化/);
+  assert.match(template, /近期内容/);
   assert.match(template, /fieldObservationRailVisible\(\)/);
   assert.match(template, /fieldObservationRailActionLabel\(\)/);
   assert.match(template, /fieldInspectorCloseLabel\(\)/);
@@ -2303,9 +2169,9 @@ test("V2 主界面区分主视图、临时工具与星域上下文", async () =>
   assert.deepEqual(context().storyQueueTabs().map((item) => item.label), ["值得阅读", "已关注", "已形成", "初步线索"]);
   assert.match(stories, /标记本次更新已读/);
   assert.match(stories, /storyIncomingEdges\(node\)/);
-  assert.match(stories, /故事变化/);
-  assert.match(stories, /技术与识别审计/);
-  assert.match(stories, /完整快照审计/);
+  assert.doesNotMatch(stories, /故事变化/);
+  assert.doesNotMatch(stories, /技术与识别审计/);
+  assert.doesNotMatch(stories, /完整快照审计/);
   assert.match(stories, /fixed inset-y-0 right-0/);
   assert.match(stories, /storySelectedId \? 'hidden lg:flex' : 'flex'/);
   assert.doesNotMatch(stories, /Stable Story|节点 \+|evidenceId\.slice/);
@@ -2410,15 +2276,12 @@ test("域内来源记录不把全部信源回填成显式媒体筛选", async ()
 
 test("故事主阅读路径不渲染 UUID、hash 或原始关系枚举", async () => {
   const stories = await readFile(new URL("../../../templates/app/views/stories.html", import.meta.url), "utf8");
-  const auditStart = stories.indexOf(">技术与识别审计<");
-  assert.ok(auditStart > 0, "技术审计必须存在且默认折叠");
-  const readingPath = stories.slice(0, auditStart);
+  assert.doesNotMatch(stories, /技术与识别审计|完整快照审计|查看当时故事/);
+  const readingPath = stories;
 
   assert.doesNotMatch(readingPath, /Stable Story|\.slice\(0,\s*8\)|x-text="[^"]*(?:canonical_id|edge_id|snapshot_id)/);
   assert.doesNotMatch(stories, />\s*(?:continuation|causes|response|corrects)\s*</);
   assert.doesNotMatch(stories, /before:absolute[^\n]*before:(?:top|bottom)/, "故事发展不应绘制贯穿事件的连续线");
-  assert.match(stories.slice(auditStart), /story_identity_id/);
-  assert.match(stories.slice(auditStart), /revision\.snapshot_id/);
 });
 
 test("故事页复用本地内联 SVG，不依赖图标字体", async () => {

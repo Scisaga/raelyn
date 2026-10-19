@@ -84,11 +84,10 @@ MCP 没有复制 API 路由逻辑，而是复用了抽出的共享 helper：
 - `get_playlist_summary`
 - `list_domains`
 - `get_domain_observation`
-- `get_domain_changes`
-- `get_canonical_history`
+- `get_canonical_detail`
 - `get_domain_topic`
 - `list_domain_stories`
-- `get_story_history`
+- `get_story_detail`
 - `get_structured_brief`
 - `get_evidence_context`
 - `search_semantic_objects`
@@ -121,7 +120,6 @@ MCP 没有复制 API 路由逻辑，而是复用了抽出的共享 helper：
 - `raelyn://playlist/{playlist_id}/briefs/by-date/{date}/body`
 - `raelyn://job/{job_id}`
 - `raelyn://domain/{playlist_id}/observation`
-- `raelyn://domain/{playlist_id}/changes`
 - `raelyn://domain/{playlist_id}/canonical/{canonical_id}`
 - `raelyn://domain/{playlist_id}/topic/{topic_id}`
 - `raelyn://domain/{playlist_id}/story/{story_identity_id}`
@@ -211,7 +209,7 @@ MCP transcript 输出字段固定包含：
 ### V2 观察语义
 
 - `get_domain_observation` 返回当前快照、观察游标和信源处理、事件抽取、入图、证据验证四类覆盖率。
-- `get_domain_changes` 按系统认知时间读取稳定变化游标，并同时保留事件发生时间。
+- canonical/story detail 只读取当前投影；更新时间与事件发生时间分开提供，不返回全量版本历史。
 - canonical 与 story 接口返回长期稳定身份、跨快照修订和谱系/航迹，不把快照内临时 id 当作长期对象；`get_domain_topic` 返回当前快照中的主题层级和代表事件。
 - `get_structured_brief` 返回生成快照、生成口径和可导航引用；`get_evidence_context` 返回来源记录、字符区间与精确分段播放语义。
 - `search_semantic_objects` 按观测域、主题、真实事件、故事、实体、简报、信源和来源记录分组，并返回 Web 深链接。

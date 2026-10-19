@@ -116,41 +116,36 @@ def video_polish_transcript(session: Session, job: Job) -> dict | None:
     base = f"{video.provider}/{video.media_id}/{video.provider_video_id}/transcript/{language}"
     s3_key = f"{base}/polished.txt" if source == "subtitle" else f"{base}/{source}-polished.txt"
 
-    try:
-        with job_workdir(job.id) as wd:
-            local_plain = wd / "plain.txt"
-            s3_download_file(bucket=plain.s3_bucket, key=plain.s3_key, local_path=local_plain)
-            text = local_plain.read_text(encoding="utf-8", errors="ignore").strip()
-            if not text:
-                return {"skipped": "plain transcript empty"}
+    with job_workdir(job.id) as wd:
+        local_plain = wd / "plain.txt"
+        s3_download_file(bucket=plain.s3_bucket, key=plain.s3_key, local_path=local_plain)
+        text = local_plain.read_text(encoding="utf-8", errors="ignore").strip()
+        if not text:
+            return {"skipped": "plain transcript empty"}
 
-            polished, usage = _polish_transcript_via_llm(session=session, text=text)
-            polished = _sanitize_llm_plain_text(polished).strip()
-            if not polished:
-                job_log(session, job, "llm transcript polish returned empty; keep plain transcript", level="warn")
-                return {"skipped": "empty polish result", "llm_usage": usage}
+        polished, usage = _polish_transcript_via_llm(session=session, text=text)
+        polished = _sanitize_llm_plain_text(polished).strip()
+        if not polished:
+            raise RuntimeError("LLM 未返回可用润色文本")
 
-            out_path = wd / "polished.txt"
-            out_path.write_text(polished, encoding="utf-8")
-            ensure_asset(
-                session,
-                video_id=video.id,
-                type_="transcript",
-                format_="txt",
-                language=language,
-                source=source,
-                variant="polished",
-                local_path=out_path,
-                s3_key=s3_key,
-                content_type="text/plain; charset=utf-8",
-                metadata={"variant": "polished", "polish_method": "llm", "polished": True},
-                replace=force,
-            )
-            job_log(session, job, "llm transcript polish saved", level="info", data={"language": language, "source": source})
-            return {"ok": True, "llm_usage": usage}
-    except Exception as e:
-        job_log(session, job, f"llm transcript polish failed: {e}", level="warn")
-        return {"skipped": "llm failed"}
+        out_path = wd / "polished.txt"
+        out_path.write_text(polished, encoding="utf-8")
+        ensure_asset(
+            session,
+            video_id=video.id,
+            type_="transcript",
+            format_="txt",
+            language=language,
+            source=source,
+            variant="polished",
+            local_path=out_path,
+            s3_key=s3_key,
+            content_type="text/plain; charset=utf-8",
+            metadata={"variant": "polished", "polish_method": "llm", "polished": True},
+            replace=force,
+        )
+        job_log(session, job, "llm transcript polish saved", level="info", data={"language": language, "source": source})
+        return {"ok": True, "llm_usage": usage}
 
 
 def _sanitize_llm_plain_text(text: str) -> str:

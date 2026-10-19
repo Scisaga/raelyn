@@ -79,10 +79,11 @@
 
 ### 高优先级代理规则
 
-- `YTDLP_PROXY` 只用于 YouTube 的 `yt-dlp` 资料同步、频道头像下载和视频同步 / 下载请求。
-- 非 `yt-dlp` 的资料 / 头像抓取、B 站请求、ASR / LLM / Embedding / 健康检查都不使用 `YTDLP_PROXY`。
-- 应用默认不隐式读取进程环境中的 `HTTP_PROXY` / `HTTPS_PROXY`；这些变量存在于 shell 或 systemd 环境里，不代表本应用会把外部请求送进代理。
-- 若 YouTube 同步/下载需要代理，必须配置 `YTDLP_PROXY`，不要依赖 `HTTP_PROXY` / `HTTPS_PROXY` 的副作用。
+- `YTDLP_PROXY` 显式用于 YouTube 的 `yt-dlp` 资料同步、频道头像下载、视频同步 / 下载请求，以及 Codex CLI；空值表示直连。
+- Codex 子进程不继承任意环境代理或应用凭据，只按 `YTDLP_PROXY` 显式注入代理；CLI 自身的已登录认证态继续复用。
+- 非 `yt-dlp` 的资料 / 头像抓取、B 站请求、ASR、HTTP LLM、Embedding 与 HTTP 健康检查都不使用 `YTDLP_PROXY`，继续直连。
+- 应用不将进程环境中的 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 及其小写形式作为默认代理来源；这些变量存在于 shell 或 systemd 环境里，不代表本应用会使用该代理。
+- 若 YouTube `yt-dlp` 请求或 Codex CLI 需要代理，必须配置 `YTDLP_PROXY`，不要依赖已有环境代理。
 - 若运行环境本身设置了 `HTTP_PROXY` / `HTTPS_PROXY`，需要让 `NO_PROXY` / `no_proxy` 包含 `127.0.0.1`、`localhost`、`::1` 和 `host.docker.internal`，避免 bgutil provider、MinIO 等本机服务被环境代理劫持。
 
 ### 工具与下载
@@ -93,7 +94,7 @@
 - `AUDIO_SAMPLE_RATE_HZ`
 - `AUDIO_CHANNELS`
 - `YTDLP_PROXY`
-  - 仅 YouTube 的 `yt-dlp` 同步 / 下载请求会显式使用该代理；完整边界见上方“高优先级代理规则”。
+  - YouTube 的 `yt-dlp` 请求与 Codex CLI 显式使用该代理，空值直连；完整边界见上方“高优先级代理规则”。
 - `NO_PROXY` / `no_proxy`
   - 推荐包含 `127.0.0.1,localhost,::1,host.docker.internal`。
   - `scripts/dev/load-env.sh` 和 Docker entrypoint 会自动补齐这些本机地址。
@@ -103,7 +104,7 @@
 - `YTDLP_POT_BGUTIL_BASE_URL`
   - 可选；bgutil PO Token Provider HTTP server 地址。空值表示不启用。
   - 本机运行常用 `http://127.0.0.1:4416`；Docker Compose 的 app 容器内使用 `http://host.docker.internal:4416`。
-  - bgutil Python 插件与 HTTP server 当前均锁定 `2.0.0`，升级时必须同步更新。Compose 显式监听 `127.0.0.1`、`::1` 和 `host.docker.internal` 对应的 Docker 内部网关，不监听宿主机 LAN 地址或通配地址；该网关应只供可信的本机容器访问。
+  - bgutil Python 插件与 HTTP server 当前均锁定 `2.0.2`，升级时必须同步更新。Compose 显式监听 `127.0.0.1`、`::1` 和 `host.docker.internal` 对应的 Docker 内部网关，不监听宿主机 LAN 地址或通配地址；该网关应只供可信的本机容器访问。
 - `YTDLP_YOUTUBE_IMPERSONATE`
   - 默认 `chrome`，仅用于 YouTube 的 `yt-dlp` 同步 / 下载请求。
   - 依赖 `curl_cffi`；空值表示不启用浏览器 impersonation。
@@ -219,7 +220,7 @@
   - 该阈值用于发现“心跳线程仍活着，但主执行循环已经卡死”的情况；YouTube 全量同步按 yt-dlp 的真实分页与条目日志刷新执行心跳，下载任务按下载进度刷新。
   - 同步/下载类 worker 超过该阈值未推进时会主动退出，由 supervisor 重启并释放对应并发锁。
 - `ORPHAN_REQUEUE_PRIORITY_BUMP`
-  - 孤儿 `running` 任务被回收后提升的优先级基数，默认 `1000`，用于让回收任务回到队头。
+  - 孤儿 `running` 任务被回收后提升的优先级基数，默认 `1000`；专职 AI 仍先按内容时间排序，提升仅影响相同内容时间的任务，其它角色沿用优先级队头语义。
 
 ### ASR / LLM / Embedding
 
@@ -238,6 +239,26 @@
 - `LLM_API_KEY`
 - `LLM_HEADERS_JSON`
 - `LLM_TIMEOUT_SECONDS`
+- `LOCAL_LLM_PROVIDER`
+  - 本地模式的 LLM 后端，`local`（默认，使用现有 HTTP LLM 配置）或 `codex`。设置页保存的 `local_llm_provider` 优先于环境变量；ASR 不受此选择影响。
+- `CODEX_COMMAND`
+  - Codex CLI 可执行文件名或路径，默认 `codex`；必须由 API / AI worker 的运行账号安装并登录。
+  - 分别核对 API 和 AI worker 实际运行账号的 `PATH`；后台服务与交互终端可能不同，可将此项设为 CLI 的绝对路径。
+  - 选择 Codex 且命令非空即视为已配置；找不到可执行文件时，实际调用报错并进入任务失败 / 有限重试，健康检查报告 `installed=false`。
+  - 子进程仅按 `YTDLP_PROXY` 显式注入代理，空值直连，不继承任意环境代理或应用凭据。
+- `CODEX_MODEL`
+  - 可选模型名；留空沿用 Codex 用户配置的模型，用户配置也未指定时使用 CLI 默认模型。事件抽取的精确缓存保留独立 Codex 模型标识，不复用原 HTTP LLM 的模型名；默认 `missing_only=true` 会保留任意历史成功结果，切换模型本身不重抽这些视频。
+  - 事件抽取及其 JSON 修复使用下述独立推理档位；其它 `think=false` 的业务调用使用单次 `model_reasoning_effort=low`，`think=true` 或未指定时沿用 CLI 默认；当前档位依据见 [gpt-6.1-sol 模型说明](https://developers.openai.com/api/docs/models/gpt-6.1-sol)。
+- `CODEX_TIMEOUT_SECONDS`
+  - Codex 单次文本任务的进程总超时，默认 `600` 秒；超时终止该次进程组，任务按现有重试策略处理。
+- `CODEX_EVENT_EXTRACTION_REASONING_EFFORT`
+  - 仅 Codex 事件抽取与抽取 JSON 修复使用，默认 `high`，可选 `low|medium|high|xhigh|max`；明确覆盖通用 `think=false` 的低档位映射，不改变 Ollama 的 think 开关、字幕润色或简报配置。
+  - 该选择针对本项目事实/观点区分、相对时间、实体、证据与因果关系判断；尚无本项目对照评估证明高档位必然更准确。档位上升会增加耗时及额度消耗，所有请求继续遵守同一每日额度门控。
+  - 推理档位纳入 Codex 抽取 `prompt_version` 后缀 `:codex-reasoning-{effort}`，保留真实模型名；显式允许历史迁移时，已有 low 结果不会命中 high 的精确成功缓存。默认补漏仍保留历史任意档位的成功结果。修改后重载 API / AI worker；确需迁移历史范围时，通过回填入口明确传入 `force=false, missing_only=false`，忽略所有成功缓存则使用 `force=true`。
+- `CODEX_DAILY_WEEKLY_LIMIT_PERCENT`
+  - 每个 `TIMEZONE` 自然日允许消耗的周订阅额度百分点，默认 `50`，`0` 关闭每日额度限制；调整后重载 API / AI worker。没有额外预留扣减。
+  - 使用 Codex 官方账户额度快照，在每次真实生成前后检查；首次启用时建立基线，同账号其它客户端的可见消耗也计入。不将 token 数换算成订阅额度。官方额度是整数、请求结束后更新，单次请求可能跨过阈值。
+  - 达到每日上限只暂停 AI 角色领取与后续 Codex 请求，次日本地零点后重新读取额度并自动恢复；周额度耗尽则等待官方周重置。额度暂不可读时暂停并定期重查，不撤销人工暂停。
 - `LLM_OLLAMA_NUM_CTX`
   - 所有 Ollama `/api/generate` 请求统一使用的 `options.num_ctx`，默认 `32768`。事件抽取、文字稿润色和简报生成共享该值，避免同一模型因上下文参数变化反复卸载重载；旧变量 `EVENT_EXTRACTION_OLLAMA_NUM_CTX` 仍作为兼容别名读取。修改后需重启 `ai` worker。
 
@@ -286,7 +307,7 @@ Embedding 健康检查固定探测 `${EMBEDDING_URL}/health`；实际向量请�
 - `ASR_LANGUAGE` 是本地 OpenAI-compatible ASR 的可选输入语言提示，默认空值。空值时请求体不传 `language`，由模型自动识别；明确知道音频全英文时可设为 `en`；混合语音应保持空值。
 - `video.asr_transcribe` 保存 `qwen3-asr` 的 `plain` / `segments` transcript 时，优先使用 ASR 响应里的实际语言；响应未返回语言时才使用 `ASR_LANGUAGE` 提示值。两者都没有时，资产 `language` 为空，S3 路径使用 `transcript/und/`。
 - 现有 `video.polish_transcript` 提示词仍是中文整理口径；自动 ASR 链路只在 transcript 语言为 `zh` 时继续投递 polish，非中文 plain transcript 先保持原文。
-- ASR / LLM / Embedding 的健康检查、容量门控、实际请求与配置测试连接都会忽略进程环境中的 `HTTP_PROXY` / `HTTPS_PROXY`；对应 URL 应直接指向可达服务地址。
+- ASR / HTTP LLM / Embedding 的健康检查、容量门控、实际请求与配置测试连接都保持直连，忽略进程环境中的 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 及其小写形式；对应 URL 应直接指向可达服务地址。Codex CLI 生成请求与连接测试显式使用 `YTDLP_PROXY`，空值直连。
 - UI 不直接修改 `.env`；保存设置后只影响新任务，不会中断正在运行的任务。
 
 ### Worker 进程选择
@@ -386,6 +407,7 @@ ChatGPT / Claude 远程连接器还要求该地址可从公网通过 HTTPS 访�
 - 建议保留 `{chunk}` 占位符；`{index}` / `{total}` 可选。
 - 默认提示词定位为“可回溯证据的保真整理稿”：按原文顺序近逐句整理，保留金融、宏观、政策、地缘、企业、行业、资产价格、利率、信用、商品、库存、财报、订单、指引、风险偏好等证据粒度；不得把长转写压缩成摘要；数字表达按原文保留，不做中文数字改写或单位换算。
 - `video.polish_transcript` 默认按约 `1500` 字符切分原始转写后逐段调用 LLM；若单段调用超时，会继续二分该段，直到最小重试粒度仍失败时再让任务失败，降低保真输出过长导致单次调用超时的概率。
+- LLM 调用、CLI 启动及网络失败向 worker 传播，按现有 `attempt/max_attempts` 有限重试，耗尽后记录为 failed；原始 plain transcript 保留。
 - 调用 LLM 前会对阿拉伯数字和英文数字短语做临时占位保护，返回后还原原文数字表达，避免模型把 `four point seven eight percent`、`ten billion` 等证据改写成中文数字或换算金额。
 
 ### 事件抽取提示词
@@ -403,12 +425,12 @@ ChatGPT / Claude 远程连接器还要求该地址可从公网通过 HTTPS 访�
 - 用于 `video.extract_events` / `video.extract_events_batch` 从视频标题、描述与 transcript source map 抽取结构化市场原子事件。
 - 当前事件抽取最终请求会追加 v3 输出协议：顶层为 `videos[]`，事件证据使用 `evidence_source_ids` 引用输入 source id，后端再写入 verified provenance。自定义 prompt 若描述旧 `events[]` 或 `evidence_quotes` 格式，以最终追加的 v3 协议为准。
 - v3 关系契约把语义命题与图端点分开：`cause` / `effect` 保持可独立阅读的自然语言命题；`source_entity_key` / `target_entity_key` 只能精确引用同事件 `entities / assets / sectors / macro_variables` 中对象由后端规则生成的唯一 `normalized_key`，无对应端点时用空字符串。后端不会拿命题文本、近似名称或跨事件实体猜端点。
-- 默认 `prompt_version` 基线为 `llm_event_v4_explicit_relation_endpoints`。升级不会自动重抽历史视频；只有新视频分析或显式重新投递的抽取任务使用新契约。
+- 默认 `prompt_version` 基线为 `llm_event_v4_explicit_relation_endpoints`。升级不会自动重抽历史视频；默认补漏仅为从未成功的视频使用新契约，已成功的视频需要显式允许历史迁移或强制重抽。
 - 默认提示词要求 `title`、`summary`、`assets`、`sectors`、`entities` 的对象口径一致；房地产、住房、楼市等具体市场对象不能泛化成单独的“市场”。
 - 默认提示词要求股票事件在可可靠判断时写明上市市场、交易所或代码，并拆分发行公司、可交易证券、行业、国家和交易所实体；普通词不能误标成公司或资产。
 - 默认提示词会过滤操作策略、荐股建议、观察名单、族群归类、关注提醒与纯预测；只有其中包含已发生事实变化时，才抽取事实变化本身。
 - `evidence_source_ids` 必须命中本次请求 source map；若原文使用 `the market`、`market`、`市场` 这类泛称，应选择包含足够上下文的 source id，让读者能判断具体市场对象。
-- 修改并保存该配置后会改变 `prompt_version`；重新投递播放列表事件抽取时，系统会按新的 prompt / model 口径生成事件。
+- 修改并保存该配置后会改变 `prompt_version`；默认 `force=false, missing_only=true` 只补从未有 `succeeded` 抽取运行的视频，含仅失败的视频及新视频，任意旧模型 / 提示词 / 转写版本的成功运行与合法零事件结果都会保留。需要按新口径迁移旧成功视频时，显式传入 `force=false, missing_only=false`，按当前 `source_hash / prompt_version / extraction_model` 精确复用；`force=true` 则明确清理播放列表活跃事件管线并重新抽取。
 
 ### 简报调度策略
 
@@ -431,6 +453,7 @@ ChatGPT / Claude 远程连接器还要求该地址可从公网通过 HTTPS 访�
 ### 推理模式
 
 - `inference_mode`
+- `local_llm_provider`
 - `volcengine_inference_config`
 
 值结构：
@@ -457,6 +480,9 @@ ChatGPT / Claude 远程连接器还要求该地址可从公网通过 HTTPS 访�
 - 运行时优先级固定为 `app_config > .env`。
 - 返回给前端的密钥字段会被脱敏，前端留空保存时会保留已存密钥。
 - v1 只公开 `local` / `volcengine` 两种模式；底层仍保持 ASR / LLM 适配层解耦。
+- 本地模式内通过 `local_llm_provider` 选择 `local` / `codex`，AppConfig 值为 `{"value":"codex"}`；`PUT /api/config/inference` 的同名字段省略时保留已有选择。GET 同时返回 `local_llm_provider_source` 与非敏感 `codex.model/timeout_seconds`。
+- Codex 负责事件抽取、文字稿润色和简报等文本任务，ASR 和 Embedding 保持独立。事件抽取默认保留任意历史成功运行，只补从未成功的视频；切换后端不会自动重跑全部历史失败任务。
+- Codex 的常规健康检查只验证 CLI 安装、版本和登录状态；“测试连接”才会完成真实短文本生成。已登录不代表网络或生成请求可用，连接测试失败会显示失败原因。
 
 ## 当前配置边界
 

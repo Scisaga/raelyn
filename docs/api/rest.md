@@ -148,6 +148,7 @@
 - 只对已启用监控的媒体批量投递同步任务。
 - `scope=recent`：同步近期视频；新发现视频会按配置自动投递下载。
 - `scope=all`：全量发现历史视频，并给库里已发现但尚未下载成功的历史视频补投下载；其中发布时间在最近 24 小时内的视频下载优先级至少为 8，避免被历史积压阻塞。
+- 若同媒体已有 pending 近期同步，显式全量请求会原地升级为不限制条数、补投已有未下载视频，并提前到可立即执行；保留已消耗的重试次数与更高优先级。不会改写正在运行的同步，后续普通近期同步也不会缩小已排好的全量范围。保存 Cookies 触发的认证恢复同样保留全量范围、已有视频下载补投与更早排期，不会降为默认 200 条或推迟全量任务。
 
 ### `POST /api/media/{media_id}/sync`
 
@@ -155,6 +156,7 @@
 - 投递单个媒体的资料同步和视频同步任务。
 - `scope=recent`：只处理近期窗口。
 - `scope=all`：除了全量发现历史视频，还会补投该媒体下仍处于待下载状态的历史视频；最近 24 小时的视频同样至少使用下载优先级 8。
+- 与批量入口相同，已排队的近期同步会原地升级为全量；运行中的任务继续按原范围完成，另排全量任务。
 - 若媒体正在删除中，返回 `409`。
 
 ### `GET /api/cleanup/stale-videos`
@@ -233,6 +235,7 @@
 
 ### `GET /api/jobs`
 
+- 列表按批量查询返回展示上下文：`media_name`、`video_title`、`video_published_at`、`video_provider_video_id` 和 `video_url`。对应值允许为 `null`；前端不为补齐列表展示逐条读取视频详情，`WS /api/ws/jobs` 使用相同字段。
 - query：
   - `status` / `status_in`
   - `type`
@@ -386,16 +389,18 @@
 
 - 手动创建 `playlist.backfill_events` 父任务；父任务按播放列表内容时间轴拆分月份范围并投递 `playlist.backfill_events_range` 子任务，范围任务运行时再查询该月内已有 `plain` transcript 的视频并投递 `video.extract_events_batch` 或 `video.extract_events` 子任务。批量抽取任务执行时每次 LLM 请求只包含 1 个视频，避免多个视频共用一个大 JSON 生成导致本地模型长时间无返回。
 - 事件抽取在 Ollama `/api/generate` 模式下使用 JSON 输出约束、低温度采样、流式读取、全局统一的 `LLM_OLLAMA_NUM_CTX`、事件专用 `num_predict` 上限和 per-model advisory lock，降低标题、实体和证据之间的结构化抽取漂移，并避免同一 Ollama 大模型被多个事件抽取请求同时压满。当前 v4 口径要求 LLM 只返回 `evidence_source_ids`，后端用 source map 写入可验证证据，并显式声明关系端点。
-- 月份范围任务的优先级低于它投递的视频事件抽取任务；同一批回填中，一旦 `video.extract_events_batch` 或 `video.extract_events` 入队，worker 会优先消费事件抽取，再继续领取后续月份范围任务。
-- body：`{ "force": false }`；`force=false` 只补齐缺失当前 transcript / prompt / model 口径事件的视频，`force=true` 会先取消当前播放列表相关的活跃事件抽取、事件 embedding 与事件地图构建任务，再重新抽取同一 prompt / model 口径下的视频事件。
+- 专职 AI worker 按真实内容时间从新到旧；同内容时间再按优先级与任务阶段排序，月份范围投递的视频抽取高于同时间的后续范围任务。其它角色的排序不变。
+- body：`{ "force": false, "missing_only": true }`，两字段均可省略，默认值如示例。默认只补从未成功抽取的视频，包括仅有失败记录的视频与新视频；只要该视频存在任意 `succeeded` 抽取运行，就保留旧结果，不因模型、提示词或转写版本不同再次调用 LLM。合法 `events: []` / `event_count=0` 同样属于成功。
+- 显式传入 `{ "force": false, "missing_only": false }` 时，按当前 `source_hash / prompt_version / extraction_model` 精确复用成功运行；只有旧口径成功、当前口径尚无成功的视频可以重新抽取，适用于主动迁移模型或提示词版本。
+- `force=true` 优先于 `missing_only`，不复用成功运行；会先取消当前播放列表相关的活跃事件抽取、事件 embedding 与事件地图构建任务，再按当前口径重新抽取视频事件。
 - `force=true` 的任务清理只取消 `pending/running` 任务并保留历史记录；地图 state 保持 dirty，现有 ready 快照不因重抽被提前切走。
-- 返回任务 ID、任务状态与进度。新 transcript 生成后也可由 `AUTO_EXTRACT_NEW_VIDEO_EVENTS=true` 自动投递单视频抽取。
+- 返回任务 ID、任务状态与进度，`backfill_job` 包含本次 `force` 与 `missing_only`，便于回读实际策略。父任务、月份范围、批量和单视频子任务传递同一补漏策略；新 transcript 生成后由 `AUTO_EXTRACT_NEW_VIDEO_EVENTS=true` 自动投递的单视频任务也默认 `missing_only=true`。
 
 ### `GET /api/playlists/{playlist_id}/events/summary`
 
 - 返回事件抽取覆盖率与状态计数：`video_total`、`video_with_events`、`event_total`、`accepted`、`draft`、`rejected`、`coverage_ratio`。
 - query：可选 `period_start=YYYY-MM-DD`、`granularity=day|week|month`；传入后按事件 `available_at` 过滤到对应可观察周期。未传时返回播放列表全量。
-- 返回当前活跃的历史抽取任务 `backfill_job`，便于 UI 展示扫描 / 投递进度；其中 `range_finished`、`range_pending`、`range_running`、`range_failed`、`range_total` 用于展示月份范围任务进度，`scanned`、`enqueued`、`skipped` 是已执行月份范围任务累计扫描 / 投递 / 跳过的视频数，`video_extracted`、`video_pending`、`video_running`、`video_failed`、`video_total` 用于展示已投递视频抽取子任务进度，`elapsed_seconds` 与 `estimated_total_seconds` 用于展示已运行时间和预估总时长。若还有月份范围未完成，`estimated_total_seconds` 会按已完成月份的平均投递视频数估算未扫描月份的未来视频抽取工作；样本不足时返回 `null`，前端显示估算中。
+- 返回当前活跃的历史抽取任务 `backfill_job`，便于 UI 展示扫描 / 投递进度；`force` 与 `missing_only` 回读本次策略，后者默认 `true`。其中 `range_finished`、`range_pending`、`range_running`、`range_failed`、`range_total` 用于展示月份范围任务进度，`scanned`、`enqueued`、`skipped` 是已执行月份范围任务累计扫描 / 投递 / 跳过的视频数，`video_extracted`、`video_pending`、`video_running`、`video_failed`、`video_total` 用于展示已投递视频抽取子任务进度，`elapsed_seconds` 与 `estimated_total_seconds` 用于展示已运行时间和预估总时长。若还有月份范围未完成，`estimated_total_seconds` 会按已完成月份的平均投递视频数估算未扫描月份的未来视频抽取工作；样本不足时返回 `null`，前端显示估算中。
 
 ### `GET /api/playlists/{playlist_id}/events`
 
@@ -422,6 +427,7 @@
 ### `GET /api/playlists/{playlist_id}/events/map/manifest`
 
 - query 可选 `snapshot_id`；省略时解析 `event_map_state.current_snapshot_id`，显式指定时读取仍可用且属于该播放列表的历史 ready 快照，并以 `is_current=false` 标记。无效的显式快照返回 `409`，不会静默回退到 current。
+- 普通星域入口和“返回当前星域”的首个 compact manifest 请求省略 `snapshot_id`，不使用域目录或内存状态缓存中的旧 ID。取得 ready 响应后，预览、完整场景、主题元数据和覆盖统计均固定到响应的 `snapshot_id`；显式历史导航仍传指定版本。manifest 请求失败显示读取错误，不将失败解释为尚未生成快照。
 - query 可选 `compact=true`，供构建状态轮询和星域首帧启动使用；该模式跳过主题标签、关键词、锚点等完整元数据，但仍返回 scene 协议、记录长度、坐标边界、稳定语义色映射、快照已物化的 `monthly_distribution[]` 和轻量 `topic_geometry[]`。首帧使用该月度分布直接确定最终的 12 个月窗口；`topic_geometry[]` 只含主题索引、层级、中心、半径和 canonical 数量，用于直接创建最终 WebGL 语义网格，不承担标签展示。
 - compact 模式的 `backfill_job` 只返回前端状态展示和轮询所需的 `job_id/status/progress_current/progress_total/created_at/started_at/cancel_requested_at`，不扫描并汇总整个 range/video 子任务树；完整 manifest 仍返回原有的详细 backfill 进度。
 - query 可选 `include_coverage=true|false`。省略时完整 manifest 默认计算覆盖率、compact manifest 默认跳过覆盖率；首屏使用 `include_coverage=false` 取得主题与标签元数据，交互开放后再以 `compact=true&include_coverage=true` 后台补取覆盖计数。
@@ -527,8 +533,10 @@
 ### `GET /api/domains/{domain_id}/observation`
 
 - 返回当前域的 `observation_enabled`、`brief_granularity`、`brief_prompt`，以及当前快照、观察游标和四类独立覆盖：可分析转写、当前口径抽取、星域收录、证据核验。它们属于处理覆盖或产出覆盖，各自使用独立分母，不表示同一条流水线的四阶段总进度。观测域设置页复用该响应，不额外读取包含完整媒体清单的播放列表详情。
+- 四类覆盖率在同一条聚合查询中共享域内视频集合；转写分母与抽取分类复用去重转写集合，证据先去重再统计，多个资产或证据不会重复计数。PostgreSQL 的覆盖统计索引见[数据模型](../architecture/data-model.md)。
+- PostgreSQL 仅在当前覆盖率查询事务内关闭 JIT，避免首次编译拖慢页面；事务结束后自动恢复连接原设置。
 - `coverage.event_extraction` 的分母是已有纯文本转写的视频，分子是存在与当前 `prompt_version + extraction_model` 一致的成功抽取记录的视频；`details` 进一步区分有事件、成功但零事件、仅旧口径成功、当前口径失败、尚无成功记录和缺少转写。`event_count=0` 是成功结果，不计为失败。
-- 提示词基础版本、提示词正文哈希或模型变化不会在服务启动时自动重投全部历史视频；历史迁移通过 `POST /api/playlists/{playlist_id}/events/extract` 的 `force=false` 回填显式触发，并复用精确命中当前 `source_hash / prompt_version / extraction_model` 的成功结果。
+- 提示词基础版本、提示词正文哈希或模型变化不会在服务启动时自动重投全部历史视频。默认 `missing_only=true` 只补从未成功的视频，旧口径成功不会为提高当前口径覆盖率而重抽；合法零事件成功也会跳过。主动迁移历史结果须通过 `POST /api/playlists/{playlist_id}/events/extract` 显式传入 `force=false, missing_only=false`，此时才按当前 `source_hash / prompt_version / extraction_model` 精确复用；`force=true` 则明确清理活跃管线并忽略成功缓存。
 
 ### `PUT /api/domains/{domain_id}/observation`
 
@@ -544,25 +552,18 @@
 - `last_page` 支持 `field|stories|briefs|playlist|library|operations`；`playlist` 表示来源播放工作台。
 - 相同状态重复提交为幂等更新，不创建新的游标记录。
 
-### `GET /api/domains/{domain_id}/changes`
-
-- query 可选 `after_snapshot_id`、`object_type`、`change_type`、`cursor`、`limit`。
-- 按 `(observed_at desc, id desc)` 稳定分页；每项同时声明事件发生时间和系统认知时间口径。
-- 每项返回 `before_revision` / `after_revision`；retire 变化的 Web 深链接固定到对象最后仍存在的 `from_snapshot_id`，其余变化固定到 `to_snapshot_id`。
-- 新增且带 evidence revision 的显式 `corrects` 故事关系会额外生成 `story_correction_added`。故事首次形成、成员或顺序变化、关系或判定依据变化、支持记录变化、事实纠正和 `emerging / established` 成熟度变化属于实质变化；仅标题/摘要措辞、质量分波动和无变化重建不刷新故事未读状态。
-
 ### `GET /api/domains/{domain_id}/observation/feed`
 
-- 分开返回 `newly_occurred`、`newly_mapped`、`story_updates`、`needs_review`，并在 `definitions` 中返回每组口径。
+- 返回当前投影中的 `newly_occurred`、`newly_mapped`、`story_updates`、`needs_review`。发生时间用于事件窗口，身份更新时间用于上次观察后的更新；每个对象只出现一次，不查询历史 before/after。`unobserved_change_count` 表示当前未观察的对象数。
 
 ### `GET /api/domains/{domain_id}/canonicals`
 
 - query 可选 `event_time_start`、`event_time_end`、`event_type`、`normalized_key`、`entity_type`、`limit`、`offset`。
 - 返回 current ready 快照的线性真实事件列表，供 3D 星域的无障碍/低性能替代视图使用；时间、事件类型和实体条件与星域一致，查询只读 canonical 热列与实体索引，不解析 JSONB。
 
-### `GET /api/domains/{domain_id}/canonicals/{canonical_id}/history`
+### `GET /api/domains/{domain_id}/canonicals/{canonical_id}`
 
-- 返回稳定 canonical 身份、跨快照修订、merge/split 谱系和变化记录。
+- 返回当前真实事件标题、摘要、时间、`point_index`、代表证据版本和投影 ID。可选 `snapshot_id` 只用于固定仍保留的投影；对象已退出该投影时返回 404。旧 `/history` 和 `/changes` 接口已移除。
 
 ### `GET /api/domains/{domain_id}/topics/{topic_id}`
 
@@ -574,18 +575,17 @@
 - query 可选 `scope=all|attention|followed|established|emerging`、`q`、`limit`（默认 `80`，最大 `200`）和 `offset`；API 默认 `scope=all`，故事页显式请求 `attention`。
 - `attention` 包含已关注或读过故事中尚未阅读的实质更新，以及域观察游标之后发生任一实质变化的成熟故事；后者包含首次形成、成员、关系、支持记录、事实纠正和成熟度变化，不要求用户预先打开过该故事。没有任何观察或阅读基线时，只返回最近一页成熟故事并逐项标记推荐，不把全库伪装成未读；只保存阅读位置或关注状态不等于已经读过，关注但未读的故事仍单独进入队列。
 - 搜索同时匹配不会随快照改写的 `stable_title` 和最新真实事件标题。结果按 `last_material_changed_at desc, story_identity_id asc` 稳定排序。
-- 每项返回稳定标题、`latest_progress`、成熟度、关系与支持记录数量、最近实质更新时间、实质变化类型、关注状态和准确的 `unread`；同时提供 `total`、`offset`、`limit`、`has_more`，调用方应渐进读取。
+- 每项返回稳定标题、`latest_progress`、成熟度、关系与支持记录数量、最近实质更新时间、实质更新时间、关注状态和准确的 `unread`；同时提供 `total`、`offset`、`limit`、`has_more`，调用方应渐进读取。
 
 ### `GET /api/domains/{domain_id}/stories/{story_identity_id}`
 
-- query 可选 `snapshot_id`；省略时优先读取 current ready 对应修订，没有可用 current 修订时读取最新长期修订；显式指定时固定到该故事历史修订且不回退到 current。故事历史正文独立于可裁剪的三维场景快照。
-- 返回 `stable_title`、所选 `selected_revision`、可读的 `trajectory.nodes/edges`、相对最后阅读修订的具名 `reading_update`、仅含实质变化的 `material_history`、合并后的 `audit_summary`、阅读状态与相关简报。若期间发生过实质变化但当前净结构已恢复，`reading_update.returned_to_previous_state=true` 并返回期间变化次数与类型，不伪造净增减。兼容期继续返回 `current_trajectory` 别名和旧历史字段。
-- 节点返回标题、摘要、起止时间、时间精度、事件类型、成员数和不确定性；同一发生时间的节点保留所选 story revision 的成员顺序。边返回中文关系、两端事件标题、支持记录数，以及已有两端命题、摘录和时间间隔。它们用于解释系统为何建立关系，不代表每一段摘录已经完成严格的逐段关系归因。
-- 历史深链接中的标题、进展、节点、关系和简报上下文全部来自所选 revision，不能混入 current 数据。
+- 默认读取 current ready 故事；可选 `snapshot_id` 只固定仍保留的投影，不提供永久版本回看。
+- 返回稳定标题、当前 `selected_revision`、`trajectory.nodes/edges`、最新进展、实质更新时间、关注和阅读位置、相关简报。没有 `revisions`、`changes`、`reading_update`、`material_history` 或 `audit_summary`。
+- 节点按事件发生时间排列，同一时间按当前成员顺序排列；关系直接读取当前 `event_map_story_edge.edge_id`，包含两端标题、中文关系、支持数量和判定依据。未读由实质更新时间与显式最后阅读时间比较。
 
 ### `GET /api/domains/{domain_id}/stories/{story_identity_id}/edges/{edge_id}/support`
 
-- query 必填 `snapshot_id`，并校验观测域、故事身份、故事修订和关系边属于同一所选快照。
+- query 必填 `snapshot_id`，并校验观测域、故事身份、当前故事和关系边属于同一仍保留的投影。
 - 返回具名来源事件、目标事件、中文关系类型、两端 claim、已有摘录、时间间隔，以及去重后的来源支持记录。
 - 支持记录包含来源标题、信源、原文片段、`verified`、转写版本状态与精确播放位置（若存在）；`support_granularity=record_revision` 明确当前证明粒度。详情按选中关系懒加载，故事主响应不逐记录扩张。
 
@@ -596,7 +596,7 @@
 ### `GET /api/briefs/{brief_id}/structured`
 
 - 返回简报生成快照、生成口径、正文地址和按正文锚点排序的结构化引用。
-- 故事引用行的 `snapshot_id` 只表示简报生成时的来源版本，用于审计；主 `web_url` 指向稳定故事身份，并通过 `focus_canonical_id` 指定应在当前故事中高亮的阶段，不用该快照约束默认阅读。`context` 同时返回该关系的 `source_canonical_id`、`target_canonical_id` 和 `focus_canonical_id`。旧引用缺少阶段 ID 时，客户端可从长期故事修订中的 `edge_id` 解析目标阶段。
+- 故事引用行的 `snapshot_id` 只表示简报生成时的来源版本，用于审计；主 `web_url` 指向稳定故事身份，并通过 `focus_canonical_id` 指定应在当前故事中高亮的阶段，不用该快照约束默认阅读。`context` 同时返回该关系的 `source_canonical_id`、`target_canonical_id` 和 `focus_canonical_id`。实际引用摘要冻结在 `context.quoted_object`，并保存原始 `evidence_revision_id` 和 `source_video_id`。点击打开最新对象；对象已退出当前星域时打开原始证据。不会重建或读取整个历史场景。
 
 ### `GET /api/domains/{domain_id}/objects/{object_type}/{object_id}/brief-references`
 
@@ -605,12 +605,14 @@
 ### `GET /api/domains/{domain_id}/evidence/{revision_id}`
 
 - 返回来源记录、证据文本、校验信息、字符区间和播放定位。
+- `canonical_ids` 和 `story_references` 只反查该域当前 ready 星域中的成员与故事关系；不会读取历次历史归档再去重。没有当前 ready 星域时这两项为空，原始证据和已有简报引用仍返回。
 - 只有来源提供精确分段时间时才返回播放秒数；否则保留字符区间，不做比例估算。
 - transcript 证据返回冻结的 `transcript_asset_id`、当前 plain transcript asset、`source_version_status=current|superseded|unavailable|unknown` 与片段 `source_sha256`；旧转写版本不会被当前版本静默替换。
 
 ### `GET /api/domains/{domain_id}/source-records/{video_id}/semantic-references`
 
-- 通过正规化历史成员与故事证据索引反查 canonical、故事关系与简报，不扫描长期修订 JSONB。
+- canonical 与故事关系直接反查该域当前 ready 星域的成员和关系，查询在数据库内限定到当前版本；不会读取全部历史版本后在 Python 中选最新版。没有当前 ready 星域时这两项为空。
+- 简报引用仍按来源记录的证据修订反查，保留历史简报的真实引用关系。
 
 ### `GET /api/library/sources` / `GET /api/library/source-records`
 
@@ -653,6 +655,22 @@
 - 返回单条简报记录。
 
 ## Config
+
+### `GET /api/config/inference`
+
+读取 AI 接入设置：`mode` 为 `local` / `volcengine`；`local_llm_provider` 为本地模式的 `local` / `codex`，并返回 `local_llm_provider_source`。`codex` 包含模型、总超时、只读 `event_extraction_reasoning_effort`（默认 `high`）与 `budget`；现有火山密钥继续只返回脱敏状态。事件抽取档位使用服务配置，与 Ollama 的 `think=false` 开关独立。
+
+`codex.budget` 返回 `enabled`、`active`、`daily_limit_percent`、`effective_limit_percent`、`reserve_percent`、`used_percent`、`remaining_percent`、`weekly_used_percent`、`weekly_resets_at`、`baseline_started_at`、`last_checked_at`、`timezone`、`paused`、`pause_reason`、`resume_at`、`status` 与脱敏 `error`。`status` 为 `ready|daily_limit|quota_unavailable|weekly_limit`；默认上限 50、预留 0，单位为周额度百分点。首次基线尚未建立时用量待确认；`quota_unavailable` 的 `resume_at` 表示下次检查时间。`GET /api/system` 的 inference 状态复用同一结构；这些读接口不发起额度查询、会话读取或生成。
+
+### `PUT /api/config/inference`
+
+保存接入模式及本地 LLM 后端。示例：`{"mode":"local","local_llm_provider":"codex"}`。省略 `local_llm_provider` 时保留既有值；本地 ASR 不随该字段变化。返回 `{"ok":true,"data":{...}}`，`data` 反映本次保存结果。后台后续任务使用当前设置，不自动重跑历史失败任务。
+
+### `POST /api/config/inference/test`
+
+使用与保存相同的草稿字段测试，不保存草稿。Codex 的 LLM 测试验证安装、登录和真实短文本生成；返回 `llm.installed`、`llm.authenticated`、`llm.generation_verified` 与失败原因。总 `ok` 仍综合 LLM 与 ASR。普通健康状态中的 Codex `ok` 只说明安装与登录检查通过，不能代替生成测试。
+
+真实 Codex 测试也遵守每日 / 周额度门控，达到上限或额度不可读时返回连接失败原因，不绕过 AI worker 的额度暂停。
 
 ### `GET /api/config`
 

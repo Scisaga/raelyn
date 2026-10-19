@@ -28,30 +28,28 @@ event_map_state.current_snapshot_id
 
 这里的“默认时间窗”由客户端根据 manifest 时间边界计算：普通 current 入口固定为截至今天的 12 个自然月；只有显式历史快照或 `window_start/window_end` 深链接使用请求中的历史范围，不再从观察游标恢复旧截止日。
 
+普通 current 入口首次读取 compact manifest 时不指定快照版本，域目录和内存状态中的旧快照 ID 不参与版本选择；这些缓存可能早于快照回收。取得 ready 响应后，预览、完整 scene、主题元数据和覆盖统计均固定到该响应的 `snapshot_id`。显式历史导航保持指定版本，“返回当前星域”明确解除本次请求的版本固定。manifest 请求失败在空画布与状态徽标显示读取错误；只有成功读取的状态才用于判断尚未生成或正在构建，避免把读取失败误显示成首次生成状态。
+
 `event_map_canonical.has_uncertainty` 是审核位的物化布尔列。场景流和待审核列表直接读取该列，不再对 `uncertainty_flags` 做逐行 JSONB 数组判断。时间窗、类型、实体和主题筛选分别由类型化列、`event_map_entity_index` 与 `event_map_topic_member` 支撑；主题成员下钻使用 `(snapshot_id, topic_id, level)` 复合索引。
 
 当前服务会在首次请求某个不可变快照时从类型化列流式编码场景。只有当实测表明冷启动编码而非网络或 GPU 成为瓶颈时，才进一步把完整二进制场景固化为对象存储资产；在没有观测证据前不维护第二份同义场景事实。
 
 ## 连续观察与长期身份
 
-- `domain_observation_cursor`：保存每个观测域的快照、认知时间、事件时间窗、筛选、镜头和选择对象；`view_mode` 仅保留兼容值。普通进入 current 星域不再用游标的历史时间窗覆盖“截至今天的 12 个月”，只有显式历史快照或 URL 时间窗恢复历史范围。
-- `event_map_change`：保存 canonical、story 与布局变化；以 `(observed_at, id)` 提供稳定分页游标。
-- `event_map_canonical_history_revision`：保存 canonical 的长期修订正文，不外键依赖可能被裁剪的大快照。
-- `event_map_canonical_history_member`：正规化长期修订到来源修订的关系，为证据和来源记录反查提供 `(playlist_id, record_revision_id, canonical_id)` 索引。
-- `event_map_story_identity` / `event_map_story_history_revision`：保存稳定故事身份及跨快照识别版本；身份只在相同故事算法版本、相同叙事锚点和稳定成员重叠下延续。`stable_title` 在身份首次形成时冻结，`last_material_snapshot_id / last_material_changed_at` 只随事实结构的实质变化推进。
-- `event_map_story_history_evidence`：正规化故事边到来源修订的关系，支持来源记录反查具体故事关系。
-- `story_read_state`：保存关注状态、最后显式标记已读的快照与故事位置；打开详情或只更新位置不改变未读。
-- `brief.snapshot_id` / `brief.generation_basis` / `brief_reference`：固定简报的生成口径和引用来源版本。故事引用以稳定 story identity 为导航目标，并保存目标 canonical 作为当前故事中的阅读焦点；引用快照只承担 provenance 与显式历史审计，不依赖三维场景继续可渲染。
+只保存当前业务结果与稳定身份。每个域保留 current 加上一份前一 ready 投影，用于原子发布、布局继承和浏览器尚未完成的请求；失败投影按现有保留任务回收，不做永久全量归档。
 
-变化记录保存 before/after 修订。故事首次形成、成员或顺序、关系或判定依据、支持记录、显式纠正与成熟度变化是阅读器使用的实质变化；标题/摘要重写、质量分波动和相同结果复核只进入技术审计。显式、带证据的 `corrects` 故事边会形成独立 correction 变化，普通文本修订不推断为纠正。retire 对象的链接固定到最后包含它的历史快照，星域变化因此仍能打开对象并展示本次差异。
+- `domain_observation_cursor` 保存观察时间、窗口、镜头和所选对象。
+- canonical 身份记录最后业务更新时间；故事身份冻结稳定标题，并仅在事件、关系依据、支持记录或成熟度实质变化时更新 `last_material_changed_at`。比较对象是当前与前一正常投影，比较结果不再写成 before/after 历史。
+- `story_read_state` 保存关注、最后显式阅读时间与位置。打开故事不会清除未读。
+- 简报的 `snapshot_id` 只记录生成来源。`brief_reference.context.quoted_object` 冻结实际引用摘要和故事关系，原始证据仍由 `evidence_revision_id` 指向；默认打开最新对象，对象不再存在时仍可读取引用摘要和播放原证据。
 
-长期历史与当前大快照分离，因此快照保留策略可以回收旧的全量空间投影，而不抹除对象修订、变化语义、阅读状态和简报引用。
+`event_map_change`、canonical/story history revision 和两个历史关系索引表已经移除。启动时不回填场景历史；每次构建也不再重复归档所有对象。来源反查直接使用 current canonical member 与 story edge，简报反查仍读取真实引用行。
 
 ## JSONB 的保留边界
 
 适合 JSONB 的内容：
 
-- canonical/story 的完整历史修订正文；
+- 简报实际引用的摘要、关系依据与原始证据指针；
 - 原始抽取载荷、证据 provenance、生成口径；
 - 相机、筛选等低频用户状态；
 - 算法版本可能扩展的快照统计。
@@ -61,32 +59,32 @@ event_map_state.current_snapshot_id
 - 星域坐标、时间窗、类型与审核筛选；
 - canonical、topic、story 成员连接；
 - 来源修订到 canonical 的反向引用；
-- 变化流分页、故事目录和简报对象引用。
+- 当前更新列表、故事目录和简报对象引用。
 
 `market_event_embedding.vector` 目前仍是快照构建输入中的 JSONB 向量，它影响构建吞吐而不影响星域显示。若构建性能观测确认向量反序列化成为主瓶颈，应采用兼容的 float32 二进制旁路或 pgvector 迁移，并保留校验和与双读迁移期；不得以重抽事件、删除旧向量或暂停现有任务作为迁移手段。
 
 ## 上线与历史兼容
 
-- 建表、加列、加索引和历史投影均为加法迁移。
+- 自动启动迁移只维护当前表结构和缺失元数据，不回填全量场景历史。
 - 旧快照的 `has_uncertainty` 由既有标记原位补齐，不重建快照。
-- 仍保留的 ready 快照会幂等补齐长期 canonical/story 修订、变化集和历史成员索引。
+- 旧全量归档通过显式维护命令迁移：备份实际引用，冻结引用摘要，核对证据完整性后删除历史表。
 - 自动 schema 迁移不会取消、暂停或删除既有任务，也不会删除历史视频、资产或来源记录。
 - V2 发布不修改当前 job 的 claim、lease、priority、worker role 或执行 token。
-- 快照发布仍在同一事务内写完对象、历史和变化后再切换 current 指针；读者不会看到半成品。
-- Web 的显式历史深链接将 `snapshot_id` 贯穿 manifest、主题、故事航迹和主题简报反查；显式选择历史版本时不可用就返回错误，不自动展示 current 数据。普通故事入口和简报中的故事引用按稳定身份读取最新可用修订，不携带历史快照；后者另以 canonical ID 定位引用阶段。
+- 快照发布在同一事务内完成当前身份元数据后切换 current 指针；读者不会看到半成品。
+- Web 显式指定仍保留的 `snapshot_id` 时，manifest、主题、故事航迹和主题简报反查使用该投影；指定的投影不可用就返回错误。普通故事入口和简报引用读取当前对象，不固定旧投影；故事引用另以 canonical ID 定位引用阶段。
 
 ## 读取接口
 
 - `/api/domains/{domain_id}/observation`：当前观察状态与四项独立处理/产出覆盖；当前口径抽取按 `prompt_version + extraction_model` 的成功运行计数。
 - `PUT /api/domains/{domain_id}/observation`：启用或停用持续观测；停用域保留来源归档，视频级共享分析以“至少一个关联域启用”为准，域级简报和星域构建仅面向启用域。
-- `/api/domains/{domain_id}/changes`：稳定变化游标。
+- `/api/domains/{domain_id}/observation/feed`：当前内容的发生与更新时间提示。
 - `/api/domains/{domain_id}/observation/feed`：新发生、认知变化、故事更新和待验证；协议字段仍为 `newly_occurred / newly_mapped / story_updates / needs_review`。
 - `/api/domains/{domain_id}/canonicals`：当前快照的类型化线性事件视图。
 - `/api/domains/{domain_id}/event-highlights`：`scope=24h` 按服务端当前时刻的 `[now-24h, now]` 平台发布时间选择当前观测域的视频，再关联固定快照中的 canonical；高亮与视频卡使用同一发布时间范围，未知或未来发布时间不入选，不按事件发生日及其精度排除。默认 `scope=event_date` 保留冻结事件发生日筛选，供“本周事件”使用，且只接受 `second/day` 精度。两种口径均叠加观察窗口、类型、实体和主题条件。响应返回全部匹配事件的点索引用于星图高亮，再按多信源佐证与时间可靠性做可审计排序，为其中最多十个有可播放来源的唯一 canonical 返回空间视频卡，同一媒体最多占两张；达到媒体上限的事件只是不生成卡片，其真实点仍保持高亮。该顺序不称为尚无冻结字段支撑的市场影响重要度。
-- `/api/domains/{domain_id}/canonicals/{canonical_id}/history`：canonical 修订与谱系。
+- `/api/domains/{domain_id}/canonicals/{canonical_id}`：当前 canonical 详情与定位。
 - `/api/domains/{domain_id}/topics/{topic_id}`：当前或显式历史快照的主题层级、成员和代表事件。
 - `/api/domains/{domain_id}/stories`：current ready 快照的稳定故事阅读队列；支持 `attention/followed/established/emerging/all`、搜索和分页，按最近实质变化稳定排序。首次没有基线时只推荐最近成熟故事，不制造全库未读。
-- `/api/domains/{domain_id}/stories/{story_identity_id}`：返回完全固定到所选 revision 的可读航迹、相对最后阅读位置的具名更新、实质历史与聚合审计。
+- `/api/domains/{domain_id}/stories/{story_identity_id}`：返回当前可读航迹、最近实质更新时间、关注和最后显式阅读状态。
 - `/api/domains/{domain_id}/stories/{story_identity_id}/edges/{edge_id}/support`：按选中关系懒加载 record revision 粒度的支持记录，并校验域、身份与快照边界。
 - `/api/domains/{domain_id}/evidence/{revision_id}`：证据上下文与精确播放/字符区间语义。
 - `/api/domains/{domain_id}/source-records/{video_id}/semantic-references`：来源记录反查语义对象与简报。

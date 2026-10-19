@@ -16,18 +16,16 @@ import uuid
 from typing import Any, Callable, Iterable, Iterator, Sequence
 
 import numpy as np
-from sqlalchemy import and_, case, func, insert, select, text, update
+from sqlalchemy import and_, case, func, insert, or_, select, text, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from raelyn.config import settings
 from raelyn.jobs.progress import set_job_progress
 from raelyn.jobs.reschedule import JobReschedule, JobTerminalFailure
 from raelyn.models import (
     EventMapCanonical,
-    EventMapCanonicalHistoryMember,
-    EventMapCanonicalHistoryRevision,
     EventMapCanonicalIdentity,
     EventMapCanonicalLineage,
     EventMapCanonicalMember,
@@ -38,8 +36,6 @@ from raelyn.models import (
     EventMapState,
     EventMapStory,
     EventMapStoryEdge,
-    EventMapStoryHistoryEvidence,
-    EventMapStoryHistoryRevision,
     EventMapStoryIdentity,
     EventMapStoryMember,
     EventMapTopic,
@@ -53,7 +49,6 @@ from raelyn.models import (
     Playlist,
     PlaylistMedia,
     Video,
-    EventMapChange,
 )
 from raelyn.services.embeddings import embedding_spec
 from raelyn.services.event_map_domain import (
@@ -96,18 +91,6 @@ _EPOCH_ORDINAL = date(1970, 1, 1).toordinal()
 _REVISION_NAMESPACE = uuid.UUID("7b2dc245-efbf-45a5-bafb-ce249f18fd35")
 _CANONICAL_NAMESPACE = uuid.UUID("0953638d-05dd-42a3-a3a0-a7649b36e7e3")
 _STORY_IDENTITY_NAMESPACE = uuid.UUID("f339dbbc-c4d2-4635-811a-9a53644145e4")
-_CHANGE_NAMESPACE = uuid.UUID("195f0e28-5b28-4f49-9d40-ec6ae6b384db")
-_HISTORY_NAMESPACE = uuid.UUID("e2a889f7-89e6-4438-aae2-1bf3a2992df5")
-STORY_MATERIAL_CHANGE_TYPES = frozenset(
-    {
-        "story_added",
-        "story_members_changed",
-        "story_relations_changed",
-        "story_evidence_changed",
-        "story_correction_added",
-        "story_maturity_changed",
-    }
-)
 _STORY_RELATION_METRIC_KEYS = frozenset(
     {
         "cosine",
@@ -1258,86 +1241,6 @@ def _assign_story_identities(
     return identities, states
 
 
-def _relink_legacy_story_identities_for_bootstrap(
-    session: Session,
-    *,
-    snapshot_id: uuid.UUID,
-    parent_snapshot_id: uuid.UUID | None,
-) -> int:
-    """把迁移前相邻快照的一次性 story_id 保守连接为稳定身份。"""
-
-    if parent_snapshot_id is None:
-        return 0
-
-    def memberships(target_snapshot_id: uuid.UUID) -> dict[uuid.UUID, tuple[uuid.UUID, set[uuid.UUID]]]:
-        rows = session.execute(
-            select(
-                EventMapStory.story_id,
-                EventMapStory.story_identity_id,
-                EventMapStoryMember.canonical_id,
-            )
-            .join(
-                EventMapStoryMember,
-                and_(
-                    EventMapStoryMember.snapshot_id == EventMapStory.snapshot_id,
-                    EventMapStoryMember.story_id == EventMapStory.story_id,
-                ),
-            )
-            .where(EventMapStory.snapshot_id == target_snapshot_id)
-        ).all()
-        output: dict[uuid.UUID, tuple[uuid.UUID, set[uuid.UUID]]] = {}
-        for story_id, identity_id, canonical_id in rows:
-            stable_id, members = output.setdefault(story_id, (identity_id or story_id, set()))
-            members.add(canonical_id)
-            output[story_id] = (stable_id, members)
-        return output
-
-    previous = memberships(parent_snapshot_id)
-    current = memberships(snapshot_id)
-    candidates: list[tuple[float, int, str, str, uuid.UUID, uuid.UUID]] = []
-    for current_story_id, (current_identity_id, current_members) in current.items():
-        # 新构建已经明确写入稳定身份时不再参与旧数据回填。
-        if current_identity_id != current_story_id:
-            continue
-        for _previous_story_id, (previous_identity_id, previous_members) in previous.items():
-            overlap = len(current_members & previous_members)
-            union = len(current_members | previous_members)
-            score = overlap / union if union else 0.0
-            exact_singleton = len(current_members) == len(previous_members) == overlap == 1
-            if not exact_singleton and (overlap < 2 or score < 0.6):
-                continue
-            candidates.append(
-                (
-                    score,
-                    overlap,
-                    str(previous_identity_id),
-                    str(current_story_id),
-                    current_story_id,
-                    previous_identity_id,
-                )
-            )
-
-    assigned_current: set[uuid.UUID] = set()
-    used_previous: set[uuid.UUID] = set()
-    for _score, _overlap, _previous_key, _current_key, current_story_id, previous_identity_id in sorted(
-        candidates,
-        key=lambda item: (-item[0], -item[1], item[2], item[3]),
-    ):
-        if current_story_id in assigned_current or previous_identity_id in used_previous:
-            continue
-        session.execute(
-            update(EventMapStory)
-            .where(
-                EventMapStory.snapshot_id == snapshot_id,
-                EventMapStory.story_id == current_story_id,
-            )
-            .values(story_identity_id=previous_identity_id)
-        )
-        assigned_current.add(current_story_id)
-        used_previous.add(previous_identity_id)
-    if assigned_current:
-        session.flush()
-    return len(assigned_current)
 
 
 def _build_snapshot_rows(
@@ -1688,68 +1591,6 @@ def _build_snapshot_rows(
     return result
 
 
-def _canonical_revision_payloads(
-    session: Session,
-    *,
-    snapshot_id: uuid.UUID,
-) -> dict[uuid.UUID, dict[str, Any]]:
-    payloads: dict[uuid.UUID, dict[str, Any]] = {}
-    for row in session.execute(
-        select(
-            EventMapCanonical.canonical_id,
-            EventMapCanonical.title,
-            EventMapCanonical.summary,
-            EventMapCanonical.event_type,
-            EventMapCanonical.event_time_start,
-            EventMapCanonical.event_time_end,
-            EventMapCanonical.time_precision,
-            EventMapCanonical.member_count,
-            EventMapCanonical.identity_state,
-            EventMapCanonical.uncertainty_flags,
-            EventMapCanonical.point_index,
-            EventMapCanonical.x,
-            EventMapCanonical.y,
-            EventMapCanonical.z,
-        ).where(EventMapCanonical.snapshot_id == snapshot_id)
-    ).mappings():
-        canonical_id = row["canonical_id"]
-        payloads[canonical_id] = {
-            "canonical_id": str(canonical_id),
-            "title": row["title"],
-            "summary": row["summary"],
-            "event_type": row["event_type"],
-            "event_time_start": _json_value(row["event_time_start"]),
-            "event_time_end": _json_value(row["event_time_end"]),
-            "time_precision": row["time_precision"],
-            "member_count": int(row["member_count"] or 0),
-            "identity_state": row["identity_state"],
-            "uncertainty_flags": list(row["uncertainty_flags"] or []),
-            "point_index": int(row["point_index"]),
-            "coordinates": [float(row["x"]), float(row["y"]), float(row["z"])],
-            "member_revision_ids": [],
-            "evidence_revision_ids": [],
-        }
-    for row in session.execute(
-        select(
-            EventMapCanonicalMember.canonical_id,
-            EventMapRecordRevision.id,
-            EventMapRecordRevision.evidence_json,
-        )
-        .join(
-            EventMapRecordRevision,
-            EventMapRecordRevision.id == EventMapCanonicalMember.record_revision_id,
-        )
-        .where(EventMapCanonicalMember.snapshot_id == snapshot_id)
-        .order_by(EventMapCanonicalMember.canonical_id, EventMapRecordRevision.id)
-    ).mappings():
-        payload = payloads.get(row["canonical_id"])
-        if payload is None:
-            continue
-        revision_id = str(row["id"])
-        payload["member_revision_ids"].append(revision_id)
-        if row["evidence_json"]:
-            payload["evidence_revision_ids"].append(revision_id)
-    return payloads
 
 
 def _story_revision_payloads(
@@ -1820,177 +1661,8 @@ def _story_revision_payloads(
     return payloads
 
 
-def _archive_payloads(
-    session: Session,
-    *,
-    snapshot_id: uuid.UUID | None,
-    object_type: str,
-) -> dict[uuid.UUID, dict[str, Any]]:
-    if snapshot_id is None:
-        return {}
-    if object_type == "canonical":
-        rows = session.execute(
-            select(EventMapCanonicalHistoryRevision).where(
-                EventMapCanonicalHistoryRevision.snapshot_id == snapshot_id
-            )
-        ).scalars().all()
-        if rows:
-            return {row.canonical_id: dict(row.revision or {}) for row in rows}
-        return _canonical_revision_payloads(session, snapshot_id=snapshot_id)
-    rows = session.execute(
-        select(EventMapStoryHistoryRevision).where(
-            EventMapStoryHistoryRevision.snapshot_id == snapshot_id
-        )
-    ).scalars().all()
-    if rows:
-        return {
-            row.story_identity_id: {
-                "story_identity_id": str(row.story_identity_id),
-                "story_id": str(row.story_id),
-                "title": row.title,
-                "summary": row.summary,
-                "story_type": row.story_type,
-                "anchor_key": row.anchor_key,
-                "maturity": row.maturity,
-                "quality_score": row.quality_score,
-                "event_time_start": _json_value(row.event_time_start),
-                "event_time_end": _json_value(row.event_time_end),
-                "member_ids": list(row.member_ids or []),
-                "edges": list(row.edges or []),
-                "evidence_revision_ids": list(row.evidence_revision_ids or []),
-            }
-            for row in rows
-        }
-    return _story_revision_payloads(session, snapshot_id=snapshot_id)
 
 
-def _change_row(
-    *,
-    playlist_id: uuid.UUID,
-    from_snapshot_id: uuid.UUID | None,
-    to_snapshot_id: uuid.UUID,
-    object_type: str,
-    object_id: uuid.UUID,
-    change_type: str,
-    occurred_at: datetime | None,
-    observed_at: datetime,
-    before: dict[str, Any] | None,
-    after: dict[str, Any] | None,
-) -> dict[str, Any]:
-    return {
-        "id": uuid.uuid5(
-            _CHANGE_NAMESPACE,
-            f"{to_snapshot_id}:{object_type}:{object_id}:{change_type}",
-        ),
-        "playlist_id": playlist_id,
-        "from_snapshot_id": from_snapshot_id,
-        "to_snapshot_id": to_snapshot_id,
-        "object_type": object_type,
-        "object_id": object_id,
-        "change_type": change_type,
-        "occurred_at": occurred_at,
-        "observed_at": observed_at,
-        "before_revision": before,
-        "after_revision": after,
-        "evidence_revision_ids": list((after or before or {}).get("evidence_revision_ids") or []),
-    }
-
-
-def _parse_payload_datetime(payload: dict[str, Any], key: str) -> datetime | None:
-    raw = payload.get(key)
-    if not raw:
-        return None
-    if isinstance(raw, datetime):
-        return raw
-    try:
-        return datetime.fromisoformat(str(raw))
-    except ValueError:
-        return None
-
-
-def _canonical_history_member_rows(
-    *,
-    playlist_id: uuid.UUID,
-    snapshot_id: uuid.UUID,
-    payloads: dict[uuid.UUID, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """把长期修订中的成员引用投影为可索引关系；JSONB 仍保留为修订正文。"""
-
-    rows: list[dict[str, Any]] = []
-    for canonical_id, payload in payloads.items():
-        history_revision_id = uuid.uuid5(
-            _HISTORY_NAMESPACE,
-            f"canonical:{snapshot_id}:{canonical_id}",
-        )
-        evidence_ids = set(payload.get("evidence_revision_ids") or [])
-        for raw_revision_id in payload.get("member_revision_ids") or []:
-            record_revision_id = uuid.UUID(str(raw_revision_id))
-            rows.append(
-                {
-                    "history_revision_id": history_revision_id,
-                    "record_revision_id": record_revision_id,
-                    "playlist_id": playlist_id,
-                    "canonical_id": canonical_id,
-                    "snapshot_id": snapshot_id,
-                    "is_evidence": str(record_revision_id) in evidence_ids,
-                }
-            )
-    return rows
-
-
-def _story_history_evidence_rows(
-    *,
-    playlist_id: uuid.UUID,
-    snapshot_id: uuid.UUID,
-    payloads: dict[uuid.UUID, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for story_identity_id, payload in payloads.items():
-        history_revision_id = uuid.uuid5(
-            _HISTORY_NAMESPACE,
-            f"story:{snapshot_id}:{story_identity_id}",
-        )
-        for edge in payload.get("edges") or []:
-            edge_id = uuid.UUID(str(edge["edge_id"]))
-            source_id = uuid.UUID(str(edge["source_canonical_id"]))
-            target_id = uuid.UUID(str(edge["target_canonical_id"]))
-            for raw_revision_id in edge.get("evidence_revision_ids") or []:
-                rows.append(
-                    {
-                        "history_revision_id": history_revision_id,
-                        "edge_id": edge_id,
-                        "record_revision_id": uuid.UUID(str(raw_revision_id)),
-                        "playlist_id": playlist_id,
-                        "story_identity_id": story_identity_id,
-                        "snapshot_id": snapshot_id,
-                        "source_canonical_id": source_id,
-                        "target_canonical_id": target_id,
-                        "relation_type": str(edge.get("relation_type") or "related"),
-                    }
-                )
-    return rows
-
-
-def _story_has_new_correction(
-    before: dict[str, Any],
-    after: dict[str, Any],
-) -> bool:
-    """只把新增且显式标为 corrects 的有证据关系识别为纠正。"""
-
-    def edge_key(edge: dict[str, Any]) -> tuple[str, str, str]:
-        return (
-            str(edge.get("source_canonical_id") or ""),
-            str(edge.get("target_canonical_id") or ""),
-            str(edge.get("relation_type") or ""),
-        )
-
-    previous = {edge_key(dict(edge)) for edge in (before.get("edges") or [])}
-    return any(
-        edge_key(dict(edge)) not in previous
-        and str(edge.get("relation_type") or "").strip().lower() == "corrects"
-        and bool(edge.get("evidence_revision_ids"))
-        for edge in (after.get("edges") or [])
-    )
 
 
 def _story_relation_material_projection(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2051,292 +1723,89 @@ def _story_support_material_projection(payload: dict[str, Any]) -> list[dict[str
     )
 
 
-def _story_change_types(
-    before: dict[str, Any] | None,
-    after: dict[str, Any],
-) -> list[str]:
-    """区分会恢复未读的事实变化与只供审计的文案变化。"""
-
+def _story_has_material_update(before: dict[str, Any] | None, after: dict[str, Any]) -> bool:
     if before is None:
-        return ["story_added"]
-
-    change_types: list[str] = []
-    if list(before.get("member_ids") or []) != list(after.get("member_ids") or []):
-        change_types.append("story_members_changed")
-    if _story_relation_material_projection(before) != _story_relation_material_projection(after):
-        change_types.append("story_relations_changed")
-        if _story_has_new_correction(before, after):
-            change_types.append("story_correction_added")
-    if _story_support_material_projection(before) != _story_support_material_projection(after):
-        change_types.append("story_evidence_changed")
-    if str(before.get("maturity") or "") != str(after.get("maturity") or ""):
-        change_types.append("story_maturity_changed")
-    if before.get("summary") != after.get("summary") or before.get("title") != after.get("title"):
-        change_types.append("story_summary_changed")
-    return change_types
+        return True
+    return (
+        list(before.get("member_ids") or []) != list(after.get("member_ids") or [])
+        or _story_relation_material_projection(before) != _story_relation_material_projection(after)
+        or _story_support_material_projection(before) != _story_support_material_projection(after)
+        or before.get("maturity") != after.get("maturity")
+    )
 
 
-def _persist_v2_history_and_changes(
+def _update_current_identity_metadata(
     session: Session,
     *,
     playlist_id: uuid.UUID,
     snapshot_id: uuid.UUID,
     parent_snapshot_id: uuid.UUID | None,
     observed_at: datetime,
-    layout_continuity: str,
 ) -> None:
-    """在原子发布前写入可长期保留的对象修订和幂等变化集。"""
+    """发布前只更新身份状态与未读时间，不归档全量场景。"""
 
-    current_canonicals = _canonical_revision_payloads(session, snapshot_id=snapshot_id)
-    previous_canonicals = _archive_payloads(
-        session,
-        snapshot_id=parent_snapshot_id,
-        object_type="canonical",
+    previous = aliased(EventMapCanonical)
+    current = EventMapCanonical
+    business_fields = (
+        "title", "summary", "event_type", "event_time_start", "event_time_end",
+        "time_precision", "representative_revision_id", "member_count", "uncertainty_flags",
     )
-    canonical_history_rows = [
-        {
-            "id": uuid.uuid5(_HISTORY_NAMESPACE, f"canonical:{snapshot_id}:{canonical_id}"),
-            "playlist_id": playlist_id,
-            "canonical_id": canonical_id,
-            "snapshot_id": snapshot_id,
-            "revision": payload,
-            "occurred_at": _parse_payload_datetime(payload, "event_time_start"),
-            "observed_at": observed_at,
-        }
-        for canonical_id, payload in current_canonicals.items()
-    ]
-    _insert_ignore_batched(session, EventMapCanonicalHistoryRevision, canonical_history_rows)
-    _insert_ignore_batched(
-        session,
-        EventMapCanonicalHistoryMember,
-        _canonical_history_member_rows(
-            playlist_id=playlist_id,
-            snapshot_id=snapshot_id,
-            payloads=current_canonicals,
+    changed_ids = select(current.canonical_id).outerjoin(
+        previous,
+        and_(previous.snapshot_id == parent_snapshot_id, previous.canonical_id == current.canonical_id),
+    ).where(
+        current.snapshot_id == snapshot_id,
+    )
+    current_member = aliased(EventMapCanonicalMember)
+    previous_member = aliased(EventMapCanonicalMember)
+    new_support = select(current_member.record_revision_id).where(
+        current_member.snapshot_id == snapshot_id,
+        current_member.canonical_id == current.canonical_id,
+        ~select(previous_member.record_revision_id).where(
+            previous_member.snapshot_id == parent_snapshot_id,
+            previous_member.canonical_id == current.canonical_id,
+            previous_member.record_revision_id == current_member.record_revision_id,
+        ).correlate(current, current_member).exists(),
+    ).correlate(current).exists()
+    changed_ids = changed_ids.where(or_(
+        previous.canonical_id.is_(None), new_support, *(
+            getattr(current, field).is_distinct_from(getattr(previous, field))
+            for field in business_fields
         ),
-    )
-
-    changes: list[dict[str, Any]] = []
-    for canonical_id, after in current_canonicals.items():
-        before = previous_canonicals.get(canonical_id)
-        occurred_at = _parse_payload_datetime(after, "event_time_start")
-        if before is None:
-            changes.append(
-                _change_row(
-                    playlist_id=playlist_id,
-                    from_snapshot_id=parent_snapshot_id,
-                    to_snapshot_id=snapshot_id,
-                    object_type="canonical",
-                    object_id=canonical_id,
-                    change_type="canonical_added",
-                    occurred_at=occurred_at,
-                    observed_at=observed_at,
-                    before=None,
-                    after=after,
-                )
-            )
-            continue
-        content_keys = ("title", "summary", "event_type", "event_time_start", "event_time_end", "time_precision")
-        if any(before.get(key) != after.get(key) for key in content_keys):
-            changes.append(_change_row(playlist_id=playlist_id, from_snapshot_id=parent_snapshot_id, to_snapshot_id=snapshot_id, object_type="canonical", object_id=canonical_id, change_type="canonical_updated", occurred_at=occurred_at, observed_at=observed_at, before=before, after=after))
-        if set(before.get("member_revision_ids") or []) != set(after.get("member_revision_ids") or []):
-            changes.append(_change_row(playlist_id=playlist_id, from_snapshot_id=parent_snapshot_id, to_snapshot_id=snapshot_id, object_type="canonical", object_id=canonical_id, change_type="canonical_members_changed", occurred_at=occurred_at, observed_at=observed_at, before=before, after=after))
-        if set(before.get("evidence_revision_ids") or []) != set(after.get("evidence_revision_ids") or []):
-            changes.append(_change_row(playlist_id=playlist_id, from_snapshot_id=parent_snapshot_id, to_snapshot_id=snapshot_id, object_type="canonical", object_id=canonical_id, change_type="canonical_evidence_changed", occurred_at=occurred_at, observed_at=observed_at, before=before, after=after))
-
-    lineage_by_predecessor: dict[uuid.UUID, list[dict[str, Any]]] = defaultdict(list)
-    for row in session.execute(
-        select(EventMapCanonicalLineage).where(EventMapCanonicalLineage.snapshot_id == snapshot_id)
-    ).scalars():
-        detail = {
-            "predecessor_canonical_id": str(row.predecessor_canonical_id),
-            "successor_canonical_id": str(row.successor_canonical_id),
-            "relation_type": row.relation_type,
-            "confidence": row.confidence,
-        }
-        lineage_by_predecessor[row.predecessor_canonical_id].append(detail)
-        successor_after = current_canonicals.get(row.successor_canonical_id)
-        changes.append(_change_row(playlist_id=playlist_id, from_snapshot_id=parent_snapshot_id, to_snapshot_id=snapshot_id, object_type="canonical", object_id=row.successor_canonical_id, change_type=f"canonical_{row.relation_type}", occurred_at=_parse_payload_datetime(successor_after or {}, "event_time_start"), observed_at=observed_at, before={"lineage": detail}, after=successor_after))
-
-    retired_canonical_ids = set(previous_canonicals) - set(current_canonicals)
-    for canonical_id in retired_canonical_ids:
-        before = previous_canonicals[canonical_id]
-        after = {"lineage": lineage_by_predecessor.get(canonical_id, [])}
-        changes.append(_change_row(playlist_id=playlist_id, from_snapshot_id=parent_snapshot_id, to_snapshot_id=snapshot_id, object_type="canonical", object_id=canonical_id, change_type="canonical_retired", occurred_at=_parse_payload_datetime(before, "event_time_start"), observed_at=observed_at, before=before, after=after))
-    if retired_canonical_ids:
-        session.execute(
-            update(EventMapCanonicalIdentity)
-            .where(EventMapCanonicalIdentity.id.in_(retired_canonical_ids))
-            .values(status="retired", retired_snapshot_id=snapshot_id, updated_at=observed_at)
+    ))
+    session.execute(update(EventMapCanonicalIdentity).where(
+        EventMapCanonicalIdentity.id.in_(changed_ids),
+    ).values(status="active", retired_snapshot_id=None, updated_at=observed_at))
+    if parent_snapshot_id is not None:
+        retired_ids = select(previous.canonical_id).where(
+            previous.snapshot_id == parent_snapshot_id,
+            ~select(current.canonical_id).where(
+                current.snapshot_id == snapshot_id,
+                current.canonical_id == previous.canonical_id,
+            ).exists(),
         )
+        session.execute(update(EventMapCanonicalIdentity).where(
+            EventMapCanonicalIdentity.id.in_(retired_ids),
+        ).values(status="retired", retired_snapshot_id=snapshot_id, updated_at=observed_at))
 
     current_stories = _story_revision_payloads(session, snapshot_id=snapshot_id)
-    previous_stories = _archive_payloads(
-        session,
-        snapshot_id=parent_snapshot_id,
-        object_type="story",
-    )
-    story_history_rows: list[dict[str, Any]] = []
-    for identity_id, payload in current_stories.items():
-        evidence_ids = sorted(set(payload.get("evidence_revision_ids") or []))
-        story_history_rows.append(
-            {
-                "id": uuid.uuid5(_HISTORY_NAMESPACE, f"story:{snapshot_id}:{identity_id}"),
-                "playlist_id": playlist_id,
-                "story_identity_id": identity_id,
-                "snapshot_id": snapshot_id,
-                "story_id": uuid.UUID(payload["story_id"]),
-                "title": payload["title"],
-                "summary": payload.get("summary"),
-                "story_type": payload.get("story_type") or "trajectory",
-                "anchor_key": payload.get("anchor_key"),
-                "maturity": payload.get("maturity") or "emerging",
-                "quality_score": payload.get("quality_score"),
-                "event_time_start": _parse_payload_datetime(payload, "event_time_start"),
-                "event_time_end": _parse_payload_datetime(payload, "event_time_end"),
-                "member_ids": list(payload.get("member_ids") or []),
-                "edges": list(payload.get("edges") or []),
-                "evidence_revision_ids": evidence_ids,
-                "method_version": EVENT_MAP_STORY_VERSION,
-                "observed_at": observed_at,
-            }
-        )
-        before = previous_stories.get(identity_id)
-        occurred_at = _parse_payload_datetime(payload, "event_time_end")
-        change_types = _story_change_types(before, payload)
-        for change_type in change_types:
-            changes.append(_change_row(playlist_id=playlist_id, from_snapshot_id=parent_snapshot_id, to_snapshot_id=snapshot_id, object_type="story", object_id=identity_id, change_type=change_type, occurred_at=occurred_at, observed_at=observed_at, before=before, after=payload))
-        if any(change_type in STORY_MATERIAL_CHANGE_TYPES for change_type in change_types):
-            session.execute(
-                update(EventMapStoryIdentity)
-                .where(EventMapStoryIdentity.id == identity_id)
-                .values(
-                    last_material_snapshot_id=snapshot_id,
-                    last_material_changed_at=observed_at,
-                    updated_at=observed_at,
-                )
-            )
-    _insert_ignore_batched(session, EventMapStoryHistoryRevision, story_history_rows)
-    _insert_ignore_batched(
-        session,
-        EventMapStoryHistoryEvidence,
-        _story_history_evidence_rows(
-            playlist_id=playlist_id,
-            snapshot_id=snapshot_id,
-            payloads=current_stories,
-        ),
-    )
-
+    previous_stories = _story_revision_payloads(session, snapshot_id=parent_snapshot_id) if parent_snapshot_id else {}
+    updated_ids = [identity_id for identity_id, payload in current_stories.items()
+                   if _story_has_material_update(previous_stories.get(identity_id), payload)]
+    if updated_ids:
+        session.execute(update(EventMapStoryIdentity).where(
+            EventMapStoryIdentity.id.in_(updated_ids),
+        ).values(status="active", retired_snapshot_id=None,
+                 last_material_snapshot_id=snapshot_id,
+                 last_material_changed_at=observed_at, updated_at=observed_at))
     retired_story_ids = set(previous_stories) - set(current_stories)
-    for identity_id in retired_story_ids:
-        before = previous_stories[identity_id]
-        changes.append(_change_row(playlist_id=playlist_id, from_snapshot_id=parent_snapshot_id, to_snapshot_id=snapshot_id, object_type="story", object_id=identity_id, change_type="story_retired", occurred_at=_parse_payload_datetime(before, "event_time_end"), observed_at=observed_at, before=before, after=None))
     if retired_story_ids:
-        session.execute(
-            update(EventMapStoryIdentity)
-            .where(EventMapStoryIdentity.id.in_(retired_story_ids))
-            .values(status="retired", retired_snapshot_id=snapshot_id, updated_at=observed_at)
-        )
-
-    if parent_snapshot_id and layout_continuity == "rebased":
-        changes.append(_change_row(playlist_id=playlist_id, from_snapshot_id=parent_snapshot_id, to_snapshot_id=snapshot_id, object_type="field", object_id=playlist_id, change_type="layout_rebased", occurred_at=None, observed_at=observed_at, before={"snapshot_id": str(parent_snapshot_id)}, after={"snapshot_id": str(snapshot_id), "layout_continuity": layout_continuity}))
-    _insert_ignore_batched(session, EventMapChange, changes)
+        session.execute(update(EventMapStoryIdentity).where(
+            EventMapStoryIdentity.id.in_(retired_story_ids),
+        ).values(status="retired", retired_snapshot_id=snapshot_id, updated_at=observed_at))
     session.flush()
 
 
-def bootstrap_v2_event_map_history(session: Session) -> int:
-    """为部署前仍保留的 ready 快照补齐 V2 长期历史；只做幂等加法写入。"""
-
-    snapshots = session.execute(
-        select(EventMapSnapshot)
-        .where(EventMapSnapshot.status == "ready")
-        .order_by(
-            EventMapSnapshot.playlist_id.asc(),
-            EventMapSnapshot.finished_at.asc().nullsfirst(),
-            EventMapSnapshot.id.asc(),
-        )
-    ).scalars().all()
-    completed = 0
-    for snapshot in snapshots:
-        exists = session.execute(
-            select(EventMapCanonicalHistoryRevision.id)
-            .where(EventMapCanonicalHistoryRevision.snapshot_id == snapshot.id)
-            .limit(1)
-        ).scalar_one_or_none()
-        if exists is None:
-            _relink_legacy_story_identities_for_bootstrap(
-                session,
-                snapshot_id=snapshot.id,
-                parent_snapshot_id=snapshot.parent_snapshot_id,
-            )
-        if exists is not None:
-            # 历史关系索引以观测域开头；仅按 snapshot_id 检查会扫描跨域历史。
-            membership_exists = session.execute(
-                select(EventMapCanonicalHistoryMember.history_revision_id)
-                .where(
-                    EventMapCanonicalHistoryMember.playlist_id == snapshot.playlist_id,
-                    EventMapCanonicalHistoryMember.snapshot_id == snapshot.id,
-                )
-                .limit(1)
-            ).scalar_one_or_none()
-            if membership_exists is None:
-                revisions = session.execute(
-                    select(EventMapCanonicalHistoryRevision).where(
-                        EventMapCanonicalHistoryRevision.snapshot_id == snapshot.id
-                    )
-                ).scalars().all()
-                _insert_ignore_batched(
-                    session,
-                    EventMapCanonicalHistoryMember,
-                    _canonical_history_member_rows(
-                        playlist_id=snapshot.playlist_id,
-                        snapshot_id=snapshot.id,
-                        payloads={row.canonical_id: dict(row.revision or {}) for row in revisions},
-                    ),
-                )
-                completed += 1
-            story_evidence_exists = session.execute(
-                select(EventMapStoryHistoryEvidence.history_revision_id)
-                .where(
-                    EventMapStoryHistoryEvidence.playlist_id == snapshot.playlist_id,
-                    EventMapStoryHistoryEvidence.snapshot_id == snapshot.id,
-                )
-                .limit(1)
-            ).scalar_one_or_none()
-            if story_evidence_exists is None:
-                story_revisions = session.execute(
-                    select(EventMapStoryHistoryRevision).where(
-                        EventMapStoryHistoryRevision.snapshot_id == snapshot.id
-                    )
-                ).scalars().all()
-                _insert_ignore_batched(
-                    session,
-                    EventMapStoryHistoryEvidence,
-                    _story_history_evidence_rows(
-                        playlist_id=snapshot.playlist_id,
-                        snapshot_id=snapshot.id,
-                        payloads={
-                            row.story_identity_id: {
-                                "edges": list(row.edges or []),
-                            }
-                            for row in story_revisions
-                        },
-                    ),
-                )
-                if story_revisions:
-                    completed += 1
-            continue
-        observed_at = snapshot.finished_at or snapshot.created_at or utcnow()
-        _persist_v2_history_and_changes(
-            session,
-            playlist_id=snapshot.playlist_id,
-            snapshot_id=snapshot.id,
-            parent_snapshot_id=snapshot.parent_snapshot_id,
-            observed_at=observed_at,
-            layout_continuity=snapshot.layout_continuity,
-        )
-        completed += 1
-    return completed
 
 
 def _ensure_event_map_state(session: Session, playlist_id: uuid.UUID) -> EventMapState:
@@ -2533,8 +2002,6 @@ def _build_event_map_snapshot_locked(
     try:
         with tempfile.TemporaryDirectory(prefix=f"raelyn-event-map-{playlist_id}-") as raw_directory:
             directory = Path(raw_directory)
-            if shutil.disk_usage(directory).free < EVENT_MAP_MIN_TEMP_FREE_BYTES:
-                raise JobTerminalFailure("event map build requires at least 5 GiB temporary free space")
 
             def progress(value: int) -> None:
                 _checkpoint(
@@ -2914,13 +2381,12 @@ def _build_event_map_snapshot_locked(
             if len(rows["canonical"]) != canonical_count:
                 raise JobTerminalFailure("event map canonical count mismatch")
             finished_at = utcnow()
-            _persist_v2_history_and_changes(
+            _update_current_identity_metadata(
                 session,
                 playlist_id=playlist_id,
                 snapshot_id=snapshot.id,
                 parent_snapshot_id=parent_snapshot_id,
                 observed_at=finished_at,
-                layout_continuity=layout_continuity,
             )
             snapshot.status = "ready"
             snapshot.layout_continuity = layout_continuity
@@ -3014,6 +2480,8 @@ def build_event_map_snapshot(
     playlist_id: uuid.UUID,
     job: Job | None = None,
 ) -> dict[str, Any]:
+    if shutil.disk_usage(tempfile.gettempdir()).free < EVENT_MAP_MIN_TEMP_FREE_BYTES:
+        raise JobReschedule(delay_seconds=300, reason="event map build requires at least 5 GiB temporary free space")
     with _event_map_build_lock(session) as acquired:
         if not acquired:
             raise JobReschedule(delay_seconds=60, reason="another event map build holds the global resource slot")

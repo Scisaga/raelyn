@@ -742,7 +742,7 @@ export function createV2ViewMethods() {
 
     fieldObservationRailActionLabel() {
       if (this.playlistEventMapSelectedId && this.fieldObservationRailOpen) return "返回变化";
-      return "星域变化";
+      return "近期内容";
     },
 
     fieldInspectorCloseLabel() {
@@ -765,14 +765,13 @@ export function createV2ViewMethods() {
     },
 
     fieldFeedItemTitle(item) {
-      return item?.title || item?.after_revision?.title || item?.after_revision?.summary || item?.change_type || "语义对象变化";
+      return item?.title || "最新内容";
     },
 
     fieldFeedItemKindLabel(item) {
-      if (item?.change_type) return this.fieldChangeTypeLabel(item.change_type);
       if (this.fieldObservationRailTab === "newly_occurred") return "事件发生";
       if (this.fieldObservationRailTab === "needs_review") return "待验证";
-      return "系统认知变化";
+      return this.fieldObservationRailTab === "story_updates" ? "故事更新" : "事件收录或更新";
     },
 
     fieldFeedEmptyLabel() {
@@ -852,9 +851,7 @@ export function createV2ViewMethods() {
       const domainId = String(this.selectedPlaylistId || "").trim();
       const initialSnapshotId = String(this.playlistEventMapSnapshotId || "").trim();
       const initialRequestedSnapshotId = String(this.fieldRequestedSnapshotId || "");
-      const targetSnapshotId = String(
-        item.after_revision ? item.to_snapshot_id || "" : item.from_snapshot_id || ""
-      );
+      const targetSnapshotId = String(item.snapshot_id || "");
       const switchesSnapshot = Boolean(targetSnapshotId && targetSnapshotId !== initialSnapshotId);
       const continuesPendingNavigation = switchesSnapshot
         && this.fieldSnapshotNavigationStillPending(initialSnapshotId, initialRequestedSnapshotId);
@@ -917,7 +914,7 @@ export function createV2ViewMethods() {
         if (!requestStillCurrent()) return false;
       }
       const selected = item.object_type === "canonical"
-        ? await this.fieldOpenCanonical(item.object_id, item.after_revision?.point_index, {
+        ? await this.fieldOpenCanonical(item.object_id, item.point_index, {
           requestGuard: requestStillCurrent,
           selectionToken: fieldSelectionToken,
         })
@@ -928,31 +925,6 @@ export function createV2ViewMethods() {
       if (selected !== true || !requestStillCurrent()) return false;
       this.fieldSelectedChange = item;
       return true;
-    },
-
-    fieldChangeTypeLabel(changeType) {
-      return {
-        canonical_added: "首次进入星域",
-        canonical_updated: "真实事件修订",
-        canonical_members_changed: "来源成员变化",
-        canonical_evidence_changed: "证据变化",
-        canonical_merge: "真实事件合并",
-        canonical_split: "真实事件拆分",
-        canonical_retired: "真实事件退休",
-        story_added: "新故事",
-        story_members_changed: "故事成员变化",
-        story_relations_changed: "故事关系变化",
-        story_evidence_changed: "故事证据变化",
-        story_summary_changed: "故事叙述修订",
-        story_correction_added: "有证据的纠正",
-        layout_rebased: "星域坐标重建",
-      }[String(changeType || "")] || String(changeType || "语义对象变化");
-    },
-
-    fieldChangeRevisionLabel(revision) {
-      if (!revision) return "无";
-      return revision.title || revision.summary ||
-        `${(revision.member_ids || revision.member_revision_ids || []).length} 个成员 · ${(revision.evidence_revision_ids || []).length} 份证据`;
     },
 
     async fieldOpenCanonical(canonicalId, pointIndex = null, { requestGuard = null, selectionToken = null } = {}) {
@@ -987,15 +959,11 @@ export function createV2ViewMethods() {
       let index = optionalPointIndex(pointIndex);
       if (!Number.isInteger(index)) {
         try {
-          const history = await this.api(
-            `/domains/${encodeURIComponent(domainId)}/canonicals/${encodeURIComponent(id)}/history`
+          const detail = await this.api(
+            `/domains/${encodeURIComponent(domainId)}/canonicals/${encodeURIComponent(id)}?snapshot_id=${encodeURIComponent(snapshotId)}`
           );
           if (!isCurrentRequest()) return false;
-          const revision = (history?.revisions || [])
-            .slice()
-            .reverse()
-            .find((item) => String(item.snapshot_id) === snapshotId);
-          index = optionalPointIndex(revision?.revision?.point_index);
+          index = optionalPointIndex(detail?.point_index);
         } catch {
           if (!isCurrentRequest()) return false;
           index = NaN;
@@ -1060,9 +1028,7 @@ export function createV2ViewMethods() {
       await storyDetailPromise;
       if (!isCurrentRequest() || Number(this._storyDetailRequestToken || 0) !== storyRequestToken) return false;
       const trajectorySnapshotId = String(this.storyTrajectory()?.snapshot_id || "");
-      const revision = (this.storyDetail?.revisions || []).find(
-        (item) => String(item.snapshot_id || "") === trajectorySnapshotId
-      ) || this.storyDetail?.revisions?.at(-1);
+      const revision = this.storySelectedRevision();
       const firstCanonicalId = revision?.member_ids?.[0];
       if (firstCanonicalId) {
         const canonicalSelected = await this.fieldOpenCanonical(firstCanonicalId, null, {
@@ -1289,7 +1255,6 @@ export function createV2ViewMethods() {
         this._fieldCursorSaveTimer = null;
         const domainId = String(this.selectedPlaylistId || "");
         if (!domainId) return;
-        const latestChange = this.fieldFeedItems()?.[0]?.id || null;
         const rawCameraState = this.playlistEventMapController()?.cameraState() || null;
         const cameraState = rawCameraState ? {
           ...rawCameraState,
@@ -1313,7 +1278,6 @@ export function createV2ViewMethods() {
           },
           selected_object_type: this.playlistEventMapSelectedKind || null,
           selected_object_id: this.playlistEventMapSelectedId || null,
-          last_change_id: latestChange,
         };
         try {
           await this.api(`/domains/${encodeURIComponent(domainId)}/observation/cursor`, {
@@ -1529,14 +1493,6 @@ export function createV2ViewMethods() {
       }
     },
 
-    async storySelectHistory(snapshotId) {
-      const id = String(snapshotId || "").trim();
-      if (!id || !this.storySelectedId) return;
-      this.storySelectedSnapshotId = id;
-      this.storySetSnapshotUrl(id);
-      await this.loadStoryDetail(this.storySelectedId, { snapshotId: id });
-    },
-
     async storyReturnCurrent() {
       if (!this.storySelectedId) return;
       this.storySelectedSnapshotId = "";
@@ -1551,13 +1507,7 @@ export function createV2ViewMethods() {
     },
 
     storySelectedRevision() {
-      const selected = this.storyDetail?.selected_revision;
-      if (selected?.revision) return { ...selected.revision, snapshot_id: selected.snapshot_id || selected.revision.snapshot_id };
-      if (selected) return selected;
-      const snapshotId = this.storyTrajectory()?.snapshot_id;
-      return (this.storyDetail?.revisions || []).find((item) => String(item.snapshot_id) === String(snapshotId))
-        || this.storyDetail?.revisions?.at(-1)
-        || null;
+      return this.storyDetail?.selected_revision || null;
     },
 
     storyTrajectory() {
@@ -1678,17 +1628,7 @@ export function createV2ViewMethods() {
 
     storyMaterialChangeLabel(item) {
       if (item?.baseline_suggestion) return "推荐阅读";
-      const types = item?.material_change_types || item?.change_types || (item?.last_material_change_type ? [item.last_material_change_type] : []);
-      const labels = {
-        story_added: "新故事",
-        story_members_changed: "事件更新",
-        story_relations_changed: "关系更新",
-        story_evidence_changed: "来源更新",
-        story_correction_added: "事实纠正",
-        story_maturity_changed: "成熟度更新",
-      };
-      const output = [...new Set(types.map((type) => labels[type]).filter(Boolean))];
-      return output.join(" · ") || (item?.unread ? "有新进展" : "已读");
+      return item?.unread ? "有新进展" : "已读";
     },
 
     storySupportRecordCount() {
@@ -1700,66 +1640,18 @@ export function createV2ViewMethods() {
       );
     },
 
-    storyReadingUpdateItems() {
-      const update = this.storyDetail?.reading_update || {};
-      if (Array.isArray(update.items)) return update.items.map((item) => typeof item === "string" ? item : item.label || item.description).filter(Boolean);
-      if (update.returned_to_previous_state) {
-        return ["期间发生过实质变化，当前故事结构已恢复到上次阅读时的状态"];
-      }
-      const output = [];
-      const eventLabel = (event) => event?.title || event?.label || "一个事件";
-      for (const event of update.events_added || update.members_added || []) output.push(`新增事件「${eventLabel(event)}」`);
-      for (const event of update.events_removed || update.members_removed || []) output.push(`移除事件「${eventLabel(event)}」`);
-      const relationLabel = (edge) => `${edge?.relation_label || this.storyRelationLabel(edge?.relation_type)}：${edge?.source_title || "源事件"} → ${edge?.target_title || "目标事件"}`;
-      for (const edge of update.relations_added || update.edges_added || []) output.push(`新增${relationLabel(edge)}`);
-      for (const edge of update.relations_removed || update.edges_removed || []) output.push(`移除${relationLabel(edge)}`);
-      for (const edge of update.relations_changed || []) {
-        output.push(`调整「${edge?.relation_label || this.storyRelationLabel(edge?.relation_type)}」依据：${edge?.source_title || "源事件"} → ${edge?.target_title || "目标事件"}`);
-      }
-      if (update.member_order_changed) output.push("事件发生顺序已调整");
-      const supportAdded = update.support_records_added_count ?? update.support_records_added ?? update.evidence_added;
-      const supportRemoved = update.support_records_removed_count ?? update.support_records_removed ?? update.evidence_removed;
-      if (Array.isArray(supportAdded) ? supportAdded.length : Number(supportAdded || 0)) output.push(`新增 ${Array.isArray(supportAdded) ? supportAdded.length : supportAdded} 份支持记录`);
-      if (Array.isArray(supportRemoved) ? supportRemoved.length : Number(supportRemoved || 0)) output.push(`移除 ${Array.isArray(supportRemoved) ? supportRemoved.length : supportRemoved} 份支持记录`);
-      if (update.support_assignments_changed) output.push("支持记录与关系的对应已调整");
-      if (update.maturity_change || update.maturity_changed) {
-        const maturity = update.maturity_change?.to || update.maturity_change?.after || update.maturity_to || update.maturity;
-        output.push(`故事成熟度更新为「${this.storyMaturityLabel(maturity)}」`);
-      }
-      if (update.correction_added || update.fact_corrected) output.push("新增事实纠正");
-      if ((update.change_types || []).includes("story_correction_added") && !output.includes("新增事实纠正")) output.push("新增事实纠正");
-      return output;
-    },
-
-    storyHasReadingUpdate() {
-      const update = this.storyDetail?.reading_update;
-      if (!update || update.baseline || update.is_first_read) return false;
-      if (update.has_material_changes === false || update.has_material_change === false) return false;
-      return this.storyReadingUpdateItems().length > 0;
-    },
-
     storyCanMarkRead() {
       if (this.storyIsHistorical() || this.storyDetail?.can_mark_read === false) return false;
-      if (this.storyDetail?.unread || this.storyHasReadingUpdate()) return true;
+      if (this.storyDetail?.unread) return true;
       return this.storyDetail?.can_mark_read === true && !this.storyDetail?.last_read_at;
     },
 
     storySuggestedStartIndex() {
-      const update = this.storyDetail?.reading_update || {};
       const nodes = this.storySortedNodes();
       const referenceFocusIndex = this.storyReferenceFocusIndex(nodes);
       if (referenceFocusIndex >= 0) return referenceFocusIndex;
-      const supplied = Number(update.first_new_position ?? update.first_added_position);
-      if (this.storyHasReadingUpdate() && Number.isInteger(supplied) && supplied >= 0) return Math.min(supplied, Math.max(0, nodes.length - 1));
-      const added = update.events_added || update.members_added || [];
-      if (this.storyHasReadingUpdate() && added.length) {
-        const ids = new Set(added.map((item) => String(item?.canonical_id || item?.id || item)));
-        const index = nodes.findIndex((node) => ids.has(String(node.canonical_id || node.id)));
-        if (index >= 0) return index;
-      }
-      const lastPosition = Number(this.storyDetail?.last_position);
-      if (!update.baseline && Number.isInteger(lastPosition) && lastPosition >= 0) return Math.min(lastPosition, Math.max(0, nodes.length - 1));
-      return 0;
+      const lastPosition = this.storyDetail?.last_position;
+      return Number.isInteger(lastPosition) ? Math.min(lastPosition, Math.max(0, nodes.length - 1)) : 0;
     },
 
     storyReferenceFocusIndex(nodes = this.storySortedNodes()) {
@@ -1786,10 +1678,6 @@ export function createV2ViewMethods() {
       const element = document.getElementById(`story-event-${normalized}`);
       element?.scrollIntoView?.({ block: "center", behavior });
       if (focus) element?.focus?.({ preventScroll: true });
-    },
-
-    storyContinueFromUpdate() {
-      this.storyScrollToIndex(this.storySuggestedStartIndex());
     },
 
     storyJumpLatest() {
@@ -2021,63 +1909,6 @@ export function createV2ViewMethods() {
       if (videoId) this.fieldOpenSourceRecord(videoId);
     },
 
-    storyRevisionDeltaLabel(revision) {
-      const delta = revision?.delta || {};
-      if (delta.baseline) return "首次识别到这条故事";
-      const added = (delta.members_added || []).length;
-      const removed = (delta.members_removed || []).length;
-      const edgeAdded = (delta.edges_added || []).length;
-      const edgeRemoved = (delta.edges_removed || []).length;
-      const evidenceAdded = (delta.evidence_added || []).length;
-      const evidenceRemoved = (delta.evidence_removed || []).length;
-      const parts = [];
-      if (added) parts.push(`新增 ${added} 个事件`);
-      if (removed) parts.push(`移除 ${removed} 个事件`);
-      if (delta.member_order_changed) parts.push("事件顺序调整");
-      if (edgeAdded) parts.push(`新增 ${edgeAdded} 条关系`);
-      if (edgeRemoved) parts.push(`移除 ${edgeRemoved} 条关系`);
-      if (delta.relation_details_changed) parts.push("关系依据调整");
-      if (evidenceAdded) parts.push(`新增 ${evidenceAdded} 份支持记录`);
-      if (evidenceRemoved) parts.push(`移除 ${evidenceRemoved} 份支持记录`);
-      if (delta.maturity_changed) parts.push("成熟度变化");
-      return parts.join(" · ") || "本次识别未发现实质变化";
-    },
-
-    storyRevisionDeltaExplanation(revision) {
-      if (revision?.delta?.baseline) return "系统首次把这些事件识别为同一条持续发展的故事。";
-      const label = this.storyRevisionDeltaLabel(revision);
-      if (label === "本次识别未发现实质变化") return "系统再次复核了这条故事，但事实结构没有变化。";
-      return `与上一次实质变化相比：${label.replaceAll(" · ", "；")}。`;
-    },
-
-    storyRevisionObservedAtLabel(revision) {
-      return localDateTimeLabel(revision?.observed_at || revision?.changed_at);
-    },
-
-    storyMaterialHistoryLabel(change) {
-      if (change?.label || change?.description) return change.label || change.description;
-      const labels = {
-        story_added: "故事首次形成",
-        story_members_changed: "事件成员发生变化",
-        story_relations_changed: "事件关系发生变化",
-        story_evidence_changed: "支持记录发生变化",
-        story_correction_added: "新增事实纠正",
-        story_maturity_changed: "故事成熟度发生变化",
-      };
-      if ((change?.change_types || []).includes("story_added")) {
-        const count = (change?.events_added || []).length;
-        return count ? `故事首次形成（${count} 个事件）` : "故事首次形成";
-      }
-      const delta = change?.delta || change || {};
-      const parts = [];
-      for (const event of delta.events_added || []) parts.push(`新增「${event?.title || "事件"}」`);
-      for (const event of delta.events_removed || []) parts.push(`移除「${event?.title || "事件"}」`);
-      for (const edge of delta.relations_added || []) parts.push(`新增${edge?.relation_label || this.storyRelationLabel(edge?.relation_type)}：${edge?.source_title || "源事件"} → ${edge?.target_title || "目标事件"}`);
-      for (const edge of delta.relations_removed || []) parts.push(`移除${edge?.relation_label || this.storyRelationLabel(edge?.relation_type)}：${edge?.source_title || "源事件"} → ${edge?.target_title || "目标事件"}`);
-      const typeLabels = (change?.change_types || []).map((type) => labels[type]).filter(Boolean);
-      return parts.join("；") || [...new Set(typeLabels)].join(" · ") || labels[change?.change_type] || this.storyRevisionDeltaLabel(change);
-    },
-
     storyBriefLabel(reference) {
       const granularity = { day: "日简报", week: "周简报", month: "月简报" }[reference?.granularity] || "相关简报";
       return `${granularity} · ${String(reference?.period_start || reference?.event_time_start || "").slice(0, 10) || "日期待确认"}`;
@@ -2159,27 +1990,8 @@ export function createV2ViewMethods() {
       return true;
     },
 
-    async briefResolveStoryFocusCanonicalId(reference, domainId, isCurrentRequest) {
-      const direct = String(
-        reference?.context?.focus_canonical_id || reference?.context?.target_canonical_id || ""
-      ).trim();
-      if (direct) return direct;
-      const storyId = String(reference?.object_id || "").trim();
-      const snapshotId = String(reference?.snapshot_id || "").trim();
-      const edgeId = String(reference?.context?.edge_id || "").trim();
-      if (!storyId || !snapshotId || !edgeId) return "";
-      try {
-        const detail = await this.api(
-          `/domains/${encodeURIComponent(domainId)}/stories/${encodeURIComponent(storyId)}?snapshot_id=${encodeURIComponent(snapshotId)}`
-        );
-        if (!isCurrentRequest()) return "";
-        const edge = (detail?.trajectory?.edges || []).find(
-          (item) => String(item?.edge_id || "") === edgeId
-        );
-        return String(edge?.target_canonical_id || "").trim();
-      } catch {
-        return "";
-      }
+    async briefResolveStoryFocusCanonicalId(reference) {
+      return String(reference?.context?.focus_canonical_id || reference?.context?.target_canonical_id || "").trim();
     },
 
     async briefOpenStoryReference(reference, domainId, isCurrentRequest) {
@@ -2208,7 +2020,9 @@ export function createV2ViewMethods() {
           this.storyReferenceFocusCanonicalId = previousStoryState.referenceFocusCanonicalId;
           this.storyDetail = previousStoryState.detail;
           this.storyFocusIndex = previousStoryState.focusIndex;
-          this.toastError?.(`无法打开故事：${error?.message || String(error)}`);
+          if (String(error?.message || "").startsWith("404:")) {
+            this.briefNavigateReferenceToField({ ...reference, object_type: "evidence", object_id: reference.evidence_revision_id }, "");
+          } else this.toastError?.(`无法打开故事：${error?.message || String(error)}`);
         }
         return;
       }
@@ -2224,7 +2038,7 @@ export function createV2ViewMethods() {
         this.toastPush?.({
           level: "info",
           title: "引用阶段已变化",
-          message: "该阶段已不在故事的当前航迹中；已打开故事最新进展，可在“故事变化”中查看当时版本。",
+          message: "该阶段已不在故事的当前航迹中；已打开故事最新进展，简报中保留了引用摘要和原始来源。",
         });
       }
     },
@@ -2232,31 +2046,19 @@ export function createV2ViewMethods() {
     async briefTryOpenCanonicalInCurrentField(reference, domainId, isCurrentRequest) {
       const objectId = String(reference?.object_id || "").trim();
       if (!objectId) return false;
-      const manifest = await this.api(
-        `/playlists/${encodeURIComponent(domainId)}/events/map/manifest?compact=true`
-      );
-      const currentSnapshotId = String(manifest?.snapshot_id || "").trim();
-      if (manifest?.status !== "ready" || !currentSnapshotId || !isCurrentRequest()) return false;
-      const history = await this.api(
-        `/domains/${encodeURIComponent(domainId)}/canonicals/${encodeURIComponent(objectId)}/history`
-      );
-      const existsInCurrent = (history?.revisions || []).some(
-        (revision) => String(revision?.snapshot_id || "") === currentSnapshotId
-      );
-      if (!existsInCurrent || !isCurrentRequest()) return false;
-      this.toastPush?.({
-        level: "info",
-        title: "历史星域已归档",
-        message: "该期三维快照已不可用，已在当前星域定位同一真实事件。",
-      });
-      return this.briefNavigateReferenceToField(reference, "");
+      try {
+        await this.api(`/domains/${encodeURIComponent(domainId)}/canonicals/${encodeURIComponent(objectId)}`);
+      } catch (error) {
+        if (String(error?.message || "").startsWith("404:")) return false;
+        throw error;
+      }
+      return isCurrentRequest() && this.briefNavigateReferenceToField(reference, "");
     },
 
     async briefOpenReference(reference) {
       if (!reference) return;
       const objectId = String(reference.object_id || "").trim();
       const objectType = String(reference.object_type || "").trim();
-      const snapshotId = String(reference.snapshot_id || "").trim();
       const domainId = String(this.selectedPlaylistId || this.playlistPageId || "").trim();
       if (["source", "source_record"].includes(objectType)) {
         if (this.activeView === "playlist" && typeof this.playlistSelectVideoById === "function") {
@@ -2287,58 +2089,17 @@ export function createV2ViewMethods() {
         await this.briefOpenStoryReference(reference, domainId, isCurrentRequest);
         return;
       }
-      if (!snapshotId) {
-        if (isCurrentRequest()) this.briefNavigateReferenceToField(reference, "");
-        return;
-      }
-
-      try {
-        await this.api(
-          `/playlists/${encodeURIComponent(domainId)}/events/map/manifest?compact=true&snapshot_id=${encodeURIComponent(snapshotId)}`
-        );
-        if (isCurrentRequest()) this.briefNavigateReferenceToField(reference, snapshotId);
-        return;
-      } catch (error) {
-        if (!isCurrentRequest()) return;
-        const message = error?.message || String(error);
-        if (!message.startsWith("409:")) {
-          this.toastError?.(`无法打开星域引用：${message}`);
-          return;
-        }
-      }
-
       if (objectType === "canonical") {
         try {
           if (await this.briefTryOpenCanonicalInCurrentField(reference, domainId, isCurrentRequest)) return;
         } catch (error) {
-          if (!isCurrentRequest()) return;
-          this.toastError?.(`无法确认当前星域中的同一真实事件：${error?.message || String(error)}`);
+          if (isCurrentRequest()) this.toastError?.(`无法读取事件：${error?.message || String(error)}`);
           return;
         }
       }
-
-      if (objectType === "evidence" && reference.context?.source_video_id) {
-        if (typeof this.playlistPlayBriefEvidence === "function") {
-          await this.playlistPlayBriefEvidence(
-            reference.evidence_revision_id || objectId,
-            String(reference.context.source_video_id)
-          );
-        } else {
-          await this.playlistSelectVideoById?.(String(reference.context.source_video_id));
-        }
-        if (!isCurrentRequest()) return;
-        this.toastPush?.({
-          level: "info",
-          title: "历史星域已归档",
-          message: "该期三维快照已不可用，已改为打开对应的来源视频。",
-        });
-        return;
+      if (isCurrentRequest() && reference.evidence_revision_id) {
+        this.briefNavigateReferenceToField({ ...reference, object_type: "evidence", object_id: reference.evidence_revision_id }, "");
       }
-
-      this.toastError?.(
-        "该引用对应的历史三维星域已不可用，且当前星域没有同一对象；仍可查看来源证据，或重建当前星域。",
-        { action: this.toastJobsAction?.() || null }
-      );
     },
 
     openBriefAtReference(reference) {
@@ -2764,14 +2525,28 @@ export function createV2ViewMethods() {
     },
 
     async loadOperations() {
-      await this.loadJobs();
-      const domainId = await this.ensureCurrentDomain();
-      if (domainId) {
-        try {
-          this.domainObservation = await this.api(`/domains/${encodeURIComponent(domainId)}/observation`);
-        } catch {
-          // 运行中心仍可在没有星域快照时展示任务。
+      await Promise.all([this.loadJobs(), this.loadOperationsObservation()]);
+    },
+
+    async loadOperationsObservation() {
+      const requestToken = ++this._operationsRequestToken;
+      this.domainObservationLoading = true;
+      this.domainObservationError = "";
+      try {
+        const domainId = await this.ensureCurrentDomain({ compact: true });
+        if (requestToken !== this._operationsRequestToken || this.activeView !== "operations") return;
+        if (String(this.domainObservation?.domain?.id || "") !== String(domainId)) this.domainObservation = null;
+        if (!domainId) return;
+        const observation = await this.api(`/domains/${encodeURIComponent(domainId)}/observation`);
+        if (requestToken !== this._operationsRequestToken || this.activeView !== "operations"
+          || String(this.selectedPlaylistId || "") !== String(domainId)) return;
+        this.domainObservation = observation;
+      } catch (error) {
+        if (requestToken === this._operationsRequestToken && this.activeView === "operations") {
+          this.domainObservationError = String(error?.message || error);
         }
+      } finally {
+        if (requestToken === this._operationsRequestToken) this.domainObservationLoading = false;
       }
     },
 

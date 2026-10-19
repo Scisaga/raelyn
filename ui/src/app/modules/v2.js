@@ -134,6 +134,7 @@ export function createV2Module() {
     briefBatchFrom: "",
     briefBatchTo: "",
     operationsActionSubmitting: "",
+    _operationsRequestToken: 0,
     semanticSearchQuery: "",
     semanticSearchOpen: false,
     semanticSearchLoading: false,

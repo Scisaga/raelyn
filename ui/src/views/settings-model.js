@@ -86,11 +86,116 @@ export function createSettingsViewMethods({ ytdlpFormatPreset1080, ytdlpFormatPr
       return "环境变量";
     },
 
+    setInferenceMode(mode) {
+      this.inferenceMode = mode;
+      this.inferenceTestResult = null;
+      this.inferenceError = "";
+    },
+
+    setLocalLlmProvider(provider) {
+      this.localLlmProvider = provider;
+      this.inferenceTestResult = null;
+      this.inferenceError = "";
+    },
+
+    localInferenceServiceStatus(kind) {
+      const provider = kind === "llm" ? this.localLlmProvider : "local";
+      const tested = this.inferenceTestResult;
+      if (tested?.mode === "local" && tested[kind]?.provider === provider) {
+        return { ...tested[kind], source: "request", tested: true };
+      }
+      const service = this.services[kind];
+      if (service.mode === "local" && service.provider === provider) return service;
+      return { ok: null, provider, source: "request", pending: true };
+    },
+
+    localInferenceServiceText(kind) {
+      const service = this.localInferenceServiceStatus(kind);
+      if (service.pending) return "待测试";
+      if (service.provider === "codex" && service.ok) return service.tested ? "可用" : "已就绪";
+      return this.serviceText(service);
+    },
+
+    codexBudgetPaused() {
+      return !!(this.codexBudget?.enabled && this.codexBudget.paused);
+    },
+
+    codexBudgetPercent(value) {
+      if (value == null) return "待确认";
+      return `${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(value)}%`;
+    },
+
+    codexBudgetDailyValue(key) {
+      const budget = this.codexBudget;
+      if (budget?.status === "quota_unavailable" && !budget.baseline_started_at) return null;
+      return budget?.[key];
+    },
+
+    codexBudgetStatusLabel() {
+      const budget = this.codexBudget;
+      if (!budget?.enabled) return "未启用每日额度保护";
+      const labels = {
+        daily_limit: budget.error ? "额度保护已挂起" : budget.reserve_percent > 0 ? "已达今日暂停阈值" : "已达今日上限",
+        weekly_limit: "本周额度用完",
+        quota_unavailable: "额度待确认",
+      };
+      return labels[budget.status] || "额度可用";
+    },
+
+    codexBudgetNotice() {
+      const budget = this.codexBudget;
+      if (!budget?.enabled) return "每日额度保护未启用。";
+      const status = budget.status;
+      if (status === "daily_limit") {
+        const reason = budget.error || (budget.reserve_percent > 0 ? "已达今日暂停阈值，预留额度不再用于新任务。" : "已达今日额度上限。");
+        return `${reason}AI 保留进度，次日自动继续；任务按新到旧处理，采集、下载与 ASR 不受影响。`;
+      }
+      if (status === "weekly_limit") return "本周订阅额度已用完，AI 等待周额度重置。任务按新到旧处理，采集、下载与 ASR 不受影响。";
+      if (status === "quota_unavailable") return `${budget.error || "暂时无法确认 Codex 订阅额度。"}AI 等待额度检查恢复。任务按新到旧处理，采集、下载与 ASR 不受影响。`;
+      return "每日可用额度用完后仅挂起 AI，保留进度，恢复后继续。任务按新到旧处理，采集、下载与 ASR 继续运行。";
+    },
+
+    codexBudgetTime(value) {
+      if (!value) return "待确认";
+      return new Intl.DateTimeFormat("zh-CN", {
+        timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hour12: false,
+      }).format(new Date(value));
+    },
+
+    codexBudgetResumeText() {
+      const budget = this.codexBudget;
+      if (budget?.resume_at) return `${this.codexBudgetTime(budget.resume_at)}（北京时间）`;
+      return budget?.status === "quota_unavailable" ? "额度检查恢复后自动继续" : "等待服务端确认";
+    },
+
+    codexBudgetResumeLabel() {
+      return this.codexBudget?.status === "quota_unavailable" ? "下次额度检查" : "自动恢复";
+    },
+
+    codexBudgetProgress() {
+      const budget = this.codexBudget;
+      if (this.codexBudgetDailyValue("used_percent") == null) return 0;
+      return Math.min(100, budget.used_percent / budget.effective_limit_percent * 100);
+    },
+
+    gotoInferenceSettings() {
+      this.settingsTab = "inference";
+      this.switchView("settings");
+      this.setSettingsTab("inference");
+    },
+
     applyInferenceConfigPayload(payload) {
       const inference = payload && typeof payload === "object" ? payload : {};
       const volcengine = inference.volcengine && typeof inference.volcengine === "object" ? inference.volcengine : {};
+      const codex = inference.codex || {};
       this.inferenceMode = String(inference.mode || "local").trim().toLowerCase() === "volcengine" ? "volcengine" : "local";
       this.inferenceModeSource = String(inference.mode_source || "env").trim().toLowerCase() || "env";
+      this.localLlmProvider = inference.local_llm_provider === "codex" ? "codex" : "local";
+      this.localLlmProviderSource = inference.local_llm_provider_source || "env";
+      this.codexModel = String(codex.model || "");
+      this.codexTimeoutSeconds = Number(codex.timeout_seconds || 600);
+      this.codexBudget = codex.budget || null;
       this.volcengineApiKeyMasked = String(volcengine.api_key_masked || "");
       this.volcengineApiKeyPresent = !!volcengine.api_key_present;
       this.volcengineLlmModel = String(volcengine.llm_model || "");
@@ -124,6 +229,7 @@ export function createSettingsViewMethods({ ytdlpFormatPreset1080, ytdlpFormatPr
     buildInferenceDraftPayload() {
       return {
         mode: this.inferenceMode === "volcengine" ? "volcengine" : "local",
+        local_llm_provider: this.localLlmProvider === "codex" ? "codex" : "local",
         volcengine: {
           api_key: String(this.volcengineApiKey || ""),
           llm_model: String(this.volcengineLlmModel || "").trim(),
@@ -150,7 +256,9 @@ export function createSettingsViewMethods({ ytdlpFormatPreset1080, ytdlpFormatPr
         await this.loadInferenceSettings({ force: true });
         await this._refreshHealthStatus({ silent: true });
         await this.loadSystemStatus({ silent: true });
-        this.globalStatus = this.inferenceMode === "volcengine" ? "已保存火山模式推理配置" : "已切换到本地模式";
+        this.globalStatus = this.inferenceMode === "volcengine"
+          ? "已保存火山模式推理配置"
+          : this.localLlmProvider === "codex" ? "已切换到 Codex，ASR 沿用本地服务" : "已切换到本地服务";
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
         this.inferenceError = msg;
@@ -164,12 +272,14 @@ export function createSettingsViewMethods({ ytdlpFormatPreset1080, ytdlpFormatPr
       try {
         this.inferenceTesting = true;
         this.inferenceError = "";
+        this.inferenceTestResult = null;
         const payload = this.buildInferenceDraftPayload();
         const result = await this.api(`/config/inference/test`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload),
         });
+        if (JSON.stringify(payload) !== JSON.stringify(this.buildInferenceDraftPayload())) return;
         this.inferenceTestResult = result;
         this.globalStatus = result && result.ok ? "推理连接测试通过" : "推理连接测试失败";
       } catch (e) {

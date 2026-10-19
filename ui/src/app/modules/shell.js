@@ -516,6 +516,7 @@ export function createShellModule({ apiTokenCookieKey, sidebarCollapsedKey, side
         }
         const inference = payload && payload.inference ? payload.inference : null;
         if (inference && typeof inference === "object") {
+          this.codexBudget = inference.codex?.budget || null;
           const volcengine = inference.volcengine && typeof inference.volcengine === "object" ? inference.volcengine : {};
           this.inference = {
             mode: String(inference.mode || "local"),

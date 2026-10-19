@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Literal
 
 from fastapi import APIRouter
 from fastapi import HTTPException
@@ -13,6 +14,7 @@ from raelyn.jobs.enqueue import enqueue_job
 from raelyn.models import AppConfig, Job, JobEvent, Media
 from raelyn.services.inference import INFERENCE_MODE_CONFIG_KEY
 from raelyn.services.inference import INFERENCE_MODES
+from raelyn.services.inference import LOCAL_LLM_PROVIDER_CONFIG_KEY
 from raelyn.services.inference import VOLCENGINE_INFERENCE_CONFIG_KEY
 from raelyn.services.inference import build_effective_asr_config_from_payload
 from raelyn.services.inference import build_effective_llm_config_from_payload
@@ -22,6 +24,7 @@ from raelyn.services.inference import check_llm_health
 from raelyn.services.inference import mask_secret
 from raelyn.services.inference import preserve_existing_volcengine_secrets
 from raelyn.services.inference import sanitize_config_value
+from raelyn.services.inference import save_local_llm_provider
 from raelyn.services.inference import test_asr_connection
 from raelyn.services.inference import test_llm_connection
 from raelyn.services.provider_cookies import cookie_config_key, looks_like_netscape_cookie_file
@@ -53,6 +56,7 @@ class ConfigUpsert(BaseModel):
 
 class InferenceSettingsPayload(BaseModel):
     mode: str
+    local_llm_provider: Literal["local", "codex"] | None = None
     volcengine: dict | None = None
 
 
@@ -93,6 +97,13 @@ def _schedule_cookie_recovery_sync(
         .limit(1)
     ).scalar_one_or_none()
     if pending:
+        if pending.params.get("max_entries") == 0:
+            # Cookies 恢复只改变认证方式，不能缩小已请求的全量范围或推迟补扫。
+            params["max_entries"] = 0
+            params["download_priority"] = max(int(pending.params.get("download_priority") or 0), 8)
+            if pending.params.get("enqueue_existing_downloads"):
+                params["enqueue_existing_downloads"] = True
+            scheduled_for = min(pending.scheduled_for, scheduled_for)
         pending.params = params
         pending.priority = max(int(pending.priority or 0), 5)
         pending.scheduled_for = scheduled_for
@@ -115,7 +126,7 @@ def _schedule_cookie_recovery_sync(
             message=event_message,
             data={
                 "provider": provider,
-                "max_entries": max_entries,
+                "max_entries": params["max_entries"],
                 "scheduled_for": scheduled_for.isoformat(),
             },
         )
@@ -219,6 +230,67 @@ def get_inference_config() -> dict:
         return build_inference_status(session)
 
 
+@router.put("/config/inference")
+def put_inference_config(payload: InferenceSettingsPayload) -> dict:
+    body = {"mode": payload.mode, "volcengine": payload.volcengine or {}}
+    _validate_inference_mode_value({"value": body["mode"]})
+    _validate_volcengine_inference_config_value(body["volcengine"])
+
+    with session_scope() as session:
+        mode_value = {"value": str(body["mode"]).strip().lower()}
+        existing_mode = session.get(AppConfig, INFERENCE_MODE_CONFIG_KEY)
+        if existing_mode:
+            existing_mode.value = mode_value
+            existing_mode.updated_at = utcnow()
+        else:
+            session.add(AppConfig(key=INFERENCE_MODE_CONFIG_KEY, value=mode_value))
+
+        if payload.local_llm_provider is not None:
+            save_local_llm_provider(session, payload.local_llm_provider)
+
+        merged_volc = preserve_existing_volcengine_secrets(body["volcengine"], session=session)
+        existing_volc = session.get(AppConfig, VOLCENGINE_INFERENCE_CONFIG_KEY)
+        if existing_volc:
+            existing_volc.value = merged_volc
+            existing_volc.updated_at = utcnow()
+        else:
+            session.add(AppConfig(key=VOLCENGINE_INFERENCE_CONFIG_KEY, value=merged_volc))
+
+        session.flush()
+        return {"ok": True, "data": build_inference_status(session)}
+
+
+@router.post("/config/inference/test")
+def test_inference_config(payload: InferenceSettingsPayload) -> dict:
+    body = {"mode": payload.mode, "volcengine": payload.volcengine or {}}
+    _validate_inference_mode_value({"value": body["mode"]})
+    _validate_volcengine_inference_config_value(body["volcengine"])
+
+    with session_scope() as session:
+        merged_volc = preserve_existing_volcengine_secrets(body["volcengine"], session=session)
+        test_payload = {"mode": body["mode"], "volcengine": merged_volc}
+        if payload.local_llm_provider is not None:
+            test_payload["local_llm_provider"] = payload.local_llm_provider
+        llm_cfg = build_effective_llm_config_from_payload(test_payload)
+        asr_cfg = build_effective_asr_config_from_payload(test_payload)
+        llm_test = test_llm_connection(llm_cfg) if llm_cfg.configured else check_llm_health(llm_cfg)
+        asr_test = test_asr_connection(asr_cfg) if asr_cfg.configured else check_asr_health(asr_cfg)
+        return {
+            "ok": bool(llm_test.get("ok") and asr_test.get("ok")),
+            "mode": str(body["mode"]).strip().lower(),
+            "volcengine": {
+                "api_key_masked": mask_secret(merged_volc.get("api_key")),
+                "api_key_present": bool(str(merged_volc.get("api_key") or "").strip()),
+                "asr_app_key_masked": mask_secret(merged_volc.get("asr_app_key")),
+                "asr_app_key_present": bool(str(merged_volc.get("asr_app_key") or "").strip()),
+                "asr_access_key_masked": mask_secret(merged_volc.get("asr_access_key")),
+                "asr_access_key_present": bool(str(merged_volc.get("asr_access_key") or "").strip()),
+            },
+            "llm": llm_test,
+            "asr": asr_test,
+        }
+
+
 @router.put("/config/{key}")
 def put_config(key: str, payload: ConfigUpsert) -> dict:
     with session_scope() as session:
@@ -245,6 +317,8 @@ def put_config(key: str, payload: ConfigUpsert) -> dict:
             value = normalize_brief_generation_policy(value)
         if key == INFERENCE_MODE_CONFIG_KEY:
             _validate_inference_mode_value(value)
+        if key == LOCAL_LLM_PROVIDER_CONFIG_KEY and value.get("value") not in ("local", "codex"):
+            raise HTTPException(status_code=400, detail="local_llm_provider.value must be one of: local, codex.")
         if key == VOLCENGINE_INFERENCE_CONFIG_KEY:
             _validate_volcengine_inference_config_value(value)
 
@@ -268,58 +342,3 @@ def put_config(key: str, payload: ConfigUpsert) -> dict:
                 clear_provider_pauses(session, providers=["bilibili"])
                 _enqueue_cookie_recovery_syncs(session, provider="bilibili")
     return {"ok": True}
-
-
-@router.put("/config/inference")
-def put_inference_config(payload: InferenceSettingsPayload) -> dict:
-    body = {"mode": payload.mode, "volcengine": payload.volcengine or {}}
-    _validate_inference_mode_value({"value": body["mode"]})
-    _validate_volcengine_inference_config_value(body["volcengine"])
-
-    with session_scope() as session:
-        mode_value = {"value": str(body["mode"]).strip().lower()}
-        existing_mode = session.get(AppConfig, INFERENCE_MODE_CONFIG_KEY)
-        if existing_mode:
-            existing_mode.value = mode_value
-            existing_mode.updated_at = utcnow()
-        else:
-            session.add(AppConfig(key=INFERENCE_MODE_CONFIG_KEY, value=mode_value))
-
-        merged_volc = preserve_existing_volcengine_secrets(body["volcengine"], session=session)
-        existing_volc = session.get(AppConfig, VOLCENGINE_INFERENCE_CONFIG_KEY)
-        if existing_volc:
-            existing_volc.value = merged_volc
-            existing_volc.updated_at = utcnow()
-        else:
-            session.add(AppConfig(key=VOLCENGINE_INFERENCE_CONFIG_KEY, value=merged_volc))
-
-        return {"ok": True, "data": build_inference_status(session)}
-
-
-@router.post("/config/inference/test")
-def test_inference_config(payload: InferenceSettingsPayload) -> dict:
-    body = {"mode": payload.mode, "volcengine": payload.volcengine or {}}
-    _validate_inference_mode_value({"value": body["mode"]})
-    _validate_volcengine_inference_config_value(body["volcengine"])
-
-    with session_scope() as session:
-        merged_volc = preserve_existing_volcengine_secrets(body["volcengine"], session=session)
-        test_payload = {"mode": body["mode"], "volcengine": merged_volc}
-        llm_cfg = build_effective_llm_config_from_payload(test_payload)
-        asr_cfg = build_effective_asr_config_from_payload(test_payload)
-        llm_test = test_llm_connection(llm_cfg) if llm_cfg.configured else check_llm_health(llm_cfg)
-        asr_test = test_asr_connection(asr_cfg) if asr_cfg.configured else check_asr_health(asr_cfg)
-        return {
-            "ok": bool(llm_test.get("ok") and asr_test.get("ok")),
-            "mode": str(body["mode"]).strip().lower(),
-            "volcengine": {
-                "api_key_masked": mask_secret(merged_volc.get("api_key")),
-                "api_key_present": bool(str(merged_volc.get("api_key") or "").strip()),
-                "asr_app_key_masked": mask_secret(merged_volc.get("asr_app_key")),
-                "asr_app_key_present": bool(str(merged_volc.get("asr_app_key") or "").strip()),
-                "asr_access_key_masked": mask_secret(merged_volc.get("asr_access_key")),
-                "asr_access_key_present": bool(str(merged_volc.get("asr_access_key") or "").strip()),
-            },
-            "llm": llm_test,
-            "asr": asr_test,
-        }

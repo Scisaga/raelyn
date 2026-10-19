@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 
+from sqlalchemy import and_, cast, Date, DateTime, literal
 from sqlalchemy import case
 from sqlalchemy import exists
 from sqlalchemy import func
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Session
 
-from raelyn.models import EventMapSnapshot, Job, JobEvent, Media, WorkerHeartbeat
+from raelyn.config import settings
+from raelyn.models import EventMapSnapshot, Job, JobEvent, Media, PlaylistMedia, Video, WorkerHeartbeat
+from raelyn.services.periods import local_date
 from raelyn.services.provider_pause import is_provider_paused, is_public_discovery_allowed_during_provider_pause, job_provider
 from raelyn.services.system_pause import is_paused
 from raelyn.services.worker_role_pause import is_worker_role_paused
@@ -50,6 +54,64 @@ _DIRECT_PROVIDER_JOB_TYPES = {
     "video.enrich_metadata.youtube": "youtube",
 }
 _YOUTUBE_DOWNLOAD_JOB_TYPE = "video.download.youtube"
+
+
+def _safe_claim_uuid(value):
+    return cast(case((func.pg_input_is_valid(value, "uuid"), value)), UUID(as_uuid=True))
+
+
+def _safe_claim_date(value):
+    valid = and_(value.op("~")("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"), func.pg_input_is_valid(value, "date"))
+    return cast(case((valid, value)), Date)
+
+
+def _ai_job_content_time(now: datetime):
+    single_time = (
+        select(Video.published_at)
+        .where(Video.id == _safe_claim_uuid(Job.params["video_id"].as_string()))
+        .correlate(Job)
+        .scalar_subquery()
+    )
+    video_ids = Job.params["video_ids"]
+    array = case((func.jsonb_typeof(video_ids) == "array", video_ids), else_=literal([], type_=JSONB))
+    members = func.jsonb_array_elements_text(array).table_valued("value").alias("batch_members")
+    batch_time = (
+        select(func.max(Video.published_at))
+        .select_from(Video)
+        .join(members, Video.id == _safe_claim_uuid(members.c.value))
+        .correlate(Job)
+        .scalar_subquery()
+    )
+    brief_date = _safe_claim_date(func.coalesce(
+        func.nullif(Job.params["period_start"].as_string(), ""), Job.params["date"].as_string(),
+    ))
+    range_end = _safe_claim_date(Job.params["range_end"].as_string())
+    range_date = case((range_end.is_not(None), func.least(range_end, local_date(now))))
+    playlist_time = (
+        select(func.max(Video.published_at))
+        .join(PlaylistMedia, PlaylistMedia.media_id == Video.media_id)
+        .where(PlaylistMedia.playlist_id == _safe_claim_uuid(Job.params["playlist_id"].as_string()))
+        .correlate(Job)
+        .scalar_subquery()
+    )
+    return case(
+        (Job.type.in_(["video.extract_events", "video.polish_transcript"]), single_time),
+        (Job.type == "video.extract_events_batch", batch_time),
+        (Job.type.in_(["brief.generate_daily", "brief.generate_period"]),
+         func.timezone(settings.timezone, cast(brief_date, DateTime))),
+        (Job.type == "playlist.backfill_events_range",
+         func.timezone(settings.timezone, cast(range_date, DateTime))),
+        (Job.type == "playlist.backfill_events", playlist_time),
+    )
+
+
+def _claim_order_by(type_in: list[str] | None, *, now: datetime):
+    rank = case(*[(Job.type == job_type, value) for job_type, value in _JOB_TYPE_RANK.items()], else_=10)
+    order = [Job.priority.desc(), rank.asc(), Job.scheduled_for.asc(), Job.created_at.desc(), Job.id.desc()]
+    if type_in and all(job_type_worker_role(job_type) == "ai" for job_type in type_in):
+        # 重投旧视频不会使它变成新内容；专职 AI worker 以业务时间先新后旧。
+        order.insert(0, _ai_job_content_time(now).desc().nulls_last())
+    return order
 
 
 def _finalize_requeued_event_map_execution(
@@ -442,22 +504,13 @@ def claim_next_job(
     if _all_claim_types_provider_paused(session, type_in):
         return None
     youtube_download_circuit_blocked: bool | None = None
-    rank = case(*[(Job.type == t, r) for t, r in _JOB_TYPE_RANK.items()], else_=10)
     base_stmt = select(Job).where(Job.status == "pending", Job.scheduled_for <= now)
     if type_in:
         base_stmt = base_stmt.where(Job.type.in_(list(type_in)))
     skip_types = set(skip_type_in or set())
     if skip_types:
         base_stmt = base_stmt.where(Job.type.not_in(list(skip_types)))
-    # 同优先级、同类型等级、同计划时间下，优先领取新创建的任务，
-    # 这样新添加的视频采集任务不会长期被旧任务压在后面。
-    ordered = base_stmt.order_by(
-        Job.priority.desc(),
-        rank.asc(),
-        Job.scheduled_for.asc(),
-        Job.created_at.desc(),
-        Job.id.desc(),
-    )
+    ordered = base_stmt.order_by(*_claim_order_by(type_in, now=now))
 
     job = None
     batch_size = 50

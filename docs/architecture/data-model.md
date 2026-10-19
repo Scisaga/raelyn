@@ -218,12 +218,12 @@
 - `event_map_record_revision`：冻结事件记录标题、摘要、发生时间、类型、实体、来源和证据；新快照的 transcript 证据同时冻结 `transcript_asset_id` 与片段 `source_sha256`，用于识别转写版本变化；
 - `event_map_canonical_identity` / `event_map_canonical` / `event_map_canonical_member` / `event_map_canonical_lineage`：稳定真实事件身份、快照节点、成员归属与 merge/split 延续；
 - `event_map_canonical.has_uncertainty`：供场景协议和待审核列表直接读取的热查询布尔列；完整原因仍保存在 `uncertainty_flags`；
-- `event_map_canonical_history_revision` / `event_map_canonical_history_member`：不依赖大快照保留期的 canonical 修订正文，以及来源修订到 canonical 的类型化反向索引；
 - `event_map_entity_index`：快照原生的实体—canonical 倒排索引；每行保存实体类型、规范键、展示名、固定 `point_index` 和该 canonical 内的底层记录数，实体筛选不再扫描可变的 `market_event_entity` 或 revision JSON；
 - `event_map_topic` / `event_map_topic_member`：确定性的一级星域与二级主题团；保存三维中心、包围半径和每层唯一归属，不保存二维 polygon；
 - `event_map_story_identity` / `event_map_story` / `event_map_story_member` / `event_map_story_edge`：稳定故事身份、快照版本、有证据的事件图和有向关系；身份保存首次形成后冻结的 `stable_title`、最近实质变化快照 `last_material_snapshot_id` 与时间 `last_material_changed_at`，故事版本保存 `anchor_key`、`story_type`、`maturity` 与 `quality_score`，边保存 evidence revision 列表及关系判定证据 JSON；
-- `event_map_story_history_revision` / `event_map_story_history_evidence` / `story_read_state`：跨快照故事修订、锚点/成熟度/质量历史、故事边到来源修订的反向索引、关注状态与最后阅读位置；
-- `domain_observation_cursor` / `event_map_change`：观察窗口和按系统认知时间分页的对象变化集；
+- `story_read_state`：关注、最后阅读时间与位置；不依赖历史场景。
+- `domain_observation_cursor`：观察时间、窗口、镜头和对象选择；不保存版本差异。
+- `brief_reference.context.quoted_object`：简报实际引用的标题、摘要、发生时间与关系依据；证据版本和视频指针保持独立，不复制全部场景。
 - `event_map_projection_anchor`：三维布局继承所需的 canonical anchor、x/y/z 与 float32 centroid。
 
 关键约束：
@@ -239,12 +239,12 @@
 - 主题下钻与主题—简报反查使用 `(snapshot_id, topic_id, level)` 复合索引，不扫描整个快照成员集；
 - story edge 禁止 self-edge，`(snapshot, source, target, relation_type)` 唯一；
 - story 身份只能在相同故事算法版本和相同 `anchor_key` 内延续；算法定义升级不会把旧语义身份误接到新故事；
-- `event_map_story_identity.stable_title` 在身份创建时写入，后续快照的生成标题不得覆盖；旧身份从最早历史修订标题回填，缺少历史时取最早可用故事标题，active 身份无法得到非空标题时迁移失败并报告；
+- `event_map_story_identity.stable_title` 在身份创建时写入，后续快照的生成标题不得覆盖；旧身份只在值缺失时取现存故事标题回填，active 身份无法得到非空标题时迁移失败并报告；
 - `last_material_snapshot_id` 不外键依赖可能被裁剪的快照。`(playlist_id, status, last_material_changed_at)` 支撑阅读队列；只有成员/顺序、关系/判定依据、支持记录、纠正或成熟度等事实结构变化才推进该游标，文案与质量分不推进；
 - occurrence interval 只来自 `event_time_start/end`；`available_at` 不进入地图表；
 - 原始 embedding 不通过地图 API 传输。
 
-星域主场景只查询上述类型化热列并流式编码固定宽度二进制；长期修订 JSONB 不进入全量显示路径。完整冷热分层见 [V2 观察与存储架构](v2-observation.md)。
+星域主场景只查询上述类型化热列并流式编码固定宽度二进制；简报引用摘要 JSONB 不进入全量显示路径。完整冷热分层见 [V2 观察与存储架构](v2-observation.md)。
 
 旧 `event_regime_*` 与 `event_graph_projection_point` 不属于现行模型，仅可能在显式旧链删除迁移中被识别。
 
@@ -363,6 +363,7 @@ playlist/{playlist_id}/background.{ext}
 
 ## 当前索引与约束重点
 
+- PostgreSQL 观测覆盖率使用 `video_observation_scope_idx(media_id, status, id)`、`asset_transcript_coverage_idx(video_id)`（仅 transcript/txt）、`market_event_observation_coverage_idx(source_video_id, id)` 和 `market_event_evidence_verified_coverage_idx(event_id)`（仅 verified=true）。四类覆盖在同一条查询中共享物化的域内视频和事件集合；在当前域内去重转写与已验证事件，再计算覆盖率，避免重复扫描和随机读取包含原始元数据与证据正文的宽表。已有库由启动迁移补齐索引，并在新增索引时刷新相关表统计，避免导入后缺失统计导致大域被误估成少量信源。在线维护若使用 `CREATE INDEX CONCURRENTLY IF NOT EXISTS`，必须先检查长事务：并发建索引仍会等待旧快照结束。
 - `media(provider, provider_media_id)` 唯一：媒体创建幂等。
 - `video(provider, provider_video_id)` 唯一：视频发现幂等。
 - `asset(...)` 唯一：产物写入幂等。
